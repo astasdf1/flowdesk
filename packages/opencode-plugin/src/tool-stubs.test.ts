@@ -1,0 +1,98 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  FLOWDESK_FDS1_FIXTURE_CATALOG,
+  FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
+  getRelease1ProductionToolRegistry
+} from "@flowdesk/core";
+import {
+  FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
+  FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY,
+  getFlowDeskPreSpikePluginToolStub,
+  getFlowDeskPreSpikePluginToolStubs,
+  getFlowDeskPreSpikeProductionToolRegistry,
+  hasPassingFds1SchemaConversionSpike,
+  runFlowDeskPreSpikePluginToolStub,
+  validateFlowDeskPreSpikePluginToolStub,
+  validateFlowDeskPreSpikePluginToolStubsComplete
+} from "./index.js";
+
+test("pre-spike plugin tool stubs cover the Release 1 minimum tools without production registration", () => {
+  assert.equal(hasPassingFds1SchemaConversionSpike(), false);
+  assert.equal(FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.length, 9);
+  assert.deepEqual(
+    FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.map((stub) => stub.toolName),
+    FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName)
+  );
+  assert.deepEqual(getFlowDeskPreSpikePluginToolStubs(), FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS);
+  assert.deepEqual(getFlowDeskPreSpikeProductionToolRegistry(), FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY);
+  assert.equal(FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY.length, 0);
+  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+  assert.equal(validateFlowDeskPreSpikePluginToolStubsComplete().ok, true);
+});
+
+test("pre-spike plugin tool stub metadata remains blocked and non-authorizing", () => {
+  for (const stub of FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS) {
+    const manifestEntry = FLOWDESK_RELEASE_1_COMMAND_MANIFEST.find((entry) => entry.toolName === stub.toolName);
+    assert.ok(manifestEntry, stub.toolName);
+    assert.equal(stub.commandName, manifestEntry.commandName);
+    assert.equal(stub.requestSchemaId, manifestEntry.requestSchemaId);
+    assert.equal(stub.responseSchemaId, manifestEntry.responseSchemaId);
+    assert.equal(stub.fixturePrefix, manifestEntry.fixturePrefix);
+    assert.equal(stub.handlerMode, "pre_spike_test_harness_stub");
+    assert.equal(stub.schemaConversionArtifactStatus, "missing_passing_fds1_schema_conversion_artifact");
+    assert.equal(stub.productionToolRegistration, "blocked_until_fds1_conversion_spike_passes");
+    assert.equal(stub.runtimeDispatch, "disabled_release1_pre_spike");
+    assert.equal(stub.productionRegistrationEligible, false);
+    assert.equal(stub.schemaConversionReady, false);
+    assert.equal(stub.dispatchApprovalEligible, false);
+    assert.equal(stub.fallbackAuthority, false);
+    assert.equal(stub.hardCancelOrNoReplyAuthority, false);
+    assert.equal(stub.actualLaneLaunch, false);
+    assert.equal(stub.providerCall, false);
+    assert.equal(stub.runtimeExecution, false);
+    assert.equal(getFlowDeskPreSpikePluginToolStub(stub.toolName), stub);
+    assert.equal(validateFlowDeskPreSpikePluginToolStub(stub).ok, true);
+  }
+});
+
+test("pre-spike plugin tool stub runner validates fixtures but never accepts execution", () => {
+  for (const stub of FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS) {
+    const requestFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === stub.toolName && entry.schemaKind === "tool_request");
+    assert.ok(requestFixture, stub.toolName);
+    const validResult = runFlowDeskPreSpikePluginToolStub(stub.toolName, requestFixture.categories["valid.minimal"].sample);
+    assert.equal(validResult.accepted, false);
+    assert.equal(validResult.requestSchemaValid, true);
+    assert.equal(validResult.responseSchemaValid, true);
+    assert.equal(validResult.blockedReason, "missing_passing_fds1_schema_conversion_artifact");
+    assert.equal(validResult.productionRegistrationEligible, false);
+    assert.equal(validResult.dispatchApprovalEligible, false);
+    assert.equal(validResult.providerCall, false);
+    assert.equal(validResult.runtimeExecution, false);
+
+    const invalidResult = runFlowDeskPreSpikePluginToolStub(stub.toolName, requestFixture.categories["invalid.unknown-property"].sample);
+    assert.equal(invalidResult.accepted, false);
+    assert.equal(invalidResult.requestSchemaValid, false);
+    assert.equal(invalidResult.responseSchemaValid, true);
+    assert.equal(invalidResult.blockedReason, "request_schema_invalid");
+  }
+});
+
+test("pre-spike plugin tool stubs reject forged authority and Release 1 real dispatch", () => {
+  const runStub = getFlowDeskPreSpikePluginToolStub("flowdesk_run");
+  assert.ok(runStub);
+  const runRequestFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_run" && entry.schemaKind === "tool_request");
+  assert.ok(runRequestFixture);
+  const realDispatchAttempt = runFlowDeskPreSpikePluginToolStub("flowdesk_run", {
+    ...runRequestFixture.categories["valid.minimal"].sample,
+    run_mode: "real-opencode-dispatch"
+  });
+  assert.equal(realDispatchAttempt.accepted, false);
+  assert.equal(realDispatchAttempt.requestSchemaValid, false);
+  assert.equal(realDispatchAttempt.blockedReason, "request_schema_invalid");
+  assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, productionRegistrationEligible: true }).ok, false);
+  assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, schemaConversionReady: true }).ok, false);
+  assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, dispatchApprovalEligible: true }).ok, false);
+  assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, providerCall: true }).ok, false);
+  assert.equal(validateFlowDeskPreSpikePluginToolStubsComplete(FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.slice(1)).ok, false);
+});
