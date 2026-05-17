@@ -1,0 +1,23 @@
+{
+  "name": "flowdesk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "FlowDesk for opencode workspace scaffold.",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/core packages/opencode-plugin",
+    "typecheck": "tsc -b packages/core packages/opencode-plugin --pretty false",
+    "test": "npm run build && node --test packages/*/dist/**/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=24.14.1",
+    "npm": ">=11.11.0"
+  }
+}
