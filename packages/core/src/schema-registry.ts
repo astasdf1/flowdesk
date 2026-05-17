@@ -1,0 +1,206 @@
+export type Release1ToolRegistrationStatus = "registered_minimum" | "optional_diagnostic_unregistered" | "later_release_unregistered" | "schema_artifact_only";
+export type Release1SchemaRegistryKind = "envelope" | "tool_request" | "tool_response" | "supporting" | "persisted_state" | "config_policy" | "bootstrap" | "guard" | "workflow" | "runtime" | "audit" | "later_release";
+export type Release1PrivilegeClass = "safe_read_only" | "privileged_non_dispatch" | "privileged_release1_dry_run_or_fake_runtime" | "internal_diagnostic" | "not_applicable";
+export type Release1SchemaCompatibilityStatus = "blocked_missing_schema_conversion_evidence" | "inert_schema_artifact" | "not_applicable";
+
+export interface Release1ToolContractMetadata {
+  privilegeClass: Release1PrivilegeClass;
+  statePreconditions: readonly string[];
+  stateOutputs: readonly string[];
+  redactedErrorShapeId: "flowdesk.redacted_error.v1";
+  schemaCompatibilityStatus: Release1SchemaCompatibilityStatus;
+  schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes" | "not_required_for_non_tool_artifact";
+}
+
+export interface Release1SchemaMetadata {
+  schemaId: string;
+  fixturePrefix: string;
+  interfaceName: string;
+  kind: Release1SchemaRegistryKind;
+  productionRegistrationEligible: false;
+  release1MinimumTool: boolean;
+  registrationStatus: Release1ToolRegistrationStatus;
+  toolName?: string;
+  toolContract?: Release1ToolContractMetadata;
+}
+
+const minimum = "registered_minimum" satisfies Release1ToolRegistrationStatus;
+const optional = "optional_diagnostic_unregistered" satisfies Release1ToolRegistrationStatus;
+const later = "later_release_unregistered" satisfies Release1ToolRegistrationStatus;
+const artifactOnly = "schema_artifact_only" satisfies Release1ToolRegistrationStatus;
+
+const blockedToolCompatibility = {
+  redactedErrorShapeId: "flowdesk.redacted_error.v1",
+  schemaCompatibilityStatus: "blocked_missing_schema_conversion_evidence",
+  schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes"
+} as const;
+
+const toolContracts = {
+  flowdesk_chat_intake: { privilegeClass: "internal_diagnostic", statePreconditions: ["redacted intake only", "chat steering conformance when used"], stateOutputs: ["redacted intake ref", "route decision"] },
+  flowdesk_doctor: { privilegeClass: "safe_read_only", statePreconditions: ["schema-valid request", "redacted refs only"], stateOutputs: ["doctor section results", "provider health summary", "compatibility ref"] },
+  flowdesk_plan: { privilegeClass: "privileged_non_dispatch", statePreconditions: ["state write permission when persisted", "audit write permission", "no dispatch"], stateOutputs: ["plan revision id", "guard precheck", "required approvals"] },
+  flowdesk_run: { privilegeClass: "privileged_release1_dry_run_or_fake_runtime", statePreconditions: ["Guard approval for dry-run or fake-runtime", "pre-run audit", "Release 1 run mode only"], stateOutputs: ["run result ref", "verification summary ref", "artifact disposition"] },
+  flowdesk_status: { privilegeClass: "safe_read_only", statePreconditions: ["workflow state readable", "redacted refs only"], stateOutputs: ["workflow state", "lane summaries", "blocker", "checkpoint id"] },
+  flowdesk_resume: { privilegeClass: "privileged_non_dispatch", statePreconditions: ["durable checkpoint", "fresh checks", "no event-only checkpoint"], stateOutputs: ["resume decision", "required fresh checks", "next checkpoint id"] },
+  flowdesk_retry: { privilegeClass: "privileged_non_dispatch", statePreconditions: ["existing attempt", "new attempt id", "Guard-compatible binding"], stateOutputs: ["new attempt id", "required guard checks", "retry state"] },
+  flowdesk_abort: { privilegeClass: "privileged_non_dispatch", statePreconditions: ["workflow id", "audit write when state changes", "best-effort cancellation only"], stateOutputs: ["requested/observed/failed cancellation state", "remaining safe actions"] },
+  flowdesk_usage: { privilegeClass: "safe_read_only", statePreconditions: ["provider family", "usage write permission when refresh persists"], stateOutputs: ["usage snapshot ref", "provider health snapshot ref", "freshness", "dispatchability"] },
+  flowdesk_explain_route: { privilegeClass: "safe_read_only", statePreconditions: ["existing workflow", "redacted route ref"], stateOutputs: ["route summary", "guard rationale ref"] },
+  flowdesk_audit: { privilegeClass: "safe_read_only", statePreconditions: ["existing workflow", "redacted audit query"], stateOutputs: ["audit refs", "summary labels", "redaction version"] },
+  flowdesk_export_debug: { privilegeClass: "privileged_non_dispatch", statePreconditions: ["debug export write permission", "redaction passes", "retention policy"], stateOutputs: ["export manifest ref", "included redacted sections", "delete after"] }
+} as const;
+
+type ToolName = keyof typeof toolContracts;
+
+function toolContract(toolName: ToolName): Release1ToolContractMetadata {
+  return { ...blockedToolCompatibility, ...toolContracts[toolName] };
+}
+
+function toolEntry(
+  toolName: ToolName,
+  schemaId: string,
+  fixturePrefix: string,
+  interfaceName: string,
+  kind: "tool_request" | "tool_response",
+  status: Release1ToolRegistrationStatus,
+  release1MinimumTool: boolean
+): Release1SchemaMetadata {
+  return {
+    schemaId,
+    fixturePrefix,
+    interfaceName,
+    kind,
+    productionRegistrationEligible: false,
+    release1MinimumTool,
+    registrationStatus: status,
+    toolName,
+    toolContract: toolContract(toolName)
+  };
+}
+
+function artifactEntry(schemaId: string, fixturePrefix: string, interfaceName: string, kind: Release1SchemaRegistryKind): Release1SchemaMetadata {
+  return {
+    schemaId,
+    fixturePrefix,
+    interfaceName,
+    kind,
+    productionRegistrationEligible: false,
+    release1MinimumTool: false,
+    registrationStatus: artifactOnly
+  };
+}
+
+export const RELEASE_1_PRODUCTION_MINIMUM_TOOL_NAMES = [
+  "flowdesk_doctor",
+  "flowdesk_plan",
+  "flowdesk_run",
+  "flowdesk_status",
+  "flowdesk_resume",
+  "flowdesk_retry",
+  "flowdesk_abort",
+  "flowdesk_usage",
+  "flowdesk_export_debug"
+] as const;
+
+export const RELEASE_1_OPTIONAL_DIAGNOSTIC_TOOL_NAMES = ["flowdesk_chat_intake", "flowdesk_explain_route", "flowdesk_audit"] as const;
+export const RELEASE_1_LATER_RELEASE_TOOL_NAMES = ["flowdesk_reference_search"] as const;
+
+export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
+  artifactEntry("flowdesk.tool.request.v1", "tool-request-envelope", "FlowDeskToolRequestEnvelopeV1", "envelope"),
+  artifactEntry("flowdesk.tool.response.v1", "tool-response-envelope", "FlowDeskToolResponseEnvelopeV1", "envelope"),
+  artifactEntry("flowdesk.redacted_error.v1", "redacted-error", "FlowDeskRedactedErrorV1", "envelope"),
+
+  toolEntry("flowdesk_chat_intake", "flowdesk.chat_intake.request.v1", "chat-intake", "FlowDeskChatIntakeRequestV1", "tool_request", optional, false),
+  toolEntry("flowdesk_chat_intake", "flowdesk.chat_intake.response.v1", "chat-intake", "FlowDeskChatIntakeResponseV1", "tool_response", optional, false),
+  artifactEntry("flowdesk.hook_harness.request.v1", "hook-harness-request", "FlowDeskHookHarnessRequestV1", "supporting"),
+  artifactEntry("flowdesk.hook_harness.response.v1", "hook-harness-response", "FlowDeskHookHarnessResponseV1", "supporting"),
+  toolEntry("flowdesk_doctor", "flowdesk.doctor.request.v1", "doctor", "FlowDeskDoctorRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_doctor", "flowdesk.doctor.response.v1", "doctor", "FlowDeskDoctorResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_plan", "flowdesk.plan.request.v1", "plan", "FlowDeskPlanRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_plan", "flowdesk.plan.response.v1", "plan", "FlowDeskPlanResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_run", "flowdesk.run.request.v1", "run", "FlowDeskRunRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_run", "flowdesk.run.response.v1", "run", "FlowDeskRunResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_status", "flowdesk.status.request.v1", "status", "FlowDeskStatusRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_status", "flowdesk.status.response.v1", "status", "FlowDeskStatusResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_resume", "flowdesk.resume.request.v1", "resume", "FlowDeskResumeRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_resume", "flowdesk.resume.response.v1", "resume", "FlowDeskResumeResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_retry", "flowdesk.retry.request.v1", "retry", "FlowDeskRetryRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_retry", "flowdesk.retry.response.v1", "retry", "FlowDeskRetryResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_abort", "flowdesk.abort.request.v1", "abort", "FlowDeskAbortRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_abort", "flowdesk.abort.response.v1", "abort", "FlowDeskAbortResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_usage", "flowdesk.usage.request.v1", "usage", "FlowDeskUsageRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_usage", "flowdesk.usage.response.v1", "usage", "FlowDeskUsageResponseV1", "tool_response", minimum, true),
+  toolEntry("flowdesk_explain_route", "flowdesk.explain_route.request.v1", "explain-route", "FlowDeskExplainRouteRequestV1", "tool_request", optional, false),
+  toolEntry("flowdesk_explain_route", "flowdesk.explain_route.response.v1", "explain-route", "FlowDeskExplainRouteResponseV1", "tool_response", optional, false),
+  toolEntry("flowdesk_audit", "flowdesk.audit.request.v1", "audit", "FlowDeskAuditRequestV1", "tool_request", optional, false),
+  toolEntry("flowdesk_audit", "flowdesk.audit.response.v1", "audit", "FlowDeskAuditResponseV1", "tool_response", optional, false),
+  toolEntry("flowdesk_export_debug", "flowdesk.export_debug.request.v1", "export-debug", "FlowDeskExportDebugRequestV1", "tool_request", minimum, true),
+  toolEntry("flowdesk_export_debug", "flowdesk.export_debug.response.v1", "export-debug", "FlowDeskExportDebugResponseV1", "tool_response", minimum, true),
+
+  artifactEntry("flowdesk.doctor_section_result.v1", "doctor-section-result", "DoctorSectionResultV1", "supporting"),
+  artifactEntry("flowdesk.doctor_report.v1", "doctor-report", "FlowDeskDoctorReportV1", "supporting"),
+  artifactEntry("flowdesk.status_summary.v1", "status-summary", "FlowDeskStatusSummaryArtifactV1", "supporting"),
+  artifactEntry("flowdesk.plan_summary.v1", "plan-summary", "FlowDeskPlanSummaryArtifactV1", "supporting"),
+  artifactEntry("flowdesk.lane_summary.v1", "lane-summary", "FlowDeskLaneSummaryArtifactV1", "supporting"),
+  artifactEntry("flowdesk.verification_summary.v1", "verification-summary", "FlowDeskVerificationSummaryArtifactV1", "supporting"),
+  artifactEntry("flowdesk.usage_snapshot.v1", "usage-snapshot", "FlowDeskUsageSnapshotV1", "supporting"),
+  artifactEntry("flowdesk.provider_health_snapshot.v1", "provider-health-snapshot", "FlowDeskProviderHealthSnapshotV1", "supporting"),
+  artifactEntry("flowdesk.debug_section_summary.v1", "debug-section-summary", "DebugSectionSummaryV1", "supporting"),
+  artifactEntry("flowdesk.audit_ref_summary.v1", "audit-ref-summary", "FlowDeskAuditRefSummaryV1", "audit"),
+  artifactEntry("flowdesk.audit_event.v1", "audit-event", "FlowDeskAuditEventV1", "audit"),
+  artifactEntry("flowdesk.conformance_runtime_metadata.v1", "conformance-runtime-metadata", "FlowDeskConformanceRuntimeMetadataV1", "runtime"),
+  artifactEntry("flowdesk.conformance_evidence_record.v1", "conformance-evidence-record", "FlowDeskConformanceEvidenceRecordV1", "runtime"),
+  artifactEntry("flowdesk.workflow_active.v1", "workflow-active", "FlowDeskWorkflowActiveV1", "persisted_state"),
+  artifactEntry("flowdesk.workflow_record.v1", "workflow-record", "FlowDeskWorkflowRecordV1", "persisted_state"),
+  artifactEntry("flowdesk.attempt_record.v1", "attempt-record", "FlowDeskAttemptRecordV1", "persisted_state"),
+  artifactEntry("flowdesk.checkpoint_record.v1", "checkpoint-record", "FlowDeskCheckpointRecordV1", "persisted_state"),
+  artifactEntry("flowdesk.active_attempt_lock.v1", "active-attempt-lock", "FlowDeskActiveAttemptLockV1", "persisted_state"),
+  artifactEntry("flowdesk.lane_record.v1", "lane-record", "FlowDeskLaneRecordV1", "persisted_state"),
+  artifactEntry("flowdesk.audit_record.v1", "audit-record", "FlowDeskAuditRecordV1", "persisted_state"),
+  artifactEntry("flowdesk.debug_export_manifest.v1", "debug-export-manifest", "FlowDeskDebugExportManifestV1", "persisted_state"),
+  artifactEntry("flowdesk.project_config.v1", "project-config", "FlowDeskProjectConfigV1", "config_policy"),
+  artifactEntry("flowdesk.policy_pack.v1", "policy-pack", "FlowDeskPolicyPackV1", "config_policy"),
+  artifactEntry("flowdesk.effective_policy.v1", "effective-policy", "FlowDeskEffectivePolicyV1", "config_policy"),
+  artifactEntry("flowdesk.non_dispatch_permission.v1", "non-dispatch-permission", "FlowDeskNonDispatchPermissionV1", "config_policy"),
+  artifactEntry("flowdesk.bootstrap_install_plan.v1", "bootstrap-install-plan", "FlowDeskBootstrapInstallPlanV1", "bootstrap"),
+  artifactEntry("flowdesk.bootstrap_backup_manifest.v1", "bootstrap-backup-manifest", "FlowDeskBootstrapBackupManifestV1", "bootstrap"),
+  artifactEntry("flowdesk.profile_mutation_summary.v1", "profile-mutation-summary", "FlowDeskProfileMutationSummaryV1", "bootstrap"),
+  artifactEntry("flowdesk.omo_cleanup_summary.v1", "omo-cleanup-summary", "FlowDeskOmoCleanupSummaryV1", "bootstrap"),
+  artifactEntry("flowdesk.command_generation_summary.v1", "command-generation-summary", "FlowDeskCommandGenerationSummaryV1", "bootstrap"),
+  artifactEntry("flowdesk.config_scaffold_summary.v1", "config-scaffold-summary", "FlowDeskConfigScaffoldSummaryV1", "bootstrap"),
+  artifactEntry("flowdesk.bootstrap_rollback_plan.v1", "bootstrap-rollback-plan", "FlowDeskBootstrapRollbackPlanV1", "bootstrap"),
+  artifactEntry("flowdesk.bootstrap_rollback_result.v1", "bootstrap-rollback-result", "FlowDeskBootstrapRollbackResultV1", "bootstrap"),
+  artifactEntry("flowdesk.bootstrap_report.v1", "bootstrap-report", "FlowDeskBootstrapReportV1", "bootstrap"),
+  artifactEntry("flowdesk.doctor_handoff.v1", "doctor-handoff", "FlowDeskDoctorHandoffV1", "bootstrap"),
+  artifactEntry("flowdesk.guard_request.v1", "guard-request", "GuardRequestV1", "guard"),
+  artifactEntry("flowdesk.guard_response.v1", "guard-response", "GuardResponseV1", "guard"),
+  artifactEntry("flowdesk.guard_approved_dispatch.v1", "guard-approved-dispatch", "GuardApprovedDispatchV1", "guard"),
+  artifactEntry("flowdesk.runtime_capability_metadata.v1", "runtime-capability-metadata", "FlowDeskRuntimeCapabilityMetadataV1", "runtime"),
+  artifactEntry("flowdesk.workflow_plan.v1", "workflow-plan", "FlowDeskWorkflowPlanV1", "workflow"),
+  {
+    schemaId: "flowdesk.reference_search.request.v1",
+    fixturePrefix: "reference-search",
+    interfaceName: "FlowDeskReferenceSearchRequestV1",
+    kind: "later_release",
+    productionRegistrationEligible: false,
+    release1MinimumTool: false,
+    registrationStatus: later,
+    toolName: "flowdesk_reference_search"
+  }
+];
+
+export function getRelease1MinimumToolRegistry(): Release1SchemaMetadata[] {
+  return RELEASE_1_SCHEMA_REGISTRY.filter((entry) => entry.release1MinimumTool && entry.kind.startsWith("tool_"));
+}
+
+export function getRelease1ProductionToolRegistry(): Release1SchemaMetadata[] {
+  return RELEASE_1_SCHEMA_REGISTRY.filter((entry) => entry.productionRegistrationEligible && entry.kind.startsWith("tool_"));
+}
+
+export function getRelease1RegisteredToolNames(): string[] {
+  return [...new Set(getRelease1MinimumToolRegistry().map((entry) => entry.toolName).filter((toolName): toolName is string => typeof toolName === "string"))];
+}
+
+export function getRelease1SchemaMetadata(schemaId: string): Release1SchemaMetadata | undefined {
+  return RELEASE_1_SCHEMA_REGISTRY.find((entry) => entry.schemaId === schemaId);
+}
