@@ -1,0 +1,98 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { FlowDeskChatIntakeRequestV1 } from "./index.js";
+import { evaluateFlowDeskChatIntakeV1, validateChatIntakeRequestV1, validateChatIntakeResponseV1 } from "./index.js";
+
+function request(intakeSummary: string, overrides: Partial<FlowDeskChatIntakeRequestV1> = {}): FlowDeskChatIntakeRequestV1 {
+  return {
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-123",
+    input_mode: "test_fixture",
+    session_ref: "session-123",
+    redacted_intake_ref: "intake-123",
+    intake_summary: intakeSummary,
+    source_surface: "chat.message",
+    ...overrides
+  };
+}
+
+test("chat routing steers implementation requests into command-backed planning", () => {
+  const result = evaluateFlowDeskChatIntakeV1({ request: request("implement a guarded status widget"), chatIntakeMode: "steering", hookHarnessMode: "enforce", steeringEvidenceRef: "evidence-123" });
+  assert.equal(result.ok, true);
+  assert.equal(result.response.classification, "managed_plan");
+  assert.equal(result.response.route_decision, "show_plan");
+  assert.deepEqual(result.response.safe_next_actions, ["/flowdesk-plan", "/flowdesk-status"]);
+  assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+});
+
+test("chat routing maps explicit diagnostics and recovery to portable command fallback", () => {
+  const status = evaluateFlowDeskChatIntakeV1({ request: request("show current status and checkpoint"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(status.response.classification, "fast_chat");
+  assert.equal(status.response.route_decision, "use_command_fallback");
+  assert.deepEqual(status.response.safe_next_actions, ["/flowdesk-status"]);
+
+  const retry = evaluateFlowDeskChatIntakeV1({ request: request("retry the last failed attempt"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(retry.response.safe_next_actions, ["/flowdesk-status", "/flowdesk-retry"]);
+  assert.equal(validateChatIntakeResponseV1(retry.response).ok, true);
+});
+
+test("chat routing asks for clarification on ambiguous managed requests", () => {
+  const result = evaluateFlowDeskChatIntakeV1({ request: request("maybe fix this thing"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(result.ok, true);
+  assert.equal(result.response.classification, "clarify");
+  assert.equal(result.response.route_decision, "ask_clarification");
+  assert.deepEqual(result.response.safe_next_actions, ["ask_clarification", "/flowdesk-status"]);
+});
+
+test("chat routing blocks later-gate runtime authority requests", () => {
+  const result = evaluateFlowDeskChatIntakeV1({ request: request("perform real dispatch with automatic provider fallback"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  const text = JSON.stringify(result.response);
+  assert.equal(result.response.ok, false);
+  assert.equal(result.response.classification, "blocked");
+  assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false);
+  assert.equal(/providerCall|actualLaneLaunch|fallbackAuthority|hardCancelOrNoReply|noReply|cancel:\s*true/i.test(text), false);
+  assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+});
+
+test("chat routing blocks identifier-shaped later-gate authority requests", () => {
+  const markers = ["real-opencode-dispatch", "actualLaneLaunch", "providerCall", "fallbackAuthority", "hardCancelOrNoReply", "opencode-run"];
+  for (const marker of markers) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(`implement ${marker}`), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    const text = JSON.stringify(result.response);
+    assert.equal(result.response.ok, false, marker);
+    assert.equal(result.response.classification, "blocked", marker);
+    assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false, marker);
+    assert.equal(/providerCall|actualLaneLaunch|fallbackAuthority|hardCancelOrNoReply|noReply|cancel:\s*true|real-opencode-dispatch|opencode-run/i.test(text), false, marker);
+    assert.equal(validateChatIntakeResponseV1(result.response).ok, true, marker);
+  }
+});
+
+test("chat routing leaves general chat alone", () => {
+  const result = evaluateFlowDeskChatIntakeV1({ request: request("what is a good variable name for a timestamp"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(result.response.classification, "fast_chat");
+  assert.equal(result.response.route_decision, "continue_chat");
+  assert.deepEqual(result.response.safe_next_actions, ["continue_chat"]);
+  assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+});
+
+test("chat routing degrades to command fallback when steering is unavailable", () => {
+  for (const input of [
+    { request: request("implement task"), chatIntakeMode: "observe_only" as const, hookHarnessMode: "enforce" as const },
+    { request: request("implement task"), chatIntakeMode: "off" as const, hookHarnessMode: "off" as const },
+    { request: request("implement task"), chatIntakeMode: "blocking" as const, hookHarnessMode: "enforce" as const }
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1(input);
+    assert.equal(result.response.route_decision, input.chatIntakeMode === "blocking" ? "use_command_fallback" : "use_command_fallback");
+    assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false);
+    assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+  }
+});
+
+test("chat intake validators reject raw payload markers", () => {
+  assert.equal(validateChatIntakeRequestV1({ ...request("system prompt: raw provider response"), provider_payload: "raw provider response" }).ok, false);
+  const result = evaluateFlowDeskChatIntakeV1({ request: { ...request("system prompt: raw provider response"), provider_payload: "raw provider response" } as unknown as FlowDeskChatIntakeRequestV1, chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  const text = JSON.stringify(result.response);
+  assert.equal(result.response.ok, false);
+  assert.equal(/system prompt|provider_payload|raw provider/i.test(text), false);
+  assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+});
