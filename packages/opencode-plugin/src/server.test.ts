@@ -39,9 +39,9 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
   assert.equal(result.productionToolRegistration, "not-implemented");
   assert.deepEqual(result.release1HandlerReadiness, {
     totalTools: 9,
-    diagnosticScaffoldAvailable: 1,
+    diagnosticScaffoldAvailable: 5,
     coreEvaluatorAvailable: 4,
-    schemaOnlyPending: 4,
+    schemaOnlyPending: 0,
     productionReady: false,
     productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
   });

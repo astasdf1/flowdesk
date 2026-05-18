@@ -9,17 +9,17 @@ import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
   FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY,
   FLOWDESK_RELEASE_1_HANDLER_READINESS,
-  getFlowDeskRelease1HandlerReadiness,
-  getFlowDeskRelease1HandlerReadinessSummary,
   getFlowDeskPreSpikePluginToolStub,
   getFlowDeskPreSpikePluginToolStubs,
   getFlowDeskPreSpikeProductionToolRegistry,
+  getFlowDeskRelease1HandlerReadiness,
+  getFlowDeskRelease1HandlerReadinessSummary,
   hasPassingFds1SchemaConversionSpike,
   runFlowDeskPreSpikePluginToolStub,
-  validateFlowDeskRelease1HandlerReadiness,
-  validateFlowDeskRelease1HandlerReadinessEntry,
   validateFlowDeskPreSpikePluginToolStub,
-  validateFlowDeskPreSpikePluginToolStubsComplete
+  validateFlowDeskPreSpikePluginToolStubsComplete,
+  validateFlowDeskRelease1HandlerReadiness,
+  validateFlowDeskRelease1HandlerReadinessEntry
 } from "./index.js";
 
 test("pre-spike plugin tool stubs cover the Release 1 minimum tools without production registration", () => {
@@ -74,9 +74,9 @@ test("Release 1 handler readiness tracks evaluator-backed tools without producti
   const summary = getFlowDeskRelease1HandlerReadinessSummary();
   assert.deepEqual(summary, {
     totalTools: 9,
-    diagnosticScaffoldAvailable: 1,
+    diagnosticScaffoldAvailable: 5,
     coreEvaluatorAvailable: 4,
-    schemaOnlyPending: 4,
+    schemaOnlyPending: 0,
     productionReady: false,
     productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
   });
@@ -87,10 +87,10 @@ test("Release 1 handler readiness tracks evaluator-backed tools without producti
   assert.equal(readinessByTool.flowdesk_run, "core_evaluator_available");
   assert.equal(readinessByTool.flowdesk_status, "core_evaluator_available");
   assert.equal(readinessByTool.flowdesk_retry, "core_evaluator_available");
-  assert.equal(readinessByTool.flowdesk_resume, "schema_only_pending");
-  assert.equal(readinessByTool.flowdesk_abort, "schema_only_pending");
-  assert.equal(readinessByTool.flowdesk_usage, "schema_only_pending");
-  assert.equal(readinessByTool.flowdesk_export_debug, "schema_only_pending");
+  assert.equal(readinessByTool.flowdesk_resume, "diagnostic_scaffold_available");
+  assert.equal(readinessByTool.flowdesk_abort, "diagnostic_scaffold_available");
+  assert.equal(readinessByTool.flowdesk_usage, "diagnostic_scaffold_available");
+  assert.equal(readinessByTool.flowdesk_export_debug, "diagnostic_scaffold_available");
 
   for (const entry of FLOWDESK_RELEASE_1_HANDLER_READINESS) {
     assert.equal(entry.productionRegistrationEligible, false);

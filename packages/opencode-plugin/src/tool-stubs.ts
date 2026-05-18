@@ -118,7 +118,7 @@ export const FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS = FLOWDESK_RELEASE_1_COMMAND_M
 
 export const FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY = [] as const satisfies readonly FlowDeskPreSpikePluginToolStubV1[];
 
-const diagnosticScaffoldTools = new Set<FlowDeskRelease1MinimumToolName>(["flowdesk_doctor"]);
+const diagnosticScaffoldTools = new Set<FlowDeskRelease1MinimumToolName>(["flowdesk_doctor", "flowdesk_resume", "flowdesk_abort", "flowdesk_usage", "flowdesk_export_debug"]);
 const coreEvaluatorBackedTools = new Set<FlowDeskRelease1MinimumToolName>(["flowdesk_plan", "flowdesk_run", "flowdesk_status", "flowdesk_retry"]);
 
 function handlerReadinessFor(toolName: FlowDeskRelease1MinimumToolName): FlowDeskRelease1HandlerReadinessStatusV1 {
@@ -265,8 +265,8 @@ export function validateFlowDeskRelease1HandlerReadiness(readiness: readonly unk
   return combine([
     readiness.length === expectedToolNames.length ? valid() : invalid("handler readiness must cover every Release 1 minimum tool"),
     JSON.stringify(actualToolNames) === JSON.stringify(expectedToolNames) ? valid() : invalid("handler readiness order or membership is not exact"),
-    summary.schemaOnlyPending > 0 ? valid() : invalid("production readiness must remain blocked until pending handlers are implemented"),
     summary.productionReady === false ? valid() : invalid("productionReady must remain false"),
+    summary.productionPromotionGate === "blocked_release1_handler_readiness_incomplete" ? valid() : invalid("production promotion gate must remain blocked"),
     ...readiness.map((entry) => validateFlowDeskRelease1HandlerReadinessEntry(entry))
   ]);
 }

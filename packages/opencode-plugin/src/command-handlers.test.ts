@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   FlowDeskAttemptRecordV1,
+  FlowDeskExportDebugRequestV1,
   FlowDeskFds1FixtureCatalogEntryV1,
   FlowDeskLaneRecordV1,
   FlowDeskNonDispatchPermissionV1,
@@ -12,6 +13,7 @@ import type {
   FlowDeskRelease1MinimumToolName,
   FlowDeskRunRequestV1,
   FlowDeskStatusCommandInputV1,
+  FlowDeskUsageResponseV1,
   FlowDeskWorkflowActiveV1,
   FlowDeskWorkflowRecordV1,
   WorkflowTaxonomyV1
@@ -425,14 +427,46 @@ test("command-backed handlers require evaluator input for core-backed tools", ()
   assertNoRuntimeAuthority(runResult);
 });
 
-test("schema-only pending handlers remain non-dispatch pending after request validation", () => {
-  const request = requestFixture("flowdesk_usage");
-  const result = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_usage", request);
-  assert.equal(result.handlerMode, "schema_only_pending");
-  assert.equal(result.ok, false);
-  assert.equal(result.requestSchemaValid, true);
-  assert.equal(result.responseSchemaValid, false);
-  assert.equal(result.coreEvaluationOk, false);
-  assert.equal(result.response, undefined);
+test("diagnostic handlers cover resume, abort, usage, and export-debug without runtime authority", () => {
+  const cases: readonly FlowDeskRelease1MinimumToolName[] = ["flowdesk_resume", "flowdesk_abort", "flowdesk_usage", "flowdesk_export_debug"];
+  for (const toolName of cases) {
+    const result = evaluateFlowDeskCommandBackedHandlerV1(toolName, requestFixture(toolName), { diagnostic: { nowIso, deleteAfterIso: "2026-05-18T00:00:00.000Z", sourceRef: "source-123", providerHealthSnapshotRef: "health-123" } });
+    assert.equal(result.handlerMode, "command_backed_diagnostic_handler", toolName);
+    assert.equal(result.ok, true, toolName);
+    assert.equal(result.requestSchemaValid, true, toolName);
+    assert.equal(result.responseSchemaValid, true, toolName);
+    assert.equal(result.coreEvaluationOk, true, toolName);
+    assert.notEqual(result.response, undefined, toolName);
+    assertNoRuntimeAuthority(result);
+  }
+});
+
+test("usage diagnostic handler reports unknown usage as non-dispatchable", () => {
+  const result = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_usage", requestFixture("flowdesk_usage"), { diagnostic: { providerHealthSnapshotRef: "health-123" } });
+  assert.equal(result.handlerMode, "command_backed_diagnostic_handler");
+  assert.equal(result.ok, true);
+  const response = result.response as FlowDeskUsageResponseV1;
+  assert.equal(response.freshness, "unknown");
+  assert.equal(response.dispatchability, "non_dispatchable");
+  assert.deepEqual(response.uncertainty_flags, ["unknown"]);
+  assert.equal(response.provider_health_snapshot_ref, "health-123");
+  assertNoRuntimeAuthority(result);
+});
+
+test("export-debug diagnostic handler returns redacted section summaries only", () => {
+  const request = {
+    ...requestFixture("flowdesk_export_debug"),
+    include_sections: ["doctor", "redaction_summary"],
+    retention_hint: "keep_until_default_expiry"
+  } as FlowDeskExportDebugRequestV1;
+  const result = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_export_debug", request, { diagnostic: { deleteAfterIso: "2026-05-18T00:00:00.000Z" } });
+  assert.equal(result.handlerMode, "command_backed_diagnostic_handler");
+  assert.equal(result.ok, true);
+  const response = result.response as { included_sections?: { section?: unknown; redaction_status?: unknown }[]; delete_after?: unknown };
+  assert.deepEqual(response.included_sections?.map((section) => section.section), ["doctor", "redaction_summary"]);
+  assert.deepEqual(response.included_sections?.map((section) => section.redaction_status), ["passed", "passed"]);
+  assert.equal(response.delete_after, "2026-05-18T00:00:00.000Z");
+  assert.equal(JSON.stringify(response).includes("/Users/"), false);
+  assert.equal(JSON.stringify(response).includes("provider_payload"), false);
   assertNoRuntimeAuthority(result);
 });

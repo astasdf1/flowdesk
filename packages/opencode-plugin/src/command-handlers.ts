@@ -1,11 +1,20 @@
 import type {
+  DebugSectionV1,
+  FlowDeskAbortRequestV1,
+  FlowDeskAbortResponseV1,
+  FlowDeskExportDebugRequestV1,
+  FlowDeskExportDebugResponseV1,
   FlowDeskFakeRuntimeCommandInputV1,
   FlowDeskGuardedDryRunCommandInputV1,
   FlowDeskPlanCommandInputV1,
   FlowDeskRelease1MinimumToolName,
+  FlowDeskResumeRequestV1,
+  FlowDeskResumeResponseV1,
   FlowDeskRetryPlanningInputV1,
   FlowDeskRunRequestV1,
   FlowDeskStatusCommandInputV1,
+  FlowDeskUsageRequestV1,
+  FlowDeskUsageResponseV1,
   ValidationResult
 } from "@flowdesk/core";
 import {
@@ -21,7 +30,7 @@ import {
 } from "@flowdesk/core";
 import { getFlowDeskRelease1HandlerReadiness } from "./tool-stubs.js";
 
-export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "missing_evaluator_input" | "request_schema_invalid" | "schema_only_pending";
+export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "command_backed_diagnostic_handler" | "missing_evaluator_input" | "request_schema_invalid" | "schema_only_pending";
 
 export interface FlowDeskCommandBackedRunHandlerContextV1 {
   guardedDryRun?: Omit<FlowDeskGuardedDryRunCommandInputV1, "commandName" | "request">;
@@ -33,6 +42,12 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
   run?: FlowDeskCommandBackedRunHandlerContextV1;
   status?: Omit<FlowDeskStatusCommandInputV1, "request">;
   retry?: Omit<FlowDeskRetryPlanningInputV1, "request">;
+  diagnostic?: {
+    nowIso?: string;
+    deleteAfterIso?: string;
+    sourceRef?: string;
+    providerHealthSnapshotRef?: string;
+  };
 }
 
 export interface FlowDeskCommandBackedHandlerResultV1 extends ValidationResult {
@@ -88,11 +103,97 @@ function requestSchemaResult(toolName: FlowDeskRelease1MinimumToolName, request:
   return validateSchemaArtifactValue(manifestEntry.requestSchemaId, request);
 }
 
+function requestId(request: { request_id?: unknown }): string {
+  return typeof request.request_id === "string" && request.request_id.length > 0 ? request.request_id : "request-unknown";
+}
+
+function diagnosticNow(context: FlowDeskCommandBackedHandlerContextV1): string {
+  return context.diagnostic?.nowIso ?? "2026-05-17T00:00:00.000Z";
+}
+
+function diagnosticDeleteAfter(context: FlowDeskCommandBackedHandlerContextV1): string {
+  return context.diagnostic?.deleteAfterIso ?? "2026-05-18T00:00:00.000Z";
+}
+
+function evaluateResumeDiagnostic(request: FlowDeskResumeRequestV1): FlowDeskResumeResponseV1 {
+  const statusOnly = request.resume_mode === "status_only";
+  return {
+    schema_version: "flowdesk.resume.response.v1",
+    ok: true,
+    status: statusOnly ? "diagnostic_only" : "recovery_available",
+    safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+    user_message: statusOnly ? "FlowDesk kept recovery in status-only mode. No lane resume occurred." : "FlowDesk prepared a non-dispatch recovery decision that requires fresh checks before any resume action.",
+    resume_decision: statusOnly ? "status_only" : "requires_fresh_checks",
+    required_fresh_checks: [
+      { check: "checkpoint", required: true, ref: request.checkpoint_id },
+      { check: "audit", required: true },
+      { check: "provider_health", required: true },
+      { check: "usage", required: true }
+    ]
+  };
+}
+
+function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1): FlowDeskAbortResponseV1 {
+  void request;
+  return {
+    schema_version: "flowdesk.abort.response.v1",
+    ok: false,
+    status: "blocked",
+    safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+    user_message: "FlowDesk recorded an abort diagnostic without hard chat cancellation, no-reply authority, lane launch, or provider interaction.",
+    cancellation_state: "cancel_failed",
+    remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"]
+  };
+}
+
+function evaluateUsageDiagnostic(request: FlowDeskUsageRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskUsageResponseV1 {
+  const id = requestId(request);
+  const usageSnapshotRef = `usage-${id}`;
+  return {
+    schema_version: "flowdesk.usage.response.v1",
+    ok: true,
+    status: "diagnostic_only",
+    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"],
+    user_message: request.refresh ? "FlowDesk reported usage as unknown without provider calls or persisted refresh." : "FlowDesk reported cached usage availability as unknown and non-dispatchable.",
+    usage_snapshot_ref: usageSnapshotRef,
+    provider_health_snapshot_ref: context.diagnostic?.providerHealthSnapshotRef ?? `health-${id}`,
+    freshness: "unknown",
+    dispatchability: "non_dispatchable",
+    uncertainty_flags: ["unknown"]
+  };
+}
+
+function debugSection(exportId: string, section: DebugSectionV1) {
+  return {
+    schema_version: "flowdesk.debug_section_summary.v1" as const,
+    export_id: exportId,
+    section,
+    ref: `debug-${section.replaceAll("_", "-")}-123`,
+    redaction_status: "passed" as const,
+    warning_count: 0,
+    excluded_categories: []
+  };
+}
+
+function evaluateExportDebugDiagnostic(request: FlowDeskExportDebugRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskExportDebugResponseV1 {
+  const exportId = `export-${requestId(request)}`;
+  const includedSections = request.include_sections.map((section) => debugSection(exportId, section));
+  return {
+    schema_version: "flowdesk.export_debug.response.v1",
+    ok: true,
+    status: "diagnostic_only",
+    safe_next_actions: ["/flowdesk-status"],
+    user_message: "FlowDesk prepared redacted debug section refs only. No raw logs, provider payloads, or absolute paths are included.",
+    export_manifest_ref: `manifest-${exportId}`,
+    included_sections: includedSections,
+    delete_after: request.retention_hint === "delete_after_export" ? diagnosticNow(context) : diagnosticDeleteAfter(context)
+  };
+}
+
 export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease1MinimumToolName, request: unknown, context: FlowDeskCommandBackedHandlerContextV1 = {}): FlowDeskCommandBackedHandlerResultV1 {
   const readiness = getFlowDeskRelease1HandlerReadiness().find((entry) => entry.toolName === toolName);
   const requestResult = requestSchemaResult(toolName, request);
   if (!requestResult.ok) return result("request_schema_invalid", toolName, requestResult, invalid("response unavailable when request schema is invalid"), undefined, false);
-  if (readiness?.handlerReadiness !== "core_evaluator_available") return result("schema_only_pending", toolName, requestResult, invalid("core evaluator is not available for this handler yet"), undefined, false);
 
   if (toolName === "flowdesk_plan") {
     if (context.plan === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("plan evaluator input is required"), undefined, false);
@@ -124,5 +225,26 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
     return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
   }
 
+  if (toolName === "flowdesk_resume") {
+    const response = evaluateResumeDiagnostic(request as FlowDeskResumeRequestV1);
+    return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
+  }
+
+  if (toolName === "flowdesk_abort") {
+    const response = evaluateAbortDiagnostic(request as FlowDeskAbortRequestV1);
+    return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
+  }
+
+  if (toolName === "flowdesk_usage") {
+    const response = evaluateUsageDiagnostic(request as FlowDeskUsageRequestV1, context);
+    return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
+  }
+
+  if (toolName === "flowdesk_export_debug") {
+    const response = evaluateExportDebugDiagnostic(request as FlowDeskExportDebugRequestV1, context);
+    return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
+  }
+
+  if (readiness?.handlerReadiness !== "core_evaluator_available") return result("schema_only_pending", toolName, requestResult, invalid("core evaluator adapter is not implemented for this handler yet"), undefined, false);
   return result("schema_only_pending", toolName, requestResult, invalid("core evaluator adapter is not implemented for this handler yet"), undefined, false);
 }
