@@ -48,6 +48,29 @@ export interface FlowDeskPreSpikePluginToolHandlerResultV1 {
   runtimeExecution: false;
 }
 
+export type FlowDeskRelease1HandlerReadinessStatusV1 = "diagnostic_scaffold_available" | "core_evaluator_available" | "schema_only_pending";
+
+export interface FlowDeskRelease1HandlerReadinessEntryV1 {
+  commandName: FlowDeskCommandManifestEntryV1["commandName"];
+  toolName: FlowDeskRelease1MinimumToolName;
+  handlerReadiness: FlowDeskRelease1HandlerReadinessStatusV1;
+  productionRegistrationEligible: false;
+  productionPromotionGate: "blocked_release1_handler_readiness_incomplete";
+  realOpenCodeDispatch: false;
+  actualLaneLaunch: false;
+  providerCall: false;
+  runtimeExecution: false;
+}
+
+export interface FlowDeskRelease1HandlerReadinessSummaryV1 {
+  totalTools: number;
+  diagnosticScaffoldAvailable: number;
+  coreEvaluatorAvailable: number;
+  schemaOnlyPending: number;
+  productionReady: false;
+  productionPromotionGate: "blocked_release1_handler_readiness_incomplete";
+}
+
 const inertAuthority = {
   productionRegistrationEligible: false,
   schemaConversionReady: false,
@@ -95,8 +118,47 @@ export const FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS = FLOWDESK_RELEASE_1_COMMAND_M
 
 export const FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY = [] as const satisfies readonly FlowDeskPreSpikePluginToolStubV1[];
 
+const diagnosticScaffoldTools = new Set<FlowDeskRelease1MinimumToolName>(["flowdesk_doctor"]);
+const coreEvaluatorBackedTools = new Set<FlowDeskRelease1MinimumToolName>(["flowdesk_plan", "flowdesk_run", "flowdesk_status", "flowdesk_retry"]);
+
+function handlerReadinessFor(toolName: FlowDeskRelease1MinimumToolName): FlowDeskRelease1HandlerReadinessStatusV1 {
+  if (diagnosticScaffoldTools.has(toolName)) return "diagnostic_scaffold_available";
+  if (coreEvaluatorBackedTools.has(toolName)) return "core_evaluator_available";
+  return "schema_only_pending";
+}
+
+export const FLOWDESK_RELEASE_1_HANDLER_READINESS = FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => ({
+  commandName: entry.commandName,
+  toolName: entry.toolName,
+  handlerReadiness: handlerReadinessFor(entry.toolName),
+  productionRegistrationEligible: false,
+  productionPromotionGate: "blocked_release1_handler_readiness_incomplete",
+  realOpenCodeDispatch: false,
+  actualLaneLaunch: false,
+  providerCall: false,
+  runtimeExecution: false
+})) as readonly FlowDeskRelease1HandlerReadinessEntryV1[];
+
 export function hasPassingFds1SchemaConversionSpike(): true {
   return true;
+}
+
+export function getFlowDeskRelease1HandlerReadiness(): readonly FlowDeskRelease1HandlerReadinessEntryV1[] {
+  return FLOWDESK_RELEASE_1_HANDLER_READINESS;
+}
+
+export function getFlowDeskRelease1HandlerReadinessSummary(): FlowDeskRelease1HandlerReadinessSummaryV1 {
+  const diagnosticScaffoldAvailable = FLOWDESK_RELEASE_1_HANDLER_READINESS.filter((entry) => entry.handlerReadiness === "diagnostic_scaffold_available").length;
+  const coreEvaluatorAvailable = FLOWDESK_RELEASE_1_HANDLER_READINESS.filter((entry) => entry.handlerReadiness === "core_evaluator_available").length;
+  const schemaOnlyPending = FLOWDESK_RELEASE_1_HANDLER_READINESS.filter((entry) => entry.handlerReadiness === "schema_only_pending").length;
+  return {
+    totalTools: FLOWDESK_RELEASE_1_HANDLER_READINESS.length,
+    diagnosticScaffoldAvailable,
+    coreEvaluatorAvailable,
+    schemaOnlyPending,
+    productionReady: false,
+    productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
+  };
 }
 
 export function getFlowDeskPreSpikePluginToolStubs(): readonly FlowDeskPreSpikePluginToolStubV1[] {
@@ -176,6 +238,36 @@ export function validateFlowDeskPreSpikePluginToolStubsComplete(stubs: readonly 
     FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY.length === 0 ? valid() : invalid("pre-spike production tool registry must remain empty"),
     getRelease1ProductionToolRegistry().length === 0 ? valid() : invalid("core production tool registry must remain empty pre-spike"),
     ...stubs.map((stub) => validateFlowDeskPreSpikePluginToolStub(stub))
+  ]);
+}
+
+export function validateFlowDeskRelease1HandlerReadinessEntry(entry: unknown): ValidationResult {
+  if (!isRecord(entry)) return invalid("handler readiness entry must be an object");
+  const manifestEntry = FLOWDESK_RELEASE_1_COMMAND_MANIFEST.find((candidate) => candidate.toolName === entry.toolName);
+  return combine([
+    rejectUnknownProperties(entry, ["commandName", "toolName", "handlerReadiness", "productionRegistrationEligible", "productionPromotionGate", "realOpenCodeDispatch", "actualLaneLaunch", "providerCall", "runtimeExecution"]),
+    manifestEntry !== undefined ? valid() : invalid("toolName is not a Release 1 minimum tool"),
+    manifestEntry?.commandName === entry.commandName ? valid() : invalid("commandName does not align with manifest"),
+    manifestEntry === undefined || entry.handlerReadiness === handlerReadinessFor(manifestEntry.toolName) ? valid() : invalid("handlerReadiness does not align with current implementation map"),
+    entry.productionRegistrationEligible === false ? valid() : invalid("productionRegistrationEligible must remain false"),
+    entry.productionPromotionGate === "blocked_release1_handler_readiness_incomplete" ? valid() : invalid("productionPromotionGate must remain blocked until all handlers are ready"),
+    entry.realOpenCodeDispatch === false ? valid() : invalid("realOpenCodeDispatch must remain false"),
+    entry.actualLaneLaunch === false ? valid() : invalid("actualLaneLaunch must remain false"),
+    entry.providerCall === false ? valid() : invalid("providerCall must remain false"),
+    entry.runtimeExecution === false ? valid() : invalid("runtimeExecution must remain false")
+  ]);
+}
+
+export function validateFlowDeskRelease1HandlerReadiness(readiness: readonly unknown[] = FLOWDESK_RELEASE_1_HANDLER_READINESS): ValidationResult {
+  const expectedToolNames = FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName);
+  const actualToolNames = readiness.map((entry) => (isRecord(entry) ? entry.toolName : undefined));
+  const summary = getFlowDeskRelease1HandlerReadinessSummary();
+  return combine([
+    readiness.length === expectedToolNames.length ? valid() : invalid("handler readiness must cover every Release 1 minimum tool"),
+    JSON.stringify(actualToolNames) === JSON.stringify(expectedToolNames) ? valid() : invalid("handler readiness order or membership is not exact"),
+    summary.schemaOnlyPending > 0 ? valid() : invalid("production readiness must remain blocked until pending handlers are implemented"),
+    summary.productionReady === false ? valid() : invalid("productionReady must remain false"),
+    ...readiness.map((entry) => validateFlowDeskRelease1HandlerReadinessEntry(entry))
   ]);
 }
 
