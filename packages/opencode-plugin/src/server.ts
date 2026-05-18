@@ -92,14 +92,14 @@ function baseToolRequest(request: FlowDeskChatIntakeRequestV1, schemaVersion: st
   };
 }
 
-function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: FlowDeskChatIntakeRequestV1): unknown {
+function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: FlowDeskChatIntakeRequestV1, options: { requiresConfirmation?: boolean } = {}): unknown {
   const summary = boundedText(request.intake_summary, "FlowDesk natural-language chat intake.");
   if (toolName === "flowdesk_plan") {
     return {
       ...baseToolRequest(request, "flowdesk.plan.request.v1"),
       goal_summary: summary,
       scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
-      risk_hint: "ordinary Release 1 command-backed steering only"
+      risk_hint: options.requiresConfirmation === true ? "execution-like chat intake requires explicit user confirmation before any run" : "ordinary Release 1 command-backed steering only"
     };
   }
   if (toolName === "flowdesk_run") {
@@ -130,7 +130,7 @@ function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: F
 function evaluateNaturalLanguageRouting(request: FlowDeskChatIntakeRequestV1, session: FlowDeskLocalNonDispatchAdapterSessionV1) {
   const evaluation = evaluateFlowDeskChatIntakeV1({ request, chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   const toolName = evaluation.response.ok ? routedToolName(evaluation.response.safe_next_actions) : undefined;
-  const routedToolResult = toolName === undefined ? undefined : session.evaluate(toolName, routedToolRequest(toolName, request));
+  const routedToolResult = toolName === undefined ? undefined : session.evaluate(toolName, routedToolRequest(toolName, request, { requiresConfirmation: evaluation.response.route_decision === "ask_clarification" }));
   return {
     schema_version: "flowdesk.chat_intake.routing_result.v1",
     ok: evaluation.ok,

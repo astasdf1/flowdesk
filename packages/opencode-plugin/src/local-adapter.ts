@@ -334,10 +334,15 @@ function laneRecordFor(request: Record<string, unknown>, parts: ReturnType<typeo
   };
 }
 
+function requiresRunConfirmation(request: Record<string, unknown>): boolean {
+  return typeof request.risk_hint === "string" && /requires explicit user confirmation/i.test(request.risk_hint);
+}
+
 function updateWorkflowState(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, nextState: FlowDeskWorkflowRecordV1["state"]): boolean {
   const workflowId = workflowIdFrom(request);
   const planRevisionId = typeof request.plan_revision_id === "string" ? request.plan_revision_id : id("plan", request);
   const laneRefs = state.laneRecords.flatMap((record) => record.refs);
+  const pendingConfirmation = nextState === "plan_pending_approval";
   const workflow: FlowDeskWorkflowRecordV1 = {
     schema_version: "flowdesk.workflow_record.v1",
     workflow_id: workflowId,
@@ -359,7 +364,15 @@ function updateWorkflowState(state: LocalAdapterState, request: Record<string, u
     audit_refs: ["audit-local"],
     status_summary_ref: "status-summary-local",
     artifact_disposition: "quarantined",
-    safe_next_actions: ["/flowdesk-status"]
+    ...(pendingConfirmation ? {
+      blocker_summary: {
+        category: "policy",
+        summary: "Execution-like chat intake is waiting for explicit user confirmation before any run.",
+        safe_remediation: "Review the FlowDesk plan and provide typed confirmation before using /flowdesk-run.",
+        refs: [id("confirmation-pending", request)]
+      }
+    } : {}),
+    safe_next_actions: pendingConfirmation ? ["/flowdesk-plan", "/flowdesk-status"] : ["/flowdesk-status"]
   };
   const active: FlowDeskWorkflowActiveV1 = {
     schema_version: "flowdesk.workflow_active.v1",
@@ -384,7 +397,7 @@ function recordPlanningState(state: LocalAdapterState, request: Record<string, u
   if (laneIntent === undefined) return false;
   state.laneRecords = [lane];
   state.inMemoryState = applyWriteIntentsToInMemoryState([laneIntent], state.inMemoryState, { now: parts.nowMs });
-  return updateWorkflowState(state, request, parts, "ready_to_run");
+  return updateWorkflowState(state, request, parts, requiresRunConfirmation(request) ? "plan_pending_approval" : "ready_to_run");
 }
 
 function recordRunState(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): boolean {

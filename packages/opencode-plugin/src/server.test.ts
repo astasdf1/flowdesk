@@ -265,7 +265,8 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(result.routedToolResult?.handler?.ok, true);
   assert.equal(result.routedToolResult?.handler?.response?.status, "ready");
   assert.equal(result.routedToolResult?.handler?.response?.workflow_state, undefined);
-  assert.equal(result.routedToolResult?.localState?.workflowState, "ready_to_run");
+  assert.equal(result.routedToolResult?.localState?.workflowState, "plan_pending_approval");
+  assert.equal(result.routedToolResult?.localState?.stateWriteApplied, true);
   assert.notEqual(result.routedToolName, "flowdesk_run");
   assert.equal(result.runtimeExecution, false);
   assert.equal(result.actualLaneLaunch, false);
