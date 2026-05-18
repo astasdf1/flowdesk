@@ -81,14 +81,15 @@ interface ChatMessageHooks {
   "chat.message"?: (input: unknown, output: { parts?: unknown[] }) => Promise<void>;
 }
 
-test("server plugin exposes only an inert pre-spike diagnostic tool", async () => {
+test("server plugin defaults to safe local command-backed chat mode", async () => {
   assert.equal(flowdeskOpenCodeServerPlugin.id, "flowdesk");
   assert.equal(hasProductionOpenCodeRegistration(), false);
   assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(getFlowDeskPreSpikeProductionToolRegistry().length, 0);
 
   const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never);
-  assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName]);
+  assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, ...FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName), flowdeskChatIntakeToolName]);
+  assert.ok((hooks as ChatMessageHooks)["chat.message"]);
 
   const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
   assert.ok(doctor);
@@ -99,7 +100,8 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
   assert.equal(result.pluginId, "flowdesk");
   assert.equal(result.loaded, true);
   assert.equal(result.probeRegistrationProfile, "disabled");
-  assert.equal(result.localNonDispatchAdapterProfile, "disabled");
+  assert.equal(result.localNonDispatchAdapterProfile, "local_non_dispatch_command_adapter");
+  assert.equal(result.naturalLanguageRoutingProfile, "chat_steering_command_backed_non_dispatch");
   assert.equal(result.productionPromotionGate, "blocked_production_opencode_registration_disabled");
   assert.equal(result.productionOpenCodeRegistration, false);
   assert.equal(result.productionToolRegistration, "not-implemented");
@@ -120,7 +122,7 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
     blockedReasons: [
       "production adapters do not yet bind write-capable handlers to scoped non-dispatch audit/debug/state write intents",
       "production adapters do not yet inject and verify fresh scoped non-dispatch permissions at the tool boundary",
-      "server still exposes only inert pre-spike doctor by default and no production non-dispatch adapter profile is registered"
+      "default server exposes safe local command-backed tools, but production adapter registration remains blocked until audit/write and permission boundaries are proven"
     ],
     productionRegistrationEligible: false,
     realOpenCodeDispatch: false,
@@ -147,7 +149,8 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   );
 
   const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-    [flowdeskLocalNonDispatchAdapterOption]: true
+    [flowdeskLocalNonDispatchAdapterOption]: true,
+    [flowdeskNaturalLanguageRoutingOption]: false
   });
   assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, ...Object.keys(localTools)]);
   assert.equal(hasProductionOpenCodeRegistration(), false);
@@ -202,18 +205,23 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.equal(invalidPlanResult.localState?.stateWriteApplied, false);
 });
 
-test("server plugin registers natural-language routing only when explicitly enabled", async () => {
-  const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never) as ChatMessageHooks;
-  assert.equal(defaultHooks["chat.message"], undefined);
-  assert.deepEqual(Object.keys(defaultHooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName]);
+test("server plugin allows explicit opt-out of local tools and natural-language routing", async () => {
+  const disabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskLocalNonDispatchAdapterOption]: false,
+    [flowdeskNaturalLanguageRoutingOption]: false
+  }) as ChatMessageHooks;
+  assert.equal(disabledHooks["chat.message"], undefined);
+  assert.deepEqual(Object.keys(disabledHooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName]);
 
   const localOnlyHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-    [flowdeskLocalNonDispatchAdapterOption]: true
+    [flowdeskLocalNonDispatchAdapterOption]: true,
+    [flowdeskNaturalLanguageRoutingOption]: false
   }) as ChatMessageHooks;
   assert.equal(localOnlyHooks["chat.message"], undefined);
   assert.equal(Object.keys(localOnlyHooks.tool ?? {}).includes(flowdeskChatIntakeToolName), false);
 
   const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskLocalNonDispatchAdapterOption]: false,
     [flowdeskNaturalLanguageRoutingOption]: true
   }) as ChatMessageHooks;
   assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, flowdeskChatIntakeToolName]);

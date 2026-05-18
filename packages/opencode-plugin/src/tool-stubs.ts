@@ -220,7 +220,7 @@ export const FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS = [
     checkId: "production_adapter_boundary",
     status: "blocked",
     evidenceRef: "release1-production-adapter:registration-profile-missing",
-    blocker: "server still exposes only inert pre-spike doctor by default and no production non-dispatch adapter profile is registered"
+    blocker: "default server exposes safe local command-backed tools, but production adapter registration remains blocked until audit/write and permission boundaries are proven"
   }
 ].map((check) => ({
   ...check,

@@ -369,11 +369,15 @@ function isFds1SchemaConversionProbeEnabled(options?: PluginOptions): boolean {
 }
 
 function isLocalNonDispatchAdapterEnabled(options?: PluginOptions): boolean {
-  return options?.[flowdeskLocalNonDispatchAdapterOption] === true;
+  const value = options?.[flowdeskLocalNonDispatchAdapterOption];
+  if (value !== undefined) return value !== false;
+  return !isFds1SchemaConversionProbeEnabled(options);
 }
 
 function isNaturalLanguageRoutingEnabled(options?: PluginOptions): boolean {
-  return options?.[flowdeskNaturalLanguageRoutingOption] === true;
+  const value = options?.[flowdeskNaturalLanguageRoutingOption];
+  if (value !== undefined) return value !== false;
+  return !isFds1SchemaConversionProbeEnabled(options);
 }
 
 function durableStateRootFromOptions(options?: PluginOptions): string | undefined {

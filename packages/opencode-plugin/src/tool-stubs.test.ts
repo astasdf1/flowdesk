@@ -150,7 +150,7 @@ test("Release 1 production readiness stays blocked until adapter prerequisites a
   assert.equal(summary.hardCancelOrNoReplyAuthority, false);
   assert.ok(summary.blockedReasons.some((reason) => reason.includes("write-capable handlers")));
   assert.ok(summary.blockedReasons.some((reason) => reason.includes("non-dispatch permissions")));
-  assert.ok(summary.blockedReasons.some((reason) => reason.includes("server still exposes only inert")));
+  assert.ok(summary.blockedReasons.some((reason) => reason.includes("production adapter registration remains blocked")));
 
   for (const check of FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS) {
     assert.equal(check.productionRegistrationEligible, false, check.checkId);
