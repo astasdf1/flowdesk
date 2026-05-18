@@ -34,6 +34,7 @@ import {
 
 const now = "2026-05-17T00:00:00.000Z";
 const later = "2026-05-18T00:00:00.000Z";
+const validationClock = Date.parse(now);
 const sessionId = "session-123";
 const workflowId = "workflow-123";
 const attemptId = "attempt-123";
@@ -249,7 +250,7 @@ test("valid persisted workflow and redacted session records prepare deterministi
     prepareWorkflowRecordWriteIntent(workflowRecord()),
     prepareAttemptRecordWriteIntent(attemptRecord()),
     prepareCheckpointRecordWriteIntent(checkpointRecord(), { source: "durable_workflow_state" }),
-    prepareActiveAttemptLockWriteIntent(activeLock(), Date.parse(now)),
+    prepareActiveAttemptLockWriteIntent(activeLock(), validationClock),
     prepareLaneRecordWriteIntent(sessionId, laneRecord()),
     prepareAuditRecordWriteIntent(sessionId, auditRecord()),
     prepareDebugExportManifestWriteIntent(sessionId, debugManifest())
@@ -263,10 +264,10 @@ test("valid persisted workflow and redacted session records prepare deterministi
   assert.ok(intents.every((intent) => !intent.path.startsWith("/")));
   assert.ok(intents.every((intent) => intent.atomicity.strategy === "temp_then_rename_intent"));
 
-  const plan = createFlowDeskStateWritePlan(intents);
+  const plan = createFlowDeskStateWritePlan(intents, { now: validationClock });
   assert.equal(plan.ok, true);
   assert.equal(plan.plan?.intents.length, 8);
-  const memoryState = applyWriteIntentsToInMemoryState(intents);
+  const memoryState = applyWriteIntentsToInMemoryState(intents, undefined, { now: validationClock });
   assert.equal(memoryState.has(".flowdesk/workflows/active.json"), true);
   assert.match(memoryState.get(".flowdesk/sessions/session-123/audit.jsonl") ?? "", /"audit_ref":"audit-123"/);
 });

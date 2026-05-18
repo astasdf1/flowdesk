@@ -64,6 +64,10 @@ export interface FlowDeskStateWritePlan {
   intents: FlowDeskStateWriteIntent[];
 }
 
+export interface FlowDeskStateValidationOptions {
+  now?: number;
+}
+
 const workflowSchemas = new Set([
   "flowdesk.workflow_active.v1",
   "flowdesk.workflow_record.v1",
@@ -114,7 +118,7 @@ function failedFromThrown(error: unknown): FlowDeskStatePrepareResult {
   return invalid(error instanceof Error ? error.message : "state path preparation failed");
 }
 
-function validateWriteIntentRecord(intent: FlowDeskStateWriteIntent): ValidationResult {
+function validateWriteIntentRecord(intent: FlowDeskStateWriteIntent, options: FlowDeskStateValidationOptions = {}): ValidationResult {
   if (intent.schemaId !== (intent.record as { schema_version?: unknown }).schema_version) return invalid("intent schemaId must match record schema_version");
   if (workflowSchemas.has(intent.schemaId) && intent.authority !== "authoritative_workflow_state") return invalid("workflow state schema requires authoritative workflow authority");
   if (sessionSchemas.has(intent.schemaId) && intent.authority !== "redacted_session_support") return invalid("session schema requires redacted session support authority");
@@ -149,7 +153,7 @@ function validateWriteIntentRecord(intent: FlowDeskStateWriteIntent): Validation
     }
     case "flowdesk.active_attempt_lock.v1": {
       const record = intent.record as FlowDeskActiveAttemptLockV1;
-      const recordResult = validateActiveAttemptLockV1(record);
+      const recordResult = validateActiveAttemptLockV1(record, options.now);
       if (!recordResult.ok) return recordResult;
       if (intent.operation !== "write_json" || intent.serialization !== "json" || intent.path !== activeAttemptLockPath(record.workflow_id)) return invalid("active-attempt-lock intent target is invalid");
       return valid();
@@ -177,7 +181,7 @@ function validateWriteIntentRecord(intent: FlowDeskStateWriteIntent): Validation
   }
 }
 
-export function validateFlowDeskStateWriteIntent(intent: unknown): ValidationResult {
+export function validateFlowDeskStateWriteIntent(intent: unknown, options: FlowDeskStateValidationOptions = {}): ValidationResult {
   if (typeof intent !== "object" || intent === null || Array.isArray(intent)) return invalid("intent must be an object");
   const candidate = intent as FlowDeskStateWriteIntent;
   const errors: string[] = [];
@@ -193,7 +197,7 @@ export function validateFlowDeskStateWriteIntent(intent: unknown): ValidationRes
   if (typeof candidate.path === "string" && typeof candidate.atomicity?.tempPath === "string" && !candidate.atomicity.tempPath.startsWith(`${candidate.path}.tmp-`)) errors.push("intent temp path must be derived from target path");
   if (candidate.record === undefined) errors.push("intent record is required");
   if (errors.length > 0) return invalid(...errors);
-  return validateWriteIntentRecord(candidate);
+  return validateWriteIntentRecord(candidate, options);
 }
 
 export function prepareWorkflowActiveWriteIntent(record: FlowDeskWorkflowActiveV1, expected?: { workflowId?: string; attemptId?: string }): FlowDeskStatePrepareResult<FlowDeskWorkflowActiveV1> {
@@ -279,18 +283,18 @@ export function prepareDebugExportManifestWriteIntent(sessionId: string, record:
   }
 }
 
-export function createFlowDeskStateWritePlan(intents: readonly FlowDeskStateWriteIntent[]): FlowDeskStateWritePlanResult {
+export function createFlowDeskStateWritePlan(intents: readonly FlowDeskStateWriteIntent[], options: FlowDeskStateValidationOptions = {}): FlowDeskStateWritePlanResult {
   const errors: string[] = [];
   for (const intent of intents) {
-    const intentResult = validateFlowDeskStateWriteIntent(intent);
+    const intentResult = validateFlowDeskStateWriteIntent(intent, options);
     if (!intentResult.ok) errors.push(...intentResult.errors);
   }
   if (errors.length > 0) return invalid(...errors);
   return { ...valid(), plan: { intents: cloneRecord([...intents]) } };
 }
 
-export function applyWriteIntentsToInMemoryState(intents: readonly FlowDeskStateWriteIntent[], initial?: ReadonlyMap<string, string>): Map<string, string> {
-  const plan = createFlowDeskStateWritePlan(intents);
+export function applyWriteIntentsToInMemoryState(intents: readonly FlowDeskStateWriteIntent[], initial?: ReadonlyMap<string, string>, options: FlowDeskStateValidationOptions = {}): Map<string, string> {
+  const plan = createFlowDeskStateWritePlan(intents, options);
   if (!plan.ok || plan.plan === undefined) throw new Error(plan.errors.join("; "));
   const state = new Map(initial ?? []);
   for (const intent of plan.plan.intents) {
