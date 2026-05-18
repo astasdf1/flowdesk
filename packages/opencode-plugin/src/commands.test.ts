@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
@@ -16,6 +19,7 @@ import {
   getFlowDeskPortableCommandFileArtifacts,
   getFlowDeskPreConformanceWrittenAliasRegistry,
   getFlowDeskPreSpikeWrittenCommandFileRegistry,
+  materializeFlowDeskPortableCommandFiles,
   validateFlowDeskDesiredAliasGateArtifact,
   validateFlowDeskDesiredAliasGateArtifactsComplete,
   validateFlowDeskPortableCommandFileArtifact,
@@ -70,6 +74,49 @@ test("portable command file artifacts remain production-disabled and non-authori
     assert.equal(artifact.actualLaneLaunch, false);
     assert.equal(artifact.providerCall, false);
     assert.equal(artifact.runtimeExecution, false);
+  }
+});
+
+test("portable command files materialize into a profile commands directory without aliases or authority", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-commands-"));
+  try {
+    const result = materializeFlowDeskPortableCommandFiles(root);
+    assert.equal(result.ok, true);
+    assert.equal(result.commandFilesWritten, 9);
+    assert.equal(result.aliasFilesWritten, 0);
+    assert.deepEqual(result.writtenCommandRefs, FLOWDESK_PORTABLE_COMMAND_FILE_ARTIFACTS.map((artifact) => artifact.commandProfileRelativePath));
+    assert.equal(result.productionRegistrationEligible, false);
+    assert.equal(result.commandAliasEligible, false);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.runtimeExecution, false);
+
+    for (const artifact of FLOWDESK_PORTABLE_COMMAND_FILE_ARTIFACTS) {
+      const target = join(root, artifact.commandProfileRelativePath);
+      assert.equal(existsSync(target), true, artifact.commandName);
+      const content = readFileSync(target, "utf8");
+      assert.match(content, new RegExp(artifact.commandName.replace("/", "\\/")));
+      assert.match(content, new RegExp(artifact.toolName));
+      assert.equal(target.includes("/flowdesk:"), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("portable command materialization fails closed for incomplete or unsafe artifacts", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-commands-invalid-"));
+  try {
+    const incomplete = materializeFlowDeskPortableCommandFiles(root, FLOWDESK_PORTABLE_COMMAND_FILE_ARTIFACTS.slice(1));
+    assert.equal(incomplete.ok, false);
+    assert.equal(incomplete.commandFilesWritten, 0);
+    assert.equal(incomplete.runtimeExecution, false);
+
+    const unsafe = materializeFlowDeskPortableCommandFiles(root, [{ ...FLOWDESK_PORTABLE_COMMAND_FILE_ARTIFACTS[0], commandProfileRelativePath: "../flowdesk-doctor.md" } as never]);
+    assert.equal(unsafe.ok, false);
+    assert.equal(unsafe.commandFilesWritten, 0);
+    assert.equal(unsafe.actualLaneLaunch, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -1,3 +1,5 @@
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
 import type { FlowDeskCommandManifestEntryV1, FlowDeskRelease1MinimumPortableCommandName, FlowDeskRelease1MinimumToolName, ValidationResult } from "@flowdesk/core";
 import {
   FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
@@ -56,9 +58,35 @@ export interface FlowDeskDesiredAliasGateArtifactV1 {
   runtimeExecution: false;
 }
 
+export interface FlowDeskPortableCommandMaterializationResultV1 extends ValidationResult {
+  profileRootDir?: string;
+  writtenCommandRefs?: string[];
+  commandFilesWritten: number;
+  aliasFilesWritten: 0;
+  productionRegistrationEligible: false;
+  commandAliasEligible: false;
+  dispatchApprovalEligible: false;
+  fallbackAuthority: false;
+  hardCancelOrNoReplyAuthority: false;
+  actualLaneLaunch: false;
+  providerCall: false;
+  runtimeExecution: false;
+}
+
 const inertAuthority = {
   productionRegistrationEligible: false,
   schemaConversionReady: false,
+  commandAliasEligible: false,
+  dispatchApprovalEligible: false,
+  fallbackAuthority: false,
+  hardCancelOrNoReplyAuthority: false,
+  actualLaneLaunch: false,
+  providerCall: false,
+  runtimeExecution: false
+} as const;
+
+const materializationDisabledAuthority = {
+  productionRegistrationEligible: false,
   commandAliasEligible: false,
   dispatchApprovalEligible: false,
   fallbackAuthority: false,
@@ -268,6 +296,36 @@ export function validateFlowDeskPortableCommandFileArtifactsComplete(artifacts: 
     getFlowDeskPreSpikeProductionCommandRegistry().length === 0 ? valid() : invalid("pre-spike production command registry must remain empty"),
     ...artifacts.map((artifact) => validateFlowDeskPortableCommandFileArtifact(artifact))
   ]);
+}
+
+function resolveProfileCommandPath(profileRootDir: string, artifact: FlowDeskPortableCommandFileArtifactV1): { root: string; target: string; temp: string } {
+  const root = resolve(profileRootDir);
+  const target = resolve(root, artifact.commandProfileRelativePath);
+  const temp = resolve(root, `${artifact.commandProfileRelativePath}.tmp-${artifact.fixturePrefix}`);
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  if (target !== root && !target.startsWith(rootPrefix)) throw new Error("portable command target escapes profile root");
+  if (temp !== root && !temp.startsWith(rootPrefix)) throw new Error("portable command temp target escapes profile root");
+  return { root, target, temp };
+}
+
+export function materializeFlowDeskPortableCommandFiles(profileRootDir: string, artifacts: readonly FlowDeskPortableCommandFileArtifactV1[] = FLOWDESK_PORTABLE_COMMAND_FILE_ARTIFACTS): FlowDeskPortableCommandMaterializationResultV1 {
+  if (typeof profileRootDir !== "string" || profileRootDir.trim().length === 0) return { ...invalid("profileRootDir is required"), commandFilesWritten: 0, aliasFilesWritten: 0, ...materializationDisabledAuthority };
+  const completeness = validateFlowDeskPortableCommandFileArtifactsComplete(artifacts);
+  if (!completeness.ok) return { ...invalid(...completeness.errors), commandFilesWritten: 0, aliasFilesWritten: 0, ...materializationDisabledAuthority };
+  const writtenCommandRefs: string[] = [];
+  try {
+    const root = resolve(profileRootDir);
+    for (const artifact of artifacts) {
+      const resolved = resolveProfileCommandPath(root, artifact);
+      mkdirSync(dirname(resolved.target), { recursive: true });
+      writeFileSync(resolved.temp, `${artifact.commandContent}\n`, "utf8");
+      renameSync(resolved.temp, resolved.target);
+      writtenCommandRefs.push(artifact.commandProfileRelativePath);
+    }
+    return { ...valid(), profileRootDir: root, writtenCommandRefs, commandFilesWritten: writtenCommandRefs.length, aliasFilesWritten: 0, ...materializationDisabledAuthority };
+  } catch (error) {
+    return { ...invalid(error instanceof Error ? error.message : "portable command materialization failed"), writtenCommandRefs, commandFilesWritten: writtenCommandRefs.length, aliasFilesWritten: 0, ...materializationDisabledAuthority };
+  }
 }
 
 function validateDesiredAliasName(value: unknown): ValidationResult {
