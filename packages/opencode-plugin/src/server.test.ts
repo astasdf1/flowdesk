@@ -358,9 +358,20 @@ test("chat.message steering mutates message parts without hard interception fiel
 
   assert.equal(output.parts.length, 2);
   const serialized = JSON.stringify(output);
-  assert.match(serialized, /FlowDesk steering/);
-  assert.match(serialized, /flowdesk_plan|flowdesk-plan/);
+  assert.match(serialized, /FlowDesk/);
+  assert.match(serialized, /Suggested next step: \/flowdesk-plan/);
+  assert.match(serialized, /Why:/);
+  assert.match(serialized, /Actions:/);
+  assert.match(serialized, /- \/flowdesk-plan/);
+  assert.match(serialized, /- \/flowdesk-status/);
   assert.equal(/noReply|cancel|stop/.test(serialized), false);
+
+  const generalChatOutput = { parts: [{ type: "text", text: "오늘 날씨 이야기하자" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-general-chat",
+    sessionID: "session-hook"
+  }, generalChatOutput);
+  assert.equal(generalChatOutput.parts.length, 1);
 });
 
 test("server plugin can expose sandbox-only FDS-1 production-shape probe tools", async () => {

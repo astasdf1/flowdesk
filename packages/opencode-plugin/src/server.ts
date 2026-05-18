@@ -166,9 +166,23 @@ function intakeRequestFromChatMessage(input: unknown): FlowDeskChatIntakeRequest
 }
 
 function steeringText(result: ReturnType<typeof evaluateNaturalLanguageRouting>): string {
-  const actions = result.evaluation.response.safe_next_actions.join(", ");
-  const routed = typeof result.routedToolName === "string" ? ` Routed local tool: ${result.routedToolName}.` : "";
-  return `FlowDesk steering: ${result.evaluation.response.user_message} Safe next actions: ${actions}.${routed}`;
+  const response = result.evaluation.response;
+  const actions = response.safe_next_actions.map((action) => action === "ask_clarification" ? "Confirm the goal or plan before FlowDesk suggests a run." : action);
+  const suggestedNextStep = actions[0] ?? "/flowdesk-status";
+  const why = response.ok === false
+    ? "This request needs capabilities that are not available in the safe FlowDesk mode."
+    : response.route_decision === "ask_clarification"
+      ? "FlowDesk needs confirmation or a clearer goal before suggesting a command-backed workflow."
+      : response.route_decision === "show_plan"
+        ? "Your message looks like planning work that FlowDesk can organize as a command-backed plan."
+        : "Your message matches a safe FlowDesk command-backed workflow.";
+  return [
+    "FlowDesk",
+    `Suggested next step: ${suggestedNextStep}`,
+    `Why: ${why}`,
+    "Actions:",
+    ...actions.map((action) => `- ${action}`)
+  ].join("\n");
 }
 
 function enumValues(values: readonly string[]): [string, ...string[]] {
