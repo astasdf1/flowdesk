@@ -4,6 +4,9 @@
   "private": true,
   "description": "FlowDesk OpenCode plugin scaffold without production dispatch registration.",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

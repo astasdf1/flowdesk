@@ -4,6 +4,9 @@
   "private": true,
   "description": "Core FlowDesk contracts and Release 1 boundaries.",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
