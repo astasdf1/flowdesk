@@ -240,6 +240,37 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
 });
 
+test("chat intake holds execution-like requests for confirmation before run", async () => {
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true
+  }) as ChatMessageHooks;
+  const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
+  assert.ok(intakeTool);
+
+  const result = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-run-confirm",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-run-confirm",
+    session_ref: "session-nl-run-confirm",
+    redacted_intake_ref: "intake-nl-run-confirm",
+    intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+
+  assert.equal(result.ok, true);
+  assert.equal(result.evaluation?.response?.route_decision, "ask_clarification");
+  assert.deepEqual(result.evaluation?.response?.safe_next_actions, ["ask_clarification", "/flowdesk-plan", "/flowdesk-status"]);
+  assert.equal(result.routedToolName, "flowdesk_plan");
+  assert.equal(result.routedToolResult?.handler?.ok, true);
+  assert.equal(result.routedToolResult?.handler?.response?.status, "ready");
+  assert.equal(result.routedToolResult?.handler?.response?.workflow_state, undefined);
+  assert.equal(result.routedToolResult?.localState?.workflowState, "ready_to_run");
+  assert.notEqual(result.routedToolName, "flowdesk_run");
+  assert.equal(result.runtimeExecution, false);
+  assert.equal(result.actualLaneLaunch, false);
+});
+
 test("natural-language routing reuses local adapter session with adapter tools", async () => {
   const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
     [flowdeskNaturalLanguageRoutingOption]: true,
