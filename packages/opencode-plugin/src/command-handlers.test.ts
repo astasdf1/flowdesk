@@ -4,15 +4,19 @@ import type {
   FlowDeskAttemptRecordV1,
   FlowDeskFds1FixtureCatalogEntryV1,
   FlowDeskLaneRecordV1,
+  FlowDeskNonDispatchPermissionV1,
   FlowDeskPlanCommandInputV1,
+  FlowDeskPolicyPackV1,
+  FlowDeskProjectConfigV1,
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskRelease1MinimumToolName,
+  FlowDeskRunRequestV1,
   FlowDeskStatusCommandInputV1,
   FlowDeskWorkflowActiveV1,
   FlowDeskWorkflowRecordV1,
   WorkflowTaxonomyV1
 } from "@flowdesk/core";
-import { FLOWDESK_FDS1_FIXTURE_CATALOG } from "@flowdesk/core";
+import { FLOWDESK_FDS1_FIXTURE_CATALOG, mergePolicyPacksV1 } from "@flowdesk/core";
 import type { FlowDeskCommandBackedHandlerResultV1 } from "./index.js";
 import { evaluateFlowDeskCommandBackedHandlerV1 } from "./index.js";
 
@@ -51,6 +55,101 @@ function assertNoRuntimeAuthority(result: FlowDeskCommandBackedHandlerResultV1):
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
 }
 
+function retention(days = { session: 14, debug: 7, conformance: 30 }) {
+  return {
+    session_records_max_days: days.session,
+    debug_staging_max_days: days.debug,
+    conformance_summary_max_days: days.conformance,
+    allow_user_longer_retention: false,
+    deletion_behavior: "delete_after_expiry" as const
+  };
+}
+
+function usagePolicy() {
+  return {
+    usage_freshness_ttl_minutes: 15,
+    unknown_usage_dispatchability: "non_dispatchable" as const,
+    stale_usage_dispatchability: "non_dispatchable" as const,
+    refused_usage_dispatchability: "non_dispatchable" as const,
+    shared_limit_suspected_dispatchability: "non_dispatchable" as const,
+    fallback_derived_dispatchability: "non_dispatchable" as const,
+    allow_local_history_source: false,
+    allow_provider_console_scraping: false as const
+  };
+}
+
+function healthPolicy() {
+  return {
+    health_freshness_ttl_minutes: 10,
+    unavailable_dispatchability: "non_dispatchable" as const,
+    degraded_dispatchability: "diagnostic_only" as const,
+    opencode_go_usage_without_official_quota: "unknown" as const,
+    z_ai_usage_without_official_quota: "unknown" as const,
+    allow_automatic_provider_fallback: false as const
+  };
+}
+
+function projectConfig(): FlowDeskProjectConfigV1 {
+  return {
+    schema_version: "flowdesk.project_config.v1",
+    config_id: "config-123",
+    created_at: nowIso,
+    updated_at: nowIso,
+    release_mode: "release1",
+    project_root_ref: "project-root-123",
+    config_hash: "config-hash-123",
+    policy_pack_refs: ["policy-ref-123"],
+    policy_pack_hashes: ["policy-hash-123"],
+    chat_intake_mode: "steering",
+    hook_harness_mode: "enforce",
+    retention: retention(),
+    usage_policy: usagePolicy(),
+    provider_health_policy: healthPolicy(),
+    disabled_modes: ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"],
+    extension_namespaces: ["flowdesk.project"],
+    audit_refs: ["audit-123"]
+  };
+}
+
+function policyPack(): FlowDeskPolicyPackV1 {
+  return {
+    schema_version: "flowdesk.policy_pack.v1",
+    policy_pack_id: "policy-123",
+    policy_pack_hash: "policy-hash-123",
+    name: "Starter policy",
+    version: "1.0.0",
+    source_ref: "policy-source-123",
+    applies_to_release_modes: ["release1"],
+    priority: 1,
+    rules: [{ rule_id: "rule-approval-123", effect: "require_approval", target: "permission_class", summary_label: "Require typed approval for writes.", refs: ["approval-123"] }],
+    hard_ban_refs: ["ban-123"],
+    retention_override: retention({ session: 7, debug: 3, conformance: 14 }),
+    usage_policy_override: { ...usagePolicy(), usage_freshness_ttl_minutes: 5 },
+    provider_health_policy_override: { ...healthPolicy(), degraded_dispatchability: "non_dispatchable" },
+    hook_policy_override: { chat_intake_mode: "steering", hook_harness_mode: "enforce", blocking_chat_intake_enabled: false, hard_no_reply_or_cancel_enabled: false },
+    allowed_extension_namespaces: ["flowdesk.project"],
+    redaction_baseline_ref: "redaction-123"
+  };
+}
+
+function permission(overrides: Partial<FlowDeskNonDispatchPermissionV1> = {}): FlowDeskNonDispatchPermissionV1 {
+  return {
+    schema_version: "flowdesk.non_dispatch_permission.v1",
+    permission_id: "permission-123",
+    permission_class: "fake_runtime_write",
+    workflow_id: "workflow-123",
+    scope_ref: "scope-123",
+    grant_source: "typed_confirmation",
+    created_at: nowIso,
+    expires_at: "2026-05-18T00:00:00.000Z",
+    config_hash: "config-hash-123",
+    policy_pack_hash: "policy-hash-123",
+    release_mode: "release1",
+    audit_ref: "audit-123",
+    ...overrides
+  };
+}
+
 function planContext(request: Readonly<Record<string, unknown>>): Omit<FlowDeskPlanCommandInputV1, "request"> {
   const workflowId = workflowIdFrom(request);
   return {
@@ -66,6 +165,71 @@ function planContext(request: Readonly<Record<string, unknown>>): Omit<FlowDeskP
     routeRef: "route-123",
     nowIso,
     taxonomy
+  };
+}
+
+function runRequest(runMode: FlowDeskRunRequestV1["run_mode"]): FlowDeskRunRequestV1 {
+  return {
+    ...requestFixture("flowdesk_run"),
+    workflow_id: "workflow-123",
+    run_mode: runMode,
+    plan_revision_id: "plan-123",
+    step_id: "step-123"
+  } as FlowDeskRunRequestV1;
+}
+
+function guardBoundary() {
+  const policy = mergePolicyPacksV1(projectConfig(), [policyPack()], { effectivePolicyId: "effective-123", computedAt: nowIso, auditRef: "audit-123" });
+  return {
+    configHash: "config-hash-123",
+    scopeRef: "scope-123",
+    policy,
+    auditRef: "audit-123",
+    conformanceRef: "conformance-123",
+    runtimeCapabilityRef: "runtime-123",
+    nonDispatchPermission: permission(),
+    now: Date.parse(nowIso)
+  };
+}
+
+function guardedDryRunContext(): NonNullable<Parameters<typeof evaluateFlowDeskCommandBackedHandlerV1>[2]>["run"] {
+  return {
+    guardedDryRun: {
+      guardBoundary: { ...guardBoundary(), nonDispatchPermission: permission({ permission_class: "audit_write" }) },
+      sessionId: "session-123",
+      attemptId: "attempt-123",
+      auditEventId: "event-123",
+      nowIso,
+      decisionRef: "decision-123",
+      routeRef: "route-123",
+      commandShapeHash: "command-shape-hash-123",
+      runResultRef: "run-result-123",
+      verificationSummaryRef: "verification-123",
+      redactionVersion: "redaction-v1"
+    }
+  };
+}
+
+function fakeRuntimeContext(): NonNullable<Parameters<typeof evaluateFlowDeskCommandBackedHandlerV1>[2]>["run"] {
+  return {
+    fakeRuntime: {
+      guardBoundary: guardBoundary(),
+      auditWritePermission: permission({ permission_class: "audit_write" }),
+      stateWritePermission: permission({ permission_class: "state_write" }),
+      sessionId: "session-123",
+      attemptId: "attempt-123",
+      auditEventId: "event-123",
+      outcomeAuditEventId: "event-outcome-123",
+      nowIso,
+      decisionRef: "decision-123",
+      routeRef: "route-123",
+      commandShapeHash: "command-shape-hash-123",
+      runResultRef: "fake-runtime-result-123",
+      runtimeEchoEvidenceRef: "runtime-echo-ref-123",
+      verificationSummaryRef: "verification-123",
+      outcomeAuditRef: "audit-outcome-123",
+      redactionVersion: "redaction-v1"
+    }
   };
 }
 
@@ -186,10 +350,12 @@ function statusContext(request: Readonly<Record<string, unknown>>): Omit<FlowDes
 
 test("command-backed handlers execute core evaluators for schema-valid requests without runtime authority", () => {
   const planRequest = requestFixture("flowdesk_plan");
+  const fakeRunRequest = runRequest("fake-runtime");
   const statusRequest = requestFixture("flowdesk_status");
   const retryRequest = requestFixture("flowdesk_retry");
-  const cases: readonly [FlowDeskRelease1MinimumToolName, Readonly<Record<string, unknown>>, Parameters<typeof evaluateFlowDeskCommandBackedHandlerV1>[2]][] = [
+  const cases: readonly [FlowDeskRelease1MinimumToolName, unknown, Parameters<typeof evaluateFlowDeskCommandBackedHandlerV1>[2]][] = [
     ["flowdesk_plan", planRequest, { plan: planContext(planRequest) }],
+    ["flowdesk_run", fakeRunRequest, { run: fakeRuntimeContext() }],
     ["flowdesk_status", statusRequest, { status: statusContext(statusRequest) }],
     ["flowdesk_retry", retryRequest, { retry: { providerHealthSnapshot: providerHealth(), newAttemptId: "attempt-retry-123", auditRef: "audit-123", debugRef: "debug-123" } }]
   ];
@@ -204,6 +370,26 @@ test("command-backed handlers execute core evaluators for schema-valid requests 
     assert.notEqual(result.response, undefined, toolName);
     assertNoRuntimeAuthority(result);
   }
+});
+
+test("command-backed run handler routes guarded dry-run and fake-runtime modes to core evaluators", () => {
+  const dryRun = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_run", runRequest("guarded-dry-run"), { run: guardedDryRunContext() });
+  assert.equal(dryRun.handlerMode, "command_backed_core_evaluator");
+  assert.equal(dryRun.ok, true);
+  assert.equal(dryRun.requestSchemaValid, true);
+  assert.equal(dryRun.responseSchemaValid, true);
+  assert.equal(dryRun.coreEvaluationOk, true);
+  assert.equal((dryRun.response as { status?: unknown }).status, "dry_run_complete");
+  assertNoRuntimeAuthority(dryRun);
+
+  const fakeRuntime = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_run", runRequest("fake-runtime"), { run: fakeRuntimeContext() });
+  assert.equal(fakeRuntime.handlerMode, "command_backed_core_evaluator");
+  assert.equal(fakeRuntime.ok, true);
+  assert.equal(fakeRuntime.requestSchemaValid, true);
+  assert.equal(fakeRuntime.responseSchemaValid, true);
+  assert.equal(fakeRuntime.coreEvaluationOk, true);
+  assert.equal((fakeRuntime.response as { status?: unknown }).status, "fake_runtime_complete");
+  assertNoRuntimeAuthority(fakeRuntime);
 });
 
 test("command-backed handlers fail closed before evaluator execution for unknown request properties", () => {
@@ -228,6 +414,15 @@ test("command-backed handlers require evaluator input for core-backed tools", ()
   assert.equal(result.coreEvaluationOk, false);
   assert.equal(result.response, undefined);
   assertNoRuntimeAuthority(result);
+
+  const runResult = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_run", runRequest("fake-runtime"));
+  assert.equal(runResult.handlerMode, "missing_evaluator_input");
+  assert.equal(runResult.ok, false);
+  assert.equal(runResult.requestSchemaValid, true);
+  assert.equal(runResult.responseSchemaValid, false);
+  assert.equal(runResult.coreEvaluationOk, false);
+  assert.equal(runResult.response, undefined);
+  assertNoRuntimeAuthority(runResult);
 });
 
 test("schema-only pending handlers remain non-dispatch pending after request validation", () => {

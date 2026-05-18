@@ -1,11 +1,16 @@
 import type {
+  FlowDeskFakeRuntimeCommandInputV1,
+  FlowDeskGuardedDryRunCommandInputV1,
   FlowDeskPlanCommandInputV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskRetryPlanningInputV1,
+  FlowDeskRunRequestV1,
   FlowDeskStatusCommandInputV1,
   ValidationResult
 } from "@flowdesk/core";
 import {
+  evaluateFlowDeskFakeRuntimeCommandV1,
+  evaluateFlowDeskGuardedDryRunCommandV1,
   evaluateFlowDeskPlanCommandV1,
   evaluateFlowDeskRetryPlanningV1,
   evaluateFlowDeskStatusCommandV1,
@@ -18,8 +23,14 @@ import { getFlowDeskRelease1HandlerReadiness } from "./tool-stubs.js";
 
 export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "missing_evaluator_input" | "request_schema_invalid" | "schema_only_pending";
 
+export interface FlowDeskCommandBackedRunHandlerContextV1 {
+  guardedDryRun?: Omit<FlowDeskGuardedDryRunCommandInputV1, "commandName" | "request">;
+  fakeRuntime?: Omit<FlowDeskFakeRuntimeCommandInputV1, "commandName" | "request">;
+}
+
 export interface FlowDeskCommandBackedHandlerContextV1 {
   plan?: Omit<FlowDeskPlanCommandInputV1, "request">;
+  run?: FlowDeskCommandBackedRunHandlerContextV1;
   status?: Omit<FlowDeskStatusCommandInputV1, "request">;
   retry?: Omit<FlowDeskRetryPlanningInputV1, "request">;
 }
@@ -86,6 +97,18 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
   if (toolName === "flowdesk_plan") {
     if (context.plan === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("plan evaluator input is required"), undefined, false);
     const evaluation = evaluateFlowDeskPlanCommandV1({ ...context.plan, request: request as FlowDeskPlanCommandInputV1["request"] });
+    return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
+  }
+
+  if (toolName === "flowdesk_run") {
+    const runRequest = request as FlowDeskRunRequestV1;
+    if (runRequest.run_mode === "guarded-dry-run") {
+      if (context.run?.guardedDryRun === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("guarded dry-run evaluator input is required"), undefined, false);
+      const evaluation = evaluateFlowDeskGuardedDryRunCommandV1({ ...context.run.guardedDryRun, commandName: "/flowdesk-run", request: runRequest });
+      return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
+    }
+    if (context.run?.fakeRuntime === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("fake-runtime evaluator input is required"), undefined, false);
+    const evaluation = evaluateFlowDeskFakeRuntimeCommandV1({ ...context.run.fakeRuntime, commandName: "/flowdesk-run", request: runRequest });
     return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
   }
 
