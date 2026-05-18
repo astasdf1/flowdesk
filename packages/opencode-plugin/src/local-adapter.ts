@@ -34,6 +34,7 @@ export interface FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
   laneRecords: number;
   inMemoryStateEntries: number;
   stateWriteApplied: boolean;
+  permissionSource: "tool_boundary_injected";
   realOpenCodeDispatch: false;
   actualLaneLaunch: false;
   providerCall: false;
@@ -60,6 +61,13 @@ export interface FlowDeskLocalNonDispatchAdapterSessionV1 {
   state: unknown;
   evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1;
 }
+
+export type FlowDeskLocalNonDispatchPermissionProviderV1 = (input: {
+  nowIso: string;
+  expiresAtIso: string;
+  workflowId: string;
+  permissionClass: FlowDeskNonDispatchPermissionV1["permission_class"];
+}) => FlowDeskNonDispatchPermissionV1;
 
 interface LocalAdapterState {
   active?: FlowDeskWorkflowActiveV1;
@@ -197,24 +205,28 @@ function effectivePolicy(parts: ReturnType<typeof nowParts>): FlowDeskEffectiveP
   return mergePolicyPacksV1(config, [policyPack()], { effectivePolicyId: "effective-local", computedAt: parts.nowIso, auditRef: "audit-local" });
 }
 
-function permission(parts: ReturnType<typeof nowParts>, workflowId: string, permissionClass: FlowDeskNonDispatchPermissionV1["permission_class"]): FlowDeskNonDispatchPermissionV1 {
-  return {
+export function createFlowDeskLocalNonDispatchPermissionProvider(): FlowDeskLocalNonDispatchPermissionProviderV1 {
+  return ({ nowIso, expiresAtIso, workflowId, permissionClass }) => ({
     schema_version: "flowdesk.non_dispatch_permission.v1",
     permission_id: `permission-${permissionClass}`,
     permission_class: permissionClass,
     workflow_id: workflowId,
     scope_ref: "scope-local",
     grant_source: "typed_confirmation",
-    created_at: parts.nowIso,
-    expires_at: parts.expiresAtIso,
+    created_at: nowIso,
+    expires_at: expiresAtIso,
     config_hash: "config-hash-local",
     policy_pack_hash: "policy-hash-local",
     release_mode: "release1",
     audit_ref: "audit-local"
-  };
+  });
 }
 
-function guardBoundary(parts: ReturnType<typeof nowParts>, workflowId: string, permissionClass: FlowDeskNonDispatchPermissionV1["permission_class"]): Omit<GuardBoundaryInputV1, "operation" | "workflowId"> {
+function permission(provider: FlowDeskLocalNonDispatchPermissionProviderV1, parts: ReturnType<typeof nowParts>, workflowId: string, permissionClass: FlowDeskNonDispatchPermissionV1["permission_class"]): FlowDeskNonDispatchPermissionV1 {
+  return provider({ nowIso: parts.nowIso, expiresAtIso: parts.expiresAtIso, workflowId, permissionClass });
+}
+
+function guardBoundary(provider: FlowDeskLocalNonDispatchPermissionProviderV1, parts: ReturnType<typeof nowParts>, workflowId: string, permissionClass: FlowDeskNonDispatchPermissionV1["permission_class"]): Omit<GuardBoundaryInputV1, "operation" | "workflowId"> {
   return {
     configHash: "config-hash-local",
     scopeRef: "scope-local",
@@ -222,7 +234,7 @@ function guardBoundary(parts: ReturnType<typeof nowParts>, workflowId: string, p
     auditRef: "audit-local",
     conformanceRef: "conformance-local-non-dispatch",
     runtimeCapabilityRef: "runtime-local-fake",
-    nonDispatchPermission: permission(parts, workflowId, permissionClass),
+    nonDispatchPermission: permission(provider, parts, workflowId, permissionClass),
     now: parts.nowMs
   };
 }
@@ -263,13 +275,13 @@ function makePlanContext(request: Record<string, unknown>, parts: ReturnType<typ
   };
 }
 
-function makeRunContext(request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): NonNullable<FlowDeskCommandBackedHandlerContextV1["run"]> {
+function makeRunContext(request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): NonNullable<FlowDeskCommandBackedHandlerContextV1["run"]> {
   const workflowId = workflowIdFrom(request);
   const runMode = request.run_mode;
   if (runMode === "guarded-dry-run") {
     return {
       guardedDryRun: {
-        guardBoundary: guardBoundary(parts, workflowId, "audit_write"),
+        guardBoundary: guardBoundary(permissionProvider, parts, workflowId, "audit_write"),
         sessionId: "session-local",
         attemptId: id("attempt", request),
         auditEventId: id("event-audit", request),
@@ -285,9 +297,9 @@ function makeRunContext(request: Record<string, unknown>, parts: ReturnType<type
   }
   return {
     fakeRuntime: {
-      guardBoundary: guardBoundary(parts, workflowId, "fake_runtime_write"),
-      auditWritePermission: permission(parts, workflowId, "audit_write"),
-      stateWritePermission: permission(parts, workflowId, "state_write"),
+      guardBoundary: guardBoundary(permissionProvider, parts, workflowId, "fake_runtime_write"),
+      auditWritePermission: permission(permissionProvider, parts, workflowId, "audit_write"),
+      stateWritePermission: permission(permissionProvider, parts, workflowId, "state_write"),
       sessionId: "session-local",
       attemptId: id("attempt", request),
       auditEventId: id("event-audit", request),
@@ -400,7 +412,7 @@ function recordPlanningState(state: LocalAdapterState, request: Record<string, u
   return updateWorkflowState(state, request, parts, requiresRunConfirmation(request) ? "plan_pending_approval" : "ready_to_run");
 }
 
-function recordRunState(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): boolean {
+function recordRunState(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): boolean {
   const workflowId = workflowIdFrom(request);
   const attempt: FlowDeskAttemptRecordV1 = {
     schema_version: "flowdesk.attempt_record.v1",
@@ -414,7 +426,7 @@ function recordRunState(state: LocalAdapterState, request: Record<string, unknow
     state_at_end: "complete",
     attempt_state: "complete",
     guard_decision_ref: id("decision", request),
-    non_dispatch_permission_ref: permission(parts, workflowId, request.run_mode === "guarded-dry-run" ? "audit_write" : "fake_runtime_write").permission_id,
+    non_dispatch_permission_ref: permission(permissionProvider, parts, workflowId, request.run_mode === "guarded-dry-run" ? "audit_write" : "fake_runtime_write").permission_id,
     command_shape_hash: id("shape", request),
     runtime_capability_ref: "runtime-local-fake",
     pre_run_audit_ref: "audit-local",
@@ -448,10 +460,10 @@ function statusContext(state: LocalAdapterState, request: Record<string, unknown
   };
 }
 
-function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown, state: LocalAdapterState, parts: ReturnType<typeof nowParts>): FlowDeskCommandBackedHandlerContextV1 {
+function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown, state: LocalAdapterState, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): FlowDeskCommandBackedHandlerContextV1 {
   const record = isRecord(request) ? request : {};
   if (toolName === "flowdesk_plan") return { plan: makePlanContext(record, parts) };
-  if (toolName === "flowdesk_run") return { run: makeRunContext(record, parts) };
+  if (toolName === "flowdesk_run") return { run: makeRunContext(record, parts, permissionProvider) };
   if (toolName === "flowdesk_status") return { status: statusContext(state, record, parts) };
   if (toolName === "flowdesk_retry") {
     const retry: NonNullable<FlowDeskRetryPlanningInputV1> = { request: record as unknown as FlowDeskRetryPlanningInputV1["request"], providerHealthSnapshot: providerHealth(parts), newAttemptId: id("attempt-retry", record), auditRef: "audit-local", debugRef: "debug-local" };
@@ -467,22 +479,23 @@ function summarize(state: LocalAdapterState, stateWriteApplied: boolean): FlowDe
     laneRecords: state.laneRecords.length,
     inMemoryStateEntries: state.inMemoryState.size,
     stateWriteApplied,
+    permissionSource: "tool_boundary_injected",
     ...disabledAuthority
   };
 }
 
-export function createFlowDeskLocalNonDispatchAdapterSession(now = new Date()): FlowDeskLocalNonDispatchAdapterSessionV1 {
+export function createFlowDeskLocalNonDispatchAdapterSession(now = new Date(), permissionProvider = createFlowDeskLocalNonDispatchPermissionProvider()): FlowDeskLocalNonDispatchAdapterSessionV1 {
   const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map() };
   return {
     state,
     evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1 {
       const parts = nowParts(now);
-      const context = contextFor(toolName, request, state, parts);
+      const context = contextFor(toolName, request, state, parts, permissionProvider);
       const handler = evaluateFlowDeskCommandBackedHandlerV1(toolName, request, context);
       const record = isRecord(request) ? request : {};
       let stateWriteApplied = false;
       if (handler.ok && toolName === "flowdesk_plan") stateWriteApplied = recordPlanningState(state, record, parts);
-      if (handler.ok && toolName === "flowdesk_run") stateWriteApplied = recordRunState(state, record, parts);
+      if (handler.ok && toolName === "flowdesk_run") stateWriteApplied = recordRunState(state, record, parts, permissionProvider);
       return {
         ...valid(),
         adapterProfile: flowdeskLocalNonDispatchAdapterProfile,

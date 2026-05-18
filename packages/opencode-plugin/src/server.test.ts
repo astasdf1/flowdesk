@@ -36,6 +36,7 @@ interface LocalAdapterTestResult {
     stateWriteApplied?: unknown;
     workflowId?: unknown;
     workflowState?: unknown;
+    permissionSource?: unknown;
   };
   providerCall?: unknown;
   runtimeExecution?: unknown;
@@ -158,6 +159,7 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.equal(planResult.handler?.response?.status, "ready");
   assert.equal(planResult.localState?.stateWriteApplied, true);
   assert.equal(planResult.localState?.workflowId, "workflow-local");
+  assert.equal(planResult.localState?.permissionSource, "tool_boundary_injected");
   assert.equal(planResult.providerCall, false);
   assert.equal(planResult.runtimeExecution, false);
   assert.equal(planResult.actualLaneLaunch, false);
