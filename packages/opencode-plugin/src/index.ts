@@ -25,4 +25,5 @@ export function hasProductionOpenCodeRegistration(): false {
 
 export * from "./command-handlers.js";
 export * from "./commands.js";
+export * from "./local-adapter.js";
 export * from "./tool-stubs.js";
