@@ -1,7 +1,7 @@
 export type Release1ToolRegistrationStatus = "registered_minimum" | "optional_diagnostic_unregistered" | "later_release_unregistered" | "schema_artifact_only";
 export type Release1SchemaRegistryKind = "envelope" | "tool_request" | "tool_response" | "supporting" | "persisted_state" | "config_policy" | "bootstrap" | "guard" | "workflow" | "runtime" | "audit" | "later_release";
 export type Release1PrivilegeClass = "safe_read_only" | "privileged_non_dispatch" | "privileged_release1_dry_run_or_fake_runtime" | "internal_diagnostic" | "not_applicable";
-export type Release1SchemaCompatibilityStatus = "blocked_missing_schema_conversion_evidence" | "inert_schema_artifact" | "not_applicable";
+export type Release1SchemaCompatibilityStatus = "compatible_runtime_closed_validation" | "blocked_missing_schema_conversion_evidence" | "inert_schema_artifact" | "not_applicable";
 
 export interface Release1ToolContractMetadata {
   privilegeClass: Release1PrivilegeClass;
@@ -9,7 +9,7 @@ export interface Release1ToolContractMetadata {
   stateOutputs: readonly string[];
   redactedErrorShapeId: "flowdesk.redacted_error.v1";
   schemaCompatibilityStatus: Release1SchemaCompatibilityStatus;
-  schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes" | "not_required_for_non_tool_artifact";
+  schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation" | "blocked_until_fds1_conversion_spike_passes" | "not_required_for_non_tool_artifact";
 }
 
 export interface Release1SchemaMetadata {
@@ -29,10 +29,10 @@ const optional = "optional_diagnostic_unregistered" satisfies Release1ToolRegist
 const later = "later_release_unregistered" satisfies Release1ToolRegistrationStatus;
 const artifactOnly = "schema_artifact_only" satisfies Release1ToolRegistrationStatus;
 
-const blockedToolCompatibility = {
+const runtimeClosedToolCompatibility = {
   redactedErrorShapeId: "flowdesk.redacted_error.v1",
-  schemaCompatibilityStatus: "blocked_missing_schema_conversion_evidence",
-  schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes"
+  schemaCompatibilityStatus: "compatible_runtime_closed_validation",
+  schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation"
 } as const;
 
 const toolContracts = {
@@ -53,7 +53,7 @@ const toolContracts = {
 type ToolName = keyof typeof toolContracts;
 
 function toolContract(toolName: ToolName): Release1ToolContractMetadata {
-  return { ...blockedToolCompatibility, ...toolContracts[toolName] };
+  return { ...runtimeClosedToolCompatibility, ...toolContracts[toolName] };
 }
 
 function toolEntry(

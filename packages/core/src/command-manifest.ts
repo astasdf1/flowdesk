@@ -34,7 +34,7 @@ export interface FlowDeskCommandManifestEntryV1 {
   statePreconditions: readonly string[];
   stateOutputs: readonly string[];
   schemaCompatibilityStatus: Release1SchemaCompatibilityStatus;
-  schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes";
+  schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation";
   productionRegistrationEligible: false;
   dispatchApprovalEligible: false;
   fallbackAuthority: false;
@@ -106,7 +106,7 @@ function templateFor(commandName: FlowDeskRelease1MinimumPortableCommandName, to
       `Fixture prefix: ${requestEntry.fixturePrefix}`,
       "Template mode: inert static command manifest.",
       "User action: collect bounded options and return schema-valid redacted refs.",
-      "Safety: pre-spike production registration remains blocked; this template performs no runtime action."
+      "Safety: FDS-1 uses runtime-closed validation; production registration remains blocked until command-backed handlers exist."
     ].join("\n")
   };
 }
@@ -117,7 +117,7 @@ function manifestEntry(commandName: FlowDeskRelease1MinimumPortableCommandName, 
   if (requestEntry.fixturePrefix !== responseEntry.fixturePrefix) throw new Error(`fixture prefix mismatch for ${toolName}`);
   if (requestEntry.toolContract === undefined || responseEntry.toolContract === undefined) throw new Error(`missing tool contract metadata for ${toolName}`);
   if (requestEntry.toolContract.privilegeClass !== responseEntry.toolContract.privilegeClass) throw new Error(`privilege class mismatch for ${toolName}`);
-  if (requestEntry.toolContract.schemaCompatibilityReadiness !== "blocked_until_fds1_conversion_spike_passes") throw new Error(`unexpected schema readiness for ${toolName}`);
+  if (requestEntry.toolContract.schemaCompatibilityReadiness !== "compatible_with_runtime_closed_validation") throw new Error(`unexpected schema readiness for ${toolName}`);
   return {
     commandName,
     toolName,
@@ -128,7 +128,7 @@ function manifestEntry(commandName: FlowDeskRelease1MinimumPortableCommandName, 
     statePreconditions: requestEntry.toolContract.statePreconditions,
     stateOutputs: requestEntry.toolContract.stateOutputs,
     schemaCompatibilityStatus: requestEntry.toolContract.schemaCompatibilityStatus,
-    schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes",
+    schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation",
     productionRegistrationEligible: false,
     dispatchApprovalEligible: false,
     fallbackAuthority: false,
@@ -251,8 +251,8 @@ export function validateFlowDeskCommandManifestEntry(entry: unknown): Validation
     requireStringArray(entry.stateOutputs, "stateOutputs"),
     JSON.stringify(entry.statePreconditions) === JSON.stringify(contract.statePreconditions) ? valid() : invalid("statePreconditions do not match registry"),
     JSON.stringify(entry.stateOutputs) === JSON.stringify(contract.stateOutputs) ? valid() : invalid("stateOutputs do not match registry"),
-    entry.schemaCompatibilityStatus === "blocked_missing_schema_conversion_evidence" ? valid() : invalid("schemaCompatibilityStatus must remain blocked"),
-    entry.schemaCompatibilityReadiness === "blocked_until_fds1_conversion_spike_passes" ? valid() : invalid("schemaCompatibilityReadiness must remain blocked"),
+    entry.schemaCompatibilityStatus === "compatible_runtime_closed_validation" ? valid() : invalid("schemaCompatibilityStatus must reflect runtime-closed compatibility"),
+    entry.schemaCompatibilityReadiness === "compatible_with_runtime_closed_validation" ? valid() : invalid("schemaCompatibilityReadiness must reflect runtime-closed compatibility"),
     entry.productionRegistrationEligible === false ? valid() : invalid("productionRegistrationEligible must be false"),
     entry.dispatchApprovalEligible === false ? valid() : invalid("dispatchApprovalEligible must be false"),
     entry.fallbackAuthority === false ? valid() : invalid("fallbackAuthority must be false"),

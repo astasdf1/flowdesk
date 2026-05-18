@@ -198,7 +198,8 @@ test("Release 1 minimum tools are identified but production registration remains
   const minimumToolEntries = RELEASE_1_SCHEMA_REGISTRY.filter((entry) => entry.release1MinimumTool && entry.kind.startsWith("tool_"));
   assert.ok(minimumToolEntries.length > 0);
   assert.ok(minimumToolEntries.every((entry) => entry.productionRegistrationEligible === false));
-  assert.ok(minimumToolEntries.every((entry) => entry.toolContract?.schemaCompatibilityStatus === "blocked_missing_schema_conversion_evidence"));
+  assert.ok(minimumToolEntries.every((entry) => entry.toolContract?.schemaCompatibilityStatus === "compatible_runtime_closed_validation"));
+  assert.ok(minimumToolEntries.every((entry) => entry.toolContract?.schemaCompatibilityReadiness === "compatible_with_runtime_closed_validation"));
 });
 
 test("provider failure classes have diagnostic-only mappings without runtime authority", () => {
@@ -528,7 +529,11 @@ test("persisted workflow, state, audit, debug validators fail closed", () => {
 
   const lane = { schema_version: "flowdesk.lane_record.v1", lane_id: "lane-123", workflow_id: "workflow-123", task_ref: "task-123", lane_class: "verification", state: "completed", created_at: "2026-05-17T00:00:00.000Z", updated_at: "2026-05-17T00:10:00.000Z", safe_next_action: "/flowdesk-status", refs: [], event_refs: [], audit_refs: ["audit-123"] };
   assert.equal(validateLaneRecordV1(lane).ok, true);
+  assert.equal(validateLaneRecordV1({ ...lane, state: "failed", failure_class: "invocation_failed", invocation_ref_kind: "background_invocation", retry_count: 1, verdict_status: "missing" }).ok, true);
   assert.equal(validateLaneRecordV1({ ...lane, state: "hard_cancel_proven" }).ok, false);
+  assert.equal(validateLaneRecordV1({ ...lane, invocation_ref_kind: "bg_c8698557" }).ok, false);
+  assert.equal(validateLaneRecordV1({ ...lane, retry_count: 3 }).ok, false);
+  assert.equal(validateLaneRecordV1({ ...lane, verdict_status: "approved" }).ok, false);
 
   const audit = { schema_version: "flowdesk.audit_record.v1", audit_ref: "audit-123", event_type: "status", created_at: "2026-05-17T00:00:00.000Z", summary_label: "status", evidence_refs: [], artifact_refs: [], redaction_version: "redaction-v1" };
   assert.equal(validateAuditRecordV1(audit).ok, true);

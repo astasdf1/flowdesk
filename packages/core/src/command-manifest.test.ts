@@ -59,7 +59,7 @@ test("Checkpoint 5 manifest entries are registry-backed and fixture prefixes mat
   }
 });
 
-test("Checkpoint 5 manifest is inert, non-authorizing, and pre-spike production-registration blocked", () => {
+test("Checkpoint 5 manifest is inert, non-authorizing, and production-registration disabled", () => {
   assert.equal(getRelease1ProductionToolRegistry().length, 0);
   assert.equal(FLOWDESK_PRE_SPIKE_PRODUCTION_COMMAND_REGISTRY.length, 0);
   assert.equal(getFlowDeskPreSpikeProductionCommandRegistry().length, 0);
@@ -70,8 +70,8 @@ test("Checkpoint 5 manifest is inert, non-authorizing, and pre-spike production-
     assert.equal(entry.hardCancelOrNoReplyAuthority, false);
     assert.equal(entry.actualLaneLaunch, false);
     assert.equal(entry.providerCall, false);
-    assert.equal(entry.schemaCompatibilityStatus, "blocked_missing_schema_conversion_evidence");
-    assert.equal(entry.schemaCompatibilityReadiness, "blocked_until_fds1_conversion_spike_passes");
+    assert.equal(entry.schemaCompatibilityStatus, "compatible_runtime_closed_validation");
+    assert.equal(entry.schemaCompatibilityReadiness, "compatible_with_runtime_closed_validation");
   }
 });
 
