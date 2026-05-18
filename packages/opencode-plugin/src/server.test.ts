@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   FLOWDESK_FDS1_FIXTURE_CATALOG,
@@ -498,6 +501,50 @@ test("local adapter fails closed for expired and cancelled pending confirmations
   assert.equal(cancelledRun.handler.handlerMode, "pending_confirmation_invalid");
   assert.equal(cancelledRun.localState.pendingConfirmationStatus, "cancelled");
   assert.equal(cancelledRun.actualLaneLaunch, false);
+});
+
+test("local adapter can opt into durable .flowdesk state materialization", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-local-adapter-"));
+  try {
+    const session = createFlowDeskLocalNonDispatchAdapterSession(new Date("2026-05-17T00:00:00.000Z"), undefined, { durableStateRootDir: root });
+    const plan = session.evaluate("flowdesk_plan", {
+      schema_version: "flowdesk.plan.request.v1",
+      request_id: "request-durable-plan",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-durable-plan",
+      session_ref: "session-durable-plan",
+      redacted_intake_ref: "intake-durable-plan",
+      goal_summary: "구현 계획을 세워줘",
+      scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
+      risk_hint: "ordinary Release 1 command-backed steering only"
+    });
+    assert.equal(plan.handler.ok, true);
+    assert.equal(plan.localState.stateWriteApplied, true);
+    assert.equal(plan.localState.durableStateMode, "durable_flowdesk_root");
+    assert.equal(plan.localState.durableStateWriteApplied, true);
+    assert.equal(plan.localState.durableStateWrites, 3);
+    const workflowPath = join(root, ".flowdesk/workflows/workflow-durable-plan/workflow.json");
+    const lanesPath = join(root, ".flowdesk/sessions/session-local/lanes.jsonl");
+    assert.equal(existsSync(workflowPath), true);
+    assert.equal(JSON.parse(readFileSync(workflowPath, "utf8")).workflow_id, "workflow-durable-plan");
+    assert.match(readFileSync(lanesPath, "utf8"), /"lane_id":"lane-plan-request-durable-plan"/);
+
+    const status = session.evaluate("flowdesk_status", {
+      schema_version: "flowdesk.status.request.v1",
+      request_id: "request-durable-status",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-durable-plan",
+      session_ref: "session-durable-plan",
+      redacted_intake_ref: "intake-durable-status",
+      detail_level: "summary"
+    });
+    assert.equal(status.handler.ok, true);
+    assert.equal(status.localState.durableStateMode, "durable_flowdesk_root");
+    assert.equal(status.providerCall, false);
+    assert.equal(status.runtimeExecution, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("natural-language routing reuses local adapter session with adapter tools", async () => {
