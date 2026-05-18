@@ -6,6 +6,8 @@ This document is the normative Release 1 schema appendix for FlowDesk plugin too
 
 Release 1 custom tools use OpenCode's official Zod-based plugin tool API. FlowDesk does not claim arbitrary JSON Schema compatibility. Schemas are restricted to a tested Zod subset because OpenCode converts plugin Zod args to JSON Schema and may apply provider-specific transformations before model dispatch.
 
+FDS-1 compatibility is defined by FlowDesk runtime-closed validation: canonical FlowDesk schema artifacts reject unknown properties, and handlers must validate requests before any privileged behavior. OpenCode provider-facing JSON Schema closedness is a caveat for the pinned conversion path because `additionalProperties: false` may be missing/null; it is not by itself a blocker when runtime validation rejects unknown properties.
+
 ## FDS-1 Authoring Profile
 
 FDS-1 schemas are authored as Zod raw shapes for OpenCode plugin tools, then exported to JSON Schema artifacts for review, tests, and documentation. Implementations must not hand-author plugin tool args as raw JSON Schema unless a later conformance report explicitly promotes that path.
@@ -93,6 +95,30 @@ type ProviderFailureClass =
   | "provider_error"
   | "opencode_provider_load_failure"
   | "telemetry_ambiguous";
+type LaneFailureClass =
+  | "launch_failed"
+  | "missing_tool"
+  | "schema_conversion_failed"
+  | "timeout"
+  | "correlation_lost"
+  | "abnormal_exit"
+  | "telemetry_unavailable"
+  | "cancellation_unproven"
+  | "redaction_blocked"
+  | "invocation_failed"
+  | "incomplete_result"
+  | "reference_kind_mismatch"
+  | "retry_limit_reached"
+  | "auth_missing"
+  | "auth_expired"
+  | "provider_unavailable"
+  | "rate_limited"
+  | "model_unavailable"
+  | "transport_timeout"
+  | "provider_error"
+  | "opencode_provider_load_failure";
+type LaneInvocationRefKind = "background_invocation" | "continuation_session" | "opencode_task" | "unknown";
+type LaneVerdictStatus = "present" | "missing" | "incomplete" | "not_required";
 ```
 
 ## Shared Envelopes
@@ -413,9 +439,12 @@ interface LaneSummaryV1 {
   task_ref: OpaqueRef;
   lane_class: "planning_draft" | "planning_refine" | "planning_review" | "research" | "documentation" | "verification" | "diagnostics" | "other";
   state: "queued" | "launching" | "running" | "waiting" | "completed" | "blocked" | "failed" | "timed_out" | "correlation_lost" | "cancel_requested" | "cancel_observed" | "cancel_failed" | "hard_cancel_proven";
-  failure_class?: string;
+  failure_class?: LaneFailureClass;
   safe_next_action: SafeNextAction;
   refs: OpaqueRef[];
+  invocation_ref_kind?: LaneInvocationRefKind;
+  retry_count?: number;
+  verdict_status?: LaneVerdictStatus;
 }
 
 interface FlowDeskStatusLaneSummaryV1 extends LaneSummaryV1 {
@@ -744,7 +773,10 @@ interface FlowDeskLaneRecordV1 {
   started_at?: IsoTimestamp;
   updated_at: IsoTimestamp;
   completed_at?: IsoTimestamp;
-  failure_class?: string;
+  failure_class?: LaneFailureClass;
+  invocation_ref_kind?: LaneInvocationRefKind;
+  retry_count?: number;
+  verdict_status?: LaneVerdictStatus;
   safe_next_action: SafeNextAction;
   refs: OpaqueRef[];
   event_refs: OpaqueRef[];
@@ -1129,8 +1161,8 @@ Artifact fixture suites must include valid minimal/full examples plus invalid un
 
 Every Release 1 registered tool requires fixture tests before registration:
 
-1. `<prefix>.valid.minimal.json` validates and converts without crash.
-2. `<prefix>.valid.full.json` validates and converts without crash.
+1. `<prefix>.valid.minimal.json` validates through FlowDesk runtime-closed validation and converts without crash.
+2. `<prefix>.valid.full.json` validates through FlowDesk runtime-closed validation and converts without crash.
 3. `<prefix>.invalid.unknown-property.json` fails FlowDesk validation.
 4. `<prefix>.invalid.enum.json` fails FlowDesk validation.
 5. `<prefix>.invalid.length.json` fails FlowDesk validation.
@@ -1149,11 +1181,11 @@ The custom plugin tool schema conversion spike must produce a redacted artifact 
 4. FDS profile version.
 5. Zod authoring result.
 6. OpenCode registry conversion result.
-7. Provider transform result for every provider/model family included in the spike.
-8. Runtime validation result for valid and invalid fixture args.
+7. Provider transform result for every provider/model family included in the spike, including provider-facing `additionalProperties` missing/null versus `false`.
+8. Runtime validation result for valid and invalid fixture args, including unknown-property rejection before execution.
 9. Crash/no-crash verdict before provider dispatch.
 10. Whether descriptions survive conversion well enough for safe model use.
 11. Redaction status and evidence refs.
 12. Narrowed FDS profile if any fixture fails.
 
-If any Release 1 registered tool lacks a passing schema conversion artifact, `/flowdesk-doctor` must report production readiness as blocked and the tool must not be registered in production profiles.
+If any Release 1 registered tool lacks a passing runtime-closed schema compatibility artifact, `/flowdesk-doctor` must report production readiness as blocked and the tool must not be registered in production profiles. A missing provider-facing `additionalProperties: false` remains a documented caveat, not a production blocker by itself, when FlowDesk runtime validation rejects unknown properties before execution.
