@@ -45,6 +45,25 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
     productionReady: false,
     productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
   });
+  assert.deepEqual(result.release1ProductionReadiness, {
+    totalChecks: 8,
+    passedChecks: 5,
+    blockedChecks: 3,
+    productionReady: false,
+    productionPromotionGate: "blocked_release1_production_readiness_incomplete",
+    blockedReasons: [
+      "production adapters do not yet bind write-capable handlers to scoped non-dispatch audit/debug/state write intents",
+      "production adapters do not yet inject and verify fresh scoped non-dispatch permissions at the tool boundary",
+      "server still exposes only inert pre-spike doctor by default and no production non-dispatch adapter profile is registered"
+    ],
+    productionRegistrationEligible: false,
+    realOpenCodeDispatch: false,
+    actualLaneLaunch: false,
+    providerCall: false,
+    runtimeExecution: false,
+    fallbackAuthority: false,
+    hardCancelOrNoReplyAuthority: false
+  });
   assert.equal(result.fds1SchemaConversionSpikePassed, true);
   assert.equal(result.realOpenCodeDispatch, "disabled");
   assert.equal(result.providerCall, false);
