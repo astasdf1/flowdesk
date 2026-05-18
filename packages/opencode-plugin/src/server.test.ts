@@ -272,6 +272,25 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.notEqual(result.routedToolName, "flowdesk_run");
   assert.equal(result.runtimeExecution, false);
   assert.equal(result.actualLaneLaunch, false);
+
+  const confirmed = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-run-confirmed",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-run-confirmed",
+    session_ref: "session-nl-run-confirmed",
+    redacted_intake_ref: "intake-nl-run-confirmed",
+    user_approval_ref: "approval-nl-run-confirmed",
+    intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.equal(confirmed.evaluation?.response?.route_decision, "use_command_fallback");
+  assert.deepEqual(confirmed.evaluation?.response?.safe_next_actions, ["/flowdesk-run", "/flowdesk-status"]);
+  assert.equal(confirmed.routedToolName, "flowdesk_run");
+  assert.equal(confirmed.routedToolResult?.handler?.ok, true);
+  assert.equal(confirmed.routedToolResult?.localState?.workflowState, "complete");
+  assert.equal(confirmed.runtimeExecution, false);
+  assert.equal(confirmed.actualLaneLaunch, false);
 });
 
 test("natural-language routing reuses local adapter session with adapter tools", async () => {

@@ -133,6 +133,19 @@ function executionConfirmationResponse(input: FlowDeskChatRoutingInputV1): FlowD
   };
 }
 
+function confirmedExecutionResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
+  return {
+    schema_version: "flowdesk.chat_intake.response.v1",
+    ok: true,
+    status: "ready",
+    safe_next_actions: ["/flowdesk-run", "/flowdesk-status"],
+    user_message: "FlowDesk accepted typed confirmation and routed this request to a command-backed Release 1 run.",
+    classification: "fast_chat",
+    redacted_intake_ref: redactedIntakeRef(input),
+    route_decision: "use_command_fallback"
+  };
+}
+
 function clarifyResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
   return {
     schema_version: "flowdesk.chat_intake.response.v1",
@@ -167,7 +180,7 @@ export function buildFlowDeskChatIntakeResponseV1(input: FlowDeskChatRoutingInpu
 
   const summary = input.request.intake_summary;
   if (unsafeLaterGatePattern.test(summary)) return blockedResponse(input);
-  if (executionLikePattern.test(summary)) return executionConfirmationResponse(input);
+  if (executionLikePattern.test(summary)) return input.request.user_approval_ref === undefined ? executionConfirmationResponse(input) : confirmedExecutionResponse(input);
   const command = commandRoutes.find(([pattern]) => pattern.test(summary));
   if (command !== undefined) return commandFallbackResponse(input, command[1]);
   if (planningPattern.test(summary)) return clarificationPattern.test(summary) ? clarifyResponse(input) : managedPlanResponse(input);
