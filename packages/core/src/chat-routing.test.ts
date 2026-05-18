@@ -57,6 +57,11 @@ test("chat routing classifies English and Korean status, plan, and fake-runtime 
   assert.deepEqual(confirmedRun.response.safe_next_actions, ["/flowdesk-run", "/flowdesk-status"]);
   assert.equal(validateChatIntakeResponseV1(confirmedRun.response).ok, true);
 
+  const weakApproval = evaluateFlowDeskChatIntakeV1({ request: request("maybe fake-runtime run this later", { user_approval_ref: "approval-chat-run" }), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(weakApproval.response.route_decision, "ask_clarification");
+  assert.equal(weakApproval.response.safe_next_actions.includes("/flowdesk-run"), false);
+  assert.equal(validateChatIntakeResponseV1(weakApproval.response).ok, true);
+
   const unsafe = evaluateFlowDeskChatIntakeV1({ request: request("opencode run with actual lane launch"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(unsafe.response.ok, false);
   assert.equal(unsafe.response.safe_next_actions.includes("/flowdesk-run"), false);

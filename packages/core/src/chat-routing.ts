@@ -25,6 +25,7 @@ const fallbackActions = ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-expo
 const unsafeLaterGatePattern = /\b(real[\s_-]*(?:opencode[\s_-]*)?dispatch|realOpenCodeDispatch|actual[\s_-]*lane[\s_-]*launch|actualLaneLaunch|provider[\s_-]*(?:call|request|api)|providerCall|automatic[\s_-]*(?:fallback|reselection)|automaticFallbackOrReselection|fallback[\s_-]*(?:provider|model|authority)|fallbackAuthority|reselect(?:ion)?|hard[\s_-]*(?:cancel|stop|no[\s_-]*reply)|hardCancelOrNoReply|noReply|no[\s_-]*reply|cancel:\s*true|stop:\s*true|opencode[\s_-]*run)\b/i;
 const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve)\b|(?:계획|구현)/i;
 const executionLikePattern = /\b(?:run|execute|start)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:실행|진행(?:해|하))/i;
+const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead)\b|(?:승인|확인|동의|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요))/i;
 const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this)\b/i;
 
 const commandRoutes: readonly (readonly [RegExp, readonly SafeNextAction[]])[] = [
@@ -146,6 +147,10 @@ function confirmedExecutionResponse(input: FlowDeskChatRoutingInputV1): FlowDesk
   };
 }
 
+function hasTypedExecutionApproval(input: FlowDeskChatRoutingInputV1, summary: string): boolean {
+  return input.request.user_approval_ref !== undefined && explicitApprovalPattern.test(summary);
+}
+
 function clarifyResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
   return {
     schema_version: "flowdesk.chat_intake.response.v1",
@@ -180,7 +185,7 @@ export function buildFlowDeskChatIntakeResponseV1(input: FlowDeskChatRoutingInpu
 
   const summary = input.request.intake_summary;
   if (unsafeLaterGatePattern.test(summary)) return blockedResponse(input);
-  if (executionLikePattern.test(summary)) return input.request.user_approval_ref === undefined ? executionConfirmationResponse(input) : confirmedExecutionResponse(input);
+  if (executionLikePattern.test(summary)) return hasTypedExecutionApproval(input, summary) ? confirmedExecutionResponse(input) : executionConfirmationResponse(input);
   const command = commandRoutes.find(([pattern]) => pattern.test(summary));
   if (command !== undefined) return commandFallbackResponse(input, command[1]);
   if (planningPattern.test(summary)) return clarificationPattern.test(summary) ? clarifyResponse(input) : managedPlanResponse(input);
