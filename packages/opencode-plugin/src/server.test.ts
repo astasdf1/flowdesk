@@ -25,6 +25,7 @@ interface LocalAdapterTestResult {
   handler?: {
     ok?: unknown;
     handlerMode?: unknown;
+    responseSchemaValid?: unknown;
     response?: {
       status?: unknown;
       plan_revision_id?: unknown;
@@ -240,6 +241,39 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(result.actualLaneLaunch, false);
   assert.equal(result.fallbackAuthority, false);
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
+
+  const retry = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-retry",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-retry",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-retry",
+    intake_summary: "retry the last failed attempt",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.deepEqual(retry.evaluation?.response?.safe_next_actions, ["/flowdesk-status", "/flowdesk-retry"]);
+  assert.equal(retry.routedToolName, "flowdesk_retry");
+  assert.equal(retry.routedToolResult?.handler?.ok, true);
+  assert.equal(retry.providerCall, false);
+  assert.equal(retry.runtimeExecution, false);
+
+  const abort = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-abort",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-abort",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-abort",
+    intake_summary: "cancel workflow safely",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.deepEqual(abort.evaluation?.response?.safe_next_actions, ["/flowdesk-status", "/flowdesk-abort"]);
+  assert.equal(abort.routedToolName, "flowdesk_abort");
+  assert.equal(abort.routedToolResult?.handler?.ok, true);
+  assert.equal(abort.routedToolResult?.handler?.responseSchemaValid, true);
+  assert.equal(abort.providerCall, false);
+  assert.equal(abort.actualLaneLaunch, false);
 });
 
 test("chat intake holds execution-like requests for confirmation before run", async () => {

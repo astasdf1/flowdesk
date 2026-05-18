@@ -72,7 +72,8 @@ function commandNameFromAction(action: SafeNextAction): FlowDeskRelease1MinimumP
 }
 
 function routedToolName(actions: readonly SafeNextAction[]): FlowDeskRelease1MinimumToolName | undefined {
-  for (const action of actions) {
+  const preferredActions = actions.length > 1 ? [...actions.filter((action) => action !== "/flowdesk-status"), ...actions.filter((action) => action === "/flowdesk-status")] : actions;
+  for (const action of preferredActions) {
     const commandName = commandNameFromAction(action);
     if (commandName === undefined) continue;
     const toolName = getFlowDeskPortableCommandToolName(commandName);
@@ -124,7 +125,42 @@ function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: F
       persist_report: false
     };
   }
-  return baseToolRequest(request, `flowdesk.${toolName.replace("flowdesk_", "")}.request.v1`);
+  if (toolName === "flowdesk_resume") {
+    return {
+      ...baseToolRequest(request, "flowdesk.resume.request.v1"),
+      checkpoint_id: safeToken(`checkpoint-${request.workflow_id ?? request.request_id}`, "checkpoint-chat-routed"),
+      resume_mode: "status_only"
+    };
+  }
+  if (toolName === "flowdesk_retry") {
+    return {
+      ...baseToolRequest(request, "flowdesk.retry.request.v1"),
+      attempt_id: safeToken(`attempt-${request.workflow_id ?? request.request_id}`, "attempt-chat-routed"),
+      retry_reason: "FlowDesk chat intake requested a non-dispatch retry diagnostic."
+    };
+  }
+  if (toolName === "flowdesk_abort") {
+    return {
+      ...baseToolRequest(request, "flowdesk.abort.request.v1"),
+      workflow_id: safeToken(request.workflow_id ?? `workflow-${request.request_id}`, "workflow-chat-routed"),
+      reason: "FlowDesk chat intake requested a safe abort diagnostic."
+    };
+  }
+  if (toolName === "flowdesk_usage") {
+    return {
+      ...baseToolRequest(request, "flowdesk.usage.request.v1"),
+      provider_family: "unknown",
+      refresh: false
+    };
+  }
+  if (toolName === "flowdesk_export_debug") {
+    return {
+      ...baseToolRequest(request, "flowdesk.export_debug.request.v1"),
+      include_sections: ["redaction_summary"],
+      retention_hint: "keep_until_default_expiry"
+    };
+  }
+  return baseToolRequest(request, "flowdesk.tool.request.v1");
 }
 
 function evaluateNaturalLanguageRouting(request: FlowDeskChatIntakeRequestV1, session: FlowDeskLocalNonDispatchAdapterSessionV1) {
