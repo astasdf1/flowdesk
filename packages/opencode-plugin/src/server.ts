@@ -214,13 +214,17 @@ function clockMs(clock: FlowDeskLocalClockV1): number {
   return (typeof clock === "function" ? clock() : clock).getTime();
 }
 
-function hasPendingConfirmationCode(result: ReturnType<typeof evaluateNaturalLanguageRouting>): boolean {
-  const localState = isRecord(result.routedToolResult) && isRecord(result.routedToolResult.localState) ? result.routedToolResult.localState : undefined;
-  return localState?.pendingConfirmationStatus === "pending" && typeof localState.pendingConfirmationRef === "string";
+function previewNaturalLanguageRouting(request: FlowDeskChatIntakeRequestV1) {
+  const evaluation = evaluateFlowDeskChatIntakeV1({ request, chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  const toolName = evaluation.response.ok ? routedToolName(evaluation.response.safe_next_actions) : undefined;
+  return { evaluation, toolName };
 }
 
-function suggestionDuplicateKey(request: FlowDeskChatIntakeRequestV1, result: ReturnType<typeof evaluateNaturalLanguageRouting>): string {
-  const response = result.evaluation.response;
+function mayCreatePendingConfirmation(preview: ReturnType<typeof previewNaturalLanguageRouting>): boolean {
+  return preview.evaluation.response.route_decision === "ask_clarification" && preview.toolName === "flowdesk_plan";
+}
+
+function suggestionDuplicateKey(request: FlowDeskChatIntakeRequestV1, response: ReturnType<typeof evaluateFlowDeskChatIntakeV1>["response"]): string {
   const suggestedNextStep = response.safe_next_actions[0] ?? "/flowdesk-status";
   return [request.session_ref, response.route_decision, suggestedNextStep].map((part, index) => safeToken(part, `chat-card-${index}`)).join("|");
 }
@@ -342,18 +346,19 @@ export function createFlowDeskNaturalLanguageChatMessageHook(now: FlowDeskLocalC
   return async function message(input: unknown, output: FlowDeskChatMessageOutput): Promise<void> {
     const inputRecord = isRecord(input) ? input : {};
     const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
-    const result = evaluateNaturalLanguageRouting(request, session);
-    if (result.evaluation.response.route_decision === "continue_chat") return;
+    const preview = previewNaturalLanguageRouting(request);
+    if (preview.evaluation.response.route_decision === "continue_chat") return;
     const nowMs = clockMs(now);
     for (const [key, recordedAtMs] of recentSuggestionCards) {
       if (nowMs - recordedAtMs > flowdeskChatSuggestionDuplicateWindowMs || nowMs < recordedAtMs) recentSuggestionCards.delete(key);
     }
-    if (!hasPendingConfirmationCode(result)) {
-      const duplicateKey = suggestionDuplicateKey(request, result);
+    if (!mayCreatePendingConfirmation(preview)) {
+      const duplicateKey = suggestionDuplicateKey(request, preview.evaluation.response);
       const previousAtMs = recentSuggestionCards.get(duplicateKey);
       recentSuggestionCards.set(duplicateKey, nowMs);
       if (previousAtMs !== undefined && nowMs - previousAtMs <= flowdeskChatSuggestionDuplicateWindowMs) return;
     }
+    const result = evaluateNaturalLanguageRouting(request, session);
     if (!Array.isArray(output.parts)) output.parts = [];
     output.parts.push({ type: "text", text: steeringText(result) });
   };

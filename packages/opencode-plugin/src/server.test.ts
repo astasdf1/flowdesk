@@ -695,41 +695,50 @@ test("chat.message steering mutates message parts without hard interception fiel
 });
 
 test("chat.message steering suppresses repeated non-confirmation cards for the same session and suggestion", async () => {
-  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-    [flowdeskNaturalLanguageRoutingOption]: true
-  }) as ChatMessageHooks;
-  assert.ok(hooks["chat.message"]);
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-duplicate-"));
+  try {
+    const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+      [flowdeskNaturalLanguageRoutingOption]: true,
+      [flowdeskDurableStateRootOption]: root
+    }) as ChatMessageHooks;
+    assert.ok(hooks["chat.message"]);
 
-  const firstPlanOutput = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
-  await hooks["chat.message"]({
-    messageID: "message-duplicate-plan-first",
-    sessionID: "session-duplicate-plan"
-  }, firstPlanOutput);
-  assert.equal(firstPlanOutput.parts.length, 2);
-  assert.match(JSON.stringify(firstPlanOutput), /Suggested next step: \/flowdesk-plan/);
+    const firstPlanOutput = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
+    await hooks["chat.message"]({
+      messageID: "message-duplicate-plan-first",
+      sessionID: "session-duplicate-plan"
+    }, firstPlanOutput);
+    assert.equal(firstPlanOutput.parts.length, 2);
+    assert.match(JSON.stringify(firstPlanOutput), /Suggested next step: \/flowdesk-plan/);
+    const workflowPath = join(root, ".flowdesk/workflows/workflow-local/workflow.json");
+    const workflowAfterFirst = readFileSync(workflowPath, "utf8");
 
-  const repeatedPlanOutput = { parts: [{ type: "text", text: "구현 계획을 다시 세워줘" }] as unknown[] };
-  await hooks["chat.message"]({
-    messageID: "message-duplicate-plan-second",
-    sessionID: "session-duplicate-plan"
-  }, repeatedPlanOutput);
-  assert.equal(repeatedPlanOutput.parts.length, 1);
-  assert.equal(/noReply|cancel|stop/.test(JSON.stringify(repeatedPlanOutput)), false);
+    const repeatedPlanOutput = { parts: [{ type: "text", text: "구현 계획을 다시 세워줘" }] as unknown[] };
+    await hooks["chat.message"]({
+      messageID: "message-duplicate-plan-second",
+      sessionID: "session-duplicate-plan"
+    }, repeatedPlanOutput);
+    assert.equal(repeatedPlanOutput.parts.length, 1);
+    assert.equal(readFileSync(workflowPath, "utf8"), workflowAfterFirst);
+    assert.equal(/noReply|cancel|stop/.test(JSON.stringify(repeatedPlanOutput)), false);
 
-  const otherSessionOutput = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
-  await hooks["chat.message"]({
-    messageID: "message-duplicate-plan-other-session",
-    sessionID: "session-duplicate-plan-other"
-  }, otherSessionOutput);
-  assert.equal(otherSessionOutput.parts.length, 2);
+    const otherSessionOutput = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
+    await hooks["chat.message"]({
+      messageID: "message-duplicate-plan-other-session",
+      sessionID: "session-duplicate-plan-other"
+    }, otherSessionOutput);
+    assert.equal(otherSessionOutput.parts.length, 2);
 
-  const differentSuggestionOutput = { parts: [{ type: "text", text: "현재 상태와 진행상황 알려줘" }] as unknown[] };
-  await hooks["chat.message"]({
-    messageID: "message-duplicate-status",
-    sessionID: "session-duplicate-plan"
-  }, differentSuggestionOutput);
-  assert.equal(differentSuggestionOutput.parts.length, 2);
-  assert.match(JSON.stringify(differentSuggestionOutput), /Suggested next step: \/flowdesk-status/);
+    const differentSuggestionOutput = { parts: [{ type: "text", text: "현재 상태와 진행상황 알려줘" }] as unknown[] };
+    await hooks["chat.message"]({
+      messageID: "message-duplicate-status",
+      sessionID: "session-duplicate-plan"
+    }, differentSuggestionOutput);
+    assert.equal(differentSuggestionOutput.parts.length, 2);
+    assert.match(JSON.stringify(differentSuggestionOutput), /Suggested next step: \/flowdesk-status/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("chat.message steering preserves repeated pending confirmation cards", async () => {
