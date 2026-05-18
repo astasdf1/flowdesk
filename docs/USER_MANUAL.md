@@ -10,6 +10,8 @@ Final product purpose: FlowDesk keeps the main agent from carrying the whole pla
 
 Current claims are bounded to OpenCode 1.14.40 evidence. In plain language: Release 1 can help route and check work, but it cannot secretly take over OpenCode or run real external-provider work for you. It does not claim real OpenCode dispatch, automatic provider/model switching, hard chat cancellation, hard no-reply control, or trusted runtime echo for real external providers.
 
+FlowDesk should not silently rewrite most chat. If a request looks like ordinary chat, FlowDesk should stay out of the way. If a request looks like it could benefit from workflow help, FlowDesk may show a visible suggestion such as “FlowDesk로 정리” or “계획 보기”. If you explicitly ask FlowDesk to manage a request, FlowDesk can route it into a command-backed workflow. Any execution-like step still requires confirmation before Release 1 guarded dry-run or fake-runtime behavior.
+
 Release 1 does not upload telemetry, community scores, prompts, transcripts, or project metadata. Later optional sharing must be explicit opt-in, previewed before enablement, and governed by a published retention/revoke policy that says whether already-uploaded data is deleted, tombstoned, retained only in irreversible aggregate form, or cannot be removed after aggregation.
 
 Local Release 1 retention defaults are short: session records expire after at most 14 days, debug export staging after at most 7 days, and opted-in conformance summaries after at most 30 days unless the user configures a shorter Policy Pack window.
@@ -26,6 +28,16 @@ Plan this refactor with FlowDesk and show me the guarded steps.
 
 FlowDesk should route the request into a guarded command-backed flow. It may use delegated authoring records or conformance-proven lanes to draft, refine, or review the plan, then show the plan summary, ask for clarification, block unsafe scope, or offer safe next actions.
 
+For less explicit requests, FlowDesk should suggest rather than take over:
+
+```text
+이 요청은 FlowDesk 워크플로로 정리할 수 있어요.
+예상 단계: 목표 정리 -> 계획 -> 실행 전 확인
+[FlowDesk로 정리] [무시]
+```
+
+This suggestion is not execution. It is an invitation to turn the request into a safer workflow.
+
 Use commands when you need setup, status, recovery, diagnostics, or fallback:
 
 ```text
@@ -41,6 +53,8 @@ Use commands when you need setup, status, recovery, diagnostics, or fallback:
 ```
 
 `/flowdesk-run` in Release 1 performs guarded dry-run or fake-runtime dispatch only. It must not claim real OpenCode dispatch.
+
+If you say “run”, “execute”, “진행”, or “실행” in chat, FlowDesk should ask for confirmation or show the plan-ready state before running any guarded dry-run or fake-runtime path.
 
 ### First Successful Flow
 

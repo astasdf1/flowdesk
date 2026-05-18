@@ -10,6 +10,8 @@ This roadmap turns `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md` into an imp
 
 Release 1 is for ordinary OpenCode users. Natural-language chat is the primary UX, routed into guarded command-backed FlowDesk workflows without relying on unverified OpenCode runtime dispatch, automatic provider/model fallback, or hard chat cancellation authority. The final product target also minimizes main-agent context by delegating workflow authoring, refinement, and review to bounded subagent lanes that return compact typed summaries.
 
+Critical review update, 2026-05-18: Release 1 must not implement broad OMO-style invisible prefix injection. `chat.message` steering is not a proven hard-interception boundary, so FlowDesk must not silently rewrite most user input or imply that the normal assistant/provider turn has been fully handled. Chat intake uses an internal intent detector with conservative outcomes: `general_chat` leaves the request alone, `flowdesk_suggest` presents a transparent FlowDesk card or guidance, `flowdesk_manage` is reserved for explicit or high-confidence FlowDesk requests, and `unsafe_later_gate` blocks only the FlowDesk route while showing safe fallback actions. User-facing UX should talk about “FlowDesk로 정리”, “계획 보기”, “실행 전 확인”, and “진단” rather than internal `manage`, `non-dispatch`, `adapter`, or `fake-runtime` terms. Execution-like natural language must stop at confirmation or plan readiness; no chat-routed path may immediately perform `/flowdesk-run` or fake-runtime state changes without explicit confirmation.
+
 Included:
 
 1. Project workspace and packages.
@@ -25,6 +27,7 @@ Included:
 11. Provider Health Snapshot diagnostics for auth, provider, API, model, timeout, OpenCode provider-load, and ambiguous telemetry failures.
 12. Hook harness `enforce`, `observe`, and `off` modes.
 13. User manual abnormal-use examples and safe alternatives.
+14. Intent detection and transparent workflow-suggestion UX that distinguishes no intervention, suggestion, explicit management, and later-gate unsafe requests without claiming hard chat takeover.
 
 Excluded:
 
@@ -35,6 +38,11 @@ Excluded:
 5. Patent, legal, or medical-device specialist workflows.
 6. Optional MCP connector execution.
 7. Opt-in federated score registry, central telemetry, or community score sharing.
+8. Broad hidden prompt/prefix injection that tries to route most ordinary chat through FlowDesk without explicit user visibility.
+
+### Progress Snapshot
+
+The current progress estimate lives in `PROGRESS_SNAPSHOT.md`. Update that file whenever implementation status, release gates, blockers, user-facing readiness, or critical review findings change. The roadmap defines the target sequence; the progress snapshot records the current position against it.
 
 ### Release 2: Managed Dispatch Beta
 
@@ -146,7 +154,7 @@ Tasks:
 7. Implement command-driven guarded dry-run.
 8. Implement fake-runtime dispatch.
 9. Implement status and recovery state display, including lane summaries, Provider Health Snapshot summaries, and safe debug references.
-10. Implement chat routing into command-backed flows where OpenCode 1.14.40 steering evidence applies.
+10. Implement chat routing into command-backed flows where OpenCode 1.14.40 steering evidence applies. The routing pipeline must be split into redacted intake normalization, intent detection, safety gate, and route rendering. The detector is not an authority boundary and must support at least `general_chat`, `flowdesk_suggest`, `flowdesk_manage`, and `unsafe_later_gate` internal outcomes.
 11. Implement delegated workflow authoring records, fake-runtime lane summaries, and command/status summaries for Release 1. Actual OpenCode subtask/model/provider lane launch is disabled until managed-dispatch gates pass and a later release explicitly promotes it. Do not implement lanes by spawning nested `opencode run` subprocesses; `opencode run` is limited to smoke tests, diagnostics, compatibility probes, and fake-runtime harnesses.
 12. Implement hook harness `enforce`, `observe`, and `off` behavior.
 13. Implement doctor failure categories: dispatch-blocking, chat-mode-disable, degraded-mode warning, and informational.
@@ -171,6 +179,8 @@ Exit criteria:
 15. Installer failure tests prove backup-first ordering, selected-profile-only mutation, provider-auth preservation, typed-confirmation binding, rollback/partial-restore reporting, static command-template validation, doctor handoff, bootstrap authority closure after doctor pass, and redacted reports with no raw config/profile content.
 16. Doctor/status/debug/audit/conformance artifact tests cover doctor report, doctor section result, status summary, debug export manifest, debug section summary, audit event, audit record, audit ref summary, usage snapshot, provider health snapshot, conformance runtime metadata, and conformance evidence record fixture prefixes.
 17. Artifact tests prove redaction, unknown-property rejection, retention/deletion state, audit-event to audit-record lifecycle, debug-section omission/blocking, conformance evidence redaction, usage/provider-health separation, and non-authority for dispatch, fallback, hard cancellation, or Guard replacement.
+18. Chat routing does not use broad invisible prefix injection. `general_chat` preserves the normal chat path, `flowdesk_suggest` produces transparent user-visible guidance or a FlowDesk card, `flowdesk_manage` requires explicit/high-confidence FlowDesk intent, and `unsafe_later_gate` never suggests `/flowdesk-run` or any later-gate authority.
+19. Any natural-language execution request reaches a confirmation-required or plan-ready state before fake-runtime or guarded dry-run evaluation. Confirmation state must be one-shot, scoped, time-bound, and redacted.
 
 ## Phase 4: OpenCode Conformance
 
@@ -242,11 +252,14 @@ Goal: improve the chat-routed user experience without relying on unsupported har
 
 Tasks:
 
-1. Enable `chat_intake_mode: blocking` only when conformance proves it; otherwise keep Release 1 steering limited to command-backed routing.
-2. Implement `fast_chat`, `managed_plan`, `clarify`, and `blocked` outcomes.
-3. Implement deterministic approval classifier.
-4. Implement typed confirmation with nonce/scope binding.
-5. Implement natural-language retry/resume/abort/status affordances.
+1. Enable `chat_intake_mode: blocking` only when conformance proves it; otherwise keep Release 1 steering limited to transparent command-backed routing.
+2. Implement the internal intent detector outcomes `general_chat`, `flowdesk_suggest`, `flowdesk_manage`, and `unsafe_later_gate`, mapped onto schema-compatible user-facing route decisions.
+3. Implement non-intrusive FlowDesk card or guidance copy for `flowdesk_suggest`, including why FlowDesk is suggesting a workflow, what it will do, what it will not do, and the fact that execution requires confirmation.
+4. Implement `fast_chat`, `managed_plan`, `clarify`, and `blocked` outcomes without exposing internal routing labels as product language.
+5. Implement deterministic approval classifier.
+6. Implement typed confirmation with nonce/scope binding.
+7. Implement pending-intent confirmation state with TTL, source summary/ref binding, one-shot consumption, cancellation/clear behavior, and non-dispatch adapter mode.
+8. Implement natural-language retry/resume/abort/status affordances.
 
 Exit criteria:
 
@@ -254,6 +267,9 @@ Exit criteria:
 2. Ambiguous or high-risk requests clarify instead of executing.
 3. Privileged dispatch requires Guard and approval.
 4. `observe_only` or `off` mode directs users to command fallback; `steering` mode routes to a guarded command-backed flow.
+5. FlowDesk suggestions are transparent and dismissible; repeated suggestions are rate-limited or preference-aware so ordinary OpenCode chat is not polluted.
+6. Execution-like chat such as “run”, “execute”, “진행”, or “실행” cannot directly mutate workflow state to complete without explicit confirmation.
+7. User-facing copy avoids internal implementation terms such as `pre-spike`, `adapter`, `non-dispatch`, `fake-runtime`, and `manage` unless a diagnostic/debug surface explicitly needs them.
 
 ## Phase 7: Operational Intelligence
 
@@ -340,3 +356,4 @@ Stop implementation and revise the spec if:
 3. Event telemetry is too lossy for safe recovery or quarantine.
 4. Provider-native usage or provider health cannot be checked without unsafe credential, raw provider error, provider payload, log, path, stack trace, or transcript persistence.
 5. Any feature requires OMO runtime compatibility.
+6. FlowDesk value depends on broad invisible prompt/prefix injection rather than explicit commands, transparent suggestions, or conformance-proven blocking chat intake.

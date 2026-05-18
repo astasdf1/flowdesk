@@ -35,8 +35,11 @@ The spec incorporates the current OpenCode-plugin-first FlowDesk design:
 5. `/flowdesk:*` and portable `/flowdesk-*` commands are setup, status, recovery, diagnostics, and fallback controls, not the primary UX.
 6. Plugin-managed workflows must not use nested `opencode run`.
 7. Patent, legal, and medical-device regulatory capabilities are source-grounded research helpers, not professional advice or signoff engines.
+8. Release 1 must not rely on broad invisible prefix injection. Chat routing may classify and steer, but it must not secretly rewrite most ordinary user input or imply that FlowDesk fully handled the turn unless blocking chat intake is conformance-proven.
 
 Release 1 is a **General-Use MVP with chat-routed command-backed workflows**: install, doctor, natural-language chat routing into guarded command-backed plan/run/status/recovery/diagnostic flows, delegated workflow authoring records, guarded dry-run, fake-runtime dispatch, redacted audit, provider health diagnostics, abnormal-use manual guidance, hook harness enforcement or observation, lane observability summaries, and conformance reporting. Real OpenCode dispatch, hard chat interception, automatic model/provider fallback, evaluation scoring authority, and specialist reference-pack workflows are later release gates unless explicitly promoted by a follow-up spec revision. Release 1 may scaffold workflow taxonomy, proposal, provider health, fallback decision, and evaluation event schemas, but those schemas must not rank work as an approval path, switch providers, switch models, or enable real dispatch.
+
+Release 1 chat routing uses a conservative intent model. Internally, implementations should distinguish general chat that FlowDesk leaves alone, likely FlowDesk-related requests that receive transparent suggestion-only guidance, explicit/high-confidence FlowDesk requests that enter command-backed management, and later-gate unsafe requests that block only the FlowDesk route. These internal states are product implementation details, not authority. User-facing experiences should present a visible FlowDesk card or guidance such as “FlowDesk로 정리”, “계획 보기”, “실행 전 확인”, and “진단” rather than hidden prompt prefixes or internal labels. Execution-like natural language must create a confirmation-required or plan-ready state before any guarded dry-run or fake-runtime evaluation occurs.
 
 ### 2.1 Final Target Feature Contract Rule
 
@@ -82,6 +85,7 @@ If a target feature lacks one of the required contracts above, implementation mu
 12. No subagent output, lane status card, log summary, or debug reference may approve dispatch, widen scope, suppress verification, or replace Guard.
 13. No Release 1 path may automatically switch provider or model. Provider/API/model outages in Release 1 are diagnostic, status, degraded-mode, or fake-runtime signals only.
 14. No provider health snapshot, hook observation, status UI, conformance artifact, model output, or runtime echo may approve dispatch or fallback.
+15. No Release 1 path may depend on broad invisible prompt or prefix injection. Message mutation is allowed only for transparent steering, command-backed routing, or conformance-proven containment; it is not a substitute for approval, blocking intake, or Guard.
 
 Bootstrap exception: the installer may perform a narrow set of setup mutations before normal Guard operation exists, but only under the bootstrap authority model in section 6.5.
 
@@ -96,6 +100,18 @@ FlowDesk uses the following terms narrowly. Implementations must not use one ter
 5. **Conformance**: repeatable evidence that a pinned OpenCode version supports the hook, command, chat, runtime, echo, telemetry, and tool-schema behavior FlowDesk depends on. Conformance enables or disables modes; it does not approve individual dispatches.
 
 If these terms conflict in an implementation path, the path must fail closed. For example, a hook denial proves containment for a tested surface, not policy correctness; an audit event proves observability, not safety; and event telemetry or echo must never satisfy Guard approval or durable pre-dispatch audit requirements.
+
+### 3.1A Chat Intent and Suggestion Terms
+
+Release 1 implementations use these terms for chat UX and routing:
+
+1. **General chat**: ordinary OpenCode chat where FlowDesk does not mutate, route, or suggest. This is the default when intent is ambiguous or unrelated.
+2. **FlowDesk suggestion**: a transparent, dismissible suggestion that a request can be organized as a FlowDesk workflow. It may show a card, concise guidance, or safe commands, but it must not claim takeover or execution.
+3. **FlowDesk management request**: an explicit or high-confidence user request to use FlowDesk. It may route into command-backed planning, status, recovery, diagnostics, guarded dry-run, or fake-runtime paths, subject to Guard and confirmation requirements.
+4. **Unsafe later-gate request**: a request for real dispatch, provider calls, actual lane launch, automatic fallback or reselection, hard no-reply/cancel/stop, or another later-release authority. FlowDesk blocks its own route and shows safe alternatives, but does not claim hard chat suppression unless conformance proves blocking intake.
+5. **Pending intent**: a redacted, time-bound, one-shot state representing a proposed FlowDesk action that requires user confirmation before execution-like behavior.
+
+These terms must not be exposed as raw product labels. Product copy should explain what FlowDesk can do, what it will not do, and whether user confirmation is required.
 
 ### 3.2 Canonical Forbidden Persisted Payloads
 
