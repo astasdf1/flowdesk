@@ -777,10 +777,15 @@ export function applyBootstrapWriteIntentsToDurableState(rootDir: string, intent
   const writtenPaths: string[] = [];
   try {
     const root = resolve(rootDir);
-    for (const intent of intents) {
+    const prepared = intents.map((intent) => {
       const validation = validateRedactedBootstrapArtifactWriteIntent(intent);
-      if (!validation.ok) return { ...invalid(...validation.errors), writtenPaths, ...disabledDurableBootstrapAuthority };
-      const resolved = resolveBootstrapTarget(root, intent.path);
+      if (!validation.ok) return { validation, intent };
+      return { validation, intent, resolved: resolveBootstrapTarget(root, intent.path) };
+    });
+    const errors = prepared.flatMap((entry) => entry.validation.ok ? [] : entry.validation.errors);
+    if (errors.length > 0) return { ...invalid(...errors), writtenPaths, ...disabledDurableBootstrapAuthority };
+    for (const { intent, resolved } of prepared) {
+      if (resolved === undefined) throw new Error("bootstrap durable write prevalidation failed");
       mkdirSync(dirname(resolved.target), { recursive: true });
       writeFileSync(resolved.temp, JSON.stringify(intent.record), "utf8");
       renameSync(resolved.temp, resolved.target);

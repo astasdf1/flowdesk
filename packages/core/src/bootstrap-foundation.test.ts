@@ -354,6 +354,26 @@ test("durable bootstrap materialization rejects forged intents before writing", 
   }
 });
 
+test("durable bootstrap materialization prevalidates full batches before writing", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-bootstrap-batch-invalid-"));
+  try {
+    const preparedReport = prepareRedactedBootstrapArtifactWriteIntent("install-plan-123", bootstrapReport()).writeIntent;
+    const preparedHandoff = prepareRedactedBootstrapArtifactWriteIntent("install-plan-123", doctorHandoff()).writeIntent;
+    assert.ok(preparedReport);
+    assert.ok(preparedHandoff);
+
+    const forged = { ...preparedHandoff, path: "../doctor-handoff.json" };
+    const result = applyBootstrapWriteIntentsToDurableState(root, [preparedReport, forged]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.writtenPaths, []);
+    assert.equal(existsSync(join(root, preparedReport.path)), false);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.runtimeExecution, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Checkpoint 4 validators reject unknown properties and forbidden raw values", () => {
   assert.equal(validateBootstrapInstallPlanV1({ ...installPlan(), unexpected: true }).ok, false);
   assert.equal(validateBootstrapBackupManifestV1({ ...backupManifest(), source_config_ref: "/Users/example/raw-config.json" }).ok, false);
