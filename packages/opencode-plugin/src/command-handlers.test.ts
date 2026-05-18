@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   FlowDeskAttemptRecordV1,
+  FlowDeskDoctorResponseV1,
   FlowDeskExportDebugRequestV1,
   FlowDeskFds1FixtureCatalogEntryV1,
   FlowDeskLaneRecordV1,
@@ -41,6 +42,15 @@ function requestFixture(toolName: FlowDeskRelease1MinimumToolName, category: "va
   const fixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry): entry is FlowDeskFds1FixtureCatalogEntryV1 => entry.toolName === toolName && entry.schemaKind === "tool_request");
   assert.ok(fixture, toolName);
   return fixture.categories[category].sample;
+}
+
+function doctorRequest(overrides: Record<string, unknown> = {}): Readonly<Record<string, unknown>> {
+  return {
+    ...requestFixture("flowdesk_doctor"),
+    check_scope: "all",
+    profile: "test",
+    ...overrides
+  };
 }
 
 function workflowIdFrom(request: Readonly<Record<string, unknown>>): string {
@@ -425,6 +435,37 @@ test("command-backed handlers require evaluator input for core-backed tools", ()
   assert.equal(runResult.coreEvaluationOk, false);
   assert.equal(runResult.response, undefined);
   assertNoRuntimeAuthority(runResult);
+});
+
+test("doctor diagnostic handler reports Release 1 disabled modes without runtime authority", () => {
+  const result = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_doctor", doctorRequest());
+  assert.equal(result.handlerMode, "command_backed_diagnostic_handler");
+  assert.equal(result.requestSchemaValid, true);
+  assert.equal(result.responseSchemaValid, true);
+  assert.equal(result.coreEvaluationOk, true);
+  const response = result.response as FlowDeskDoctorResponseV1;
+  assert.equal(response.schema_version, "flowdesk.doctor.response.v1");
+  assert.equal(response.provider_health_summary.dispatchability, "non_dispatchable");
+  assert.deepEqual(response.disabled_modes, ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"]);
+  assert.equal(JSON.stringify(response).includes("provider_payload"), false);
+  assert.equal(JSON.stringify(response).includes("/Users/"), false);
+  assertNoRuntimeAuthority(result);
+});
+
+test("doctor diagnostic handler rejects semantic request enum drift before response", () => {
+  for (const request of [
+    doctorRequest({ check_scope: "raw_provider_payload" }),
+    doctorRequest({ profile: "production-admin" })
+  ]) {
+    const result = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_doctor", request);
+    assert.equal(result.handlerMode, "request_schema_invalid");
+    assert.equal(result.ok, false);
+    assert.equal(result.requestSchemaValid, false);
+    assert.equal(result.responseSchemaValid, false);
+    assert.equal(result.coreEvaluationOk, false);
+    assert.equal(result.response, undefined);
+    assertNoRuntimeAuthority(result);
+  }
 });
 
 test("diagnostic handlers cover resume, abort, usage, and export-debug without runtime authority", () => {

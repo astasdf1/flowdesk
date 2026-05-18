@@ -1,7 +1,11 @@
 import type {
   DebugSectionV1,
+  DoctorFailureCategoryV1,
+  DoctorSectionResultV1,
   FlowDeskAbortRequestV1,
   FlowDeskAbortResponseV1,
+  FlowDeskDoctorRequestV1,
+  FlowDeskDoctorResponseV1,
   FlowDeskExportDebugRequestV1,
   FlowDeskExportDebugResponseV1,
   FlowDeskFakeRuntimeCommandInputV1,
@@ -24,8 +28,10 @@ import {
   evaluateFlowDeskRetryPlanningV1,
   evaluateFlowDeskStatusCommandV1,
   FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
+  getDoctorFailureCategoryOutcomeV1,
   invalid,
   valid,
+  validateDoctorRequestV1,
   validateSchemaArtifactValue
 } from "@flowdesk/core";
 import { getFlowDeskRelease1HandlerReadiness } from "./tool-stubs.js";
@@ -100,11 +106,24 @@ function responseSchemaResult(toolName: FlowDeskRelease1MinimumToolName, respons
 function requestSchemaResult(toolName: FlowDeskRelease1MinimumToolName, request: unknown): ValidationResult {
   const manifestEntry = FLOWDESK_RELEASE_1_COMMAND_MANIFEST.find((entry) => entry.toolName === toolName);
   if (manifestEntry === undefined) return invalid("toolName is not a Release 1 minimum tool");
-  return validateSchemaArtifactValue(manifestEntry.requestSchemaId, request);
+  const artifactResult = validateSchemaArtifactValue(manifestEntry.requestSchemaId, request);
+  if (toolName === "flowdesk_doctor") {
+    const semanticResult = validateDoctorRequestV1(request);
+    const errors = [...artifactResult.errors, ...semanticResult.errors];
+    return errors.length === 0 ? valid() : invalid(...errors);
+  }
+  return artifactResult;
 }
 
 function requestId(request: { request_id?: unknown }): string {
   return typeof request.request_id === "string" && request.request_id.length > 0 ? request.request_id : "request-unknown";
+}
+
+function safeDiagnosticId(prefix: string, request: { request_id?: unknown }): string {
+  const suffix = requestId(request)
+    .replaceAll(/[^A-Za-z0-9_.:-]/g, "-")
+    .slice(0, 80);
+  return `${prefix}-${suffix.length > 0 ? suffix : "request-unknown"}`;
 }
 
 function diagnosticNow(context: FlowDeskCommandBackedHandlerContextV1): string {
@@ -113,6 +132,57 @@ function diagnosticNow(context: FlowDeskCommandBackedHandlerContextV1): string {
 
 function diagnosticDeleteAfter(context: FlowDeskCommandBackedHandlerContextV1): string {
   return context.diagnostic?.deleteAfterIso ?? "2026-05-18T00:00:00.000Z";
+}
+
+function doctorCategoryFor(request: FlowDeskDoctorRequestV1): DoctorFailureCategoryV1 {
+  if (request.check_scope === "usage" || request.check_scope === "provider_health") return "degraded_mode_warning";
+  if (request.check_scope === "install" || request.check_scope === "policy") return "informational";
+  return "dispatch_blocking";
+}
+
+function doctorSectionFor(category: DoctorFailureCategoryV1, request: FlowDeskDoctorRequestV1) {
+  const runId = safeDiagnosticId("doctor-run", request);
+  const section: DoctorSectionResultV1["section"] = category === "degraded_mode_warning" ? "provider_usage_readiness" : category === "informational" && request.check_scope === "policy" ? "policy_project_safety" : category === "informational" ? "migration_cleanup" : "opencode_plugin_compatibility";
+  const outcome = getDoctorFailureCategoryOutcomeV1(category);
+  return {
+    schema_version: "flowdesk.doctor_section_result.v1" as const,
+    run_id: runId,
+    section,
+    category,
+    summary: category === "dispatch_blocking" ? "FlowDesk Release 1 keeps real dispatch, lane launch, managed fallback, and hard chat authority disabled." : category === "degraded_mode_warning" ? "FlowDesk reports provider usage and health as diagnostic-only unless fresh official evidence is available." : "FlowDesk doctor completed a redacted diagnostic scaffold check without production mutation.",
+    safe_next_actions: [...outcome.safe_next_actions],
+    refs: [`doctor-${category}-ref`],
+    redaction_version: "redaction-v1"
+  };
+}
+
+function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1): FlowDeskDoctorResponseV1 {
+  const category = doctorCategoryFor(request);
+  const outcome = getDoctorFailureCategoryOutcomeV1(category);
+  const providerHealth = category === "degraded_mode_warning" ? {
+    provider_family: "unknown" as const,
+    availability_state: "unknown" as const,
+    failure_class: "telemetry_ambiguous" as const,
+    dispatchability: "non_dispatchable" as const,
+    safe_remediation: "Use FlowDesk usage, status, and doctor diagnostics without provider fallback or dispatch."
+  } : {
+    provider_family: "unknown" as const,
+    availability_state: "unknown" as const,
+    failure_class: "none" as const,
+    dispatchability: "non_dispatchable" as const,
+    safe_remediation: "Use FlowDesk status and export-debug for redacted diagnostic follow-up."
+  };
+  return {
+    schema_version: "flowdesk.doctor.response.v1",
+    ok: category !== "dispatch_blocking",
+    status: category === "dispatch_blocking" ? "blocked" : category === "degraded_mode_warning" ? "degraded" : "diagnostic_only",
+    safe_next_actions: [...outcome.safe_next_actions],
+    user_message: request.persist_report ? "FlowDesk doctor prepared a redacted diagnostic report reference only; no filesystem write occurred in this handler." : "FlowDesk doctor completed a redacted diagnostic check without production registration, provider calls, or runtime execution.",
+    doctor_results: [doctorSectionFor(category, request)],
+    provider_health_summary: providerHealth,
+    compatibility_ref: safeDiagnosticId("compatibility", request),
+    disabled_modes: [...outcome.disabled_modes]
+  };
 }
 
 function evaluateResumeDiagnostic(request: FlowDeskResumeRequestV1): FlowDeskResumeResponseV1 {
@@ -194,6 +264,11 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
   const readiness = getFlowDeskRelease1HandlerReadiness().find((entry) => entry.toolName === toolName);
   const requestResult = requestSchemaResult(toolName, request);
   if (!requestResult.ok) return result("request_schema_invalid", toolName, requestResult, invalid("response unavailable when request schema is invalid"), undefined, false);
+
+  if (toolName === "flowdesk_doctor") {
+    const response = evaluateDoctorDiagnostic(request as FlowDeskDoctorRequestV1);
+    return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
+  }
 
   if (toolName === "flowdesk_plan") {
     if (context.plan === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("plan evaluator input is required"), undefined, false);
