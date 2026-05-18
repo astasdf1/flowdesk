@@ -55,6 +55,14 @@ export interface FlowDeskRelease1BootstrapInstallResultV1 extends ValidationResu
   rollbackCommandRefs?: string[];
 }
 
+export interface FlowDeskRelease1BootstrapTypedConfirmationInputV1 {
+  profileRootDir: string;
+  targetProfileRef: string;
+  confirmationRef: string;
+  expiresAt: string;
+  typedPhrase: string;
+}
+
 const disabledBootstrapInstallAuthority = {
   productionRegistrationEligible: false,
   commandAliasEligible: false,
@@ -98,6 +106,24 @@ function resultBase(): Pick<FlowDeskRelease1BootstrapInstallResultV1, "bootstrap
 
 function expectedTypedPhrase(targetProfileRef: string, profileRootRef: string, confirmationRef: string, installPlanId: string): string {
   return `install FlowDesk release1 ${targetProfileRef} ${profileRootRef} ${confirmationRef} ${installPlanId}`;
+}
+
+export function expectedFlowDeskRelease1BootstrapApprovalPhrase(profileRootDir: string, targetProfileRef: string, confirmationRef: string): string {
+  return expectedTypedPhrase(targetProfileRef, flowDeskBootstrapProfileRootRef(profileRootDir), confirmationRef, ids(targetProfileRef).installPlanId);
+}
+
+export function prepareFlowDeskRelease1BootstrapTypedConfirmation(input: FlowDeskRelease1BootstrapTypedConfirmationInputV1): FlowDeskRelease1BootstrapTypedConfirmationV1 {
+  const artifactIds = ids(input.targetProfileRef);
+  return {
+    confirmationRef: input.confirmationRef,
+    targetProfileRef: input.targetProfileRef,
+    profileRootRef: flowDeskBootstrapProfileRootRef(input.profileRootDir),
+    installPlanRef: artifactIds.installPlanId,
+    rollbackPlanRef: artifactIds.rollbackPlanId,
+    expiresAt: input.expiresAt,
+    actorClass: "user",
+    typedPhrase: input.typedPhrase
+  };
 }
 
 function safeHash(value: string): string {
