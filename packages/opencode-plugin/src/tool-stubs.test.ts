@@ -18,7 +18,7 @@ import {
 } from "./index.js";
 
 test("pre-spike plugin tool stubs cover the Release 1 minimum tools without production registration", () => {
-  assert.equal(hasPassingFds1SchemaConversionSpike(), false);
+  assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.length, 9);
   assert.deepEqual(
     FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.map((stub) => stub.toolName),
@@ -39,9 +39,11 @@ test("pre-spike plugin tool stub metadata remains blocked and non-authorizing", 
     assert.equal(stub.requestSchemaId, manifestEntry.requestSchemaId);
     assert.equal(stub.responseSchemaId, manifestEntry.responseSchemaId);
     assert.equal(stub.fixturePrefix, manifestEntry.fixturePrefix);
+    assert.equal(stub.registrationProfile, "sandbox_conformance_probe_only");
     assert.equal(stub.handlerMode, "pre_spike_test_harness_stub");
-    assert.equal(stub.schemaConversionArtifactStatus, "missing_passing_fds1_schema_conversion_artifact");
-    assert.equal(stub.productionToolRegistration, "blocked_until_fds1_conversion_spike_passes");
+    assert.equal(stub.schemaConversionArtifactStatus, "compatible_runtime_closed_validation");
+    assert.equal(stub.productionPromotionGate, "blocked_production_opencode_registration_disabled");
+    assert.equal(stub.productionToolRegistration, "disabled_production_opencode_registration");
     assert.equal(stub.runtimeDispatch, "disabled_release1_pre_spike");
     assert.equal(stub.productionRegistrationEligible, false);
     assert.equal(stub.schemaConversionReady, false);
@@ -64,7 +66,9 @@ test("pre-spike plugin tool stub runner validates fixtures but never accepts exe
     assert.equal(validResult.accepted, false);
     assert.equal(validResult.requestSchemaValid, true);
     assert.equal(validResult.responseSchemaValid, true);
-    assert.equal(validResult.blockedReason, "missing_passing_fds1_schema_conversion_artifact");
+    assert.equal(validResult.blockedReason, "production_opencode_registration_disabled");
+    assert.equal(validResult.registrationProfile, "sandbox_conformance_probe_only");
+    assert.equal(validResult.productionPromotionGate, "blocked_production_opencode_registration_disabled");
     assert.equal(validResult.productionRegistrationEligible, false);
     assert.equal(validResult.dispatchApprovalEligible, false);
     assert.equal(validResult.providerCall, false);
@@ -91,6 +95,8 @@ test("pre-spike plugin tool stubs reject forged authority and Release 1 real dis
   assert.equal(realDispatchAttempt.requestSchemaValid, false);
   assert.equal(realDispatchAttempt.blockedReason, "request_schema_invalid");
   assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, productionRegistrationEligible: true }).ok, false);
+  assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, registrationProfile: "production" }).ok, false);
+  assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, productionPromotionGate: "passed" }).ok, false);
   assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, schemaConversionReady: true }).ok, false);
   assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, dispatchApprovalEligible: true }).ok, false);
   assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, providerCall: true }).ok, false);

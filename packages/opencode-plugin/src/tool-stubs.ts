@@ -17,9 +17,11 @@ export interface FlowDeskPreSpikePluginToolStubV1 {
   requestSchemaId: string;
   responseSchemaId: string;
   fixturePrefix: string;
+  registrationProfile: "sandbox_conformance_probe_only";
   handlerMode: "pre_spike_test_harness_stub";
-  schemaConversionArtifactStatus: "missing_passing_fds1_schema_conversion_artifact";
-  productionToolRegistration: "blocked_until_fds1_conversion_spike_passes";
+  schemaConversionArtifactStatus: "compatible_runtime_closed_validation";
+  productionPromotionGate: "blocked_production_opencode_registration_disabled";
+  productionToolRegistration: "disabled_production_opencode_registration";
   runtimeDispatch: "disabled_release1_pre_spike";
   productionRegistrationEligible: false;
   schemaConversionReady: false;
@@ -36,7 +38,9 @@ export interface FlowDeskPreSpikePluginToolHandlerResultV1 {
   accepted: false;
   requestSchemaValid: boolean;
   responseSchemaValid: boolean;
-  blockedReason: "missing_passing_fds1_schema_conversion_artifact" | "request_schema_invalid";
+  blockedReason: "production_opencode_registration_disabled" | "request_schema_invalid";
+  registrationProfile: "sandbox_conformance_probe_only";
+  productionPromotionGate: "blocked_production_opencode_registration_disabled";
   responseSample: Readonly<Record<string, unknown>>;
   productionRegistrationEligible: false;
   dispatchApprovalEligible: false;
@@ -77,9 +81,11 @@ function stubForManifestEntry(entry: FlowDeskCommandManifestEntryV1): FlowDeskPr
     requestSchemaId: entry.requestSchemaId,
     responseSchemaId: entry.responseSchemaId,
     fixturePrefix: entry.fixturePrefix,
+    registrationProfile: "sandbox_conformance_probe_only",
     handlerMode: "pre_spike_test_harness_stub",
-    schemaConversionArtifactStatus: "missing_passing_fds1_schema_conversion_artifact",
-    productionToolRegistration: "blocked_until_fds1_conversion_spike_passes",
+    schemaConversionArtifactStatus: "compatible_runtime_closed_validation",
+    productionPromotionGate: "blocked_production_opencode_registration_disabled",
+    productionToolRegistration: "disabled_production_opencode_registration",
     runtimeDispatch: "disabled_release1_pre_spike",
     ...inertAuthority
   };
@@ -89,8 +95,8 @@ export const FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS = FLOWDESK_RELEASE_1_COMMAND_M
 
 export const FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY = [] as const satisfies readonly FlowDeskPreSpikePluginToolStubV1[];
 
-export function hasPassingFds1SchemaConversionSpike(): false {
-  return false;
+export function hasPassingFds1SchemaConversionSpike(): true {
+  return true;
 }
 
 export function getFlowDeskPreSpikePluginToolStubs(): readonly FlowDeskPreSpikePluginToolStubV1[] {
@@ -129,8 +135,10 @@ export function validateFlowDeskPreSpikePluginToolStub(stub: unknown): Validatio
       "requestSchemaId",
       "responseSchemaId",
       "fixturePrefix",
+      "registrationProfile",
       "handlerMode",
       "schemaConversionArtifactStatus",
+      "productionPromotionGate",
       "productionToolRegistration",
       "runtimeDispatch",
       "productionRegistrationEligible",
@@ -148,9 +156,11 @@ export function validateFlowDeskPreSpikePluginToolStub(stub: unknown): Validatio
     manifestEntry?.responseSchemaId === stub.responseSchemaId ? valid() : invalid("responseSchemaId does not align with manifest"),
     manifestEntry?.fixturePrefix === stub.fixturePrefix ? valid() : invalid("fixturePrefix does not align with manifest"),
     stub.stubId === `flowdesk-pre-spike-plugin-tool-stub:${stub.fixturePrefix}:v1` ? valid() : invalid("stubId does not align with fixture prefix"),
+    stub.registrationProfile === "sandbox_conformance_probe_only" ? valid() : invalid("registrationProfile must remain sandbox conformance probe only"),
     stub.handlerMode === "pre_spike_test_harness_stub" ? valid() : invalid("handlerMode must remain pre-spike test harness only"),
-    stub.schemaConversionArtifactStatus === "missing_passing_fds1_schema_conversion_artifact" ? valid() : invalid("schema conversion artifact must remain missing before the spike passes"),
-    stub.productionToolRegistration === "blocked_until_fds1_conversion_spike_passes" ? valid() : invalid("production registration must remain blocked"),
+    stub.schemaConversionArtifactStatus === "compatible_runtime_closed_validation" ? valid() : invalid("schema conversion artifact must reflect runtime-closed compatibility"),
+    stub.productionPromotionGate === "blocked_production_opencode_registration_disabled" ? valid() : invalid("production promotion gate must remain blocked while production registration is disabled"),
+    stub.productionToolRegistration === "disabled_production_opencode_registration" ? valid() : invalid("production registration must remain disabled"),
     stub.runtimeDispatch === "disabled_release1_pre_spike" ? valid() : invalid("runtime dispatch must remain disabled pre-spike"),
     authorityChecks(stub)
   ]);
@@ -192,7 +202,9 @@ export function runFlowDeskPreSpikePluginToolStub(toolName: string, request: unk
     accepted: false,
     requestSchemaValid: requestResult.ok,
     responseSchemaValid: responseResult.ok,
-    blockedReason: requestResult.ok ? "missing_passing_fds1_schema_conversion_artifact" : "request_schema_invalid",
+    blockedReason: requestResult.ok ? "production_opencode_registration_disabled" : "request_schema_invalid",
+    registrationProfile: "sandbox_conformance_probe_only",
+    productionPromotionGate: "blocked_production_opencode_registration_disabled",
     responseSample,
     productionRegistrationEligible: false,
     dispatchApprovalEligible: false,
