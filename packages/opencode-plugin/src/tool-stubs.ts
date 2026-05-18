@@ -71,6 +71,40 @@ export interface FlowDeskRelease1HandlerReadinessSummaryV1 {
   productionPromotionGate: "blocked_release1_handler_readiness_incomplete";
 }
 
+export type FlowDeskRelease1ProductionReadinessCheckIdV1 = "handler_readiness" | "schema_evidence" | "guard_boundary" | "audit_write_boundary" | "policy_permission_boundary" | "redaction_boundary" | "disabled_modes" | "production_adapter_boundary";
+
+export type FlowDeskRelease1ProductionReadinessCheckStatusV1 = "passed" | "blocked";
+
+export interface FlowDeskRelease1ProductionReadinessCheckV1 {
+  checkId: FlowDeskRelease1ProductionReadinessCheckIdV1;
+  status: FlowDeskRelease1ProductionReadinessCheckStatusV1;
+  evidenceRef: string;
+  blocker: string;
+  productionRegistrationEligible: false;
+  realOpenCodeDispatch: false;
+  actualLaneLaunch: false;
+  providerCall: false;
+  runtimeExecution: false;
+  fallbackAuthority: false;
+  hardCancelOrNoReplyAuthority: false;
+}
+
+export interface FlowDeskRelease1ProductionReadinessSummaryV1 {
+  totalChecks: number;
+  passedChecks: number;
+  blockedChecks: number;
+  productionReady: false;
+  productionPromotionGate: "blocked_release1_production_readiness_incomplete";
+  blockedReasons: string[];
+  productionRegistrationEligible: false;
+  realOpenCodeDispatch: false;
+  actualLaneLaunch: false;
+  providerCall: false;
+  runtimeExecution: false;
+  fallbackAuthority: false;
+  hardCancelOrNoReplyAuthority: false;
+}
+
 const inertAuthority = {
   productionRegistrationEligible: false,
   schemaConversionReady: false,
@@ -139,6 +173,66 @@ export const FLOWDESK_RELEASE_1_HANDLER_READINESS = FLOWDESK_RELEASE_1_COMMAND_M
   runtimeExecution: false
 })) as readonly FlowDeskRelease1HandlerReadinessEntryV1[];
 
+export const FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS = [
+  {
+    checkId: "handler_readiness",
+    status: "passed",
+    evidenceRef: "release1-handler-readiness:all-minimum-tools-command-backed",
+    blocker: "none"
+  },
+  {
+    checkId: "schema_evidence",
+    status: "passed",
+    evidenceRef: "fds1-schema-conversion-probe:runtime-closed-compatible",
+    blocker: "none"
+  },
+  {
+    checkId: "guard_boundary",
+    status: "passed",
+    evidenceRef: "release1-guard-boundary:non-dispatch-only",
+    blocker: "none"
+  },
+  {
+    checkId: "audit_write_boundary",
+    status: "blocked",
+    evidenceRef: "release1-production-adapter:audit-write-boundary-missing",
+    blocker: "production adapters do not yet bind write-capable handlers to scoped non-dispatch audit/debug/state write intents"
+  },
+  {
+    checkId: "policy_permission_boundary",
+    status: "blocked",
+    evidenceRef: "release1-production-adapter:permission-boundary-missing",
+    blocker: "production adapters do not yet inject and verify fresh scoped non-dispatch permissions at the tool boundary"
+  },
+  {
+    checkId: "redaction_boundary",
+    status: "passed",
+    evidenceRef: "release1-redaction:forbidden-raw-payload-tests",
+    blocker: "none"
+  },
+  {
+    checkId: "disabled_modes",
+    status: "passed",
+    evidenceRef: "release1-disabled-modes:real-dispatch-fallback-lane-hard-chat-disabled",
+    blocker: "none"
+  },
+  {
+    checkId: "production_adapter_boundary",
+    status: "blocked",
+    evidenceRef: "release1-production-adapter:registration-profile-missing",
+    blocker: "server still exposes only inert pre-spike doctor by default and no production non-dispatch adapter profile is registered"
+  }
+].map((check) => ({
+  ...check,
+  productionRegistrationEligible: false,
+  realOpenCodeDispatch: false,
+  actualLaneLaunch: false,
+  providerCall: false,
+  runtimeExecution: false,
+  fallbackAuthority: false,
+  hardCancelOrNoReplyAuthority: false
+})) as readonly FlowDeskRelease1ProductionReadinessCheckV1[];
+
 export function hasPassingFds1SchemaConversionSpike(): true {
   return true;
 }
@@ -158,6 +252,29 @@ export function getFlowDeskRelease1HandlerReadinessSummary(): FlowDeskRelease1Ha
     schemaOnlyPending,
     productionReady: false,
     productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
+  };
+}
+
+export function getFlowDeskRelease1ProductionReadinessChecks(): readonly FlowDeskRelease1ProductionReadinessCheckV1[] {
+  return FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS;
+}
+
+export function getFlowDeskRelease1ProductionReadinessSummary(): FlowDeskRelease1ProductionReadinessSummaryV1 {
+  const blockedReasons = FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.filter((entry) => entry.status === "blocked").map((entry) => entry.blocker);
+  return {
+    totalChecks: FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.length,
+    passedChecks: FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.filter((entry) => entry.status === "passed").length,
+    blockedChecks: blockedReasons.length,
+    productionReady: false,
+    productionPromotionGate: "blocked_release1_production_readiness_incomplete",
+    blockedReasons,
+    productionRegistrationEligible: false,
+    realOpenCodeDispatch: false,
+    actualLaneLaunch: false,
+    providerCall: false,
+    runtimeExecution: false,
+    fallbackAuthority: false,
+    hardCancelOrNoReplyAuthority: false
   };
 }
 
@@ -268,6 +385,38 @@ export function validateFlowDeskRelease1HandlerReadiness(readiness: readonly unk
     summary.productionReady === false ? valid() : invalid("productionReady must remain false"),
     summary.productionPromotionGate === "blocked_release1_handler_readiness_incomplete" ? valid() : invalid("production promotion gate must remain blocked"),
     ...readiness.map((entry) => validateFlowDeskRelease1HandlerReadinessEntry(entry))
+  ]);
+}
+
+export function validateFlowDeskRelease1ProductionReadinessCheck(check: unknown): ValidationResult {
+  if (!isRecord(check)) return invalid("production readiness check must be an object");
+  return combine([
+    rejectUnknownProperties(check, ["checkId", "status", "evidenceRef", "blocker", "productionRegistrationEligible", "realOpenCodeDispatch", "actualLaneLaunch", "providerCall", "runtimeExecution", "fallbackAuthority", "hardCancelOrNoReplyAuthority"]),
+    ["handler_readiness", "schema_evidence", "guard_boundary", "audit_write_boundary", "policy_permission_boundary", "redaction_boundary", "disabled_modes", "production_adapter_boundary"].includes(String(check.checkId)) ? valid() : invalid("production readiness checkId is invalid"),
+    check.status === "passed" || check.status === "blocked" ? valid() : invalid("production readiness status is invalid"),
+    typeof check.evidenceRef === "string" && check.evidenceRef.length > 0 && check.evidenceRef.length <= 160 ? validateNoForbiddenRawPayloads(check.evidenceRef, "evidenceRef") : invalid("production readiness evidenceRef is invalid"),
+    typeof check.blocker === "string" && check.blocker.length > 0 && check.blocker.length <= 500 ? validateNoForbiddenRawPayloads(check.blocker, "blocker") : invalid("production readiness blocker is invalid"),
+    check.status === "passed" && check.blocker !== "none" ? invalid("passed production readiness checks must use blocker none") : valid(),
+    check.status === "blocked" && check.blocker === "none" ? invalid("blocked production readiness checks require a blocker") : valid(),
+    check.productionRegistrationEligible === false ? valid() : invalid("productionRegistrationEligible must remain false"),
+    check.realOpenCodeDispatch === false ? valid() : invalid("realOpenCodeDispatch must remain false"),
+    check.actualLaneLaunch === false ? valid() : invalid("actualLaneLaunch must remain false"),
+    check.providerCall === false ? valid() : invalid("providerCall must remain false"),
+    check.runtimeExecution === false ? valid() : invalid("runtimeExecution must remain false"),
+    check.fallbackAuthority === false ? valid() : invalid("fallbackAuthority must remain false"),
+    check.hardCancelOrNoReplyAuthority === false ? valid() : invalid("hardCancelOrNoReplyAuthority must remain false")
+  ]);
+}
+
+export function validateFlowDeskRelease1ProductionReadiness(checks: readonly unknown[] = FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS): ValidationResult {
+  const expectedCheckIds = FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.map((entry) => entry.checkId);
+  const actualCheckIds = checks.map((entry) => (isRecord(entry) ? entry.checkId : undefined));
+  const blockedChecks = checks.filter((entry) => isRecord(entry) && entry.status === "blocked").length;
+  return combine([
+    checks.length === expectedCheckIds.length ? valid() : invalid("production readiness checks must cover every Release 1 prerequisite"),
+    JSON.stringify(actualCheckIds) === JSON.stringify(expectedCheckIds) ? valid() : invalid("production readiness check order or membership is not exact"),
+    blockedChecks > 0 ? valid() : invalid("production readiness must remain blocked until adapter prerequisites are implemented"),
+    ...checks.map((entry) => validateFlowDeskRelease1ProductionReadinessCheck(entry))
   ]);
 }
 

@@ -9,17 +9,22 @@ import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
   FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY,
   FLOWDESK_RELEASE_1_HANDLER_READINESS,
+  FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS,
   getFlowDeskPreSpikePluginToolStub,
   getFlowDeskPreSpikePluginToolStubs,
   getFlowDeskPreSpikeProductionToolRegistry,
   getFlowDeskRelease1HandlerReadiness,
   getFlowDeskRelease1HandlerReadinessSummary,
+  getFlowDeskRelease1ProductionReadinessChecks,
+  getFlowDeskRelease1ProductionReadinessSummary,
   hasPassingFds1SchemaConversionSpike,
   runFlowDeskPreSpikePluginToolStub,
   validateFlowDeskPreSpikePluginToolStub,
   validateFlowDeskPreSpikePluginToolStubsComplete,
   validateFlowDeskRelease1HandlerReadiness,
-  validateFlowDeskRelease1HandlerReadinessEntry
+  validateFlowDeskRelease1HandlerReadinessEntry,
+  validateFlowDeskRelease1ProductionReadiness,
+  validateFlowDeskRelease1ProductionReadinessCheck
 } from "./index.js";
 
 test("pre-spike plugin tool stubs cover the Release 1 minimum tools without production registration", () => {
@@ -127,6 +132,38 @@ test("pre-spike plugin tool stub runner validates fixtures but never accepts exe
   }
 });
 
+test("Release 1 production readiness stays blocked until adapter prerequisites are proven", () => {
+  assert.deepEqual(getFlowDeskRelease1ProductionReadinessChecks(), FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS);
+  assert.equal(validateFlowDeskRelease1ProductionReadiness().ok, true);
+
+  const summary = getFlowDeskRelease1ProductionReadinessSummary();
+  assert.equal(summary.totalChecks, 8);
+  assert.equal(summary.passedChecks, 5);
+  assert.equal(summary.blockedChecks, 3);
+  assert.equal(summary.productionReady, false);
+  assert.equal(summary.productionPromotionGate, "blocked_release1_production_readiness_incomplete");
+  assert.equal(summary.productionRegistrationEligible, false);
+  assert.equal(summary.realOpenCodeDispatch, false);
+  assert.equal(summary.providerCall, false);
+  assert.equal(summary.runtimeExecution, false);
+  assert.equal(summary.fallbackAuthority, false);
+  assert.equal(summary.hardCancelOrNoReplyAuthority, false);
+  assert.ok(summary.blockedReasons.some((reason) => reason.includes("write-capable handlers")));
+  assert.ok(summary.blockedReasons.some((reason) => reason.includes("non-dispatch permissions")));
+  assert.ok(summary.blockedReasons.some((reason) => reason.includes("server still exposes only inert")));
+
+  for (const check of FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS) {
+    assert.equal(check.productionRegistrationEligible, false, check.checkId);
+    assert.equal(check.realOpenCodeDispatch, false, check.checkId);
+    assert.equal(check.actualLaneLaunch, false, check.checkId);
+    assert.equal(check.providerCall, false, check.checkId);
+    assert.equal(check.runtimeExecution, false, check.checkId);
+    assert.equal(check.fallbackAuthority, false, check.checkId);
+    assert.equal(check.hardCancelOrNoReplyAuthority, false, check.checkId);
+    assert.equal(validateFlowDeskRelease1ProductionReadinessCheck(check).ok, true, check.checkId);
+  }
+});
+
 test("pre-spike plugin tool stubs reject forged authority and Release 1 real dispatch", () => {
   const runStub = getFlowDeskPreSpikePluginToolStub("flowdesk_run");
   assert.ok(runStub);
@@ -151,5 +188,11 @@ test("pre-spike plugin tool stubs reject forged authority and Release 1 real dis
   assert.equal(validateFlowDeskRelease1HandlerReadinessEntry({ ...readyRun, realOpenCodeDispatch: true }).ok, false);
   assert.equal(validateFlowDeskRelease1HandlerReadinessEntry({ ...readyRun, handlerReadiness: "schema_only_pending" }).ok, false);
   assert.equal(validateFlowDeskRelease1HandlerReadiness(FLOWDESK_RELEASE_1_HANDLER_READINESS.filter((entry) => entry.toolName !== "flowdesk_abort")).ok, false);
+  const blockedProductionCheck = FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.find((entry) => entry.status === "blocked");
+  assert.ok(blockedProductionCheck);
+  assert.equal(validateFlowDeskRelease1ProductionReadinessCheck({ ...blockedProductionCheck, productionRegistrationEligible: true }).ok, false);
+  assert.equal(validateFlowDeskRelease1ProductionReadinessCheck({ ...blockedProductionCheck, blocker: "raw provider payload" }).ok, false);
+  assert.equal(validateFlowDeskRelease1ProductionReadiness(FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.map((entry) => ({ ...entry, status: "passed" as const, blocker: "none" }))).ok, false);
+  assert.equal(validateFlowDeskRelease1ProductionReadiness(FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.filter((entry) => entry.checkId !== "audit_write_boundary")).ok, false);
   assert.equal(validateFlowDeskPreSpikePluginToolStubsComplete(FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.slice(1)).ok, false);
 });
