@@ -18,7 +18,7 @@ import {
   flowdeskPluginScaffold,
   hasProductionOpenCodeRegistration
 } from "./index.js";
-import { createFlowDeskLocalNonDispatchAdapterSession, type FlowDeskLocalNonDispatchAdapterSessionV1, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
+import { createFlowDeskLocalNonDispatchAdapterSession, type FlowDeskLocalClockV1, type FlowDeskLocalNonDispatchAdapterSessionV1, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
 import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
   getFlowDeskRelease1HandlerReadinessSummary,
@@ -41,6 +41,8 @@ type FlowDeskOpenCodeToolArg = z.ZodType;
 interface FlowDeskChatMessageOutput {
   parts?: unknown[];
 }
+
+const flowdeskChatSuggestionDuplicateWindowMs = 10_000;
 
 const disabledAuthority = {
   productionRegistrationEligible: false,
@@ -208,6 +210,21 @@ function intakeRequestFromChatMessage(input: unknown): FlowDeskChatIntakeRequest
   };
 }
 
+function clockMs(clock: FlowDeskLocalClockV1): number {
+  return (typeof clock === "function" ? clock() : clock).getTime();
+}
+
+function hasPendingConfirmationCode(result: ReturnType<typeof evaluateNaturalLanguageRouting>): boolean {
+  const localState = isRecord(result.routedToolResult) && isRecord(result.routedToolResult.localState) ? result.routedToolResult.localState : undefined;
+  return localState?.pendingConfirmationStatus === "pending" && typeof localState.pendingConfirmationRef === "string";
+}
+
+function suggestionDuplicateKey(request: FlowDeskChatIntakeRequestV1, result: ReturnType<typeof evaluateNaturalLanguageRouting>): string {
+  const response = result.evaluation.response;
+  const suggestedNextStep = response.safe_next_actions[0] ?? "/flowdesk-status";
+  return [request.session_ref, response.route_decision, suggestedNextStep].map((part, index) => safeToken(part, `chat-card-${index}`)).join("|");
+}
+
 function steeringText(result: ReturnType<typeof evaluateNaturalLanguageRouting>): string {
   const response = result.evaluation.response;
   const actions = response.safe_next_actions.map((action) => action === "ask_clarification" ? "Confirm the goal or plan before FlowDesk suggests a run." : action);
@@ -320,11 +337,23 @@ export function createFlowDeskNaturalLanguageRoutingTools(now = new Date(), sess
   };
 }
 
-export function createFlowDeskNaturalLanguageChatMessageHook(now = new Date(), session = createFlowDeskLocalNonDispatchAdapterSession(now)) {
+export function createFlowDeskNaturalLanguageChatMessageHook(now: FlowDeskLocalClockV1 = () => new Date(), session = createFlowDeskLocalNonDispatchAdapterSession(now)) {
+  const recentSuggestionCards = new Map<string, number>();
   return async function message(input: unknown, output: FlowDeskChatMessageOutput): Promise<void> {
     const inputRecord = isRecord(input) ? input : {};
-    const result = evaluateNaturalLanguageRouting(intakeRequestFromChatMessage({ ...inputRecord, ...output }), session);
+    const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
+    const result = evaluateNaturalLanguageRouting(request, session);
     if (result.evaluation.response.route_decision === "continue_chat") return;
+    const nowMs = clockMs(now);
+    for (const [key, recordedAtMs] of recentSuggestionCards) {
+      if (nowMs - recordedAtMs > flowdeskChatSuggestionDuplicateWindowMs || nowMs < recordedAtMs) recentSuggestionCards.delete(key);
+    }
+    if (!hasPendingConfirmationCode(result)) {
+      const duplicateKey = suggestionDuplicateKey(request, result);
+      const previousAtMs = recentSuggestionCards.get(duplicateKey);
+      recentSuggestionCards.set(duplicateKey, nowMs);
+      if (previousAtMs !== undefined && nowMs - previousAtMs <= flowdeskChatSuggestionDuplicateWindowMs) return;
+    }
     if (!Array.isArray(output.parts)) output.parts = [];
     output.parts.push({ type: "text", text: steeringText(result) });
   };
@@ -380,7 +409,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
   if (isLocalNonDispatchAdapterEnabled(options)) Object.assign(tools, createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession));
   if (isNaturalLanguageRoutingEnabled(options)) Object.assign(tools, createFlowDeskNaturalLanguageRoutingTools(new Date(), localSession));
   if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
-  return { tool: tools, "chat.message": createFlowDeskNaturalLanguageChatMessageHook(new Date(), localSession) };
+  return { tool: tools, "chat.message": createFlowDeskNaturalLanguageChatMessageHook(() => new Date(), localSession) };
 };
 
 export const flowdeskOpenCodeServerPlugin = {

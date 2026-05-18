@@ -694,6 +694,70 @@ test("chat.message steering mutates message parts without hard interception fiel
   assert.equal(generalChatOutput.parts.length, 1);
 });
 
+test("chat.message steering suppresses repeated non-confirmation cards for the same session and suggestion", async () => {
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true
+  }) as ChatMessageHooks;
+  assert.ok(hooks["chat.message"]);
+
+  const firstPlanOutput = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-duplicate-plan-first",
+    sessionID: "session-duplicate-plan"
+  }, firstPlanOutput);
+  assert.equal(firstPlanOutput.parts.length, 2);
+  assert.match(JSON.stringify(firstPlanOutput), /Suggested next step: \/flowdesk-plan/);
+
+  const repeatedPlanOutput = { parts: [{ type: "text", text: "구현 계획을 다시 세워줘" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-duplicate-plan-second",
+    sessionID: "session-duplicate-plan"
+  }, repeatedPlanOutput);
+  assert.equal(repeatedPlanOutput.parts.length, 1);
+  assert.equal(/noReply|cancel|stop/.test(JSON.stringify(repeatedPlanOutput)), false);
+
+  const otherSessionOutput = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-duplicate-plan-other-session",
+    sessionID: "session-duplicate-plan-other"
+  }, otherSessionOutput);
+  assert.equal(otherSessionOutput.parts.length, 2);
+
+  const differentSuggestionOutput = { parts: [{ type: "text", text: "현재 상태와 진행상황 알려줘" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-duplicate-status",
+    sessionID: "session-duplicate-plan"
+  }, differentSuggestionOutput);
+  assert.equal(differentSuggestionOutput.parts.length, 2);
+  assert.match(JSON.stringify(differentSuggestionOutput), /Suggested next step: \/flowdesk-status/);
+});
+
+test("chat.message steering preserves repeated pending confirmation cards", async () => {
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true
+  }) as ChatMessageHooks;
+  assert.ok(hooks["chat.message"]);
+
+  const firstConfirmationOutput = { parts: [{ type: "text", text: "approved plan을 fake-runtime으로 실행 진행해" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-confirmation-card-first",
+    sessionID: "session-confirmation-card"
+  }, firstConfirmationOutput);
+  assert.equal(firstConfirmationOutput.parts.length, 2);
+  assert.match(JSON.stringify(firstConfirmationOutput), /Confirmation code: approval-plan-chat-message-confirmation-card-first/);
+
+  const repeatedConfirmationOutput = { parts: [{ type: "text", text: "approved plan을 fake-runtime으로 실행 진행해" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-confirmation-card-second",
+    sessionID: "session-confirmation-card"
+  }, repeatedConfirmationOutput);
+  const repeatedSerialized = JSON.stringify(repeatedConfirmationOutput);
+  assert.equal(repeatedConfirmationOutput.parts.length, 2);
+  assert.match(repeatedSerialized, /Confirmation code: approval-plan-chat-message-confirmation-card-second/);
+  assert.match(repeatedSerialized, /explicit approval/);
+  assert.equal(/noReply|cancel|stop/.test(repeatedSerialized), false);
+});
+
 test("server plugin can expose sandbox-only FDS-1 production-shape probe tools", async () => {
   const probeTools = createFlowDeskFds1SchemaConversionProbeTools();
   assert.deepEqual(
