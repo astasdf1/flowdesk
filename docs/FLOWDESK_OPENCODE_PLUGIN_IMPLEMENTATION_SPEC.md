@@ -163,6 +163,7 @@ Owns:
 5. OpenCode session/event observation.
 6. Translation from OpenCode context to typed core requests.
 7. User-visible blocked, clarify, status, lane observability, and recovery messages.
+8. Runtime-adapter reporting for delegated lane invocation ids, retry attempts, incomplete outputs, and aborted/inconclusive lane states.
 
 Must not own:
 
@@ -187,6 +188,7 @@ Owns:
 9. Audit event type definitions.
 10. Checkpoint/resume state machine contracts.
 11. Workflow authoring delegation contracts and typed subagent lane summaries.
+12. Delegation reliability supervisor contracts that distinguish invocation ids from continuation ids, classify incomplete and aborted lane results, bound retry attempts, and prevent failed lanes from counting as approval or verification.
 
 Reuse from `dex-conductor` where safe: `WorkflowPlan`, `WorkflowStep`, Guard contracts, usage snapshot contracts, runtime capability artifacts, execution echo validation, verification result, artifact lineage, and checkpoint contracts.
 
@@ -530,7 +532,7 @@ Release 1 schema authoring uses **FDS-1**, a conservative Zod raw-shape profile 
 7. Defaults are applied by FlowDesk after validating the request envelope; they must not rely on OpenCode or provider schema transforms.
 8. Raw JSON Schema plugin args, mixed Zod/raw args, `oneOf`, `anyOf`, `allOf`, unions, discriminated unions, recursive schemas, nullable fields, transforms, preprocessors, `refine`, `superRefine`, records, maps, sets, tuples, and provider-specific schema tricks remain unsupported unless explicitly promoted by pinned conformance.
 
-Tool registration is blocked until the OpenCode custom tool schema PoC proves FDS-1 Zod-to-OpenCode registry conversion is crash-free for every Release 1 registered tool. If FDS-1 is too broad, the conformance result must narrow this section before registration.
+FDS-1 compatibility is accepted only at the FlowDesk runtime-closed validation boundary: OpenCode may expose provider-facing schemas without `additionalProperties: false`, but FlowDesk canonical schemas and handlers must reject unknown properties before privileged behavior. Production OpenCode tool registration remains disabled until production handlers and the wider release gates are separately satisfied.
 
 Shared request envelope fields:
 
@@ -657,7 +659,7 @@ Release 1 persisted artifact schemas must be generated from these named contract
 
 Release 1 tool schemas must be authored through OpenCode's official Zod-based plugin tool API and exported to JSON Schema artifacts for review and tests. FlowDesk does not claim arbitrary JSON Schema compatibility for plugin tool args. Raw JSON Schema args, mixed Zod/raw args, unions, recursive schemas, nullable fields, transforms, and provider-specific schema tricks remain unsupported unless a pinned conformance report explicitly narrows or promotes them.
 
-Production tool registration is blocked until every registered Release 1 tool has a passing artifact for the schema conversion spike described in the schema appendix and in `OPENCODE_CONFORMANCE_PLAN.md` section 7A. If the spike narrows FDS-1, this section and the schema appendix must be updated before implementation continues.
+Production tool registration remains disabled until every registered Release 1 tool has a passing runtime-closed schema compatibility artifact, production handlers exist, and the applicable Guard, audit, dispatch, runtime, and policy gates are satisfied. Provider-facing `additionalProperties: false` emission is a documented caveat for OpenCode 1.14.40, not a production blocker by itself when FlowDesk runtime validation rejects unknown properties before execution.
 
 Generated command templates must be static. The allowed template shape is a fixed instruction to call the matching FlowDesk tool with schema-reviewed fields supplied by OpenCode command arguments or by a redacted intake reference. Templates must not include shell interpolation, arbitrary shell blocks, dynamic imports, provider calls, raw prompt persistence, or command text that widens the tool schema.
 
@@ -855,6 +857,9 @@ Minimum contract:
 7. Cancellation is best-effort unless the pinned OpenCode conformance artifact proves hard cancellation for that lane type. Audit must distinguish `cancel_requested`, `cancel_observed`, `cancel_failed`, and `hard_cancel_proven`.
 8. Delegated outputs are advisory until verified by the workflow's required validation path. A delegated result cannot widen scope, approve dispatch, suppress verification, or replace Guard.
 9. If lane state is ambiguous because telemetry is missing, delayed, lossy, or uncorrelated, FlowDesk must quarantine dependent artifacts and fall back to status, abort, retry planning, or debug export.
+10. FlowDesk must keep separate id classes for background invocation handles and continuation/session handles. A background invocation handle may be used only to retrieve or cancel that invocation's result; a continuation/session handle may be used only to continue the same lane context. Adapters that expose concrete prefixes such as `bg_*` and `ses_*` must preserve that distinction in typed records and reject cross-use before retrying.
+11. A lane result is complete only when it contains the requested deliverable or a final verdict matching the lane contract. A lane that terminates after tool calls only, returns an invocation error such as `Tool execution aborted`, or lacks a required verdict is `incomplete`, `invocation_failed`, or `abnormal_exit`; it must not count as approval, QA pass, security pass, or implementation completion.
+12. The delegation reliability supervisor may retry an invocation failure once with corrected invocation metadata, and may retry once through a fresh compatible lane route when safe and non-destructive. Retries must be recorded with a new attempt/ref and must not silently switch provider, model, or authority class unless a later release gate and Guard approve that binding.
 
 Release 1 lane behavior is limited to delegated authoring records, fake-runtime lane summaries, command/status summaries, and degraded fallback records. Any actual OpenCode subtask/model/provider lane launch requires the managed-dispatch gate: trusted binding, trusted runtime echo, sufficient telemetry, fresh usage when provider/model selection is involved, fresh provider health, Guard approval for privileged work, and durable pre-dispatch audit.
 
@@ -871,6 +876,9 @@ Minimum lane status summary fields:
 9. `log_ref` or `debug_ref`: opaque reference to a redacted summary or debug bundle, not a raw log.
 10. `failure_class`: optional value from the lane failure class list below.
 11. `safe_next_action`: portable command or bounded chat action.
+12. `invocation_ref_kind`: optional `background_invocation|continuation_session|opencode_task|unknown` when the pinned surface exposes distinct references.
+13. `retry_count`: optional non-negative integer bounded by policy.
+14. `verdict_status`: optional `present|missing|incomplete|not_required`.
 
 Lane failure classes:
 
@@ -883,14 +891,18 @@ Lane failure classes:
 7. `telemetry_unavailable`: the pinned OpenCode version does not expose enough event, hook, or status data for the lane behavior FlowDesk wanted.
 8. `cancellation_unproven`: cancellation was requested but hard cancellation was not proven.
 9. `redaction_blocked`: a lane summary or reference would contain forbidden persisted payloads.
-10. `auth_missing`: required provider authentication was not found.
-11. `auth_expired`: provider authentication appears expired or rejected.
-12. `provider_unavailable`: the provider API or service appears unavailable.
-13. `rate_limited`: a provider/account limit blocks the requested lane.
-14. `model_unavailable`: the selected model is unavailable for the provider/account.
-15. `transport_timeout`: request, stream, or chunk timeout occurred.
-16. `provider_error`: provider returned an error that can be represented only by safe class.
-17. `opencode_provider_load_failure`: OpenCode could not load the configured provider or model list.
+10. `invocation_failed`: the adapter returned an invocation/runtime failure, including an aborted tool execution, before a valid lane verdict or deliverable was produced.
+11. `incomplete_result`: the lane ran but produced only intermediate tool calls, partial output, or a response missing the required verdict/deliverable.
+12. `reference_kind_mismatch`: a background invocation reference was used as a continuation reference, a continuation reference was used for result retrieval, or another adapter-specific id class was crossed.
+13. `retry_limit_reached`: the bounded retry policy has been exhausted and the lane must degrade to direct verification, status, retry planning, or debug export.
+14. `auth_missing`: required provider authentication was not found.
+15. `auth_expired`: provider authentication appears expired or rejected.
+16. `provider_unavailable`: the provider API or service appears unavailable.
+17. `rate_limited`: a provider/account limit blocks the requested lane.
+18. `model_unavailable`: the selected model is unavailable for the provider/account.
+19. `transport_timeout`: request, stream, or chunk timeout occurred.
+20. `provider_error`: provider returned an error that can be represented only by safe class.
+21. `opencode_provider_load_failure`: OpenCode could not load the configured provider or model list.
 
 Release 1 observability surface:
 
@@ -1949,7 +1961,7 @@ docs/THREAT_MODEL.md
 
 These items are not open blockers for Release 1 documentation or scaffolding. They are explicit gates that must be resolved before the affected implementation step starts:
 
-1. **OpenCode tool schema subset:** Release 1 uses FDS-1 until conformance narrows it. Production tool registration is blocked until FDS-1 or a narrower replacement passes the custom plugin tool schema conversion PoC.
+1. **OpenCode tool schema subset:** Release 1 uses FDS-1 through FlowDesk runtime-closed validation. OpenCode provider-facing `additionalProperties: false` emission remains a caveat, while production tool registration stays disabled until production handlers and release gates are satisfied.
 2. **Npm scope:** `@flowdesk/*` is the normative implementation target for Release 1. A private organization scope requires a newer ADR before package publication.
 3. **Provider usage and health collectors:** Release 1 implements display/freshness/diagnostic contracts and fake/local fixtures. Mandatory provider-native usage collectors and provider health collectors for real dispatch or managed fallback/reselection are a Release 2 gate and must be specified before `real-opencode-dispatch` is enabled.
 4. **Reference-pack jurisdictions:** Specialist reference packs are not Release 1 scope. The first jurisdictions are a Release 4 gate and must be specified before any specialist workflow or `flowdesk_reference_search` registration.

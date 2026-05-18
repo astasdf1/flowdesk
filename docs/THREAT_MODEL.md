@@ -446,9 +446,9 @@ Mitigations:
 
 Stop condition: session, artifact, debug, or conformance data can replace authoritative workflow/checkpoint state, or any persistent store contains forbidden raw payloads.
 
-### T22: Delegation Lane Ambiguity, Hidden Authoring, and False Cancellation
+### T22: Delegation Lane Ambiguity, Hidden Authoring, False Completion, and False Cancellation
 
-Threat: delegated planning, research, review, verification, or execution lanes run without bounded concurrency, observable state, timeouts, verification, or accurate cancellation semantics, creating unbounded orchestration, hidden main-agent planning, stale decisions, undetected launch failures, or false claims that a task was cancelled.
+Threat: delegated planning, research, review, verification, or execution lanes run without bounded concurrency, observable state, timeouts, verification, reference-kind separation, complete verdict detection, or accurate cancellation semantics, creating unbounded orchestration, hidden main-agent planning, stale decisions, undetected launch failures, false approval, false completion, or false claims that a task was cancelled.
 
 Mitigations:
 
@@ -457,12 +457,14 @@ Mitigations:
 3. Guard decisions, user approval, final dispatch selection, and blocking architecture decisions must complete before dependent execution.
 4. Every lane has timeout, retry, cancellation, and failure disposition rules.
 5. Status and audit records include lane id, task ref, state, timestamps, event refs, debug refs, failure class, and safe next action when the pinned OpenCode surface makes that feasible.
-6. Lane failure classes include launch failure, missing tool, schema conversion failure, timeout, lost correlation, abnormal exit, telemetry unavailable, unproven cancellation, and redaction blocked.
-7. Audit records distinguish `cancel_requested`, `cancel_observed`, `cancel_failed`, and `hard_cancel_proven`.
-8. Delegated outputs are advisory until verified and cannot widen scope, approve dispatch, suppress verification, or replace Guard.
-9. If OpenCode cannot prove clickable or openable lane refs, FlowDesk falls back to `/flowdesk-status` and `/flowdesk-export-debug` redacted summaries.
+6. Lane failure classes include launch failure, missing tool, schema conversion failure, timeout, lost correlation, abnormal exit, telemetry unavailable, invocation failure, incomplete result, reference-kind mismatch, retry limit reached, unproven cancellation, and redaction blocked.
+7. Runtime adapters distinguish background invocation handles from continuation/session handles and reject cross-use before a retry. Adapter-specific examples such as `bg_*` and `ses_*` are normalized to typed reference kinds rather than treated as interchangeable strings.
+8. A delegated lane cannot be marked complete unless the requested deliverable or final verdict is present. Tool-only completion, `Tool execution aborted`, missing verdict, or truncated/partial output is recorded as failed or incomplete and cannot count as approval, QA pass, security pass, or implementation completion.
+9. Audit records distinguish `cancel_requested`, `cancel_observed`, `cancel_failed`, and `hard_cancel_proven`.
+10. Delegated outputs are advisory until verified and cannot widen scope, approve dispatch, suppress verification, or replace Guard.
+11. If OpenCode cannot prove clickable or openable lane refs, FlowDesk falls back to `/flowdesk-status` and `/flowdesk-export-debug` redacted summaries.
 
-Stop condition: a delegated lane can approve privileged work, widen scope, suppress verification, hide failed invocation, persist raw logs, or claim hard cancellation without conformance evidence.
+Stop condition: a delegated lane can approve privileged work, widen scope, suppress verification, hide failed invocation, treat an aborted or incomplete lane as passing review, persist raw logs, or claim hard cancellation without conformance evidence.
 
 ### T23: Agent Profile Drift, Persona-Only Specialists, and Forced Document Paths
 
@@ -526,7 +528,7 @@ Release 1 and later gated releases must include tests for the features they expo
 40. Federated shared payloads exclude raw prompts, transcripts, repo names, organization names, file paths, branch names, issue or PR titles, tool args/results, provider payloads, runtime echoes, stack traces, raw file contents, secrets, credentials, stable ids, public unsalted hashes, and prompt-derived hashes.
 41. Community score snapshots cannot make an ineligible candidate eligible, bypass Guard, reduce verification, skip approval, override usage or conformance, or block local-only operation.
 42. Session records cannot replace `.flowdesk/workflows` authoritative workflow/checkpoint state, and persistent session/conformance/debug stores exclude forbidden raw payloads.
-43. Delegation lane tests prove policy-controlled parallel limits, main-agent minimal routing, timeout handling, failure disposition, invocation failure detection where OpenCode surfaces allow it, verification before trust, and best-effort cancellation records without hard-cancellation claims.
+43. Delegation lane tests prove policy-controlled parallel limits, main-agent minimal routing, timeout handling, failure disposition, reference-kind separation, invocation failure detection where OpenCode surfaces allow it, incomplete-result detection, bounded retry behavior, verification before trust, and best-effort cancellation records without hard-cancellation claims.
 44. Lane observability tests prove status/debug summaries exclude raw prompts, transcripts, raw logs, tool args/results, provider payloads, runtime echoes, stack traces, raw file contents, and raw paths.
 45. Agent profile validation rejects forced documentation paths, persona-only roles, OMO/OMC path dependencies, missing specialist boundaries, missing output contracts, and missing verification/handoff rules.
 46. Config/policy schema tests reject release-mode escalation, automatic fallback enablement, hard no-reply/cancel enablement, provider console scraping, stale or mismatched config/policy hashes, unregistered extensions, hidden external policy refs, forbidden raw payloads, and raw paths.

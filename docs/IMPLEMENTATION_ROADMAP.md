@@ -85,7 +85,7 @@ Tasks:
 10. Add audited `critic -> reviewer` migration rule for legacy imports.
 11. Define safety terms for Guard, Hook Containment, Audit, Echo, and Conformance.
 12. Define `.flowdesk/workflows` as authoritative state and `.flowdesk/sessions` as redacted session/audit/artifact organization.
-13. Define the Delegation Runtime Contract with policy-controlled lane limits, main-agent minimal routing, timeouts, verification, lane status summaries, invocation failure classes, failure disposition, and best-effort cancellation records.
+13. Define the Delegation Runtime Contract with policy-controlled lane limits, main-agent minimal routing, timeouts, verification, lane status summaries, invocation failure classes, reference-kind separation, bounded retry disposition, incomplete-result handling, and best-effort cancellation records.
 
 Exit criteria:
 
@@ -131,7 +131,7 @@ Exit criteria:
 
 Goal: provide the first usable General-Use MVP without real dispatch.
 
-Precondition: before any production plugin tool is registered with OpenCode, the custom plugin tool schema conversion spike from Phase 4 task 11 must pass for the FDS-1 schema profile in the implementation spec. If it has not passed, Phase 3 may implement package skeletons, core contracts, static command files, and test-harness stubs only.
+Precondition: before any production plugin tool is registered with OpenCode, FDS-1 runtime-closed schema compatibility must pass and production handlers plus the applicable release gates must be satisfied. Provider-facing `additionalProperties: false` emission remains a caveat, not a blocker by itself, when FlowDesk runtime validation rejects unknown properties before execution.
 
 Pre-spike allowed work: package skeletons, TypeScript interfaces, exported JSON Schema artifacts, static command files, fixtures, and fake/test-harness stubs. Pre-spike forbidden work: production plugin tool registration, provider dispatch, actual OpenCode subtask/model/provider lane launch, or any claim that custom tool schemas are production-ready.
 
@@ -162,7 +162,7 @@ Exit criteria:
 6. Plugin tool schema compatibility tests pass for every registered tool, including crash-free conversion before provider dispatch.
 7. Release 1 uses chat as the normal UX while keeping commands available for setup, status, recovery, diagnostics, and fallback.
 8. Hook harness off mode disables managed and privileged automation and leaves safe manual fallback only.
-9. Lane failure classes are represented in workflow state and audit when possible: failed launch, missing tool, schema conversion failure, timeout, lost correlation, abnormal exit, and unproven cancellation.
+9. Lane failure classes are represented in workflow state and audit when possible: failed launch, missing tool, schema conversion failure, timeout, lost correlation, abnormal exit, invocation failure, incomplete result, reference-kind mismatch, retry limit reached, and unproven cancellation.
 10. Taxonomy, proposal, and score event schemas may be emitted in fake-runtime or guarded dry-run paths, but ranking cannot approve work and real dispatch remains disabled.
 11. `/flowdesk-doctor` blocks managed dispatch for Guard, audit, redaction, usage, provider health, policy, plugin schema, or dispatch-critical conformance failures, but may disable only chat-routed mode when the failure is chat-specific and command fallback remains safe.
 12. Release 1 provider/API/model failures are diagnostic, status, degraded-mode, or fake-runtime outcomes only and never trigger real automatic provider/model switching.
@@ -187,7 +187,7 @@ Tasks:
 7. Test real runtime model/agent binding feasibility.
 8. Test runtime echo evidence source.
 9. Test capability-discovered harness telemetry surfaces for lifecycle, progress, tool activity, permission/shell/command events, errors, cancellation, and timeout.
-10. Test subagent lane launch, task reference capture, status correlation, lane timeout, abnormal exit detection, missing tool detection, schema conversion failure detection, and status or debug reference presentation.
+10. Test subagent lane launch, task reference capture, reference-kind separation, status correlation, lane timeout, abnormal exit detection, missing tool detection, schema conversion failure detection, invocation failure classification, incomplete-result classification, bounded retry behavior, and status or debug reference presentation.
 11. Test custom plugin tool schema conversion for every registered tool because the OpenCode 1.14.40 PoC found a schema conversion crash before provider dispatch. This task is a Phase 3 precondition for production tool registration and remains in Phase 4 for full pinned-version evidence reporting.
 12. Record `opencode run` behavior as a diagnostic/smoke-test surface only. Conformance must not count nested CLI subprocess fan-out as proof of delegated lane execution, parallel multi-model orchestration, trusted model/agent binding, lane observability, cancellation, or runtime echo.
 13. Test Provider Health Snapshot modes and provider/API/model failure classes, including auth missing/expired, provider unavailable, rate limited, model unavailable, transport timeout, provider error, OpenCode provider-load failure, and telemetry ambiguous.
