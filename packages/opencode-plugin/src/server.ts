@@ -81,6 +81,8 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
         return JSON.stringify({
           pluginId: flowdeskPluginId,
           loaded: true,
+          probeRegistrationProfile: isFds1SchemaConversionProbeEnabled(options) ? "sandbox_conformance_probe_only" : "disabled",
+          productionPromotionGate: "blocked_production_opencode_registration_disabled",
           productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
           productionToolRegistration: flowdeskPluginScaffold.productionToolRegistration,
           fds1SchemaConversionSpikePassed: hasPassingFds1SchemaConversionSpike(),

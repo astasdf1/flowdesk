@@ -99,7 +99,7 @@ function commandContentFor(entry: FlowDeskCommandManifestEntryV1): string {
     `Fixture prefix: ${entry.fixturePrefix}`,
     "Mode: inert static command-file artifact.",
     "Alias mode: portable command only until conformance promotes aliases.",
-    "Safety: schema conversion evidence is missing; production registration remains blocked.",
+    "Safety: FDS-1 uses FlowDesk runtime-closed validation; production registration remains disabled.",
     "Runtime: disabled in this artifact; use FlowDesk status or doctor for safe next actions."
   ].join("\n");
 }
@@ -251,7 +251,7 @@ export function validateFlowDeskPortableCommandFileArtifact(artifact: unknown): 
     artifact.aliasMode === "portable_only_pre_conformance" ? valid() : invalid("aliasMode must remain portable-only pre-conformance"),
     artifact.generationMode === "inert_static_command_file_artifact" ? valid() : invalid("generationMode must remain inert"),
     artifact.writeMode === "not_written_pre_spike_artifact" ? valid() : invalid("writeMode must not write files pre-spike"),
-    hasPassingFds1SchemaConversionSpike() === false ? valid() : invalid("schema conversion spike must not be treated as passing"),
+    hasPassingFds1SchemaConversionSpike() === true ? valid() : invalid("FDS-1 runtime-closed schema compatibility must remain passing"),
     validateCommandContent(artifact, manifestEntry),
     authorityChecks(artifact)
   ]);
@@ -311,7 +311,7 @@ export function validateFlowDeskDesiredAliasGateArtifact(artifact: unknown): Val
     artifact.aliasGenerationMode === "blocked_until_alias_conformance_passes" ? valid() : invalid("aliasGenerationMode must remain blocked"),
     artifact.aliasWriteMode === "not_written_pre_conformance_artifact" ? valid() : invalid("aliasWriteMode must not write aliases pre-conformance"),
     artifact.requiredConformanceRef === "missing_pinned_alias_parser_conformance" ? valid() : invalid("requiredConformanceRef must remain missing before conformance passes"),
-    hasPassingFds1SchemaConversionSpike() === false ? valid() : invalid("schema conversion spike must not be treated as passing"),
+    hasPassingFds1SchemaConversionSpike() === true ? valid() : invalid("FDS-1 runtime-closed schema compatibility must remain passing"),
     authorityChecks(artifact)
   ]);
 }

@@ -19,7 +19,7 @@ import flowdeskOpenCodeServerPlugin, {
 test("server plugin exposes only an inert pre-spike diagnostic tool", async () => {
   assert.equal(flowdeskOpenCodeServerPlugin.id, "flowdesk");
   assert.equal(hasProductionOpenCodeRegistration(), false);
-  assert.equal(hasPassingFds1SchemaConversionSpike(), false);
+  assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(getFlowDeskPreSpikeProductionToolRegistry().length, 0);
 
   const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never);
@@ -33,9 +33,11 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
   const result = JSON.parse(await doctor.execute({}, undefined as never)) as Record<string, unknown>;
   assert.equal(result.pluginId, "flowdesk");
   assert.equal(result.loaded, true);
+  assert.equal(result.probeRegistrationProfile, "disabled");
+  assert.equal(result.productionPromotionGate, "blocked_production_opencode_registration_disabled");
   assert.equal(result.productionOpenCodeRegistration, false);
   assert.equal(result.productionToolRegistration, "not-implemented");
-  assert.equal(result.fds1SchemaConversionSpikePassed, false);
+  assert.equal(result.fds1SchemaConversionSpikePassed, true);
   assert.equal(result.realOpenCodeDispatch, "disabled");
   assert.equal(result.providerCall, false);
   assert.equal(result.runtimeExecution, false);
@@ -56,7 +58,7 @@ test("server plugin can expose sandbox-only FDS-1 production-shape probe tools",
   });
   assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, ...Object.keys(probeTools)]);
   assert.equal(hasProductionOpenCodeRegistration(), false);
-  assert.equal(hasPassingFds1SchemaConversionSpike(), false);
+  assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(getFlowDeskPreSpikeProductionToolRegistry().length, 0);
 
   for (const manifestEntry of FLOWDESK_RELEASE_1_COMMAND_MANIFEST) {
@@ -72,15 +74,24 @@ test("server plugin can expose sandbox-only FDS-1 production-shape probe tools",
     assert.equal(result.accepted, false);
     assert.equal(result.requestSchemaValid, true);
     assert.equal(result.responseSchemaValid, true);
-    assert.equal(result.blockedReason, "missing_passing_fds1_schema_conversion_artifact");
+    assert.equal(result.blockedReason, "production_opencode_registration_disabled");
+    assert.equal(result.registrationProfile, "sandbox_conformance_probe_only");
+    assert.equal(result.productionPromotionGate, "blocked_production_opencode_registration_disabled");
     assert.equal(result.productionRegistrationEligible, false);
     assert.equal(result.dispatchApprovalEligible, false);
     assert.equal(result.providerCall, false);
     assert.equal(result.runtimeExecution, false);
+    const invalidResult = JSON.parse(await registeredTool.execute(requestFixture.categories["invalid.unknown-property"].sample, undefined as never)) as Record<string, unknown>;
+    assert.equal(invalidResult.toolName, manifestEntry.toolName);
+    assert.equal(invalidResult.accepted, false);
+    assert.equal(invalidResult.requestSchemaValid, false);
+    assert.equal(invalidResult.blockedReason, "request_schema_invalid");
+    assert.equal(invalidResult.providerCall, false);
+    assert.equal(invalidResult.runtimeExecution, false);
   }
 });
 
-test("FDS-1 probe documents OpenCode raw-shape conversion closed-schema blocker", () => {
+test("FDS-1 probe records OpenCode provider-facing closed-schema caveat", () => {
   const probeTools = createFlowDeskFds1SchemaConversionProbeTools();
   const conversionSummaries = Object.entries(probeTools).map(([toolName, registeredTool]) => {
     const converted = tool.schema.toJSONSchema(tool.schema.object(registeredTool.args), { io: "input" }) as Record<string, unknown>;
@@ -95,7 +106,7 @@ test("FDS-1 probe documents OpenCode raw-shape conversion closed-schema blocker"
   assert.equal(conversionSummaries.length, 9);
   for (const summary of conversionSummaries) {
     assert.ok(summary.propertyCount > 0, summary.toolName);
-    assert.notEqual(summary.additionalProperties, false, `${summary.toolName} unexpectedly converted as a closed provider-facing schema`);
+    assert.equal(summary.additionalProperties ?? null, null, `${summary.toolName} unexpectedly converted as a closed provider-facing schema`);
   }
-  assert.equal(hasPassingFds1SchemaConversionSpike(), false);
+  assert.equal(hasPassingFds1SchemaConversionSpike(), true);
 });

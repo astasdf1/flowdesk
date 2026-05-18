@@ -56,7 +56,7 @@ test("portable command file artifacts are static, portable-only, and schema-back
   }
 });
 
-test("portable command file artifacts remain pre-spike and non-authorizing", () => {
+test("portable command file artifacts remain production-disabled and non-authorizing", () => {
   assert.equal(FLOWDESK_PRE_SPIKE_WRITTEN_COMMAND_FILE_REGISTRY.length, 0);
   assert.equal(getFlowDeskPreSpikeWrittenCommandFileRegistry().length, 0);
   assert.equal(getFlowDeskPreSpikeProductionCommandRegistry().length, 0);
