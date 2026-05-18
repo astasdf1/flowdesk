@@ -202,6 +202,10 @@ test("lane record conversion produces display-only summaries with opaque debug r
   assert.equal(summary.log_ref, "log-123");
   assert.deepEqual(summary.refs, ["lane-summary-123"]);
   assert.equal(validateStatusLaneSummaryV1(summary).ok, true);
+  assert.equal(validateStatusLaneSummaryV1({ ...summary, failure_class: "incomplete_result", invocation_ref_kind: "continuation_session", retry_count: 1, verdict_status: "incomplete" }).ok, true);
+  assert.equal(validateStatusLaneSummaryV1({ ...summary, failure_class: "Tool execution aborted" }).ok, false);
+  assert.equal(validateStatusLaneSummaryV1({ ...summary, invocation_ref_kind: "ses_123" }).ok, false);
+  assert.equal(validateStatusLaneSummaryV1({ ...summary, retry_count: 3 }).ok, false);
 
   const withLaneRefs = buildFlowDeskStatusResponseV1(statusInput({ request: request({ detail_level: "lane_refs" }) }));
   assert.deepEqual(withLaneRefs.lane_refs, ["lane-ref-123"]);
