@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type {
   DoctorFailureCategoryV1,
@@ -18,6 +20,7 @@ import type {
   FlowDeskProfileMutationSummaryV1
 } from "./index.js";
 import {
+  applyBootstrapWriteIntentsToDurableState,
   applyBootstrapWriteIntentsToInMemoryState,
   buildDoctorSectionResultV1,
   DOCTOR_FAILURE_CATEGORIES,
@@ -308,6 +311,47 @@ test("valid redacted Checkpoint 4 bootstrap artifacts and write intents pass", (
   assert.ok(prepared.writeIntent);
   const memoryState = applyBootstrapWriteIntentsToInMemoryState([prepared.writeIntent]);
   assert.match(memoryState.get(prepared.writeIntent?.path ?? "") ?? "", /"schema_version":"flowdesk.bootstrap_report.v1"/);
+});
+
+test("redacted bootstrap artifacts materialize durable .flowdesk bootstrap files", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-bootstrap-"));
+  try {
+    const preparedReport = prepareRedactedBootstrapArtifactWriteIntent("install-plan-123", bootstrapReport()).writeIntent;
+    const preparedHandoff = prepareRedactedBootstrapArtifactWriteIntent("install-plan-123", doctorHandoff()).writeIntent;
+    assert.ok(preparedReport);
+    assert.ok(preparedHandoff);
+
+    const result = applyBootstrapWriteIntentsToDurableState(root, [preparedReport, preparedHandoff]);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.writtenPaths, [preparedReport.path, preparedHandoff.path]);
+    assert.equal(result.bootstrapAuthority, "redacted_bootstrap_artifact");
+    assert.equal(result.productionRegistrationEligible, false);
+    assert.equal(result.providerCall, false);
+
+    const reportPath = join(root, preparedReport.path);
+    const handoffPath = join(root, preparedHandoff.path);
+    assert.equal(existsSync(reportPath), true);
+    assert.equal(JSON.parse(readFileSync(reportPath, "utf8")).schema_version, "flowdesk.bootstrap_report.v1");
+    assert.equal(JSON.parse(readFileSync(handoffPath, "utf8")).install_plan_ref, "install-plan-123");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("durable bootstrap materialization rejects forged intents before writing", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-bootstrap-invalid-"));
+  try {
+    const preparedReport = prepareRedactedBootstrapArtifactWriteIntent("install-plan-123", bootstrapReport()).writeIntent;
+    assert.ok(preparedReport);
+    const forged = { ...preparedReport, path: "../bootstrap-report.json" };
+    const result = applyBootstrapWriteIntentsToDurableState(root, [forged]);
+    assert.equal(result.ok, false);
+    assert.equal(result.writtenPaths?.length ?? 0, 0);
+    assert.equal(result.realOpenCodeDispatch, false);
+    assert.equal(result.runtimeExecution, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Checkpoint 4 validators reject unknown properties and forbidden raw values", () => {

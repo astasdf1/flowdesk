@@ -1,3 +1,5 @@
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
 import type {
   BootstrapPhaseV1,
   DisabledModeV1,
@@ -53,6 +55,18 @@ export interface FlowDeskBootstrapWriteIntent<TRecord = FlowDeskBootstrapArtifac
 export interface FlowDeskBootstrapPrepareResult<TRecord = FlowDeskBootstrapArtifactV1> extends ValidationResult {
   record?: TRecord;
   writeIntent?: FlowDeskBootstrapWriteIntent<TRecord>;
+}
+
+export interface FlowDeskBootstrapDurableApplyResult extends ValidationResult {
+  rootDir?: string;
+  writtenPaths?: string[];
+  bootstrapAuthority: "redacted_bootstrap_artifact";
+  productionRegistrationEligible: false;
+  dispatchApprovalEligible: false;
+  realOpenCodeDispatch: false;
+  actualLaneLaunch: false;
+  providerCall: false;
+  runtimeExecution: false;
 }
 
 export interface FlowDeskBootstrapTypedConfirmationBindingV1 {
@@ -131,6 +145,15 @@ const DOCTOR_CATEGORY_OUTCOMES: Record<DoctorFailureCategoryV1, DoctorFailureCat
 };
 const MUTATING_BOOTSTRAP_PHASES: readonly BootstrapPhaseV1[] = ["profile_mutation", "omo_cleanup", "command_generation", "config_scaffold"];
 const BOOTSTRAP_REPORT_REF_FIELDS = ["backup_manifest_ref", "profile_mutation_ref", "omo_cleanup_ref", "command_generation_ref", "config_scaffold_ref", "rollback_plan_ref", "rollback_result_ref", "doctor_handoff_ref", "doctor_report_ref"] as const;
+const disabledDurableBootstrapAuthority = {
+  bootstrapAuthority: "redacted_bootstrap_artifact" as const,
+  productionRegistrationEligible: false,
+  dispatchApprovalEligible: false,
+  realOpenCodeDispatch: false,
+  actualLaneLaunch: false,
+  providerCall: false,
+  runtimeExecution: false
+} as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -737,6 +760,36 @@ export function applyBootstrapWriteIntentsToInMemoryState(intents: readonly Flow
     state.set(intent.path, JSON.stringify(intent.record));
   }
   return state;
+}
+
+function resolveBootstrapTarget(rootDir: string, relativePath: string): { root: string; target: string; temp: string } {
+  const root = resolve(rootDir);
+  const target = resolve(root, relativePath);
+  const temp = resolve(root, `${relativePath}.tmp-${Date.now().toString(36)}`);
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  if (target !== root && !target.startsWith(rootPrefix)) throw new Error("bootstrap target escapes rootDir");
+  if (temp !== root && !temp.startsWith(rootPrefix)) throw new Error("bootstrap temp target escapes rootDir");
+  return { root, target, temp };
+}
+
+export function applyBootstrapWriteIntentsToDurableState(rootDir: string, intents: readonly FlowDeskBootstrapWriteIntent[]): FlowDeskBootstrapDurableApplyResult {
+  if (typeof rootDir !== "string" || rootDir.trim().length === 0) return { ...invalid("rootDir is required"), ...disabledDurableBootstrapAuthority };
+  const writtenPaths: string[] = [];
+  try {
+    const root = resolve(rootDir);
+    for (const intent of intents) {
+      const validation = validateRedactedBootstrapArtifactWriteIntent(intent);
+      if (!validation.ok) return { ...invalid(...validation.errors), writtenPaths, ...disabledDurableBootstrapAuthority };
+      const resolved = resolveBootstrapTarget(root, intent.path);
+      mkdirSync(dirname(resolved.target), { recursive: true });
+      writeFileSync(resolved.temp, JSON.stringify(intent.record), "utf8");
+      renameSync(resolved.temp, resolved.target);
+      writtenPaths.push(intent.path);
+    }
+    return { ...valid(), rootDir: root, writtenPaths, ...disabledDurableBootstrapAuthority };
+  } catch (error) {
+    return { ...invalid(error instanceof Error ? error.message : "bootstrap durable write failed"), writtenPaths, ...disabledDurableBootstrapAuthority };
+  }
 }
 
 export function redactedBootstrapRef(ref: OpaqueRef): OpaqueRef {
