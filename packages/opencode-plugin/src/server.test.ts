@@ -13,8 +13,10 @@ import {
 import flowdeskOpenCodeServerPlugin, {
   createFlowDeskFds1SchemaConversionProbeTools,
   createFlowDeskLocalNonDispatchAdapterTools,
+  flowdeskChatIntakeToolName,
   flowdeskFds1SchemaConversionProbeOption,
   flowdeskLocalNonDispatchAdapterOption,
+  flowdeskNaturalLanguageRoutingOption,
   flowdeskPreSpikeDoctorToolName
 } from "./server.js";
 
@@ -38,6 +40,30 @@ interface LocalAdapterTestResult {
   providerCall?: unknown;
   runtimeExecution?: unknown;
   actualLaneLaunch?: unknown;
+}
+
+interface NaturalLanguageRoutingTestResult {
+  ok?: unknown;
+  evaluation?: {
+    response?: {
+      ok?: unknown;
+      route_decision?: unknown;
+      safe_next_actions?: unknown[];
+      classification?: unknown;
+    };
+  };
+  routedToolName?: unknown;
+  routedToolResult?: LocalAdapterTestResult;
+  providerCall?: unknown;
+  runtimeExecution?: unknown;
+  actualLaneLaunch?: unknown;
+  fallbackAuthority?: unknown;
+  hardCancelOrNoReplyAuthority?: unknown;
+}
+
+interface ChatMessageHooks {
+  tool?: Record<string, { execute(request: unknown, context: unknown): Promise<string>; description: string; args: Record<string, unknown> }>;
+  "chat.message"?: (input: unknown, output: { parts?: unknown[] }) => Promise<void>;
 }
 
 test("server plugin exposes only an inert pre-spike diagnostic tool", async () => {
@@ -158,6 +184,113 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.equal(invalidPlanResult.handler?.ok, false);
   assert.equal(invalidPlanResult.handler?.handlerMode, "request_schema_invalid");
   assert.equal(invalidPlanResult.localState?.stateWriteApplied, false);
+});
+
+test("server plugin registers natural-language routing only when explicitly enabled", async () => {
+  const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never) as ChatMessageHooks;
+  assert.equal(defaultHooks["chat.message"], undefined);
+  assert.deepEqual(Object.keys(defaultHooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName]);
+
+  const localOnlyHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskLocalNonDispatchAdapterOption]: true
+  }) as ChatMessageHooks;
+  assert.equal(localOnlyHooks["chat.message"], undefined);
+  assert.equal(Object.keys(localOnlyHooks.tool ?? {}).includes(flowdeskChatIntakeToolName), false);
+
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true
+  }) as ChatMessageHooks;
+  assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, flowdeskChatIntakeToolName]);
+  assert.ok(hooks["chat.message"]);
+
+  const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+  assert.ok(doctor);
+  const result = JSON.parse(await doctor.execute({}, undefined as never)) as Record<string, unknown>;
+  assert.equal(result.naturalLanguageRoutingProfile, "chat_steering_command_backed_non_dispatch");
+  assert.equal(result.productionOpenCodeRegistration, false);
+  assert.equal(result.providerCall, false);
+});
+
+test("chat intake tool evaluates routing and executes local command-backed result safely", async () => {
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true
+  }) as ChatMessageHooks;
+  const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
+  assert.ok(intakeTool);
+
+  const result = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-status",
+    input_mode: "chat_routed",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-status",
+    intake_summary: "현재 상태와 진행상황 알려줘",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+
+  assert.equal(result.ok, true);
+  assert.equal(result.evaluation?.response?.route_decision, "use_command_fallback");
+  assert.deepEqual(result.evaluation?.response?.safe_next_actions, ["/flowdesk-status"]);
+  assert.equal(result.routedToolName, "flowdesk_status");
+  assert.equal(result.routedToolResult?.handler?.ok, true);
+  assert.equal(result.providerCall, false);
+  assert.equal(result.runtimeExecution, false);
+  assert.equal(result.actualLaneLaunch, false);
+  assert.equal(result.fallbackAuthority, false);
+  assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("natural-language routing reuses local adapter session with adapter tools", async () => {
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true,
+    [flowdeskLocalNonDispatchAdapterOption]: true
+  }) as ChatMessageHooks;
+  const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
+  const statusTool = hooks.tool?.flowdesk_status;
+  assert.ok(intakeTool);
+  assert.ok(statusTool);
+
+  const planResult = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-plan",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-shared",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-plan",
+    intake_summary: "구현 계획을 세워줘",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.equal(planResult.routedToolName, "flowdesk_plan");
+  assert.equal(planResult.routedToolResult?.localState?.workflowId, "workflow-nl-shared");
+
+  const statusResult = JSON.parse(await statusTool.execute({
+    schema_version: "flowdesk.status.request.v1",
+    request_id: "request-nl-shared-status",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-shared",
+    detail_level: "summary"
+  }, undefined as never)) as LocalAdapterTestResult;
+  assert.equal(statusResult.handler?.ok, true);
+  assert.equal(statusResult.handler?.response?.workflow_id, "workflow-nl-shared");
+  assert.equal(statusResult.localState?.workflowState, "ready_to_run");
+});
+
+test("chat.message steering mutates message parts without hard interception fields", async () => {
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskNaturalLanguageRoutingOption]: true
+  }) as ChatMessageHooks;
+  assert.ok(hooks["chat.message"]);
+  const output = { parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-korean-plan",
+    sessionID: "session-hook"
+  }, output);
+
+  assert.equal(output.parts.length, 2);
+  const serialized = JSON.stringify(output);
+  assert.match(serialized, /FlowDesk steering/);
+  assert.match(serialized, /flowdesk_plan|flowdesk-plan/);
+  assert.equal(/noReply|cancel|stop/.test(serialized), false);
 });
 
 test("server plugin can expose sandbox-only FDS-1 production-shape probe tools", async () => {

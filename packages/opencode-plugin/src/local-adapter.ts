@@ -56,6 +56,11 @@ export interface FlowDeskLocalNonDispatchAdapterToolResultV1 extends ValidationR
   hardCancelOrNoReplyAuthority: false;
 }
 
+export interface FlowDeskLocalNonDispatchAdapterSessionV1 {
+  state: unknown;
+  evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1;
+}
+
 interface LocalAdapterState {
   active?: FlowDeskWorkflowActiveV1;
   workflow?: FlowDeskWorkflowRecordV1;
@@ -453,7 +458,7 @@ function summarize(state: LocalAdapterState, stateWriteApplied: boolean): FlowDe
   };
 }
 
-export function createFlowDeskLocalNonDispatchAdapterSession(now = new Date()) {
+export function createFlowDeskLocalNonDispatchAdapterSession(now = new Date()): FlowDeskLocalNonDispatchAdapterSessionV1 {
   const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map() };
   return {
     state,

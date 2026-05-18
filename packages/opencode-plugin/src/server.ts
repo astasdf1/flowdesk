@@ -1,4 +1,15 @@
-import { getRelease1SchemaArtifact } from "@flowdesk/core";
+import type {
+  FlowDeskChatIntakeRequestV1,
+  FlowDeskRelease1MinimumPortableCommandName,
+  FlowDeskRelease1MinimumToolName,
+  FlowDeskToolRequestEnvelopeV1,
+  SafeNextAction
+} from "@flowdesk/core";
+import {
+  evaluateFlowDeskChatIntakeV1,
+  getFlowDeskPortableCommandToolName,
+  getRelease1SchemaArtifact
+} from "@flowdesk/core";
 import type { Plugin, PluginModule, PluginOptions } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import type { z } from "zod";
@@ -7,7 +18,7 @@ import {
   flowdeskPluginScaffold,
   hasProductionOpenCodeRegistration
 } from "./index.js";
-import { createFlowDeskLocalNonDispatchAdapterSession, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
+import { createFlowDeskLocalNonDispatchAdapterSession, type FlowDeskLocalNonDispatchAdapterSessionV1, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
 import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
   getFlowDeskRelease1HandlerReadinessSummary,
@@ -17,12 +28,148 @@ import {
 } from "./tool-stubs.js";
 
 export const flowdeskPreSpikeDoctorToolName = "flowdesk_pre_spike_doctor" as const;
+export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption = "fds1SchemaConversionProbe" as const;
 export const flowdeskLocalNonDispatchAdapterOption = "localNonDispatchAdapter" as const;
+export const flowdeskNaturalLanguageRoutingOption = "naturalLanguageRouting" as const;
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
 type FlowDeskOpenCodeToolArg = z.ZodType;
+
+interface FlowDeskChatMessageOutput {
+  parts?: unknown[];
+}
+
+const disabledAuthority = {
+  productionRegistrationEligible: false,
+  dispatchApprovalEligible: false,
+  realOpenCodeDispatch: false,
+  actualLaneLaunch: false,
+  providerCall: false,
+  runtimeExecution: false,
+  fallbackAuthority: false,
+  hardCancelOrNoReplyAuthority: false
+} as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function boundedText(value: string, fallback: string): string {
+  const trimmed = value.trim();
+  return (trimmed.length > 0 ? trimmed : fallback).slice(0, 500);
+}
+
+function safeToken(value: unknown, fallback: string): string {
+  const source = typeof value === "string" && value.length > 0 ? value : fallback;
+  const token = source.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 80);
+  return token.length > 0 ? token : fallback;
+}
+
+function commandNameFromAction(action: SafeNextAction): FlowDeskRelease1MinimumPortableCommandName | undefined {
+  return action.startsWith("/flowdesk-") && action !== "/flowdesk-explain-route" && action !== "/flowdesk-audit" ? action as FlowDeskRelease1MinimumPortableCommandName : undefined;
+}
+
+function routedToolName(actions: readonly SafeNextAction[]): FlowDeskRelease1MinimumToolName | undefined {
+  for (const action of actions) {
+    const commandName = commandNameFromAction(action);
+    if (commandName === undefined) continue;
+    const toolName = getFlowDeskPortableCommandToolName(commandName);
+    if (toolName !== undefined) return toolName;
+  }
+  return undefined;
+}
+
+function baseToolRequest(request: FlowDeskChatIntakeRequestV1, schemaVersion: string): FlowDeskToolRequestEnvelopeV1 {
+  return {
+    schema_version: schemaVersion,
+    request_id: safeToken(`${schemaVersion.split(".")[1] ?? "tool"}-${request.request_id}`, "request-chat-routed"),
+    input_mode: "chat_routed",
+    ...(request.workflow_id === undefined ? {} : { workflow_id: request.workflow_id }),
+    ...(request.session_ref === undefined ? {} : { session_ref: request.session_ref }),
+    ...(request.redacted_intake_ref === undefined ? {} : { redacted_intake_ref: request.redacted_intake_ref })
+  };
+}
+
+function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: FlowDeskChatIntakeRequestV1): unknown {
+  const summary = boundedText(request.intake_summary, "FlowDesk natural-language chat intake.");
+  if (toolName === "flowdesk_plan") {
+    return {
+      ...baseToolRequest(request, "flowdesk.plan.request.v1"),
+      goal_summary: summary,
+      scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
+      risk_hint: "ordinary Release 1 command-backed steering only"
+    };
+  }
+  if (toolName === "flowdesk_run") {
+    return {
+      ...baseToolRequest(request, "flowdesk.run.request.v1"),
+      run_mode: /dry[\s_-]*run|드라이\s*런/i.test(summary) ? "guarded-dry-run" : "fake-runtime",
+      plan_revision_id: safeToken(`plan-${request.workflow_id ?? request.request_id}`, "plan-chat-routed"),
+      step_id: safeToken(`step-${request.request_id}`, "step-chat-routed")
+    };
+  }
+  if (toolName === "flowdesk_status") {
+    return {
+      ...baseToolRequest(request, "flowdesk.status.request.v1"),
+      detail_level: "summary"
+    };
+  }
+  if (toolName === "flowdesk_doctor") {
+    return {
+      ...baseToolRequest(request, "flowdesk.doctor.request.v1"),
+      check_scope: "all",
+      profile: "test",
+      persist_report: false
+    };
+  }
+  return baseToolRequest(request, `flowdesk.${toolName.replace("flowdesk_", "")}.request.v1`);
+}
+
+function evaluateNaturalLanguageRouting(request: FlowDeskChatIntakeRequestV1, session: FlowDeskLocalNonDispatchAdapterSessionV1) {
+  const evaluation = evaluateFlowDeskChatIntakeV1({ request, chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  const toolName = evaluation.response.ok ? routedToolName(evaluation.response.safe_next_actions) : undefined;
+  const routedToolResult = toolName === undefined ? undefined : session.evaluate(toolName, routedToolRequest(toolName, request));
+  return {
+    schema_version: "flowdesk.chat_intake.routing_result.v1",
+    ok: evaluation.ok,
+    evaluation,
+    ...(toolName === undefined ? {} : { routedToolName: toolName }),
+    ...(routedToolResult === undefined ? {} : { routedToolResult }),
+    ...disabledAuthority
+  };
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) return "";
+  const direct = [value.text, value.content, value.message].filter((candidate): candidate is string => typeof candidate === "string");
+  const partText = Array.isArray(value.parts) ? value.parts.map(extractText) : [];
+  const nestedMessage = isRecord(value.message) ? [extractText(value.message)] : [];
+  return [...direct, ...partText, ...nestedMessage].filter((text) => text.length > 0).join(" ");
+}
+
+function intakeRequestFromChatMessage(input: unknown): FlowDeskChatIntakeRequestV1 {
+  const record = isRecord(input) ? input : {};
+  const requestId = safeToken(record.request_id ?? record.message_id ?? record.messageID ?? record.id, "chat-message");
+  const sessionRef = safeToken(record.session_ref ?? record.session_id ?? record.sessionID, "chat-session");
+  return {
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: `chat-${requestId}`,
+    input_mode: "chat_routed",
+    session_ref: sessionRef,
+    redacted_intake_ref: `intake-${requestId}`,
+    intake_summary: boundedText(extractText(record.message ?? record), "FlowDesk chat message."),
+    source_surface: "chat.message"
+  };
+}
+
+function steeringText(result: ReturnType<typeof evaluateNaturalLanguageRouting>): string {
+  const actions = result.evaluation.response.safe_next_actions.join(", ");
+  const routed = typeof result.routedToolName === "string" ? ` Routed local tool: ${result.routedToolName}.` : "";
+  return `FlowDesk steering: ${result.evaluation.response.user_message} Safe next actions: ${actions}.${routed}`;
+}
 
 function enumValues(values: readonly string[]): [string, ...string[]] {
   if (values.length === 0) throw new Error("FDS-1 enum field has no values");
@@ -72,8 +219,7 @@ export function createFlowDeskFds1SchemaConversionProbeTools(): Record<string, F
   );
 }
 
-export function createFlowDeskLocalNonDispatchAdapterTools(now = new Date()): Record<string, FlowDeskOpenCodeTool> {
-  const session = createFlowDeskLocalNonDispatchAdapterSession(now);
+export function createFlowDeskLocalNonDispatchAdapterTools(now = new Date(), session = createFlowDeskLocalNonDispatchAdapterSession(now)): Record<string, FlowDeskOpenCodeTool> {
   return Object.fromEntries(
     FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.map((stub) => {
       const artifact = getRelease1SchemaArtifact(stub.requestSchemaId);
@@ -96,6 +242,34 @@ export function createFlowDeskLocalNonDispatchAdapterTools(now = new Date()): Re
   );
 }
 
+export function createFlowDeskNaturalLanguageRoutingTools(now = new Date(), session = createFlowDeskLocalNonDispatchAdapterSession(now)): Record<string, FlowDeskOpenCodeTool> {
+  const artifact = getRelease1SchemaArtifact("flowdesk.chat_intake.request.v1");
+  if (artifact === undefined) throw new Error("missing FDS-1 schema artifact: flowdesk.chat_intake.request.v1");
+  const required = new Set(artifact.required);
+  const args = Object.fromEntries(
+    Object.keys(artifact.properties).map((fieldName) => [fieldName, zodForSchemaProperty("flowdesk.chat_intake.request.v1", fieldName, required.has(fieldName))])
+  ) as FlowDeskOpenCodeToolArgs;
+  return {
+    [flowdeskChatIntakeToolName]: tool({
+      description: "FlowDesk natural-language chat intake steering; command-backed only, with no provider call, real dispatch, lane launch, fallback, or hard chat control.",
+      args,
+      async execute(request) {
+        return JSON.stringify(evaluateNaturalLanguageRouting(request as unknown as FlowDeskChatIntakeRequestV1, session));
+      }
+    })
+  };
+}
+
+export function createFlowDeskNaturalLanguageChatMessageHook(now = new Date(), session = createFlowDeskLocalNonDispatchAdapterSession(now)) {
+  return async function message(input: unknown, output: FlowDeskChatMessageOutput): Promise<void> {
+    const inputRecord = isRecord(input) ? input : {};
+    const result = evaluateNaturalLanguageRouting(intakeRequestFromChatMessage({ ...inputRecord, ...output }), session);
+    if (result.evaluation.response.route_decision === "continue_chat") return;
+    if (!Array.isArray(output.parts)) output.parts = [];
+    output.parts.push({ type: "text", text: steeringText(result) });
+  };
+}
+
 function isFds1SchemaConversionProbeEnabled(options?: PluginOptions): boolean {
   return options?.[flowdeskFds1SchemaConversionProbeOption] === true;
 }
@@ -104,7 +278,12 @@ function isLocalNonDispatchAdapterEnabled(options?: PluginOptions): boolean {
   return options?.[flowdeskLocalNonDispatchAdapterOption] === true;
 }
 
+function isNaturalLanguageRoutingEnabled(options?: PluginOptions): boolean {
+  return options?.[flowdeskNaturalLanguageRoutingOption] === true;
+}
+
 const flowdeskServerPlugin: Plugin = async (_input, options) => {
+  const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession() : undefined;
   const tools: Record<string, FlowDeskOpenCodeTool> = {
     [flowdeskPreSpikeDoctorToolName]: tool({
       description: "Report FlowDesk plugin load status without enabling production tools or dispatch.",
@@ -115,6 +294,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
           loaded: true,
           probeRegistrationProfile: isFds1SchemaConversionProbeEnabled(options) ? "sandbox_conformance_probe_only" : "disabled",
           localNonDispatchAdapterProfile: isLocalNonDispatchAdapterEnabled(options) ? flowdeskLocalNonDispatchAdapterProfile : "disabled",
+          naturalLanguageRoutingProfile: isNaturalLanguageRoutingEnabled(options) ? "chat_steering_command_backed_non_dispatch" : "disabled",
           productionPromotionGate: "blocked_production_opencode_registration_disabled",
           productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
           productionToolRegistration: flowdeskPluginScaffold.productionToolRegistration,
@@ -132,8 +312,10 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
     })
   };
   if (isFds1SchemaConversionProbeEnabled(options)) Object.assign(tools, createFlowDeskFds1SchemaConversionProbeTools());
-  if (isLocalNonDispatchAdapterEnabled(options)) Object.assign(tools, createFlowDeskLocalNonDispatchAdapterTools());
-  return { tool: tools };
+  if (isLocalNonDispatchAdapterEnabled(options)) Object.assign(tools, createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession));
+  if (isNaturalLanguageRoutingEnabled(options)) Object.assign(tools, createFlowDeskNaturalLanguageRoutingTools(new Date(), localSession));
+  if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
+  return { tool: tools, "chat.message": createFlowDeskNaturalLanguageChatMessageHook(new Date(), localSession) };
 };
 
 export const flowdeskOpenCodeServerPlugin = {
