@@ -9,6 +9,7 @@ import {
 } from "./index.js";
 import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
+  getFlowDeskRelease1HandlerReadinessSummary,
   hasPassingFds1SchemaConversionSpike,
   runFlowDeskPreSpikePluginToolStub
 } from "./tool-stubs.js";
@@ -85,6 +86,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
           productionPromotionGate: "blocked_production_opencode_registration_disabled",
           productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
           productionToolRegistration: flowdeskPluginScaffold.productionToolRegistration,
+          release1HandlerReadiness: getFlowDeskRelease1HandlerReadinessSummary(),
           fds1SchemaConversionSpikePassed: hasPassingFds1SchemaConversionSpike(),
           realOpenCodeDispatch: flowdeskPluginScaffold.runtimeBoundary.realOpenCodeDispatch,
           providerCall: false,

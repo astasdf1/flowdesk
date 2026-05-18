@@ -37,6 +37,14 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
   assert.equal(result.productionPromotionGate, "blocked_production_opencode_registration_disabled");
   assert.equal(result.productionOpenCodeRegistration, false);
   assert.equal(result.productionToolRegistration, "not-implemented");
+  assert.deepEqual(result.release1HandlerReadiness, {
+    totalTools: 9,
+    diagnosticScaffoldAvailable: 1,
+    coreEvaluatorAvailable: 4,
+    schemaOnlyPending: 4,
+    productionReady: false,
+    productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
+  });
   assert.equal(result.fds1SchemaConversionSpikePassed, true);
   assert.equal(result.realOpenCodeDispatch, "disabled");
   assert.equal(result.providerCall, false);
