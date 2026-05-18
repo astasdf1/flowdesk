@@ -58,6 +58,21 @@ Conformance run artifacts default to an isolated temporary directory. Persisted 
 
 Guard, audit durability, redaction, usage, provider health, policy, plugin schema compatibility, trusted runtime binding, trusted echo, and dispatch-critical conformance failures are `dispatch_blocking` for real dispatch. Chat-hook or chat-steering failures are `chat_mode_disable` unless they also affect command-backed safety. Release 1 provider/API/model outages are diagnostic, status, degraded, or fake-runtime signals only and must not trigger real automatic provider/model switching.
 
+## Gate Resolution Queue
+
+The remaining gates must be resolved in dependency order. A later gate cannot be used to justify an earlier one, and no gate may silently enable real dispatch, fallback/reselection, hard chat cancellation, actual lane launch, or production registration outside its explicit scope.
+
+1. **Release 1 handler readiness:** prove command-backed production handlers for doctor, plan, run, status, resume, retry, abort, usage, and export-debug can validate requests, write only through scoped non-dispatch permissions, and return schema-valid redacted results while production OpenCode registration stays disabled.
+2. **Plugin schema evidence:** keep FDS-1 runtime-closed compatibility as the handler safety boundary, then collect pinned provider-facing schema evidence for OpenCode plugin tool registration, provider/model transform output, description preservation, and unknown-property rejection before execution. If provider-facing closedness remains missing/null, record whether FlowDesk-side hardening is sufficient for the selected registration profile.
+3. **Production non-dispatch registration:** enable production OpenCode registration only for command-backed non-dispatch handlers after doctor, schema, Guard, audit, policy, redaction, disabled-mode, and conformance checks pass. This gate must still reject `real-opencode-dispatch`, provider calls, actual lane launch, automatic fallback/reselection, and hard chat cancellation.
+4. **Telemetry and runtime echo harness:** before real dispatch, prove correlated event/log/hook evidence for session id, message id, command/tool id, workflow id, attempt id, selected provider/model, tool schema hash, audit refs, and failure classes. Persist only redacted references and summaries.
+5. **Single-step managed dispatch beta:** enable one low-risk real dispatch step only when trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, configured verification, and quarantine-on-ambiguity all pass.
+6. **Hard managed chat and cancellation:** prove `blocking` chat/no-reply/cancellation with e2e evidence for no duplicate assistant reply, pending tool abort, lane cleanup, and audit state transitions. Until then, chat remains steering and abort remains best-effort.
+7. **Actual delegated lane launch:** promote lane launch only after managed dispatch also proves task ref capture, reference-kind separation, incomplete-result detection, timeout/correlation handling, redacted status/debug refs, and bounded retry behavior.
+8. **Managed fallback/reselection:** keep automatic provider/model switching last. It requires every real-dispatch gate plus runtime compatibility, policy eligibility, fresh usage, fresh provider health, durable pre-dispatch audit for the new binding, a new attempt id, and explicit Guard approval.
+
+Each queue item must produce a redacted conformance artifact, a doctor-consumable compatibility result, and tests proving both the pass path and fail-closed behavior before the next gate is promoted.
+
 ## Required Evidence Areas
 
 ### 1. Plugin Loading

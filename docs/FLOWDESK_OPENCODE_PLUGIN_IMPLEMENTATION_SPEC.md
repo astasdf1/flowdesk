@@ -661,6 +661,15 @@ Release 1 tool schemas must be authored through OpenCode's official Zod-based pl
 
 Production tool registration remains disabled until every registered Release 1 tool has a passing runtime-closed schema compatibility artifact, production handlers exist, and the applicable Guard, audit, dispatch, runtime, and policy gates are satisfied. Provider-facing `additionalProperties: false` emission is a documented caveat for OpenCode 1.14.40, not a production blocker by itself when FlowDesk runtime validation rejects unknown properties before execution.
 
+Promotion order is strict:
+
+1. Release 1 production handlers are implemented and verified while OpenCode production registration remains disabled.
+2. Plugin tool schema evidence proves the pinned OpenCode plugin path, provider/model transforms, and FlowDesk runtime validation preserve the selected FDS boundary.
+3. Production OpenCode registration is enabled only for command-backed non-dispatch handlers after doctor, schema, Guard, audit, policy, redaction, and disabled-mode checks pass.
+4. Telemetry and runtime-echo conformance is proven before any real dispatch path is implemented.
+5. A single low-risk `real-opencode-dispatch` beta path is promoted only after trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, and configured verification all pass.
+6. Hard chat no-reply/cancellation, actual delegated lane launch, and automatic provider/model fallback or reselection remain separate later gates. They must not be bundled into the production-registration gate or the first real-dispatch beta gate.
+
 Generated command templates must be static. The allowed template shape is a fixed instruction to call the matching FlowDesk tool with schema-reviewed fields supplied by OpenCode command arguments or by a redacted intake reference. Templates must not include shell interpolation, arbitrary shell blocks, dynamic imports, provider calls, raw prompt persistence, or command text that widens the tool schema.
 
 ### 6.4 Runtime Dispatch

@@ -202,20 +202,31 @@ Exit criteria:
 3. Real dispatch remains disabled unless binding, echo, telemetry, fresh usage, fresh provider health, Guard approval, and durable pre-dispatch audit all pass.
 4. Managed fallback/reselection remains disabled unless all future fallback gates pass with a new attempt id and explicit Guard approval.
 
+Gate resolution order:
+
+1. Finish Release 1 command-backed product handlers while production OpenCode registration stays disabled. Handlers may write only through existing non-dispatch permissions and must preserve guarded dry-run, fake-runtime, status, recovery, usage, and debug-export boundaries.
+2. Complete provider-facing schema evidence for the plugin tool path. The current FDS-1 runtime-closed compatibility pass is sufficient for handler safety, but production registration still needs pinned evidence for OpenCode registry conversion, provider/model transform output, and any FlowDesk-side schema hardening required to preserve the runtime-closed boundary.
+3. Promote production OpenCode registration only for non-dispatch command-backed handlers after doctor, schema, Guard, audit, policy, redaction, and disabled-mode checks pass. This gate must not enable real dispatch, actual lane launch, automatic fallback/reselection, or hard chat cancellation.
+4. Add the telemetry and runtime-echo conformance harness before any real dispatch. The harness must correlate workflow id, attempt id, command/tool id, model/provider binding, tool schema hash, event refs, and audit refs without persisting raw prompts, transcripts, provider payloads, or runtime echo bodies.
+5. Promote a single low-risk managed-dispatch beta step only after trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh Provider Health Snapshot, Guard approval, durable pre-dispatch audit, and configured verification all pass.
+6. Prove hard managed chat/no-reply/cancellation separately. Until e2e evidence proves no duplicate assistant reply, pending-tool abort, lane cleanup, and audit transitions, abort remains best-effort and chat remains steering/command-backed.
+7. Promote actual delegated lane launch only after the managed-dispatch gate also proves task ref capture, reference-kind separation, incomplete-result detection, timeout/correlation handling, redacted status/debug refs, and bounded retry behavior for the pinned OpenCode surface.
+8. Keep automatic provider/model fallback or reselection last. It requires all real-dispatch gates plus runtime compatibility, policy eligibility, a new attempt id, fresh usage, fresh provider health, durable audit for the new binding, and explicit Guard approval.
+
 ## Phase 5: Managed Dispatch Beta Gate
 
 Goal: enable low-risk managed real dispatch safely.
 
 Tasks:
 
-1. Implement real `GuardApprovedDispatch` runtime path.
+1. Implement real `GuardApprovedDispatch` runtime path only after production non-dispatch registration and telemetry/echo conformance are already passing.
 2. Require trusted model/agent binding evidence.
 3. Require trusted runtime echo evidence.
-4. Require capability-discovered telemetry surfaces.
+4. Require capability-discovered telemetry surfaces with stable correlation ids.
 5. Require fresh provider-native usage and fresh Provider Health Snapshot.
 6. Require durable pre-dispatch audit.
 7. Run configured verification.
-8. Quarantine artifacts on missing evidence, failed verification, provider health failure, or event ambiguity.
+8. Quarantine artifacts on missing evidence, failed verification, provider health failure, event ambiguity, missing echo, or mismatched binding.
 
 Exit criteria:
 
