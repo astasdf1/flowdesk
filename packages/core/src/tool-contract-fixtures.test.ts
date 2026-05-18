@@ -46,7 +46,7 @@ test("FDS-1 fixtures align with registry, schema artifacts, and the inert comman
   }
 });
 
-test("FDS-1 fixture categories include valid, invalid, and redaction metadata without conversion readiness", () => {
+test("FDS-1 fixture categories include valid, invalid, and redaction metadata with runtime-closed compatibility", () => {
   for (const fixtureEntry of FLOWDESK_FDS1_FIXTURE_CATALOG) {
     assert.deepEqual(Object.keys(fixtureEntry.categories), [...FLOWDESK_FDS1_FIXTURE_CATEGORIES]);
     assert.equal(validateSchemaArtifactValue(fixtureEntry.schemaId, fixtureEntry.categories["valid.minimal"].sample).ok, true);
@@ -108,8 +108,8 @@ test("FDS-1 fixture foundation has no production registration or runtime authori
     assert.equal(fixtureEntry.actualLaneLaunch, false);
     assert.equal(fixtureEntry.providerCall, false);
     assert.equal(fixtureEntry.runtimeExecution, false);
-    assert.equal(fixtureEntry.schemaCompatibilityStatus, "blocked_missing_schema_conversion_evidence");
-    assert.equal(fixtureEntry.schemaCompatibilityReadiness, "blocked_until_fds1_conversion_spike_passes");
+    assert.equal(fixtureEntry.schemaCompatibilityStatus, "compatible_runtime_closed_validation");
+    assert.equal(fixtureEntry.schemaCompatibilityReadiness, "compatible_with_runtime_closed_validation");
   }
   for (const stub of FLOWDESK_FDS1_UNSUPPORTED_CONTROL_STUBS) {
     assert.equal(stub.productionRegistrationEligible, false);

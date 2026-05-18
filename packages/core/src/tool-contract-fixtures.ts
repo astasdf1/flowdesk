@@ -57,8 +57,8 @@ export interface FlowDeskFds1FixtureCatalogEntryV1 extends FlowDeskFds1InertAuth
   schemaKind: "tool_request" | "tool_response";
   interfaceName: string;
   diagnosticOnly: false;
-  schemaCompatibilityStatus: "blocked_missing_schema_conversion_evidence";
-  schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes";
+  schemaCompatibilityStatus: "compatible_runtime_closed_validation";
+  schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation";
   categories: Readonly<Record<FlowDeskFds1FixtureCategory, FlowDeskFds1FixtureCategoryMetadataV1>>;
 }
 
@@ -229,8 +229,8 @@ function fixtureEntry(commandEntry: FlowDeskCommandManifestEntryV1, schemaKind: 
     schemaKind,
     interfaceName: registryEntry.interfaceName,
     diagnosticOnly: false,
-    schemaCompatibilityStatus: "blocked_missing_schema_conversion_evidence",
-    schemaCompatibilityReadiness: "blocked_until_fds1_conversion_spike_passes",
+    schemaCompatibilityStatus: "compatible_runtime_closed_validation",
+    schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation",
     categories: categoryFixtures(artifact, registryEntry.schemaId),
     ...inertBoundary
   };
@@ -374,15 +374,15 @@ export function validateFlowDeskFds1FixtureCatalogEntry(entry: unknown): Validat
     registryEntry?.fixturePrefix === entry.fixturePrefix ? valid() : invalid("fixturePrefix does not align with registry"),
     registryEntry?.interfaceName === entry.interfaceName ? valid() : invalid("interfaceName does not align with registry"),
     registryEntry?.registrationStatus === "registered_minimum" ? valid() : invalid("registry entry must be a minimum registration stub"),
-    registryEntry?.toolContract?.schemaCompatibilityReadiness === "blocked_until_fds1_conversion_spike_passes" ? valid() : invalid("registry schema compatibility readiness must remain blocked"),
+    registryEntry?.toolContract?.schemaCompatibilityReadiness === "compatible_with_runtime_closed_validation" ? valid() : invalid("registry schema compatibility readiness must reflect runtime-closed compatibility"),
     commandEntry !== undefined ? valid() : invalid("commandName is not in the minimum command manifest"),
     commandEntry?.toolName === entry.toolName ? valid() : invalid("command/tool mapping does not align with manifest"),
     entry.schemaKind === "tool_request" && commandEntry?.requestSchemaId === entry.schemaId ? valid() : entry.schemaKind === "tool_response" && commandEntry?.responseSchemaId === entry.schemaId ? valid() : invalid("schemaId does not align with command manifest"),
     entry.fixtureId === `flowdesk-fds1-fixture:${entry.fixturePrefix}:${entry.schemaKind}:v1` ? valid() : invalid("fixtureId does not align with fixture prefix and schema kind"),
     entry.diagnosticOnly === false ? valid() : invalid("minimum fixture entries must not be diagnostic-only"),
     RELEASE_1_OPTIONAL_DIAGNOSTIC_TOOL_NAMES.includes(entry.toolName as never) ? invalid("optional diagnostic tools must not appear in the minimum fixture catalog") : valid(),
-    entry.schemaCompatibilityStatus === "blocked_missing_schema_conversion_evidence" ? valid() : invalid("schemaCompatibilityStatus must remain blocked"),
-    entry.schemaCompatibilityReadiness === "blocked_until_fds1_conversion_spike_passes" ? valid() : invalid("schemaCompatibilityReadiness must remain blocked"),
+    entry.schemaCompatibilityStatus === "compatible_runtime_closed_validation" ? valid() : invalid("schemaCompatibilityStatus must reflect runtime-closed compatibility"),
+    entry.schemaCompatibilityReadiness === "compatible_with_runtime_closed_validation" ? valid() : invalid("schemaCompatibilityReadiness must reflect runtime-closed compatibility"),
     exactCategories ? valid() : invalid("fixture categories must exactly match the FDS-1 required categories"),
     authorityBoundaryChecks(entry),
     ...categoryResults
