@@ -82,14 +82,19 @@ function routedToolName(actions: readonly SafeNextAction[]): FlowDeskRelease1Min
   return undefined;
 }
 
-function baseToolRequest(request: FlowDeskChatIntakeRequestV1, schemaVersion: string): FlowDeskToolRequestEnvelopeV1 {
+type FlowDeskRequestEnvelopeOptionalField = "workflow_id" | "session_ref" | "redacted_intake_ref";
+
+const chatEnvelopeOptionalFields: readonly FlowDeskRequestEnvelopeOptionalField[] = ["workflow_id", "session_ref", "redacted_intake_ref"];
+
+function baseToolRequest(request: FlowDeskChatIntakeRequestV1, schemaVersion: string, optionalFields: readonly FlowDeskRequestEnvelopeOptionalField[] = chatEnvelopeOptionalFields): FlowDeskToolRequestEnvelopeV1 {
+  const includeOptional = new Set(optionalFields);
   return {
     schema_version: schemaVersion,
     request_id: safeToken(`${schemaVersion.split(".")[1] ?? "tool"}-${request.request_id}`, "request-chat-routed"),
     input_mode: "chat_routed",
-    ...(request.workflow_id === undefined ? {} : { workflow_id: request.workflow_id }),
-    ...(request.session_ref === undefined ? {} : { session_ref: request.session_ref }),
-    ...(request.redacted_intake_ref === undefined ? {} : { redacted_intake_ref: request.redacted_intake_ref })
+    ...(includeOptional.has("workflow_id") && request.workflow_id !== undefined ? { workflow_id: request.workflow_id } : {}),
+    ...(includeOptional.has("session_ref") && request.session_ref !== undefined ? { session_ref: request.session_ref } : {}),
+    ...(includeOptional.has("redacted_intake_ref") && request.redacted_intake_ref !== undefined ? { redacted_intake_ref: request.redacted_intake_ref } : {})
   };
 }
 
@@ -119,7 +124,7 @@ function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: F
   }
   if (toolName === "flowdesk_doctor") {
     return {
-      ...baseToolRequest(request, "flowdesk.doctor.request.v1"),
+      ...baseToolRequest(request, "flowdesk.doctor.request.v1", []),
       check_scope: "all",
       profile: "test",
       persist_report: false
@@ -127,7 +132,7 @@ function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: F
   }
   if (toolName === "flowdesk_resume") {
     return {
-      ...baseToolRequest(request, "flowdesk.resume.request.v1"),
+      ...baseToolRequest(request, "flowdesk.resume.request.v1", []),
       checkpoint_id: safeToken(`checkpoint-${request.workflow_id ?? request.request_id}`, "checkpoint-chat-routed"),
       resume_mode: "status_only"
     };
@@ -148,14 +153,14 @@ function routedToolRequest(toolName: FlowDeskRelease1MinimumToolName, request: F
   }
   if (toolName === "flowdesk_usage") {
     return {
-      ...baseToolRequest(request, "flowdesk.usage.request.v1"),
+      ...baseToolRequest(request, "flowdesk.usage.request.v1", []),
       provider_family: "unknown",
       refresh: false
     };
   }
   if (toolName === "flowdesk_export_debug") {
     return {
-      ...baseToolRequest(request, "flowdesk.export_debug.request.v1"),
+      ...baseToolRequest(request, "flowdesk.export_debug.request.v1", []),
       include_sections: ["redaction_summary"],
       retention_hint: "keep_until_default_expiry"
     };

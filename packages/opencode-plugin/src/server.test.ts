@@ -274,6 +274,51 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(abort.routedToolResult?.handler?.responseSchemaValid, true);
   assert.equal(abort.providerCall, false);
   assert.equal(abort.actualLaneLaunch, false);
+
+  const resume = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-resume",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-resume",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-resume",
+    intake_summary: "resume from checkpoint",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.deepEqual(resume.evaluation?.response?.safe_next_actions, ["/flowdesk-status", "/flowdesk-resume"]);
+  assert.equal(resume.routedToolName, "flowdesk_resume");
+  assert.equal(resume.routedToolResult?.handler?.ok, true);
+  assert.equal(resume.providerCall, false);
+  assert.equal(resume.actualLaneLaunch, false);
+
+  const usage = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-usage",
+    input_mode: "chat_routed",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-usage",
+    intake_summary: "show usage quota",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.deepEqual(usage.evaluation?.response?.safe_next_actions, ["/flowdesk-usage", "/flowdesk-doctor", "/flowdesk-status"]);
+  assert.equal(usage.routedToolName, "flowdesk_usage");
+  assert.equal(usage.routedToolResult?.handler?.ok, true);
+  assert.equal(usage.providerCall, false);
+
+  const exportDebug = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-export-debug",
+    input_mode: "chat_routed",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-export-debug",
+    intake_summary: "export debug bundle",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.deepEqual(exportDebug.evaluation?.response?.safe_next_actions, ["/flowdesk-export-debug", "/flowdesk-status"]);
+  assert.equal(exportDebug.routedToolName, "flowdesk_export_debug");
+  assert.equal(exportDebug.routedToolResult?.handler?.ok, true);
+  assert.equal(exportDebug.providerCall, false);
+  assert.equal(exportDebug.runtimeExecution, false);
 });
 
 test("chat intake holds execution-like requests for confirmation before run", async () => {
