@@ -23,12 +23,13 @@ export interface FlowDeskChatRoutingEvaluationV1 extends ValidationResult {
 
 const fallbackActions = ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"] as const;
 const unsafeLaterGatePattern = /\b(real[\s_-]*(?:opencode[\s_-]*)?dispatch|realOpenCodeDispatch|actual[\s_-]*lane[\s_-]*launch|actualLaneLaunch|provider[\s_-]*(?:call|request|api)|providerCall|automatic[\s_-]*(?:fallback|reselection)|automaticFallbackOrReselection|fallback[\s_-]*(?:provider|model|authority)|fallbackAuthority|reselect(?:ion)?|hard[\s_-]*(?:cancel|stop|no[\s_-]*reply)|hardCancelOrNoReply|noReply|no[\s_-]*reply|cancel:\s*true|stop:\s*true|opencode[\s_-]*run)\b/i;
-const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve)\b/i;
+const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve)\b|(?:계획|구현)/i;
 const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this)\b/i;
 
 const commandRoutes: readonly (readonly [RegExp, readonly SafeNextAction[]])[] = [
-  [/\b(?:show|current|check|get|what(?:'s| is))\b.{0,40}\b(?:status|progress|state|checkpoint)\b|\bflowdesk-status\b/i, ["/flowdesk-status"]],
+  [/\b(?:show|current|check|get|what(?:'s| is))\b.{0,40}\b(?:status|progress|state|checkpoint)\b|\bflowdesk-status\b|(?:상태|진행상황)/i, ["/flowdesk-status"]],
   [/\b(doctor|diagnos(?:e|tic)|compatibility|health)\b/i, ["/flowdesk-doctor"]],
+  [/\b(?:run|execute|start)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:진행|실행)/i, ["/flowdesk-run", "/flowdesk-status"]],
   [/\b(resume|continue from checkpoint)\b/i, ["/flowdesk-status", "/flowdesk-resume"]],
   [/\b(retry|try again)\b/i, ["/flowdesk-status", "/flowdesk-retry"]],
   [/\b(abort|cancel workflow|stop workflow)\b/i, ["/flowdesk-status", "/flowdesk-abort"]],

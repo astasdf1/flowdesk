@@ -36,6 +36,25 @@ test("chat routing maps explicit diagnostics and recovery to portable command fa
   assert.equal(validateChatIntakeResponseV1(retry.response).ok, true);
 });
 
+test("chat routing classifies English and Korean status, plan, and fake-runtime intents", () => {
+  const status = evaluateFlowDeskChatIntakeV1({ request: request("현재 상태와 진행상황 알려줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(status.response.route_decision, "use_command_fallback");
+  assert.deepEqual(status.response.safe_next_actions, ["/flowdesk-status"]);
+
+  const plan = evaluateFlowDeskChatIntakeV1({ request: request("구현 계획을 세워줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(plan.response.classification, "managed_plan");
+  assert.deepEqual(plan.response.safe_next_actions, ["/flowdesk-plan", "/flowdesk-status"]);
+
+  const run = evaluateFlowDeskChatIntakeV1({ request: request("approved plan을 fake-runtime으로 실행 진행해"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(run.response.route_decision, "use_command_fallback");
+  assert.deepEqual(run.response.safe_next_actions, ["/flowdesk-run", "/flowdesk-status"]);
+
+  const unsafe = evaluateFlowDeskChatIntakeV1({ request: request("opencode run with actual lane launch"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.equal(unsafe.response.ok, false);
+  assert.equal(unsafe.response.safe_next_actions.includes("/flowdesk-run"), false);
+  assert.equal(validateChatIntakeResponseV1(unsafe.response).ok, true);
+});
+
 test("chat routing asks for clarification on ambiguous managed requests", () => {
   const result = evaluateFlowDeskChatIntakeV1({ request: request("maybe fix this thing"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(result.ok, true);
