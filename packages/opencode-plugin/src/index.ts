@@ -23,5 +23,6 @@ export function hasProductionOpenCodeRegistration(): false {
   return false;
 }
 
+export * from "./command-handlers.js";
 export * from "./commands.js";
 export * from "./tool-stubs.js";
