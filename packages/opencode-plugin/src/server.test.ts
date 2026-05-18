@@ -676,6 +676,16 @@ test("chat.message steering mutates message parts without hard interception fiel
   assert.match(serialized, /- \/flowdesk-status/);
   assert.equal(/noReply|cancel|stop/.test(serialized), false);
 
+  const executionOutput = { parts: [{ type: "text", text: "approved plan을 fake-runtime으로 실행 진행해" }] as unknown[] };
+  await hooks["chat.message"]({
+    messageID: "message-execution-confirmation",
+    sessionID: "session-hook-confirm"
+  }, executionOutput);
+  const executionSerialized = JSON.stringify(executionOutput);
+  assert.match(executionSerialized, /Confirmation code: approval-plan-chat-message-execution-confirmation/);
+  assert.match(executionSerialized, /explicit approval/);
+  assert.equal(/noReply|cancel|stop/.test(executionSerialized), false);
+
   const generalChatOutput = { parts: [{ type: "text", text: "오늘 날씨 이야기하자" }] as unknown[] };
   await hooks["chat.message"]({
     messageID: "message-general-chat",

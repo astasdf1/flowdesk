@@ -212,6 +212,8 @@ function steeringText(result: ReturnType<typeof evaluateNaturalLanguageRouting>)
   const response = result.evaluation.response;
   const actions = response.safe_next_actions.map((action) => action === "ask_clarification" ? "Confirm the goal or plan before FlowDesk suggests a run." : action);
   const suggestedNextStep = actions[0] ?? "/flowdesk-status";
+  const localState = isRecord(result.routedToolResult) && isRecord(result.routedToolResult.localState) ? result.routedToolResult.localState : undefined;
+  const confirmationRef = localState?.pendingConfirmationStatus === "pending" && typeof localState.pendingConfirmationRef === "string" ? localState.pendingConfirmationRef : undefined;
   const why = response.ok === false
     ? "This request needs capabilities that are not available in the safe FlowDesk mode."
     : response.route_decision === "ask_clarification"
@@ -223,6 +225,7 @@ function steeringText(result: ReturnType<typeof evaluateNaturalLanguageRouting>)
     "FlowDesk",
     `Suggested next step: ${suggestedNextStep}`,
     `Why: ${why}`,
+    ...(confirmationRef === undefined ? [] : [`Confirmation code: ${confirmationRef}`, "To continue, review the plan and reply with this confirmation code plus explicit approval."]),
     "Actions:",
     ...actions.map((action) => `- ${action}`)
   ].join("\n");
