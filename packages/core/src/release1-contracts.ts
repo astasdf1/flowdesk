@@ -212,6 +212,10 @@ export const LANE_FAILURE_CLASSES = [
   "telemetry_unavailable",
   "cancellation_unproven",
   "redaction_blocked",
+  "invocation_failed",
+  "incomplete_result",
+  "reference_kind_mismatch",
+  "retry_limit_reached",
   "auth_missing",
   "auth_expired",
   "provider_unavailable",
@@ -222,6 +226,12 @@ export const LANE_FAILURE_CLASSES = [
   "opencode_provider_load_failure"
 ] as const;
 export type LaneFailureClassV1 = (typeof LANE_FAILURE_CLASSES)[number];
+
+export const LANE_INVOCATION_REF_KINDS = ["background_invocation", "continuation_session", "opencode_task", "unknown"] as const;
+export type LaneInvocationRefKindV1 = (typeof LANE_INVOCATION_REF_KINDS)[number];
+
+export const LANE_VERDICT_STATUSES = ["present", "missing", "incomplete", "not_required"] as const;
+export type LaneVerdictStatusV1 = (typeof LANE_VERDICT_STATUSES)[number];
 
 export const HOOK_HARNESS_MODES = ["enforce", "observe", "off"] as const;
 export type HookHarnessModeV1 = (typeof HOOK_HARNESS_MODES)[number];
@@ -574,6 +584,9 @@ export interface LaneSummaryV1 {
   failure_class?: LaneFailureClassV1;
   safe_next_action: SafeNextAction;
   refs: OpaqueRef[];
+  invocation_ref_kind?: LaneInvocationRefKindV1;
+  retry_count?: number;
+  verdict_status?: LaneVerdictStatusV1;
 }
 
 export interface FlowDeskStatusLaneSummaryV1 extends LaneSummaryV1 {
@@ -749,6 +762,9 @@ export interface FlowDeskLaneRecordV1 {
   updated_at: IsoTimestamp;
   completed_at?: IsoTimestamp;
   failure_class?: LaneFailureClassV1;
+  invocation_ref_kind?: LaneInvocationRefKindV1;
+  retry_count?: number;
+  verdict_status?: LaneVerdictStatusV1;
   safe_next_action: SafeNextAction;
   refs: OpaqueRef[];
   event_refs: OpaqueRef[];

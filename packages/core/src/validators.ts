@@ -56,6 +56,8 @@ import {
   HOOK_HARNESS_MODES,
   INPUT_MODES,
   LANE_FAILURE_CLASSES,
+  LANE_INVOCATION_REF_KINDS,
+  LANE_VERDICT_STATUSES,
   LOCK_RECOVERY_STATES,
   NON_DISPATCH_PERMISSION_CLASSES,
   PERSISTED_LANE_STATES,
@@ -619,7 +621,7 @@ export function assertRetryResponseV1(value: unknown): asserts value is FlowDesk
 export function validateStatusLaneSummaryV1(value: unknown): ValidationResult {
   if (!isRecord(value)) return invalid("status lane summary must be an object");
   return combine([
-    rejectUnknownProperties(value, ["lane_id", "task_ref", "lane_class", "state", "failure_class", "safe_next_action", "refs", "workflow_id", "plan_revision_id", "attempt_id", "created_at", "started_at", "updated_at", "completed_at", "event_refs", "audit_refs", "log_ref", "debug_ref"]),
+    rejectUnknownProperties(value, ["lane_id", "task_ref", "lane_class", "state", "failure_class", "safe_next_action", "refs", "invocation_ref_kind", "retry_count", "verdict_status", "workflow_id", "plan_revision_id", "attempt_id", "created_at", "started_at", "updated_at", "completed_at", "event_refs", "audit_refs", "log_ref", "debug_ref"]),
     requireFields(value, ["lane_id", "workflow_id", "plan_revision_id", "task_ref", "lane_class", "state", "created_at", "updated_at", "safe_next_action", "refs", "event_refs", "audit_refs"]),
     validateOpaqueId(value.lane_id, "lane_id"),
     validateOpaqueId(value.workflow_id, "workflow_id"),
@@ -630,6 +632,9 @@ export function validateStatusLaneSummaryV1(value: unknown): ValidationResult {
     isEnumValue(value.state, PERSISTED_LANE_STATES) ? valid() : invalid("lane summary state is invalid or future-gated"),
     value.state === "hard_cancel_proven" ? invalid("Release 1 status lane summaries must not claim hard cancel is proven") : valid(),
     value.failure_class === undefined || isEnumValue(value.failure_class, LANE_FAILURE_CLASSES) ? valid() : invalid("failure_class is invalid"),
+    value.invocation_ref_kind === undefined || isEnumValue(value.invocation_ref_kind, LANE_INVOCATION_REF_KINDS) ? valid() : invalid("invocation_ref_kind is invalid"),
+    value.retry_count === undefined || (typeof value.retry_count === "number" && Number.isInteger(value.retry_count) && value.retry_count >= 0 && value.retry_count <= 2) ? valid() : invalid("retry_count is invalid"),
+    value.verdict_status === undefined || isEnumValue(value.verdict_status, LANE_VERDICT_STATUSES) ? valid() : invalid("verdict_status is invalid"),
     isEnumValue(value.safe_next_action, SAFE_NEXT_ACTIONS) ? valid() : invalid("safe_next_action is invalid"),
     validateStringArray(value.refs, "refs", undefined, 20),
     validateStringArray(value.event_refs, "event_refs", undefined, 20),
@@ -1095,6 +1100,9 @@ export function validateLaneRecordV1(value: unknown): ValidationResult {
     validateStringArray(value.event_refs, "event_refs"),
     validateStringArray(value.audit_refs, "audit_refs"),
     value.debug_ref === undefined ? valid() : validateOpaqueRef(value.debug_ref, "debug_ref"),
+    value.invocation_ref_kind === undefined || isEnumValue(value.invocation_ref_kind, LANE_INVOCATION_REF_KINDS) ? valid() : invalid("invocation_ref_kind is invalid"),
+    value.retry_count === undefined || (typeof value.retry_count === "number" && Number.isInteger(value.retry_count) && value.retry_count >= 0 && value.retry_count <= 2) ? valid() : invalid("retry_count is invalid"),
+    value.verdict_status === undefined || isEnumValue(value.verdict_status, LANE_VERDICT_STATUSES) ? valid() : invalid("verdict_status is invalid"),
     isEnumValue(value.safe_next_action, SAFE_NEXT_ACTIONS) ? valid() : invalid("safe_next_action is invalid")
   ]);
 }

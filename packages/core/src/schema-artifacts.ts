@@ -1,4 +1,4 @@
-import { DOCTOR_FAILURE_CATEGORIES, HOOK_HARNESS_ATTEMPT_KINDS, HOOK_HARNESS_CAPABILITIES, HOOK_HARNESS_DECISIONS, HOOK_HARNESS_MODES, INPUT_MODES, SAFE_NEXT_ACTIONS, TOOL_STATUSES } from "./release1-contracts.js";
+import { DOCTOR_FAILURE_CATEGORIES, HOOK_HARNESS_ATTEMPT_KINDS, HOOK_HARNESS_CAPABILITIES, HOOK_HARNESS_DECISIONS, HOOK_HARNESS_MODES, INPUT_MODES, LANE_FAILURE_CLASSES, LANE_INVOCATION_REF_KINDS, LANE_VERDICT_STATUSES, SAFE_NEXT_ACTIONS, TOOL_STATUSES } from "./release1-contracts.js";
 import { RELEASE_1_SCHEMA_REGISTRY } from "./schema-registry.js";
 
 export type Release1JsonSchemaPropertyType = "string" | "number" | "boolean" | "array" | "object";
@@ -125,21 +125,21 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.attempt_record.v1": ["step_id", "state_at_end", "guard_decision_ref", "non_dispatch_permission_ref", "command_shape_hash", "usage_snapshot_ref", "provider_health_snapshot_ref", "runtime_capability_ref", "verification_ref", "outcome_audit_ref", "failure_category"],
   "flowdesk.checkpoint_record.v1": ["attempt_id", "current_step_id"],
   "flowdesk.active_attempt_lock.v1": ["heartbeat_at"],
-  "flowdesk.lane_record.v1": ["plan_revision_id", "attempt_id", "started_at", "completed_at", "failure_class", "debug_ref"],
+  "flowdesk.lane_record.v1": ["plan_revision_id", "attempt_id", "started_at", "completed_at", "failure_class", "invocation_ref_kind", "retry_count", "verdict_status", "debug_ref"],
   "flowdesk.audit_event.v1": ["workflow_id", "attempt_id", "step_id", "policy_ref", "decision_ref"],
   "flowdesk.audit_record.v1": ["event_id", "workflow_id", "attempt_id", "step_id", "checkpoint_id", "actor_class", "policy_ref", "decision_ref"],
   "flowdesk.debug_export_manifest.v1": ["workflow_id", "session_ref", "deletion_proof_ref", "partial_deletion_warning"],
   "flowdesk.audit_ref_summary.v1": ["workflow_id", "attempt_id"],
   "flowdesk.conformance_runtime_metadata.v1": ["opencode_commit"],
   "flowdesk.status_summary.v1": ["current_step_id", "blocker_summary", "usage_summary_ref", "provider_health_summary_ref", "checkpoint_id", "debug_ref"],
-  "flowdesk.lane_summary.v1": ["attempt_id", "started_at", "completed_at", "failure_class", "log_ref", "debug_ref"],
+  "flowdesk.lane_summary.v1": ["attempt_id", "started_at", "completed_at", "failure_class", "invocation_ref_kind", "retry_count", "verdict_status", "log_ref", "debug_ref"],
   "flowdesk.verification_summary.v1": ["attempt_id", "failure_category"],
   "flowdesk.policy_pack.v1": ["retention_override", "usage_policy_override", "provider_health_policy_override", "hook_policy_override"],
   "flowdesk.non_dispatch_permission.v1": ["workflow_id", "audit_ref"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {
-  if (fieldName === "status" || fieldName === "freshness") return "string";
+  if (fieldName === "status" || fieldName === "freshness" || fieldName === "verdict_status") return "string";
   if (fieldName.startsWith("is_") || fieldName.startsWith("allow_") || fieldName.startsWith("requires_") || fieldName.endsWith("_eligible") || fieldName.endsWith("_enabled") || fieldName.endsWith("_authorized") || fieldName.endsWith("_bypassed") || fieldName.endsWith("_applied") || fieldName === "ok" || fieldName === "refresh" || fieldName === "unrelated_profile_mutation" || fieldName === "omitted_legacy_runtime_imports") return "boolean";
   if (fieldName.endsWith("_count") || fieldName === "priority" || fieldName === "freshness_ttl" || fieldName === "byte_count" || fieldName === "file_count") return "number";
   if (fieldName.endsWith("s") || fieldName.endsWith("_refs") || fieldName.endsWith("_hashes") || fieldName === "safe_next_actions" || fieldName === "lane_refs" || fieldName === "uncertainty_flags" || fieldName === "include_sections" || fieldName === "diagnostic_observations") return "array";
@@ -156,6 +156,8 @@ function propertyArtifact(fieldName: string): Release1JsonSchemaPropertyArtifact
     ...(fieldName === "attempt_kind" ? { enum: HOOK_HARNESS_ATTEMPT_KINDS } : {}),
     ...(fieldName === "requested_capability" ? { enum: HOOK_HARNESS_CAPABILITIES } : {}),
     ...(fieldName === "decision" ? { enum: HOOK_HARNESS_DECISIONS } : {}),
+    ...(fieldName === "invocation_ref_kind" ? { enum: LANE_INVOCATION_REF_KINDS } : {}),
+    ...(fieldName === "verdict_status" ? { enum: LANE_VERDICT_STATUSES } : {}),
     ...(type === "string" && (fieldName.endsWith("_id") || fieldName.endsWith("_ref") || fieldName.endsWith("_hash")) ? { maxLength: 128 } : {}),
     ...(type === "string" && (fieldName.includes("summary") || fieldName === "user_message" || fieldName === "safe_remediation" || fieldName === "reason") ? { maxLength: 500 } : {}),
     ...(fieldName === "safe_next_actions" ? { maxItems: 8, enum: SAFE_NEXT_ACTIONS } : {}),
@@ -172,6 +174,7 @@ function schemaArtifact(schemaId: string): Release1JsonSchemaArtifact {
   const properties = Object.fromEntries(fieldNames.map((fieldName) => [fieldName, propertyArtifact(fieldName)]));
   if (schemaId.endsWith(".response.v1") && properties.status !== undefined) properties.status = { ...properties.status, type: "string", enum: TOOL_STATUSES };
   if (schemaId === "flowdesk.doctor_section_result.v1" && properties.category !== undefined) properties.category = { ...properties.category, type: "string", enum: DOCTOR_FAILURE_CATEGORIES };
+  if ((schemaId === "flowdesk.lane_record.v1" || schemaId === "flowdesk.lane_summary.v1") && properties.failure_class !== undefined) properties.failure_class = { ...properties.failure_class, type: "string", enum: LANE_FAILURE_CLASSES };
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: schemaId,
