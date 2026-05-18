@@ -74,8 +74,8 @@ function resultBase(): Pick<FlowDeskRelease1BootstrapInstallResultV1, "bootstrap
   return { bootstrapArtifactsWritten: 0, commandFilesWritten: 0, aliasFilesWritten: 0, ...disabledBootstrapInstallAuthority };
 }
 
-function expectedTypedPhrase(targetProfileRef: string, installPlanId: string): string {
-  return `install FlowDesk release1 ${targetProfileRef} ${installPlanId}`;
+function expectedTypedPhrase(targetProfileRef: string, profileRootRef: string, confirmationRef: string, installPlanId: string): string {
+  return `install FlowDesk release1 ${targetProfileRef} ${profileRootRef} ${confirmationRef} ${installPlanId}`;
 }
 
 function safeHash(value: string): string {
@@ -112,7 +112,7 @@ function validateRequest(request: FlowDeskRelease1BootstrapInstallRequestV1, art
     if (confirmation.installPlanRef !== artifactIds.installPlanId) errors.push("typed confirmation must bind install plan");
     if (confirmation.rollbackPlanRef !== artifactIds.rollbackPlanId) errors.push("typed confirmation must bind rollback plan");
     if (confirmation.actorClass !== "user") errors.push("typed confirmation actor must be user");
-    if (confirmation.typedPhrase !== expectedTypedPhrase(request.targetProfileRef, artifactIds.installPlanId)) errors.push("typed confirmation phrase is invalid");
+    if (confirmation.typedPhrase !== expectedTypedPhrase(request.targetProfileRef, derivedProfileRootRef, confirmation.confirmationRef, artifactIds.installPlanId)) errors.push("typed confirmation phrase is invalid");
     const expiresAtMs = Date.parse(confirmation.expiresAt);
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now.getTime()) errors.push("typed confirmation is expired or invalid");
   }

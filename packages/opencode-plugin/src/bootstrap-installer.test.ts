@@ -7,15 +7,17 @@ import { FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES } from "@flowdesk/cor
 import { flowDeskBootstrapProfileRootRef, installFlowDeskRelease1Bootstrap } from "./index.js";
 
 function typedConfirmation(targetProfileRef: string, profileRootDir: string, suffix: string) {
+  const confirmationRef = `confirmation-release1-${suffix}`;
+  const profileRootRef = flowDeskBootstrapProfileRootRef(profileRootDir);
   return {
-    confirmationRef: `confirmation-release1-${suffix}`,
+    confirmationRef,
     targetProfileRef,
-    profileRootRef: flowDeskBootstrapProfileRootRef(profileRootDir),
+    profileRootRef,
     installPlanRef: `install-plan-${targetProfileRef}`,
     rollbackPlanRef: `rollback-plan-${targetProfileRef}`,
     expiresAt: "2026-05-19T00:10:00.000Z",
     actorClass: "user" as const,
-    typedPhrase: `install FlowDesk release1 ${targetProfileRef} install-plan-${targetProfileRef}`
+    typedPhrase: `install FlowDesk release1 ${targetProfileRef} ${profileRootRef} ${confirmationRef} install-plan-${targetProfileRef}`
   };
 }
 
@@ -160,7 +162,11 @@ test("Release 1 bootstrap installer consumes successful confirmations once", () 
       profileRootDir: secondProfileRoot,
       durableStateRootDir: secondDurableRoot,
       targetProfileRef: "profile-consume",
-      typedConfirmation: { ...confirmation, profileRootRef: flowDeskBootstrapProfileRootRef(secondProfileRoot) },
+      typedConfirmation: {
+        ...confirmation,
+        profileRootRef: flowDeskBootstrapProfileRootRef(secondProfileRoot),
+        typedPhrase: `install FlowDesk release1 profile-consume ${flowDeskBootstrapProfileRootRef(secondProfileRoot)} ${confirmation.confirmationRef} install-plan-profile-consume`
+      },
       now: new Date("2026-05-19T00:00:00.000Z")
     });
     assert.equal(replay.ok, false);
