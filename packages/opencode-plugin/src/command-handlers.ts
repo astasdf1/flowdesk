@@ -34,7 +34,7 @@ import {
   validateDoctorRequestV1,
   validateSchemaArtifactValue
 } from "@flowdesk/core";
-import { getFlowDeskRelease1HandlerReadiness } from "./tool-stubs.js";
+import { getFlowDeskRelease1HandlerReadiness, getFlowDeskRelease1ProductionReadinessSummary } from "./tool-stubs.js";
 
 export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "command_backed_diagnostic_handler" | "missing_evaluator_input" | "request_schema_invalid" | "schema_only_pending";
 
@@ -144,14 +144,15 @@ function doctorSectionFor(category: DoctorFailureCategoryV1, request: FlowDeskDo
   const runId = safeDiagnosticId("doctor-run", request);
   const section: DoctorSectionResultV1["section"] = category === "degraded_mode_warning" ? "provider_usage_readiness" : category === "informational" && request.check_scope === "policy" ? "policy_project_safety" : category === "informational" ? "migration_cleanup" : "opencode_plugin_compatibility";
   const outcome = getDoctorFailureCategoryOutcomeV1(category);
+  const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   return {
     schema_version: "flowdesk.doctor_section_result.v1" as const,
     run_id: runId,
     section,
     category,
-    summary: category === "dispatch_blocking" ? "FlowDesk Release 1 keeps real dispatch, lane launch, managed fallback, and hard chat authority disabled." : category === "degraded_mode_warning" ? "FlowDesk reports provider usage and health as diagnostic-only unless fresh official evidence is available." : "FlowDesk doctor completed a redacted diagnostic scaffold check without production mutation.",
+    summary: category === "dispatch_blocking" ? `FlowDesk Release 1 production readiness remains blocked by ${productionReadiness.blockedChecks} non-dispatch prerequisite checks.` : category === "degraded_mode_warning" ? "FlowDesk reports provider usage and health as diagnostic-only unless fresh official evidence is available." : "FlowDesk doctor completed a redacted diagnostic scaffold check without production mutation.",
     safe_next_actions: [...outcome.safe_next_actions],
-    refs: [`doctor-${category}-ref`],
+    refs: [`doctor-${category}-ref`, `production-readiness-blocked-${productionReadiness.blockedChecks}`],
     redaction_version: "redaction-v1"
   };
 }

@@ -445,6 +445,8 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
   assert.equal(result.coreEvaluationOk, true);
   const response = result.response as FlowDeskDoctorResponseV1;
   assert.equal(response.schema_version, "flowdesk.doctor.response.v1");
+  assert.match(response.doctor_results[0]?.summary ?? "", /production readiness remains blocked/);
+  assert.ok(response.doctor_results[0]?.refs.some((ref) => ref.startsWith("production-readiness-blocked-")));
   assert.equal(response.provider_health_summary.dispatchability, "non_dispatchable");
   assert.deepEqual(response.disabled_modes, ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"]);
   assert.equal(JSON.stringify(response).includes("provider_payload"), false);
