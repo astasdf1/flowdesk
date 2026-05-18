@@ -12,9 +12,33 @@ import {
 } from "./index.js";
 import flowdeskOpenCodeServerPlugin, {
   createFlowDeskFds1SchemaConversionProbeTools,
+  createFlowDeskLocalNonDispatchAdapterTools,
   flowdeskFds1SchemaConversionProbeOption,
+  flowdeskLocalNonDispatchAdapterOption,
   flowdeskPreSpikeDoctorToolName
 } from "./server.js";
+
+interface LocalAdapterTestResult {
+  adapterProfile?: unknown;
+  handler?: {
+    ok?: unknown;
+    handlerMode?: unknown;
+    response?: {
+      status?: unknown;
+      plan_revision_id?: unknown;
+      workflow_id?: unknown;
+      workflow_state?: unknown;
+    };
+  };
+  localState?: {
+    stateWriteApplied?: unknown;
+    workflowId?: unknown;
+    workflowState?: unknown;
+  };
+  providerCall?: unknown;
+  runtimeExecution?: unknown;
+  actualLaneLaunch?: unknown;
+}
 
 test("server plugin exposes only an inert pre-spike diagnostic tool", async () => {
   assert.equal(flowdeskOpenCodeServerPlugin.id, "flowdesk");
@@ -34,6 +58,7 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
   assert.equal(result.pluginId, "flowdesk");
   assert.equal(result.loaded, true);
   assert.equal(result.probeRegistrationProfile, "disabled");
+  assert.equal(result.localNonDispatchAdapterProfile, "disabled");
   assert.equal(result.productionPromotionGate, "blocked_production_opencode_registration_disabled");
   assert.equal(result.productionOpenCodeRegistration, false);
   assert.equal(result.productionToolRegistration, "not-implemented");
@@ -71,6 +96,68 @@ test("server plugin exposes only an inert pre-spike diagnostic tool", async () =
   assert.equal(result.actualLaneLaunch, false);
   assert.equal(result.fallbackAuthority, false);
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("server plugin can expose local non-dispatch command-backed tools", async () => {
+  const localTools = createFlowDeskLocalNonDispatchAdapterTools(new Date("2026-05-17T00:00:00.000Z"));
+  assert.deepEqual(
+    Object.keys(localTools),
+    FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName)
+  );
+
+  const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+    [flowdeskLocalNonDispatchAdapterOption]: true
+  });
+  assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, ...Object.keys(localTools)]);
+  assert.equal(hasProductionOpenCodeRegistration(), false);
+
+  const planFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_plan" && entry.schemaKind === "tool_request");
+  const statusFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_status" && entry.schemaKind === "tool_request");
+  const runFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_run" && entry.schemaKind === "tool_request");
+  assert.ok(planFixture);
+  assert.ok(statusFixture);
+  assert.ok(runFixture);
+
+  const planTool = hooks.tool?.flowdesk_plan;
+  const statusTool = hooks.tool?.flowdesk_status;
+  const runTool = hooks.tool?.flowdesk_run;
+  assert.ok(planTool);
+  assert.ok(statusTool);
+  assert.ok(runTool);
+
+  const planResult = JSON.parse(await planTool.execute({ ...planFixture.categories["valid.minimal"].sample, request_id: "request-local", workflow_id: "workflow-local" }, undefined as never)) as LocalAdapterTestResult;
+  assert.equal(planResult.adapterProfile, "local_non_dispatch_command_adapter");
+  assert.equal(planResult.handler?.ok, true);
+  assert.equal(planResult.handler?.handlerMode, "command_backed_core_evaluator");
+  assert.equal(planResult.handler?.response?.status, "ready");
+  assert.equal(planResult.localState?.stateWriteApplied, true);
+  assert.equal(planResult.localState?.workflowId, "workflow-local");
+  assert.equal(planResult.providerCall, false);
+  assert.equal(planResult.runtimeExecution, false);
+  assert.equal(planResult.actualLaneLaunch, false);
+
+  const runResult = JSON.parse(await runTool.execute({ ...runFixture.categories["valid.minimal"].sample, request_id: "request-local-run", workflow_id: "workflow-local", plan_revision_id: planResult.handler?.response?.plan_revision_id, run_mode: "fake-runtime", step_id: "step-local" }, undefined as never)) as LocalAdapterTestResult;
+  assert.equal(runResult.handler?.ok, true);
+  assert.equal(runResult.handler?.response?.status, "fake_runtime_complete");
+  assert.equal(runResult.localState?.stateWriteApplied, true);
+  assert.equal(runResult.localState?.workflowState, "complete");
+  assert.equal(runResult.providerCall, false);
+  assert.equal(runResult.runtimeExecution, false);
+  assert.equal(runResult.actualLaneLaunch, false);
+
+  const statusResult = JSON.parse(await statusTool.execute({ ...statusFixture.categories["valid.minimal"].sample, request_id: "request-local-status", workflow_id: "workflow-local" }, undefined as never)) as LocalAdapterTestResult;
+  assert.equal(statusResult.handler?.ok, true);
+  assert.equal(statusResult.handler?.response?.workflow_id, "workflow-local");
+  assert.equal(statusResult.handler?.response?.workflow_state, "complete");
+  assert.equal(statusResult.localState?.workflowState, "complete");
+  assert.equal(statusResult.providerCall, false);
+  assert.equal(statusResult.runtimeExecution, false);
+  assert.equal(statusResult.actualLaneLaunch, false);
+
+  const invalidPlanResult = JSON.parse(await planTool.execute(planFixture.categories["invalid.unknown-property"].sample, undefined as never)) as LocalAdapterTestResult;
+  assert.equal(invalidPlanResult.handler?.ok, false);
+  assert.equal(invalidPlanResult.handler?.handlerMode, "request_schema_invalid");
+  assert.equal(invalidPlanResult.localState?.stateWriteApplied, false);
 });
 
 test("server plugin can expose sandbox-only FDS-1 production-shape probe tools", async () => {

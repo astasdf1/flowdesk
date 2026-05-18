@@ -7,6 +7,7 @@ import {
   flowdeskPluginScaffold,
   hasProductionOpenCodeRegistration
 } from "./index.js";
+import { createFlowDeskLocalNonDispatchAdapterSession, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
 import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
   getFlowDeskRelease1HandlerReadinessSummary,
@@ -17,6 +18,7 @@ import {
 
 export const flowdeskPreSpikeDoctorToolName = "flowdesk_pre_spike_doctor" as const;
 export const flowdeskFds1SchemaConversionProbeOption = "fds1SchemaConversionProbe" as const;
+export const flowdeskLocalNonDispatchAdapterOption = "localNonDispatchAdapter" as const;
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
@@ -70,8 +72,36 @@ export function createFlowDeskFds1SchemaConversionProbeTools(): Record<string, F
   );
 }
 
+export function createFlowDeskLocalNonDispatchAdapterTools(now = new Date()): Record<string, FlowDeskOpenCodeTool> {
+  const session = createFlowDeskLocalNonDispatchAdapterSession(now);
+  return Object.fromEntries(
+    FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.map((stub) => {
+      const artifact = getRelease1SchemaArtifact(stub.requestSchemaId);
+      if (artifact === undefined) throw new Error(`missing FDS-1 schema artifact: ${stub.requestSchemaId}`);
+      const required = new Set(artifact.required);
+      const args = Object.fromEntries(
+        Object.keys(artifact.properties).map((fieldName) => [fieldName, zodForSchemaProperty(stub.requestSchemaId, fieldName, required.has(fieldName))])
+      ) as FlowDeskOpenCodeToolArgs;
+      return [
+        stub.toolName,
+        tool({
+          description: `FlowDesk local non-dispatch command adapter for ${stub.toolName}; no provider call, real dispatch, or lane launch.`,
+          args,
+          async execute(request) {
+            return JSON.stringify(session.evaluate(stub.toolName, request));
+          }
+        })
+      ];
+    })
+  );
+}
+
 function isFds1SchemaConversionProbeEnabled(options?: PluginOptions): boolean {
   return options?.[flowdeskFds1SchemaConversionProbeOption] === true;
+}
+
+function isLocalNonDispatchAdapterEnabled(options?: PluginOptions): boolean {
+  return options?.[flowdeskLocalNonDispatchAdapterOption] === true;
 }
 
 const flowdeskServerPlugin: Plugin = async (_input, options) => {
@@ -84,6 +114,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
           pluginId: flowdeskPluginId,
           loaded: true,
           probeRegistrationProfile: isFds1SchemaConversionProbeEnabled(options) ? "sandbox_conformance_probe_only" : "disabled",
+          localNonDispatchAdapterProfile: isLocalNonDispatchAdapterEnabled(options) ? flowdeskLocalNonDispatchAdapterProfile : "disabled",
           productionPromotionGate: "blocked_production_opencode_registration_disabled",
           productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
           productionToolRegistration: flowdeskPluginScaffold.productionToolRegistration,
@@ -101,6 +132,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
     })
   };
   if (isFds1SchemaConversionProbeEnabled(options)) Object.assign(tools, createFlowDeskFds1SchemaConversionProbeTools());
+  if (isLocalNonDispatchAdapterEnabled(options)) Object.assign(tools, createFlowDeskLocalNonDispatchAdapterTools());
   return { tool: tools };
 };
 
