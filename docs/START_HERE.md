@@ -12,11 +12,14 @@ Implementation decisions use these documents as the normative set:
 2. `schemas/RELEASE_1_TOOL_CONTRACTS.md`
 3. `adr/0001-opencode-plugin-first.md`
 4. `IMPLEMENTATION_ROADMAP.md`
-5. `OPENCODE_CONFORMANCE_PLAN.md`
-6. `THREAT_MODEL.md`
-7. `USER_MANUAL.md`
+5. `PROGRESS_SNAPSHOT.md`
+6. `OPENCODE_CONFORMANCE_PLAN.md`
+7. `THREAT_MODEL.md`
+8. `USER_MANUAL.md`
 
 If these documents conflict, the implementation specification wins unless a newer ADR explicitly changes the decision.
+
+`PROGRESS_SNAPSHOT.md` is the required status tracker. Update it whenever implementation status, release gates, blockers, conformance evidence, user-facing readiness, or critical review priorities change. If a work session changes nothing that affects progress, explicitly state that the snapshot was checked and did not need an update.
 
 ## Background Documents
 
@@ -30,6 +33,8 @@ They are not normative for FlowDesk implementation identity, package names, proj
 ## Current Implementation Target
 
 Release 1 is a **General-Use MVP** for ordinary OpenCode users. Natural-language chat is the primary UX. FlowDesk routes accepted chat requests into guarded command-backed workflows when OpenCode 1.14.40 conformance evidence supports safe mutation/throw behavior.
+
+Current planning update: FlowDesk must not use broad hidden prefix injection to force most chat through FlowDesk. Chat routing is conservative: ordinary chat is left alone, likely FlowDesk-related work may receive a visible suggestion, explicit FlowDesk requests may enter command-backed workflows, and later-gate unsafe requests are routed to safe alternatives. Execution-like chat requires confirmation before guarded dry-run or fake-runtime behavior.
 
 Release 1 provider/API/model outage handling is diagnostic only. FlowDesk may show provider health, usage readiness, degraded status, fake-runtime output, and safe next actions, but it must not automatically switch providers or models.
 

@@ -6,6 +6,10 @@ This folder contains FlowDesk planning and design documents.
 
 This file lists the main FlowDesk documents without imposing an agent-specific reading path.
 
+## Progress Tracking Requirement
+
+`PROGRESS_SNAPSHOT.md` is the required progress tracker for implementation status. Every non-trivial work session must check it before concluding and update it when code, tests, docs, packaging, installer behavior, conformance evidence, release gates, blockers, or user-facing readiness changes. If no progress fields changed, the final response must explicitly state that the progress snapshot was checked and did not need an update.
+
 ## Document Authority
 
 Normative implementation documents:
@@ -15,9 +19,10 @@ Normative implementation documents:
 3. `schemas/RELEASE_1_TOOL_CONTRACTS.md`
 4. `adr/0001-opencode-plugin-first.md`
 5. `IMPLEMENTATION_ROADMAP.md`
-6. `OPENCODE_CONFORMANCE_PLAN.md`
-7. `THREAT_MODEL.md`
-8. `USER_MANUAL.md`
+6. `PROGRESS_SNAPSHOT.md`
+7. `OPENCODE_CONFORMANCE_PLAN.md`
+8. `THREAT_MODEL.md`
+9. `USER_MANUAL.md`
 
 User-facing safety document:
 

@@ -6,9 +6,15 @@ This repository is the FlowDesk OpenCode plugin project.
 
 For product and implementation context, use the documentation under `docs/`. The implementation specification is the primary contract when documents conflict unless a newer ADR explicitly changes the decision. This file is not a mandatory traversal path for generated FlowDesk agents.
 
+## Progress Tracking Requirement
+
+`docs/PROGRESS_SNAPSHOT.md` is the required progress tracker for this repository. Every non-trivial work session must check it before concluding and update it when code, tests, docs, packaging, installer behavior, conformance evidence, release gates, blockers, or user-facing readiness changes. If no progress fields changed, the final response must explicitly say the progress snapshot was checked and did not need an update.
+
 ## Current Target
 
 Release 1 is a general-use MVP for ordinary OpenCode users. Natural-language chat is the primary UX, routed into guarded command-backed workflows. Commands are setup, status, recovery, diagnostics, and fallback controls, not the main way users should work.
+
+Planning update: do not implement broad hidden OMO-style prompt/prefix injection. Release 1 chat routing must use conservative, transparent intent handling: leave general chat alone, show visible FlowDesk suggestions for likely workflow-worthy requests, route only explicit/high-confidence FlowDesk requests into command-backed workflows, and require confirmation before any execution-like guarded dry-run or fake-runtime step.
 
 Allowed Release 1 scope:
 
@@ -61,6 +67,7 @@ Use background docs only for historical context, research rationale, or migratio
 8. Event telemetry supports harness coordination but is not Guard authority, dispatch authorization, durable audit completion, or sole runtime echo evidence.
 9. Debug and audit outputs must be redacted-first.
 10. Heavy workflow authoring belongs in bounded subagent lanes where conformance and release gates permit. In Release 1, lane records and summaries may be fake-runtime, degraded, or command-backed when actual lane launch is not proven safe. Main-agent output should be limited to routing, compact summaries, Guard handoff, and safe next actions.
+11. Chat/message mutation is steering only unless conformance proves blocking intake. Do not claim that FlowDesk fully handled, suppressed, or replaced the normal assistant turn through prompt mutation alone.
 
 ## Before Changing Code
 
@@ -72,3 +79,5 @@ Before implementing or editing code, identify which release gate the task belong
 4. Specialist workflow.
 
 If the task asks for a later gate, verify the required conformance and threat-model conditions before implementation.
+
+Before concluding any implementation or planning task, update `docs/PROGRESS_SNAPSHOT.md` or state why no update was necessary.
