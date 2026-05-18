@@ -36,7 +36,7 @@ import {
 } from "@flowdesk/core";
 import { getFlowDeskRelease1HandlerReadiness, getFlowDeskRelease1ProductionReadinessSummary } from "./tool-stubs.js";
 
-export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "command_backed_diagnostic_handler" | "missing_evaluator_input" | "request_schema_invalid" | "schema_only_pending";
+export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "command_backed_diagnostic_handler" | "missing_evaluator_input" | "request_schema_invalid" | "pending_confirmation_invalid" | "schema_only_pending";
 
 export interface FlowDeskCommandBackedRunHandlerContextV1 {
   guardedDryRun?: Omit<FlowDeskGuardedDryRunCommandInputV1, "commandName" | "request">;

@@ -82,9 +82,9 @@ function routedToolName(actions: readonly SafeNextAction[]): FlowDeskRelease1Min
   return undefined;
 }
 
-type FlowDeskRequestEnvelopeOptionalField = "workflow_id" | "session_ref" | "redacted_intake_ref";
+type FlowDeskRequestEnvelopeOptionalField = "workflow_id" | "session_ref" | "redacted_intake_ref" | "user_approval_ref";
 
-const chatEnvelopeOptionalFields: readonly FlowDeskRequestEnvelopeOptionalField[] = ["workflow_id", "session_ref", "redacted_intake_ref"];
+const chatEnvelopeOptionalFields: readonly FlowDeskRequestEnvelopeOptionalField[] = ["workflow_id", "session_ref", "redacted_intake_ref", "user_approval_ref"];
 
 function baseToolRequest(request: FlowDeskChatIntakeRequestV1, schemaVersion: string, optionalFields: readonly FlowDeskRequestEnvelopeOptionalField[] = chatEnvelopeOptionalFields): FlowDeskToolRequestEnvelopeV1 {
   const includeOptional = new Set(optionalFields);
@@ -94,7 +94,8 @@ function baseToolRequest(request: FlowDeskChatIntakeRequestV1, schemaVersion: st
     input_mode: "chat_routed",
     ...(includeOptional.has("workflow_id") && request.workflow_id !== undefined ? { workflow_id: request.workflow_id } : {}),
     ...(includeOptional.has("session_ref") && request.session_ref !== undefined ? { session_ref: request.session_ref } : {}),
-    ...(includeOptional.has("redacted_intake_ref") && request.redacted_intake_ref !== undefined ? { redacted_intake_ref: request.redacted_intake_ref } : {})
+    ...(includeOptional.has("redacted_intake_ref") && request.redacted_intake_ref !== undefined ? { redacted_intake_ref: request.redacted_intake_ref } : {}),
+    ...(includeOptional.has("user_approval_ref") && request.user_approval_ref !== undefined ? { user_approval_ref: request.user_approval_ref } : {})
   };
 }
 

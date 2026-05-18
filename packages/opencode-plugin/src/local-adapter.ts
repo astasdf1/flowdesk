@@ -16,6 +16,7 @@ import type {
 } from "@flowdesk/core";
 import {
   applyWriteIntentsToInMemoryState,
+  invalid,
   mergePolicyPacksV1,
   prepareAttemptRecordWriteIntent,
   prepareLaneRecordWriteIntent,
@@ -31,6 +32,10 @@ export const flowdeskLocalNonDispatchAdapterProfile = "local_non_dispatch_comman
 export interface FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
   workflowId?: string;
   workflowState?: FlowDeskWorkflowRecordV1["state"];
+  pendingConfirmationStatus?: "pending" | "consumed" | "cancelled" | "expired" | "missing";
+  pendingConfirmationRef?: string;
+  pendingConfirmationWorkflowId?: string;
+  pendingConfirmationExpiresAt?: string;
   laneRecords: number;
   inMemoryStateEntries: number;
   stateWriteApplied: boolean;
@@ -69,12 +74,29 @@ export type FlowDeskLocalNonDispatchPermissionProviderV1 = (input: {
   permissionClass: FlowDeskNonDispatchPermissionV1["permission_class"];
 }) => FlowDeskNonDispatchPermissionV1;
 
+export type FlowDeskLocalClockV1 = Date | (() => Date);
+
 interface LocalAdapterState {
   active?: FlowDeskWorkflowActiveV1;
   workflow?: FlowDeskWorkflowRecordV1;
   currentAttempt?: FlowDeskAttemptRecordV1;
   laneRecords: FlowDeskLaneRecordV1[];
   inMemoryState: Map<string, string>;
+  pendingConfirmation?: LocalPendingConfirmation;
+}
+
+interface LocalPendingConfirmation {
+  status: "pending" | "consumed" | "cancelled" | "expired";
+  approvalRef: string;
+  workflowId: string;
+  sessionRef?: string;
+  redactedIntakeRef?: string;
+  sourceSummaryHash: string;
+  planRevisionId: string;
+  createdAtIso: string;
+  expiresAtIso: string;
+  consumedAtIso?: string;
+  cancelledAtIso?: string;
 }
 
 const disabledAuthority = {
@@ -108,6 +130,16 @@ function safeToken(value: unknown, fallback: string): string {
   const raw = typeof value === "string" && value.length > 0 ? value : fallback;
   const token = raw.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 80);
   return token.length > 0 ? token : fallback;
+}
+
+function safeHash(value: unknown): string {
+  const source = typeof value === "string" ? value.trim().slice(0, 500) : "";
+  let hash = 2166136261;
+  for (const char of source) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `summary-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function id(prefix: string, request: Record<string, unknown>, fallback = "local"): string {
@@ -350,6 +382,68 @@ function requiresRunConfirmation(request: Record<string, unknown>): boolean {
   return typeof request.risk_hint === "string" && /requires explicit user confirmation/i.test(request.risk_hint);
 }
 
+function pendingApprovalRef(request: Record<string, unknown>): string {
+  return id("approval", request);
+}
+
+function pendingExpiresAt(parts: ReturnType<typeof nowParts>): string {
+  return new Date(parts.nowMs + 15 * 60 * 1000).toISOString();
+}
+
+function createPendingConfirmation(request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, planRevisionId: string): LocalPendingConfirmation {
+  return {
+    status: "pending",
+    approvalRef: pendingApprovalRef(request),
+    workflowId: workflowIdFrom(request),
+    ...(typeof request.session_ref === "string" ? { sessionRef: request.session_ref } : {}),
+    ...(typeof request.redacted_intake_ref === "string" ? { redactedIntakeRef: request.redacted_intake_ref } : {}),
+    sourceSummaryHash: safeHash(request.goal_summary ?? request.intake_summary),
+    planRevisionId,
+    createdAtIso: parts.nowIso,
+    expiresAtIso: pendingExpiresAt(parts)
+  };
+}
+
+function matchesOptionalScope(expected: string | undefined, actual: unknown): boolean {
+  return expected === undefined || actual === undefined || actual === expected;
+}
+
+function validatePendingConfirmation(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): ValidationResult {
+  const pending = state.pendingConfirmation;
+  if (pending === undefined) return invalid("pending confirmation is required before chat-routed run");
+  if (pending.status !== "pending") return invalid(`pending confirmation is ${pending.status}`);
+  if (Date.parse(pending.expiresAtIso) <= parts.nowMs) {
+    pending.status = "expired";
+    return invalid("pending confirmation expired");
+  }
+  const summaryMatches = pending.sourceSummaryHash === safeHash(request.goal_summary ?? request.intake_summary);
+  const sourceRefMatches = pending.redactedIntakeRef !== undefined && request.redacted_intake_ref === pending.redactedIntakeRef;
+  const errors: string[] = [];
+  if (request.user_approval_ref !== pending.approvalRef) errors.push("user_approval_ref does not match pending confirmation");
+  if (workflowIdFrom(request) !== pending.workflowId) errors.push("workflow_id does not match pending confirmation");
+  if (!matchesOptionalScope(pending.sessionRef, request.session_ref)) errors.push("session_ref does not match pending confirmation");
+  if (!summaryMatches && !sourceRefMatches) errors.push("approval source does not match pending confirmation");
+  return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+function shouldGateRun(state: LocalAdapterState, request: Record<string, unknown>): boolean {
+  return request.input_mode === "chat_routed" || state.workflow?.state === "plan_pending_approval";
+}
+
+function consumePendingConfirmation(state: LocalAdapterState, parts: ReturnType<typeof nowParts>): void {
+  if (state.pendingConfirmation !== undefined) {
+    state.pendingConfirmation = { ...state.pendingConfirmation, status: "consumed", consumedAtIso: parts.nowIso };
+  }
+}
+
+function cancelPendingConfirmation(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): void {
+  const pending = state.pendingConfirmation;
+  if (pending === undefined || pending.status !== "pending") return;
+  if (workflowIdFrom(request) !== pending.workflowId) return;
+  if (!matchesOptionalScope(pending.sessionRef, request.session_ref)) return;
+  state.pendingConfirmation = { ...pending, status: "cancelled", cancelledAtIso: parts.nowIso };
+}
+
 function updateWorkflowState(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, nextState: FlowDeskWorkflowRecordV1["state"]): boolean {
   const workflowId = workflowIdFrom(request);
   const planRevisionId = typeof request.plan_revision_id === "string" ? request.plan_revision_id : id("plan", request);
@@ -409,6 +503,7 @@ function recordPlanningState(state: LocalAdapterState, request: Record<string, u
   if (laneIntent === undefined) return false;
   state.laneRecords = [lane];
   state.inMemoryState = applyWriteIntentsToInMemoryState([laneIntent], state.inMemoryState, { now: parts.nowMs });
+  if (requiresRunConfirmation(request)) state.pendingConfirmation = createPendingConfirmation(request, parts, typeof request.plan_revision_id === "string" ? request.plan_revision_id : id("plan", request));
   return updateWorkflowState(state, request, parts, requiresRunConfirmation(request) ? "plan_pending_approval" : "ready_to_run");
 }
 
@@ -473,9 +568,16 @@ function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown,
 }
 
 function summarize(state: LocalAdapterState, stateWriteApplied: boolean): FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
+  const pending = state.pendingConfirmation;
   return {
     workflowId: state.workflow?.workflow_id,
     workflowState: state.workflow?.state,
+    ...(pending === undefined ? { pendingConfirmationStatus: "missing" as const } : {
+      pendingConfirmationStatus: pending.status,
+      pendingConfirmationRef: pending.approvalRef,
+      pendingConfirmationWorkflowId: pending.workflowId,
+      pendingConfirmationExpiresAt: pending.expiresAtIso
+    }),
     laneRecords: state.laneRecords.length,
     inMemoryStateEntries: state.inMemoryState.size,
     stateWriteApplied,
@@ -484,18 +586,50 @@ function summarize(state: LocalAdapterState, stateWriteApplied: boolean): FlowDe
   };
 }
 
-export function createFlowDeskLocalNonDispatchAdapterSession(now = new Date(), permissionProvider = createFlowDeskLocalNonDispatchPermissionProvider()): FlowDeskLocalNonDispatchAdapterSessionV1 {
+function blockedRunHandler(toolName: FlowDeskRelease1MinimumToolName, validation: ValidationResult): FlowDeskCommandBackedHandlerResultV1 {
+  return {
+    ...validation,
+    toolName,
+    handlerMode: "pending_confirmation_invalid",
+    requestSchemaValid: false,
+    responseSchemaValid: false,
+    coreEvaluationOk: false,
+    ...disabledAuthority
+  };
+}
+
+function clockDate(clock: FlowDeskLocalClockV1): Date {
+  return typeof clock === "function" ? clock() : clock;
+}
+
+export function createFlowDeskLocalNonDispatchAdapterSession(now: FlowDeskLocalClockV1 = new Date(), permissionProvider = createFlowDeskLocalNonDispatchPermissionProvider()): FlowDeskLocalNonDispatchAdapterSessionV1 {
   const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map() };
   return {
     state,
     evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1 {
-      const parts = nowParts(now);
+      const parts = nowParts(clockDate(now));
+      const record = isRecord(request) ? request : {};
+      if (toolName === "flowdesk_run" && shouldGateRun(state, record)) {
+        const confirmationResult = validatePendingConfirmation(state, record, parts);
+        if (!confirmationResult.ok) {
+          const handler = blockedRunHandler(toolName, confirmationResult);
+          return {
+            ...confirmationResult,
+            adapterProfile: flowdeskLocalNonDispatchAdapterProfile,
+            toolName,
+            handler,
+            localState: summarize(state, false),
+            ...disabledAuthority
+          };
+        }
+        consumePendingConfirmation(state, parts);
+      }
       const context = contextFor(toolName, request, state, parts, permissionProvider);
       const handler = evaluateFlowDeskCommandBackedHandlerV1(toolName, request, context);
-      const record = isRecord(request) ? request : {};
       let stateWriteApplied = false;
       if (handler.ok && toolName === "flowdesk_plan") stateWriteApplied = recordPlanningState(state, record, parts);
       if (handler.ok && toolName === "flowdesk_run") stateWriteApplied = recordRunState(state, record, parts, permissionProvider);
+      if (handler.ok && toolName === "flowdesk_abort") cancelPendingConfirmation(state, record, parts);
       return {
         ...valid(),
         adapterProfile: flowdeskLocalNonDispatchAdapterProfile,

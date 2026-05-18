@@ -10,6 +10,7 @@ import {
   hasPassingFds1SchemaConversionSpike,
   hasProductionOpenCodeRegistration
 } from "./index.js";
+import { createFlowDeskLocalNonDispatchAdapterSession } from "./local-adapter.js";
 import flowdeskOpenCodeServerPlugin, {
   createFlowDeskFds1SchemaConversionProbeTools,
   createFlowDeskLocalNonDispatchAdapterTools,
@@ -25,6 +26,7 @@ interface LocalAdapterTestResult {
   handler?: {
     ok?: unknown;
     handlerMode?: unknown;
+    errors?: unknown[];
     responseSchemaValid?: unknown;
     response?: {
       status?: unknown;
@@ -37,6 +39,10 @@ interface LocalAdapterTestResult {
     stateWriteApplied?: unknown;
     workflowId?: unknown;
     workflowState?: unknown;
+    pendingConfirmationStatus?: unknown;
+    pendingConfirmationRef?: unknown;
+    pendingConfirmationWorkflowId?: unknown;
+    pendingConfirmationExpiresAt?: unknown;
     permissionSource?: unknown;
   };
   providerCall?: unknown;
@@ -348,6 +354,9 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(result.routedToolResult?.handler?.response?.workflow_state, undefined);
   assert.equal(result.routedToolResult?.localState?.workflowState, "plan_pending_approval");
   assert.equal(result.routedToolResult?.localState?.stateWriteApplied, true);
+  assert.equal(result.routedToolResult?.localState?.pendingConfirmationStatus, "pending");
+  const pendingApprovalRef = result.routedToolResult?.localState?.pendingConfirmationRef;
+  assert.equal(typeof pendingApprovalRef, "string");
   assert.notEqual(result.routedToolName, "flowdesk_run");
   assert.equal(result.runtimeExecution, false);
   assert.equal(result.actualLaneLaunch, false);
@@ -356,10 +365,10 @@ test("chat intake holds execution-like requests for confirmation before run", as
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-run-confirmed",
     input_mode: "chat_routed",
-    workflow_id: "workflow-nl-run-confirmed",
-    session_ref: "session-nl-run-confirmed",
-    redacted_intake_ref: "intake-nl-run-confirmed",
-    user_approval_ref: "approval-nl-run-confirmed",
+    workflow_id: "workflow-nl-run-confirm",
+    session_ref: "session-nl-run-confirm",
+    redacted_intake_ref: "intake-nl-run-confirm",
+    user_approval_ref: pendingApprovalRef,
     intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
     source_surface: "chat.message"
   }, undefined as never)) as NaturalLanguageRoutingTestResult;
@@ -368,8 +377,28 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(confirmed.routedToolName, "flowdesk_run");
   assert.equal(confirmed.routedToolResult?.handler?.ok, true);
   assert.equal(confirmed.routedToolResult?.localState?.workflowState, "complete");
+  assert.equal(confirmed.routedToolResult?.localState?.pendingConfirmationStatus, "consumed");
   assert.equal(confirmed.runtimeExecution, false);
   assert.equal(confirmed.actualLaneLaunch, false);
+
+  const reused = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-run-reused-confirmation",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-run-confirm",
+    session_ref: "session-nl-run-confirm",
+    redacted_intake_ref: "intake-nl-run-confirm",
+    user_approval_ref: pendingApprovalRef,
+    intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.equal(reused.routedToolName, "flowdesk_run");
+  assert.equal(reused.routedToolResult?.handler?.ok, false);
+  assert.equal(reused.routedToolResult?.handler?.handlerMode, "pending_confirmation_invalid");
+  assert.equal(reused.routedToolResult?.localState?.pendingConfirmationStatus, "consumed");
+  assert.equal(reused.routedToolResult?.localState?.stateWriteApplied, false);
+  assert.equal(reused.runtimeExecution, false);
+  assert.equal(reused.actualLaneLaunch, false);
 
   const weakApproval = JSON.parse(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
@@ -387,6 +416,88 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(weakApproval.routedToolResult?.localState?.workflowState, "plan_pending_approval");
   assert.equal(weakApproval.runtimeExecution, false);
   assert.equal(weakApproval.actualLaneLaunch, false);
+});
+
+test("local adapter fails closed for expired and cancelled pending confirmations", () => {
+  let clock = new Date("2026-05-17T00:00:00.000Z");
+  const session = createFlowDeskLocalNonDispatchAdapterSession(() => clock);
+  const pendingPlan = session.evaluate("flowdesk_plan", {
+    schema_version: "flowdesk.plan.request.v1",
+    request_id: "request-expiring-plan",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-expiring-plan",
+    session_ref: "session-expiring-plan",
+    redacted_intake_ref: "intake-expiring-plan",
+    goal_summary: "approved plan을 fake-runtime으로 실행 진행해",
+    scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
+    risk_hint: "execution-like chat intake requires explicit user confirmation before any run"
+  });
+  assert.equal(pendingPlan.localState.pendingConfirmationStatus, "pending");
+  const approvalRef = pendingPlan.localState.pendingConfirmationRef;
+  assert.equal(typeof approvalRef, "string");
+
+  clock = new Date("2026-05-17T00:16:00.000Z");
+  const expiredRun = session.evaluate("flowdesk_run", {
+    schema_version: "flowdesk.run.request.v1",
+    request_id: "request-expired-run",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-expiring-plan",
+    session_ref: "session-expiring-plan",
+    redacted_intake_ref: "intake-expiring-plan",
+    user_approval_ref: approvalRef,
+    run_mode: "fake-runtime",
+    plan_revision_id: "plan-workflow-expiring-plan",
+    step_id: "step-expired-run"
+  });
+  assert.equal(expiredRun.handler.ok, false);
+  assert.equal(expiredRun.handler.handlerMode, "pending_confirmation_invalid");
+  assert.equal(expiredRun.localState.pendingConfirmationStatus, "expired");
+  assert.equal(expiredRun.localState.workflowState, "plan_pending_approval");
+  assert.equal(expiredRun.runtimeExecution, false);
+
+  clock = new Date("2026-05-17T01:00:00.000Z");
+  const cancelSession = createFlowDeskLocalNonDispatchAdapterSession(() => clock);
+  const cancellablePlan = cancelSession.evaluate("flowdesk_plan", {
+    schema_version: "flowdesk.plan.request.v1",
+    request_id: "request-cancellable-plan",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-cancellable-plan",
+    session_ref: "session-cancellable-plan",
+    redacted_intake_ref: "intake-cancellable-plan",
+    goal_summary: "approved plan을 fake-runtime으로 실행 진행해",
+    scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
+    risk_hint: "execution-like chat intake requires explicit user confirmation before any run"
+  });
+  const cancellableApprovalRef = cancellablePlan.localState.pendingConfirmationRef;
+  const abort = cancelSession.evaluate("flowdesk_abort", {
+    schema_version: "flowdesk.abort.request.v1",
+    request_id: "request-cancel-pending",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-cancellable-plan",
+    session_ref: "session-cancellable-plan",
+    redacted_intake_ref: "intake-cancellable-plan",
+    reason: "FlowDesk chat intake requested a safe abort diagnostic."
+  });
+  assert.equal(abort.handler.ok, true);
+  assert.equal(abort.localState.pendingConfirmationStatus, "cancelled");
+  assert.equal(abort.hardCancelOrNoReplyAuthority, false);
+
+  const cancelledRun = cancelSession.evaluate("flowdesk_run", {
+    schema_version: "flowdesk.run.request.v1",
+    request_id: "request-cancelled-run",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-cancellable-plan",
+    session_ref: "session-cancellable-plan",
+    redacted_intake_ref: "intake-cancellable-plan",
+    user_approval_ref: cancellableApprovalRef,
+    run_mode: "fake-runtime",
+    plan_revision_id: "plan-workflow-cancellable-plan",
+    step_id: "step-cancelled-run"
+  });
+  assert.equal(cancelledRun.handler.ok, false);
+  assert.equal(cancelledRun.handler.handlerMode, "pending_confirmation_invalid");
+  assert.equal(cancelledRun.localState.pendingConfirmationStatus, "cancelled");
+  assert.equal(cancelledRun.actualLaneLaunch, false);
 });
 
 test("natural-language routing reuses local adapter session with adapter tools", async () => {
