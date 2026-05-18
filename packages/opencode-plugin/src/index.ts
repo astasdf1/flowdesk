@@ -23,6 +23,7 @@ export function hasProductionOpenCodeRegistration(): false {
   return false;
 }
 
+export * from "./bootstrap-cli.js";
 export * from "./bootstrap-installer.js";
 export * from "./command-handlers.js";
 export * from "./commands.js";
