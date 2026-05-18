@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -30,24 +30,33 @@ function ledgerPath(durableRoot: string, confirmationRef: string): string {
   return join(durableRoot, ".flowdesk", "bootstrap", "confirmations", `${confirmationRef}.json`);
 }
 
-function writeConsumedLedger(durableRoot: string, confirmation: ReturnType<typeof typedConfirmation>, overrides: Record<string, unknown> = {}) {
+function writeLedger(durableRoot: string, confirmation: ReturnType<typeof typedConfirmation>, status: "pending" | "consumed", overrides: Record<string, unknown> = {}) {
   const target = ledgerPath(durableRoot, confirmation.confirmationRef);
   mkdirSync(join(durableRoot, ".flowdesk", "bootstrap", "confirmations"), { recursive: true });
-  writeFileSync(target, `${JSON.stringify({
+  const ledger: Record<string, unknown> = {
     schema_version: "flowdesk.bootstrap_confirmation_consumption.v1",
     confirmation_ref: confirmation.confirmationRef,
-    status: "consumed",
+    status,
     target_profile_ref: confirmation.targetProfileRef,
     profile_root_ref: confirmation.profileRootRef,
     install_plan_ref: confirmation.installPlanRef,
     rollback_plan_ref: confirmation.rollbackPlanRef,
     typed_phrase_hash: typedPhraseHash(confirmation.typedPhrase),
     created_at: "2026-05-19T00:00:00.000Z",
-    consumed_at: "2026-05-19T00:00:00.000Z",
     expires_at: confirmation.expiresAt,
     actor_class: confirmation.actorClass,
     ...overrides
-  }, null, 2)}\n`, "utf8");
+  };
+  if (status === "consumed" && ledger.consumed_at === undefined) ledger.consumed_at = "2026-05-19T00:00:00.000Z";
+  writeFileSync(target, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+}
+
+function writeConsumedLedger(durableRoot: string, confirmation: ReturnType<typeof typedConfirmation>, overrides: Record<string, unknown> = {}) {
+  writeLedger(durableRoot, confirmation, "consumed", overrides);
+}
+
+function writePendingLedger(durableRoot: string, confirmation: ReturnType<typeof typedConfirmation>, overrides: Record<string, unknown> = {}) {
+  writeLedger(durableRoot, confirmation, "pending", overrides);
 }
 
 test("Release 1 bootstrap installer materializes commands and redacted bootstrap artifacts", () => {
@@ -135,6 +144,66 @@ test("Release 1 bootstrap installer rejects a durable consumed confirmation befo
   }
 });
 
+test("Release 1 bootstrap installer rejects a durable pending confirmation before writes", () => {
+  const profileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-pending-replay-"));
+  const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-pending-replay-"));
+  try {
+    const confirmation = typedConfirmation("profile-pending-replay", profileRoot, "pending-replay");
+    writePendingLedger(durableRoot, confirmation);
+
+    const result = installFlowDeskRelease1Bootstrap({
+      profileRootDir: profileRoot,
+      durableStateRootDir: durableRoot,
+      targetProfileRef: "profile-pending-replay",
+      typedConfirmation: confirmation,
+      now: new Date("2026-05-19T00:00:00.000Z")
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.commandFilesWritten, 0);
+    assert.equal(result.bootstrapArtifactsWritten, 0);
+    assert.equal(existsSync(join(profileRoot, "commands")), false);
+    assert.equal(existsSync(join(durableRoot, ".flowdesk/bootstrap/install-plan-profile-pending-replay")), false);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.runtimeExecution, false);
+  } finally {
+    rmSync(profileRoot, { recursive: true, force: true });
+    rmSync(durableRoot, { recursive: true, force: true });
+  }
+});
+
+test("Release 1 bootstrap installer rejects a symlinked confirmation ledger directory before writes", () => {
+  const profileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-symlink-ledger-"));
+  const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-symlink-ledger-"));
+  const symlinkTarget = mkdtempSync(join(tmpdir(), "flowdesk-install-ledger-symlink-target-"));
+  try {
+    const confirmation = typedConfirmation("profile-symlink-ledger", profileRoot, "symlink-ledger");
+    mkdirSync(join(durableRoot, ".flowdesk", "bootstrap"), { recursive: true });
+    symlinkSync(symlinkTarget, join(durableRoot, ".flowdesk", "bootstrap", "confirmations"), "dir");
+
+    const result = installFlowDeskRelease1Bootstrap({
+      profileRootDir: profileRoot,
+      durableStateRootDir: durableRoot,
+      targetProfileRef: "profile-symlink-ledger",
+      typedConfirmation: confirmation,
+      now: new Date("2026-05-19T00:00:00.000Z")
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.commandFilesWritten, 0);
+    assert.equal(result.bootstrapArtifactsWritten, 0);
+    assert.equal(existsSync(join(profileRoot, "commands")), false);
+    assert.equal(existsSync(join(durableRoot, ".flowdesk/bootstrap/install-plan-profile-symlink-ledger")), false);
+    assert.equal(existsSync(join(symlinkTarget, `${confirmation.confirmationRef}.json`)), false);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.runtimeExecution, false);
+  } finally {
+    rmSync(profileRoot, { recursive: true, force: true });
+    rmSync(durableRoot, { recursive: true, force: true });
+    rmSync(symlinkTarget, { recursive: true, force: true });
+  }
+});
+
 test("Release 1 bootstrap installer rejects a mismatched durable confirmation ledger before writes", () => {
   const profileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-ledger-mismatch-"));
   const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-ledger-mismatch-"));
@@ -190,15 +259,16 @@ test("Release 1 bootstrap installer fails before writes without exact typed conf
 
 test("Release 1 bootstrap installer rolls back command files when durable artifact write fails", () => {
   const profileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-rollback-"));
-  const root = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-rollback-"));
-  const blockedDurableRoot = join(root, "not-a-directory");
+  const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-rollback-"));
   try {
-    writeFileSync(blockedDurableRoot, "blocked", "utf8");
+    const confirmation = typedConfirmation("profile-release1", profileRoot, "rollback");
+    mkdirSync(join(durableRoot, ".flowdesk", "bootstrap"), { recursive: true });
+    writeFileSync(join(durableRoot, ".flowdesk", "bootstrap", "install-plan-profile-release1"), "blocked", "utf8");
     const result = installFlowDeskRelease1Bootstrap({
       profileRootDir: profileRoot,
-      durableStateRootDir: blockedDurableRoot,
+      durableStateRootDir: durableRoot,
       targetProfileRef: "profile-release1",
-      typedConfirmation: typedConfirmation("profile-release1", profileRoot, "rollback"),
+      typedConfirmation: confirmation,
       now: new Date("2026-05-19T00:00:00.000Z")
     });
 
@@ -209,11 +279,18 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
     for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
       assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), false, commandName);
     }
+    const rawLedger = readFileSync(ledgerPath(durableRoot, confirmation.confirmationRef), "utf8");
+    const ledger = JSON.parse(rawLedger) as Record<string, unknown>;
+    assert.equal(ledger.status, "pending");
+    assert.equal(ledger.confirmation_ref, confirmation.confirmationRef);
+    assert.equal(ledger.typed_phrase_hash, typedPhraseHash(confirmation.typedPhrase));
+    assert.equal(ledger.consumed_at, undefined);
+    assert.equal(rawLedger.includes(confirmation.typedPhrase), false);
     assert.equal(result.providerCall, false);
     assert.equal(result.runtimeExecution, false);
   } finally {
     rmSync(profileRoot, { recursive: true, force: true });
-    rmSync(root, { recursive: true, force: true });
+    rmSync(durableRoot, { recursive: true, force: true });
   }
 });
 

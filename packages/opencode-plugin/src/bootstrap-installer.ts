@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import {
   applyBootstrapWriteIntentsToDurableState,
   type FlowDeskBootstrapInstallPlanV1,
@@ -74,16 +74,22 @@ const safeLedgerConfirmationRefPattern = /^[A-Za-z0-9_.:-]+$/;
 interface FlowDeskBootstrapConfirmationLedgerV1 {
   schema_version: typeof bootstrapConfirmationLedgerSchemaVersion;
   confirmation_ref: string;
-  status: "consumed";
+  status: "pending" | "consumed";
   target_profile_ref: string;
   profile_root_ref: string;
   install_plan_ref: string;
   rollback_plan_ref: string;
   typed_phrase_hash: string;
   created_at: string;
-  consumed_at: string;
+  consumed_at?: string;
   expires_at: string;
   actor_class: "user";
+}
+
+interface FlowDeskBootstrapConfirmationLedgerLocation {
+  rootDir: string;
+  ledgerPath: string;
+  ledgerDir: string;
 }
 
 function resultBase(): Pick<FlowDeskRelease1BootstrapInstallResultV1, "bootstrapArtifactsWritten" | "commandFilesWritten" | "aliasFilesWritten"> & typeof disabledBootstrapInstallAuthority {
@@ -158,35 +164,108 @@ function validateSafeLedgerConfirmationRef(confirmationRef: string): ValidationR
   return errors.length === 0 ? valid() : invalid(...errors);
 }
 
-function bootstrapConfirmationLedgerPath(durableStateRootDir: string, confirmationRef: string): ValidationResult & { ledgerPath?: string; ledgerDir?: string } {
-  const refValidation = validateSafeLedgerConfirmationRef(confirmationRef);
-  if (!refValidation.ok) return refValidation;
-  const root = resolve(durableStateRootDir);
-  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  const ledgerDir = resolve(root, ".flowdesk", "bootstrap", "confirmations");
-  const ledgerPath = resolve(ledgerDir, `${confirmationRef}.json`);
-  if (ledgerPath === root || !ledgerPath.startsWith(rootPrefix)) {
-    return invalid("typed confirmation ledger path escapes durable state root");
-  }
-  return { ...valid(), ledgerPath, ledgerDir };
+function pathIsInside(parent: string, child: string): boolean {
+  const parentPrefix = parent.endsWith(sep) ? parent : `${parent}${sep}`;
+  return child === parent || child.startsWith(parentPrefix);
 }
 
-function expectedConsumedLedger(request: FlowDeskRelease1BootstrapInstallRequestV1, nowIso: string): FlowDeskBootstrapConfirmationLedgerV1 {
+function bootstrapConfirmationLedgerLocation(durableStateRootDir: string, confirmationRef: string): ValidationResult & Partial<FlowDeskBootstrapConfirmationLedgerLocation> {
+  const refValidation = validateSafeLedgerConfirmationRef(confirmationRef);
+  if (!refValidation.ok) return refValidation;
+  const rootDir = resolve(durableStateRootDir);
+  const ledgerDir = resolve(rootDir, ".flowdesk", "bootstrap", "confirmations");
+  const ledgerPath = resolve(ledgerDir, `${confirmationRef}.json`);
+  if (!pathIsInside(rootDir, ledgerPath)) {
+    return invalid("typed confirmation ledger path escapes durable state root");
+  }
+  return { ...valid(), rootDir, ledgerPath, ledgerDir };
+}
+
+function validateRealLedgerDirectory(location: FlowDeskBootstrapConfirmationLedgerLocation, create: boolean): ValidationResult {
+  let rootRealPath: string;
+  try {
+    const rootStat = lstatSync(location.rootDir);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return invalid("typed confirmation durable root is not a real directory");
+    rootRealPath = realpathSync(location.rootDir);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    return invalid(`typed confirmation durable root is unavailable: ${message}`);
+  }
+
+  const directories = [resolve(location.rootDir, ".flowdesk"), resolve(location.rootDir, ".flowdesk", "bootstrap"), location.ledgerDir];
+  for (const directory of directories) {
+    try {
+      const stat = lstatSync(directory);
+      if (stat.isSymbolicLink()) return invalid("typed confirmation durable ledger directory must not be a symlink");
+      if (!stat.isDirectory()) return invalid("typed confirmation durable ledger directory is not a directory");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        if (!create) return valid();
+        try {
+          mkdirSync(directory);
+        } catch (mkdirError) {
+          const message = mkdirError instanceof Error ? mkdirError.message : "unknown error";
+          return invalid(`typed confirmation durable ledger directory creation failed: ${message}`);
+        }
+      } else {
+        const message = error instanceof Error ? error.message : "unknown error";
+        return invalid(`typed confirmation durable ledger directory is unavailable: ${message}`);
+      }
+    }
+
+    let realDirectory: string;
+    try {
+      const stat = lstatSync(directory);
+      if (stat.isSymbolicLink()) return invalid("typed confirmation durable ledger directory must not be a symlink");
+      if (!stat.isDirectory()) return invalid("typed confirmation durable ledger directory is not a directory");
+      realDirectory = realpathSync(directory);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown error";
+      return invalid(`typed confirmation durable ledger directory validation failed: ${message}`);
+    }
+    if (!pathIsInside(rootRealPath, realDirectory)) return invalid("typed confirmation durable ledger directory escapes durable state root");
+  }
+  return valid();
+}
+
+function readExistingDurableConfirmationLedger(location: FlowDeskBootstrapConfirmationLedgerLocation): ValidationResult & { ledger?: Record<string, unknown> } {
+  const directoryValidation = validateRealLedgerDirectory(location, false);
+  if (!directoryValidation.ok) return directoryValidation;
+
+  try {
+    const stat = lstatSync(location.ledgerPath);
+    if (stat.isSymbolicLink()) return invalid("typed confirmation durable ledger file must not be a symlink");
+    if (!stat.isFile()) return invalid("typed confirmation durable ledger path is not a file");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return valid();
+    const message = error instanceof Error ? error.message : "unknown error";
+    return invalid(`typed confirmation durable ledger is unavailable: ${message}`);
+  }
+
+  try {
+    return { ...valid(), ledger: JSON.parse(readFileSync(location.ledgerPath, "utf8")) as Record<string, unknown> };
+  } catch {
+    return invalid("typed confirmation durable ledger is unreadable");
+  }
+}
+
+function expectedConfirmationLedger(request: FlowDeskRelease1BootstrapInstallRequestV1, status: "pending" | "consumed", createdAt: string, consumedAt?: string): FlowDeskBootstrapConfirmationLedgerV1 {
   const confirmation = request.typedConfirmation;
-  return {
+  const ledger: FlowDeskBootstrapConfirmationLedgerV1 = {
     schema_version: bootstrapConfirmationLedgerSchemaVersion,
     confirmation_ref: confirmation.confirmationRef,
-    status: "consumed",
+    status,
     target_profile_ref: confirmation.targetProfileRef,
     profile_root_ref: confirmation.profileRootRef,
     install_plan_ref: confirmation.installPlanRef,
     rollback_plan_ref: confirmation.rollbackPlanRef,
     typed_phrase_hash: typedPhraseHash(confirmation.typedPhrase),
-    created_at: nowIso,
-    consumed_at: nowIso,
+    created_at: createdAt,
     expires_at: confirmation.expiresAt,
     actor_class: confirmation.actorClass
   };
+  if (consumedAt !== undefined) ledger.consumed_at = consumedAt;
+  return ledger;
 }
 
 function existingLedgerBindingMismatches(ledger: Record<string, unknown>, expected: FlowDeskBootstrapConfirmationLedgerV1): string[] {
@@ -205,40 +284,76 @@ function existingLedgerBindingMismatches(ledger: Record<string, unknown>, expect
 }
 
 function validateDurableConfirmationLedgerAvailable(request: FlowDeskRelease1BootstrapInstallRequestV1, nowIso: string): ValidationResult {
-  const pathResult = bootstrapConfirmationLedgerPath(request.durableStateRootDir, request.typedConfirmation.confirmationRef);
+  const pathResult = bootstrapConfirmationLedgerLocation(request.durableStateRootDir, request.typedConfirmation.confirmationRef);
   if (!pathResult.ok) return pathResult;
-  if (pathResult.ledgerPath === undefined || !existsSync(pathResult.ledgerPath)) return valid();
+  if (pathResult.rootDir === undefined || pathResult.ledgerPath === undefined || pathResult.ledgerDir === undefined) return invalid("typed confirmation durable ledger path is unavailable");
+  const readResult = readExistingDurableConfirmationLedger(pathResult as FlowDeskBootstrapConfirmationLedgerLocation);
+  if (!readResult.ok) return readResult;
+  if (readResult.ledger === undefined) return valid();
 
-  let ledger: Record<string, unknown>;
-  try {
-    ledger = JSON.parse(readFileSync(pathResult.ledgerPath, "utf8")) as Record<string, unknown>;
-  } catch {
-    return invalid("typed confirmation durable ledger is unreadable");
-  }
-
-  const expected = expectedConsumedLedger(request, nowIso);
+  const ledger = readResult.ledger;
+  const expected = expectedConfirmationLedger(request, "pending", nowIso);
   const mismatches = existingLedgerBindingMismatches(ledger, expected);
   if (mismatches.length > 0) return invalid("typed confirmation durable ledger binding mismatch");
+  if (ledger.status === "pending") return invalid("typed confirmation has already been claimed by durable ledger");
   if (ledger.status === "consumed") return invalid("typed confirmation has already been consumed by durable ledger");
   return invalid("typed confirmation durable ledger status is invalid");
 }
 
-function writeConsumedDurableConfirmationLedger(request: FlowDeskRelease1BootstrapInstallRequestV1, nowIso: string): ValidationResult {
-  const pathResult = bootstrapConfirmationLedgerPath(request.durableStateRootDir, request.typedConfirmation.confirmationRef);
+function claimPendingDurableConfirmationLedger(request: FlowDeskRelease1BootstrapInstallRequestV1, nowIso: string): ValidationResult {
+  const pathResult = bootstrapConfirmationLedgerLocation(request.durableStateRootDir, request.typedConfirmation.confirmationRef);
   if (!pathResult.ok) return pathResult;
-  if (pathResult.ledgerPath === undefined || pathResult.ledgerDir === undefined) return invalid("typed confirmation durable ledger path is unavailable");
-  if (existsSync(pathResult.ledgerPath)) return invalid("typed confirmation durable ledger already exists");
+  if (pathResult.rootDir === undefined || pathResult.ledgerPath === undefined || pathResult.ledgerDir === undefined) return invalid("typed confirmation durable ledger path is unavailable");
+  const location = pathResult as FlowDeskBootstrapConfirmationLedgerLocation;
 
-  const tempPath = resolve(pathResult.ledgerDir, `.${request.typedConfirmation.confirmationRef}.${process.pid}.${Date.now()}.tmp`);
+  const existing = readExistingDurableConfirmationLedger(location);
+  if (!existing.ok) return existing;
+  if (existing.ledger !== undefined) {
+    const expected = expectedConfirmationLedger(request, "pending", nowIso);
+    const mismatches = existingLedgerBindingMismatches(existing.ledger, expected);
+    if (mismatches.length > 0) return invalid("typed confirmation durable ledger binding mismatch");
+    if (existing.ledger.status === "pending") return invalid("typed confirmation has already been claimed by durable ledger");
+    if (existing.ledger.status === "consumed") return invalid("typed confirmation has already been consumed by durable ledger");
+    return invalid("typed confirmation durable ledger status is invalid");
+  }
+
+  const directoryValidation = validateRealLedgerDirectory(location, true);
+  if (!directoryValidation.ok) return directoryValidation;
   try {
-    mkdirSync(dirname(pathResult.ledgerPath), { recursive: true });
-    writeFileSync(tempPath, `${JSON.stringify(expectedConsumedLedger(request, nowIso), null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-    renameSync(tempPath, pathResult.ledgerPath);
+    writeFileSync(location.ledgerPath, `${JSON.stringify(expectedConfirmationLedger(request, "pending", nowIso), null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    return valid();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    return invalid(`typed confirmation durable ledger claim failed: ${message}`);
+  }
+}
+
+function markDurableConfirmationLedgerConsumed(request: FlowDeskRelease1BootstrapInstallRequestV1, nowIso: string): ValidationResult {
+  const pathResult = bootstrapConfirmationLedgerLocation(request.durableStateRootDir, request.typedConfirmation.confirmationRef);
+  if (!pathResult.ok) return pathResult;
+  if (pathResult.rootDir === undefined || pathResult.ledgerPath === undefined || pathResult.ledgerDir === undefined) return invalid("typed confirmation durable ledger path is unavailable");
+  const location = pathResult as FlowDeskBootstrapConfirmationLedgerLocation;
+  const existing = readExistingDurableConfirmationLedger(location);
+  if (!existing.ok) return existing;
+  if (existing.ledger === undefined) return invalid("typed confirmation durable ledger claim is missing");
+  const createdAt = typeof existing.ledger.created_at === "string" ? existing.ledger.created_at : undefined;
+  if (createdAt === undefined) return invalid("typed confirmation durable ledger claim timestamp is invalid");
+  const expected = expectedConfirmationLedger(request, "pending", createdAt);
+  const mismatches = existingLedgerBindingMismatches(existing.ledger, expected);
+  if (mismatches.length > 0) return invalid("typed confirmation durable ledger binding mismatch");
+  if (existing.ledger.status !== "pending") return invalid("typed confirmation durable ledger is not pending");
+
+  const directoryValidation = validateRealLedgerDirectory(location, false);
+  if (!directoryValidation.ok) return directoryValidation;
+  const tempPath = resolve(location.ledgerDir, `.${request.typedConfirmation.confirmationRef}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    writeFileSync(tempPath, `${JSON.stringify(expectedConfirmationLedger(request, "consumed", createdAt, nowIso), null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    renameSync(tempPath, location.ledgerPath);
     return valid();
   } catch (error) {
     rmSync(tempPath, { force: true });
     const message = error instanceof Error ? error.message : "unknown error";
-    return invalid(`typed confirmation durable ledger write failed: ${message}`);
+    return invalid(`typed confirmation durable ledger consume update failed: ${message}`);
   }
 }
 
@@ -330,6 +445,12 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
     return { ...invalid(...commandMaterialization.errors), commandMaterialization, commandFilesWritten: 0, bootstrapArtifactsWritten: 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
   }
 
+  const ledgerClaim = claimPendingDurableConfirmationLedger(request, nowIso);
+  if (!ledgerClaim.ok) {
+    const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+    return { ...invalid(...ledgerClaim.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, commandFilesWritten: 0, bootstrapArtifactsWritten: 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
+  }
+
   const commandRefs = commandMaterialization.writtenCommandRefs?.map((ref) => `command-file-${ref.replace(/[^A-Za-z0-9_.:-]/g, "-")}`) ?? [];
   const artifacts = [
     installPlan(nowIso, request.targetProfileRef, request.typedConfirmation.confirmationRef, artifactIds.installPlanId, artifactIds.rollbackPlanId),
@@ -351,7 +472,7 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
     return { ...invalid(...durable.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, commandFilesWritten: 0, bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
   }
 
-  const ledgerWrite = writeConsumedDurableConfirmationLedger(request, nowIso);
+  const ledgerWrite = markDurableConfirmationLedgerConsumed(request, nowIso);
   if (!ledgerWrite.ok) {
     const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
     return { ...invalid(...ledgerWrite.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, commandFilesWritten: 0, bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
