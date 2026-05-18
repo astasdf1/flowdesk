@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ import flowdeskOpenCodeServerPlugin, {
   createFlowDeskFds1SchemaConversionProbeTools,
   createFlowDeskLocalNonDispatchAdapterTools,
   flowdeskChatIntakeToolName,
+  flowdeskDurableStateRootOption,
   flowdeskFds1SchemaConversionProbeOption,
   flowdeskLocalNonDispatchAdapterOption,
   flowdeskNaturalLanguageRoutingOption,
@@ -46,6 +47,9 @@ interface LocalAdapterTestResult {
     pendingConfirmationRef?: unknown;
     pendingConfirmationWorkflowId?: unknown;
     pendingConfirmationExpiresAt?: unknown;
+    durableStateMode?: unknown;
+    durableStateWriteApplied?: unknown;
+    durableStateWrites?: unknown;
     permissionSource?: unknown;
   };
   providerCall?: unknown;
@@ -419,6 +423,20 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(weakApproval.routedToolResult?.localState?.workflowState, "plan_pending_approval");
   assert.equal(weakApproval.runtimeExecution, false);
   assert.equal(weakApproval.actualLaneLaunch, false);
+
+  const missingSessionScope = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-run-missing-session-scope",
+    input_mode: "chat_routed",
+    workflow_id: "workflow-nl-run-confirm",
+    redacted_intake_ref: "intake-nl-run-confirm",
+    user_approval_ref: pendingApprovalRef,
+    intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.equal(missingSessionScope.routedToolResult?.handler?.ok, false);
+  assert.equal(missingSessionScope.routedToolResult?.handler?.handlerMode, "pending_confirmation_invalid");
+  assert.equal(missingSessionScope.runtimeExecution, false);
 });
 
 test("local adapter fails closed for expired and cancelled pending confirmations", () => {
@@ -542,6 +560,61 @@ test("local adapter can opt into durable .flowdesk state materialization", () =>
     assert.equal(status.localState.durableStateMode, "durable_flowdesk_root");
     assert.equal(status.providerCall, false);
     assert.equal(status.runtimeExecution, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("local adapter fails closed when durable state cannot be written", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-local-adapter-blocked-"));
+  const blockedRoot = join(root, "not-a-directory");
+  try {
+    writeFileSync(blockedRoot, "not a directory", "utf8");
+    const session = createFlowDeskLocalNonDispatchAdapterSession(new Date("2026-05-17T00:00:00.000Z"), undefined, { durableStateRootDir: blockedRoot });
+    const plan = session.evaluate("flowdesk_plan", {
+      schema_version: "flowdesk.plan.request.v1",
+      request_id: "request-durable-failure",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-durable-failure",
+      session_ref: "session-durable-failure",
+      redacted_intake_ref: "intake-durable-failure",
+      goal_summary: "구현 계획을 세워줘",
+      scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
+      risk_hint: "ordinary Release 1 command-backed steering only"
+    });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.handler.ok, true);
+    assert.equal(plan.localState.stateWriteApplied, false);
+    assert.equal(plan.localState.workflowState, undefined);
+    assert.equal(plan.localState.durableStateWriteApplied, false);
+    assert.equal(plan.providerCall, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("server option wires durable state root into local routing session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-server-durable-"));
+  try {
+    const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+      [flowdeskNaturalLanguageRoutingOption]: true,
+      [flowdeskDurableStateRootOption]: root
+    }) as ChatMessageHooks;
+    const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
+    assert.ok(intakeTool);
+    const plan = JSON.parse(await intakeTool.execute({
+      schema_version: "flowdesk.chat_intake.request.v1",
+      request_id: "request-server-durable-plan",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-server-durable",
+      session_ref: "session-server-durable",
+      redacted_intake_ref: "intake-server-durable",
+      intake_summary: "구현 계획을 세워줘",
+      source_surface: "chat.message"
+    }, undefined as never)) as NaturalLanguageRoutingTestResult;
+    assert.equal(plan.routedToolResult?.localState?.durableStateMode, "durable_flowdesk_root");
+    assert.equal(plan.routedToolResult?.localState?.durableStateWriteApplied, true);
+    assert.equal(existsSync(join(root, ".flowdesk/workflows/workflow-server-durable/workflow.json")), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

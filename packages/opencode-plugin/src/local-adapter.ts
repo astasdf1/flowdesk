@@ -417,7 +417,7 @@ function createPendingConfirmation(request: Record<string, unknown>, parts: Retu
 }
 
 function matchesOptionalScope(expected: string | undefined, actual: unknown): boolean {
-  return expected === undefined || actual === undefined || actual === expected;
+  return expected === undefined || actual === expected;
 }
 
 function validatePendingConfirmation(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): ValidationResult {
@@ -458,15 +458,15 @@ function cancelPendingConfirmation(state: LocalAdapterState, request: Record<str
 
 function applyAdapterWriteIntents(state: LocalAdapterState, intents: readonly FlowDeskStateWriteIntent[], parts: ReturnType<typeof nowParts>): boolean {
   try {
-    state.inMemoryState = applyWriteIntentsToInMemoryState(intents, state.inMemoryState, { now: parts.nowMs });
-    if (state.durableStateRootDir === undefined) {
+    if (state.durableStateRootDir !== undefined) {
+      const durableResult = applyWriteIntentsToDurableState(state.durableStateRootDir, intents, { now: parts.nowMs });
+      state.lastDurableStateWriteApplied = durableResult.ok;
+      if (!durableResult.ok) return false;
+      state.durableStateWrites += durableResult.writtenPaths?.length ?? 0;
+    } else {
       state.lastDurableStateWriteApplied = false;
-      return true;
     }
-    const durableResult = applyWriteIntentsToDurableState(state.durableStateRootDir, intents, { now: parts.nowMs });
-    state.lastDurableStateWriteApplied = durableResult.ok;
-    if (!durableResult.ok) return false;
-    state.durableStateWrites += durableResult.writtenPaths?.length ?? 0;
+    state.inMemoryState = applyWriteIntentsToInMemoryState(intents, state.inMemoryState, { now: parts.nowMs });
     return true;
   } catch {
     state.lastDurableStateWriteApplied = false;
@@ -531,10 +531,16 @@ function recordPlanningState(state: LocalAdapterState, request: Record<string, u
   const lane = laneRecordFor(request, parts, "planning_draft");
   const laneIntent = prepareLaneRecordWriteIntent("session-local", lane).writeIntent;
   if (laneIntent === undefined) return false;
-  state.laneRecords = [lane];
   if (!applyAdapterWriteIntents(state, [laneIntent], parts)) return false;
-  if (requiresRunConfirmation(request)) state.pendingConfirmation = createPendingConfirmation(request, parts, typeof request.plan_revision_id === "string" ? request.plan_revision_id : id("plan", request));
-  return updateWorkflowState(state, request, parts, requiresRunConfirmation(request) ? "plan_pending_approval" : "ready_to_run");
+  const previousLaneRecords = state.laneRecords;
+  state.laneRecords = [lane];
+  const pendingConfirmation = requiresRunConfirmation(request);
+  if (!updateWorkflowState(state, request, parts, pendingConfirmation ? "plan_pending_approval" : "ready_to_run")) {
+    state.laneRecords = previousLaneRecords;
+    return false;
+  }
+  if (pendingConfirmation) state.pendingConfirmation = createPendingConfirmation(request, parts, typeof request.plan_revision_id === "string" ? request.plan_revision_id : id("plan", request));
+  return true;
 }
 
 function recordRunState(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): boolean {
@@ -565,10 +571,17 @@ function recordRunState(state: LocalAdapterState, request: Record<string, unknow
   const attemptIntent = prepareAttemptRecordWriteIntent(attempt).writeIntent;
   const laneIntent = prepareLaneRecordWriteIntent("session-local", lane).writeIntent;
   if (attemptIntent === undefined || laneIntent === undefined) return false;
+  if (!applyAdapterWriteIntents(state, [attemptIntent, laneIntent], parts)) return false;
+  const previousAttempt = state.currentAttempt;
+  const previousLaneRecords = state.laneRecords;
   state.currentAttempt = attempt;
   state.laneRecords = [...state.laneRecords.filter((record) => record.lane_id !== lane.lane_id), lane];
-  if (!applyAdapterWriteIntents(state, [attemptIntent, laneIntent], parts)) return false;
-  return updateWorkflowState(state, request, parts, "complete");
+  if (!updateWorkflowState(state, request, parts, "complete")) {
+    state.currentAttempt = previousAttempt;
+    state.laneRecords = previousLaneRecords;
+    return false;
+  }
+  return true;
 }
 
 function statusContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): NonNullable<FlowDeskCommandBackedHandlerContextV1["status"]> {
@@ -663,8 +676,9 @@ export function createFlowDeskLocalNonDispatchAdapterSession(now: FlowDeskLocalC
       if (handler.ok && toolName === "flowdesk_plan") stateWriteApplied = recordPlanningState(state, record, parts);
       if (handler.ok && toolName === "flowdesk_run") stateWriteApplied = recordRunState(state, record, parts, permissionProvider);
       if (handler.ok && toolName === "flowdesk_abort") cancelPendingConfirmation(state, record, parts);
+      const adapterValidation = handler.ok && (toolName === "flowdesk_plan" || toolName === "flowdesk_run") && !stateWriteApplied ? invalid("local adapter state write failed") : valid();
       return {
-        ...valid(),
+        ...adapterValidation,
         adapterProfile: flowdeskLocalNonDispatchAdapterProfile,
         toolName,
         handler,

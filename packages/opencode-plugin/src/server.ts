@@ -32,6 +32,7 @@ export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption = "fds1SchemaConversionProbe" as const;
 export const flowdeskLocalNonDispatchAdapterOption = "localNonDispatchAdapter" as const;
 export const flowdeskNaturalLanguageRoutingOption = "naturalLanguageRouting" as const;
+export const flowdeskDurableStateRootOption = "durableStateRoot" as const;
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
@@ -338,8 +339,13 @@ function isNaturalLanguageRoutingEnabled(options?: PluginOptions): boolean {
   return options?.[flowdeskNaturalLanguageRoutingOption] === true;
 }
 
+function durableStateRootFromOptions(options?: PluginOptions): string | undefined {
+  const value = options?.[flowdeskDurableStateRootOption];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
 const flowdeskServerPlugin: Plugin = async (_input, options) => {
-  const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession() : undefined;
+  const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, { durableStateRootDir: durableStateRootFromOptions(options) }) : undefined;
   const tools: Record<string, FlowDeskOpenCodeTool> = {
     [flowdeskPreSpikeDoctorToolName]: tool({
       description: "Report FlowDesk plugin load status without enabling production tools or dispatch.",
