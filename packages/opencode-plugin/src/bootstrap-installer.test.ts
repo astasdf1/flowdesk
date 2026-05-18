@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES } from "@flowdesk/core";
-import { installFlowDeskRelease1Bootstrap } from "./index.js";
+import { flowDeskBootstrapProfileRootRef, installFlowDeskRelease1Bootstrap } from "./index.js";
 
-function typedConfirmation(targetProfileRef: string, profileRootRef = "profile-root-release1") {
+function typedConfirmation(targetProfileRef: string, profileRootDir: string, suffix: string) {
   return {
-    confirmationRef: "confirmation-release1",
+    confirmationRef: `confirmation-release1-${suffix}`,
     targetProfileRef,
-    profileRootRef,
+    profileRootRef: flowDeskBootstrapProfileRootRef(profileRootDir),
     installPlanRef: `install-plan-${targetProfileRef}`,
     rollbackPlanRef: `rollback-plan-${targetProfileRef}`,
     expiresAt: "2026-05-19T00:10:00.000Z",
@@ -27,8 +27,7 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
       profileRootDir: profileRoot,
       durableStateRootDir: durableRoot,
       targetProfileRef: "profile-release1",
-      profileRootRef: "profile-root-release1",
-      typedConfirmation: typedConfirmation("profile-release1"),
+      typedConfirmation: typedConfirmation("profile-release1", profileRoot, "happy"),
       now: new Date("2026-05-19T00:00:00.000Z")
     });
 
@@ -68,8 +67,7 @@ test("Release 1 bootstrap installer fails before writes without exact typed conf
       profileRootDir: profileRoot,
       durableStateRootDir: durableRoot,
       targetProfileRef: "profile-release1",
-      profileRootRef: "profile-root-release1",
-      typedConfirmation: { ...typedConfirmation("profile-release1"), typedPhrase: "install it" },
+      typedConfirmation: { ...typedConfirmation("profile-release1", profileRoot, "invalid-phrase"), typedPhrase: "install it" },
       now: new Date("2026-05-19T00:00:00.000Z")
     });
 
@@ -96,8 +94,7 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
       profileRootDir: profileRoot,
       durableStateRootDir: blockedDurableRoot,
       targetProfileRef: "profile-release1",
-      profileRootRef: "profile-root-release1",
-      typedConfirmation: typedConfirmation("profile-release1"),
+      typedConfirmation: typedConfirmation("profile-release1", profileRoot, "rollback"),
       now: new Date("2026-05-19T00:00:00.000Z")
     });
 
@@ -113,5 +110,66 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
   } finally {
     rmSync(profileRoot, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Release 1 bootstrap installer rejects confirmation replay to a different profile root", () => {
+  const originalProfileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-original-"));
+  const replayProfileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-replay-"));
+  const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-replay-"));
+  try {
+    const confirmation = typedConfirmation("profile-release1", originalProfileRoot, "replay");
+    const result = installFlowDeskRelease1Bootstrap({
+      profileRootDir: replayProfileRoot,
+      durableStateRootDir: durableRoot,
+      targetProfileRef: "profile-release1",
+      typedConfirmation: confirmation,
+      now: new Date("2026-05-19T00:00:00.000Z")
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.commandFilesWritten, 0);
+    assert.equal(result.bootstrapArtifactsWritten, 0);
+    assert.equal(existsSync(join(replayProfileRoot, "commands")), false);
+    assert.equal(existsSync(join(durableRoot, ".flowdesk")), false);
+    assert.equal(result.providerCall, false);
+  } finally {
+    rmSync(originalProfileRoot, { recursive: true, force: true });
+    rmSync(replayProfileRoot, { recursive: true, force: true });
+    rmSync(durableRoot, { recursive: true, force: true });
+  }
+});
+
+test("Release 1 bootstrap installer consumes successful confirmations once", () => {
+  const firstProfileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-consume-first-"));
+  const secondProfileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-consume-second-"));
+  const firstDurableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-consume-first-"));
+  const secondDurableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-consume-second-"));
+  try {
+    const confirmation = typedConfirmation("profile-consume", firstProfileRoot, "consume");
+    const first = installFlowDeskRelease1Bootstrap({
+      profileRootDir: firstProfileRoot,
+      durableStateRootDir: firstDurableRoot,
+      targetProfileRef: "profile-consume",
+      typedConfirmation: confirmation,
+      now: new Date("2026-05-19T00:00:00.000Z")
+    });
+    assert.equal(first.ok, true);
+
+    const replay = installFlowDeskRelease1Bootstrap({
+      profileRootDir: secondProfileRoot,
+      durableStateRootDir: secondDurableRoot,
+      targetProfileRef: "profile-consume",
+      typedConfirmation: { ...confirmation, profileRootRef: flowDeskBootstrapProfileRootRef(secondProfileRoot) },
+      now: new Date("2026-05-19T00:00:00.000Z")
+    });
+    assert.equal(replay.ok, false);
+    assert.equal(replay.commandFilesWritten, 0);
+    assert.equal(existsSync(join(secondProfileRoot, "commands")), false);
+  } finally {
+    rmSync(firstProfileRoot, { recursive: true, force: true });
+    rmSync(secondProfileRoot, { recursive: true, force: true });
+    rmSync(firstDurableRoot, { recursive: true, force: true });
+    rmSync(secondDurableRoot, { recursive: true, force: true });
   }
 });

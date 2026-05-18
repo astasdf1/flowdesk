@@ -31,7 +31,6 @@ export interface FlowDeskRelease1BootstrapInstallRequestV1 {
   profileRootDir: string;
   durableStateRootDir: string;
   targetProfileRef: string;
-  profileRootRef: string;
   typedConfirmation: FlowDeskRelease1BootstrapTypedConfirmationV1;
   now?: Date;
 }
@@ -69,6 +68,8 @@ const disabledBootstrapInstallAuthority = {
   hardCancelOrNoReplyAuthority: false
 } as const;
 
+const consumedBootstrapConfirmationRefs = new Set<string>();
+
 function resultBase(): Pick<FlowDeskRelease1BootstrapInstallResultV1, "bootstrapArtifactsWritten" | "commandFilesWritten" | "aliasFilesWritten"> & typeof disabledBootstrapInstallAuthority {
   return { bootstrapArtifactsWritten: 0, commandFilesWritten: 0, aliasFilesWritten: 0, ...disabledBootstrapInstallAuthority };
 }
@@ -77,12 +78,26 @@ function expectedTypedPhrase(targetProfileRef: string, installPlanId: string): s
   return `install FlowDesk release1 ${targetProfileRef} ${installPlanId}`;
 }
 
+function safeHash(value: string): string {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+export function flowDeskBootstrapProfileRootRef(profileRootDir: string): string {
+  return `profile-root-${safeHash(resolve(profileRootDir))}`;
+}
+
 function validateRequest(request: FlowDeskRelease1BootstrapInstallRequestV1, artifactIds: ReturnType<typeof ids>, now: Date): ValidationResult {
   const errors: string[] = [];
   if (typeof request.profileRootDir !== "string" || request.profileRootDir.trim().length === 0) errors.push("profileRootDir is required");
   if (typeof request.durableStateRootDir !== "string" || request.durableStateRootDir.trim().length === 0) errors.push("durableStateRootDir is required");
   errors.push(...validateOpaqueRef(request.targetProfileRef, "targetProfileRef").errors);
-  errors.push(...validateOpaqueRef(request.profileRootRef, "profileRootRef").errors);
+  const derivedProfileRootRef = flowDeskBootstrapProfileRootRef(request.profileRootDir);
+  errors.push(...validateOpaqueRef(derivedProfileRootRef, "derivedProfileRootRef").errors);
   const confirmation = request.typedConfirmation;
   if (confirmation === undefined || confirmation === null || typeof confirmation !== "object") errors.push("typedConfirmation is required");
   else {
@@ -91,8 +106,9 @@ function validateRequest(request: FlowDeskRelease1BootstrapInstallRequestV1, art
     errors.push(...validateOpaqueRef(confirmation.profileRootRef, "typedConfirmation.profileRootRef").errors);
     errors.push(...validateOpaqueRef(confirmation.installPlanRef, "typedConfirmation.installPlanRef").errors);
     errors.push(...validateOpaqueRef(confirmation.rollbackPlanRef, "typedConfirmation.rollbackPlanRef").errors);
+    if (consumedBootstrapConfirmationRefs.has(confirmation.confirmationRef)) errors.push("typed confirmation has already been consumed");
     if (confirmation.targetProfileRef !== request.targetProfileRef) errors.push("typed confirmation must bind target profile");
-    if (confirmation.profileRootRef !== request.profileRootRef) errors.push("typed confirmation must bind selected profile root");
+    if (confirmation.profileRootRef !== derivedProfileRootRef) errors.push("typed confirmation must bind selected profile root");
     if (confirmation.installPlanRef !== artifactIds.installPlanId) errors.push("typed confirmation must bind install plan");
     if (confirmation.rollbackPlanRef !== artifactIds.rollbackPlanId) errors.push("typed confirmation must bind rollback plan");
     if (confirmation.actorClass !== "user") errors.push("typed confirmation actor must be user");
@@ -220,6 +236,8 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
     const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
     return { ...invalid(...durable.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, commandFilesWritten: 0, bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
   }
+
+  consumedBootstrapConfirmationRefs.add(request.typedConfirmation.confirmationRef);
 
   return {
     ...valid(),
