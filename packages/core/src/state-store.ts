@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
 import type {
   FlowDeskActiveAttemptLockV1,
   FlowDeskAttemptRecordV1,
@@ -64,6 +66,15 @@ export interface FlowDeskStateWritePlan {
   intents: FlowDeskStateWriteIntent[];
 }
 
+export interface FlowDeskDurableStateApplyResult extends ValidationResult {
+  rootDir?: string;
+  writtenPaths?: string[];
+  realOpenCodeDispatch: false;
+  actualLaneLaunch: false;
+  providerCall: false;
+  runtimeExecution: false;
+}
+
 export interface FlowDeskStateValidationOptions {
   now?: number;
 }
@@ -77,6 +88,13 @@ const workflowSchemas = new Set([
 ]);
 
 const sessionSchemas = new Set(["flowdesk.lane_record.v1", "flowdesk.audit_record.v1", "flowdesk.debug_export_manifest.v1"]);
+
+const disabledDurableStateAuthority = {
+  realOpenCodeDispatch: false,
+  actualLaneLaunch: false,
+  providerCall: false,
+  runtimeExecution: false
+} as const;
 
 function cloneRecord<TRecord>(record: TRecord): TRecord {
   return JSON.parse(JSON.stringify(record)) as TRecord;
@@ -307,4 +325,38 @@ export function applyWriteIntentsToInMemoryState(intents: readonly FlowDeskState
     }
   }
   return state;
+}
+
+function resolveFlowDeskTarget(rootDir: string, relativePath: string): { root: string; target: string; temp: string } {
+  const root = resolve(rootDir);
+  const target = resolve(root, relativePath);
+  const temp = resolve(root, `${relativePath}.tmp-${Date.now().toString(36)}`);
+  const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  if (target !== root && !target.startsWith(rootPrefix)) throw new Error("durable state target escapes rootDir");
+  if (temp !== root && !temp.startsWith(rootPrefix)) throw new Error("durable state temp target escapes rootDir");
+  return { root, target, temp };
+}
+
+export function applyWriteIntentsToDurableState(rootDir: string, intents: readonly FlowDeskStateWriteIntent[], options: FlowDeskStateValidationOptions = {}): FlowDeskDurableStateApplyResult {
+  if (typeof rootDir !== "string" || rootDir.trim().length === 0) return { ...invalid("rootDir is required"), ...disabledDurableStateAuthority };
+  const plan = createFlowDeskStateWritePlan(intents, options);
+  if (!plan.ok || plan.plan === undefined) return { ...invalid(...plan.errors), ...disabledDurableStateAuthority };
+  const writtenPaths: string[] = [];
+  try {
+    const root = resolve(rootDir);
+    for (const intent of plan.plan.intents) {
+      const resolved = resolveFlowDeskTarget(root, intent.path);
+      mkdirSync(dirname(resolved.target), { recursive: true });
+      const serialized = JSON.stringify(intent.record);
+      const content = intent.operation === "append_jsonl" && existsSync(resolved.target)
+        ? `${readFileSync(resolved.target, "utf8")}${serialized}\n`
+        : `${serialized}${intent.operation === "append_jsonl" ? "\n" : ""}`;
+      writeFileSync(resolved.temp, content, "utf8");
+      renameSync(resolved.temp, resolved.target);
+      writtenPaths.push(intent.path);
+    }
+    return { ...valid(), rootDir: root, writtenPaths, ...disabledDurableStateAuthority };
+  } catch (error) {
+    return { ...invalid(error instanceof Error ? error.message : "durable state write failed"), writtenPaths, ...disabledDurableStateAuthority };
+  }
 }

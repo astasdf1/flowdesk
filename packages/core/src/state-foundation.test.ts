@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   activeAttemptLockPath,
+  applyWriteIntentsToDurableState,
   applyWriteIntentsToInMemoryState,
   attemptRecordPath,
   auditEventToAuditRecord,
@@ -272,6 +275,34 @@ test("valid persisted workflow and redacted session records prepare deterministi
   assert.match(memoryState.get(".flowdesk/sessions/session-123/audit.jsonl") ?? "", /"audit_ref":"audit-123"/);
 });
 
+test("validated write intents materialize durable .flowdesk files atomically", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-state-"));
+  try {
+    const workflowIntent = prepareWorkflowRecordWriteIntent(workflowRecord()).writeIntent;
+    const laneIntent = prepareLaneRecordWriteIntent(sessionId, laneRecord()).writeIntent;
+    assert.ok(workflowIntent);
+    assert.ok(laneIntent);
+
+    const first = applyWriteIntentsToDurableState(root, [workflowIntent, laneIntent], { now: validationClock });
+    assert.equal(first.ok, true);
+    assert.deepEqual(first.writtenPaths, [".flowdesk/workflows/workflow-123/workflow.json", ".flowdesk/sessions/session-123/lanes.jsonl"]);
+    assert.equal(first.realOpenCodeDispatch, false);
+    assert.equal(first.providerCall, false);
+
+    const workflowPath = join(root, ".flowdesk/workflows/workflow-123/workflow.json");
+    const lanesPath = join(root, ".flowdesk/sessions/session-123/lanes.jsonl");
+    assert.equal(existsSync(workflowPath), true);
+    assert.equal(JSON.parse(readFileSync(workflowPath, "utf8")).workflow_id, workflowId);
+    assert.match(readFileSync(lanesPath, "utf8"), /"lane_id":"lane-123"/);
+
+    const second = applyWriteIntentsToDurableState(root, [laneIntent], { now: validationClock });
+    assert.equal(second.ok, true);
+    assert.equal(readFileSync(lanesPath, "utf8").trim().split("\n").length, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("invalid persisted records fail closed before write intents", () => {
   assert.equal(prepareWorkflowRecordWriteIntent({ ...workflowRecord(), unknown: true } as never).ok, false);
   assert.equal(prepareAuditRecordWriteIntent(sessionId, { ...auditRecord(), provider_payload: "raw" } as never).ok, false);
@@ -293,6 +324,21 @@ test("write plans and in-memory application reject forged unvalidated intents", 
   };
   assert.equal(createFlowDeskStateWritePlan([forgedRawRecord]).ok, false);
   assert.throws(() => applyWriteIntentsToInMemoryState([forgedRawRecord]));
+});
+
+test("durable state materialization rejects forged or unsafe write intents", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-state-unsafe-"));
+  try {
+    const validIntent = prepareWorkflowRecordWriteIntent(workflowRecord()).writeIntent;
+    assert.ok(validIntent);
+    const forged = { ...validIntent, path: "../outside.json" };
+    const result = applyWriteIntentsToDurableState(root, [forged], { now: validationClock });
+    assert.equal(result.ok, false);
+    assert.equal(result.writtenPaths?.length ?? 0, 0);
+    assert.equal(result.runtimeExecution, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("write plans reject mismatched schema, authority, operation, and path families", () => {
