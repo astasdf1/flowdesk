@@ -1,9 +1,17 @@
 {
   "name": "@flowdesk/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Core FlowDesk contracts and Release 1 boundaries.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astasdf1/flowdesk.git",
+    "directory": "packages/core"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist/**/*.d.ts",
     "dist/**/*.d.ts.map",
