@@ -452,6 +452,7 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
   assert.match(compatibility.summary, /non-dispatch command registration is ready/);
   assert.equal(compatibility.category, "informational");
   assert.ok(compatibility.refs.some((ref) => ref.startsWith("production-readiness-passed-")));
+  assert.ok(compatibility.refs.includes("top_tier_multi_perspective_review_mode=planned"));
   assert.ok(providerReadiness);
   assert.equal(providerReadiness.category, "degraded_mode_warning");
   assert.match(providerReadiness.summary, /auth readiness and fresh real usage\/quota\/reset evidence/);
