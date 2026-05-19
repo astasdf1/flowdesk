@@ -634,6 +634,12 @@ interface FlowDeskConformanceRuntimeMetadataV1 {
   disabled_modes: DisabledModeV1[];
 }
 
+// `mode_fields` is the forward-compatible location for later-gate compatibility flags
+// that are not part of the Release 1 fixed field set. Planned entries include
+// `top_tier_multi_perspective_review_mode=disabled|planned|conformance_ready|release_gate_ready`.
+// These entries are diagnostic compatibility metadata only and cannot authorize dispatch,
+// reviewer launch, fallback, or approval by themselves.
+
 interface FlowDeskConformanceEvidenceRecordV1 {
   schema_version: "flowdesk.conformance_evidence_record.v1";
   evidence_ref: OpaqueRef;
