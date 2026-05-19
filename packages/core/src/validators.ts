@@ -1556,3 +1556,94 @@ export function validateSessionRecordCannotReplaceWorkflowState(value: unknown):
   if (value.schema_version === "flowdesk.lane_record.v1") return validateLaneRecordV1(value);
   return validateDebugExportManifestV1(value);
 }
+
+const TOP_TIER_REVIEWER_PERSPECTIVES = ["policy_security", "architecture", "verification_implementation"] as const;
+const TOP_TIER_BINDING_AVAILABILITY_STATES = ["registered_available", "registered_unavailable", "registered_blocked"] as const;
+const TOP_TIER_LANE_INCLUSION_STATES = ["included", "excluded", "blocked"] as const;
+const TOP_TIER_REVIEW_INVENTORY_DECISIONS = ["ready", "blocked", "policy_change_required"] as const;
+
+const FORBIDDEN_REVIEWER_AUTHORITY_KEYS = [
+  "trusted",
+  "approve_dispatch",
+  "guard_decision",
+  "guard_approved_dispatch",
+  "real_dispatch",
+  "actual_dispatch",
+  "managed_dispatch",
+  "fallback_authorized",
+  "noReply"
+] as const;
+
+function rejectForbiddenAuthorityKeys(value: Record<string, unknown>, label: string): ValidationResult {
+  const present = FORBIDDEN_REVIEWER_AUTHORITY_KEYS.filter((key) => key in value);
+  return present.length === 0 ? valid() : invalid(`${label} cannot carry authority keys: ${present.join(",")}`);
+}
+
+export function validateTopTierReviewerBindingV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("top tier reviewer binding must be an object");
+  const providerFamily = value.provider_family as ProviderFamily | undefined;
+  return combine([
+    validateSchemaArtifactValue("flowdesk.top_tier_reviewer_binding.v1", value),
+    rejectForbiddenAuthorityKeys(value, "top tier reviewer binding"),
+    validateOpaqueId(value.binding_id, "binding_id"),
+    value.reviewer_profile_id === "reviewer" ? valid() : invalid("reviewer_profile_id must be canonical reviewer"),
+    typeof value.binding_label === "string" && value.binding_label.length > 0 && value.binding_label.length <= 64 && /^[a-z][a-z0-9_]*$/.test(value.binding_label) ? validateNoForbiddenRawPayloads(value.binding_label, "binding_label") : invalid("binding_label must be a bounded lowercase identifier"),
+    validateProviderFamily(providerFamily),
+    providerFamily === "unknown" || providerFamily === "all" ? invalid("top tier reviewer binding provider_family must be concrete") : valid(),
+    validateConcreteProviderQualifiedModelId(value.provider_qualified_model_id, "top tier reviewer binding provider_qualified_model_id"),
+    typeof value.model_family === "string" && value.model_family.length > 0 && value.model_family.length <= 120 ? validateNoForbiddenRawPayloads(value.model_family, "model_family") : invalid("model_family is required"),
+    value.highest_tier_eligible === true ? valid() : invalid("highest_tier_eligible must be true"),
+    validateOpaqueRef(value.registry_entry_ref, "registry_entry_ref"),
+    validateOpaqueRef(value.policy_pack_eligibility_ref, "policy_pack_eligibility_ref"),
+    isEnumValue(value.availability, TOP_TIER_BINDING_AVAILABILITY_STATES) ? valid() : invalid("availability is invalid"),
+    value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier reviewer binding"),
+    validateTimestamp(value.observed_at, "observed_at"),
+    validateTimestamp(value.expires_at, "expires_at"),
+    validateNoForbiddenRawPayloads(value, "top_tier_reviewer_binding")
+  ]);
+}
+
+export function validateTopTierReviewerLanePlanV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("top tier reviewer lane plan must be an object");
+  return combine([
+    validateSchemaArtifactValue("flowdesk.top_tier_reviewer_lane_plan.v1", value),
+    rejectForbiddenAuthorityKeys(value, "top tier reviewer lane plan"),
+    validateOpaqueId(value.lane_plan_id, "lane_plan_id"),
+    validateOpaqueRef(value.binding_ref, "binding_ref"),
+    isEnumValue(value.perspective, TOP_TIER_REVIEWER_PERSPECTIVES) ? valid() : invalid("perspective is invalid"),
+    isEnumValue(value.inclusion_state, TOP_TIER_LANE_INCLUSION_STATES) ? valid() : invalid("inclusion_state is invalid"),
+    typeof value.reason_label === "string" && value.reason_label.length > 0 && value.reason_label.length <= 200 ? validateNoForbiddenRawPayloads(value.reason_label, "reason_label") : invalid("reason_label is required"),
+    validateStringArray(value.safe_next_actions, "safe_next_actions", SAFE_NEXT_ACTIONS, 8),
+    value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier reviewer lane plan"),
+    validateNoForbiddenRawPayloads(value, "top_tier_reviewer_lane_plan")
+  ]);
+}
+
+export function validateTopTierReviewBindingInventoryV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("top tier review binding inventory must be an object");
+  return combine([
+    validateSchemaArtifactValue("flowdesk.top_tier_review_binding_inventory.v1", value),
+    rejectForbiddenAuthorityKeys(value, "top tier review binding inventory"),
+    validateOpaqueId(value.inventory_id, "inventory_id"),
+    validateOpaqueId(value.workflow_id, "workflow_id"),
+    validateOpaqueId(value.plan_revision_id, "plan_revision_id"),
+    validateTimestamp(value.created_at, "created_at"),
+    typeof value.redaction_version === "string" && value.redaction_version.length > 0 && value.redaction_version.length <= 128 ? validateNoForbiddenRawPayloads(value.redaction_version, "redaction_version") : invalid("redaction_version is required"),
+    validateOpaqueRefArray(value.registered_binding_refs, "registered_binding_refs", 32),
+    validateOpaqueRefArray(value.available_binding_refs, "available_binding_refs", 32),
+    validateOpaqueRefArray(value.unavailable_binding_refs, "unavailable_binding_refs", 32),
+    validateOpaqueRefArray(value.blocked_binding_refs, "blocked_binding_refs", 32),
+    validateOpaqueRefArray(value.lane_plan_refs, "lane_plan_refs", 64),
+    Array.isArray(value.registered_binding_refs) && value.registered_binding_refs.length > 0 ? valid() : invalid("registered_binding_refs must list at least one binding"),
+    Array.isArray(value.lane_plan_refs) && value.lane_plan_refs.length > 0 ? valid() : invalid("lane_plan_refs must list at least one lane plan"),
+    typeof value.max_concurrent_lane_count === "number" && Number.isInteger(value.max_concurrent_lane_count) && value.max_concurrent_lane_count > 0 && value.max_concurrent_lane_count <= 32 ? valid() : invalid("max_concurrent_lane_count must be a positive bounded integer"),
+    typeof value.budget_cap_label === "string" && value.budget_cap_label.length > 0 && value.budget_cap_label.length <= 200 ? validateNoForbiddenRawPayloads(value.budget_cap_label, "budget_cap_label") : invalid("budget_cap_label is required"),
+    typeof value.quota_reserve_label === "string" && value.quota_reserve_label.length > 0 && value.quota_reserve_label.length <= 200 ? validateNoForbiddenRawPayloads(value.quota_reserve_label, "quota_reserve_label") : invalid("quota_reserve_label is required"),
+    typeof value.timeout_label === "string" && value.timeout_label.length > 0 && value.timeout_label.length <= 200 ? validateNoForbiddenRawPayloads(value.timeout_label, "timeout_label") : invalid("timeout_label is required"),
+    typeof value.retry_budget_label === "string" && value.retry_budget_label.length > 0 && value.retry_budget_label.length <= 200 ? validateNoForbiddenRawPayloads(value.retry_budget_label, "retry_budget_label") : invalid("retry_budget_label is required"),
+    isEnumValue(value.inventory_decision, TOP_TIER_REVIEW_INVENTORY_DECISIONS) ? valid() : invalid("inventory_decision is invalid"),
+    validateStringArray(value.safe_next_actions, "safe_next_actions", SAFE_NEXT_ACTIONS, 8),
+    value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier review binding inventory"),
+    validateNoForbiddenRawPayloads(value, "top_tier_review_binding_inventory")
+  ]);
+}
