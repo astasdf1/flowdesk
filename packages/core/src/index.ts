@@ -42,6 +42,7 @@ export * from "./release1-contracts.js";
 export * from "./retry.js";
 export * from "./schema-artifacts.js";
 export * from "./schema-registry.js";
+export * from "./session-evidence.js";
 export * from "./state-paths.js";
 export * from "./state-store.js";
 export * from "./status.js";

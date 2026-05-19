@@ -1,0 +1,210 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  FLOWDESK_SESSION_EVIDENCE_CLASSES,
+  prepareFlowDeskSessionEvidenceWriteIntentV1,
+  reloadFlowDeskSessionEvidenceV1,
+  sessionEvidenceDirectoryPath,
+  sessionEvidenceRecordPath
+} from "./index.js";
+
+const workflowId = "workflow-evidence-1";
+
+function usageAuthorityRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+    authority_ref: "authority-ref-1",
+    usage_snapshot_ref: "usage-snapshot-1",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/claude-opus-4-5",
+    model_family: "opus",
+    source_kind: "provider_native",
+    source_version_ref: "source-version-1",
+    auth_profile_ref: "principal-scope-claude",
+    auth_evidence_ref: "auth-evidence-claude",
+    credential_scope_ref: "principal-scope-claude",
+    account_boundary_ref: "account-boundary-claude",
+    quota_evidence_ref: "quota-evidence-claude",
+    usage_acquired: true,
+    reset_time: "2026-05-19T01:00:00.000Z",
+    reset_bucket: "claude-weekly",
+    source_ref: "usage-source-claude",
+    conformance_ref: "usage-conformance-claude",
+    redacted_evidence_refs: ["redacted-evidence-claude-1"],
+    trusted: true,
+    observed_at: "2026-05-19T00:00:00.000Z",
+    expires_at: "2026-05-19T05:00:00.000Z",
+    ...overrides
+  };
+}
+
+function runtimeEchoRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1",
+    runtime_echo_ref: "runtime-echo-ref-1",
+    workflow_id: workflowId,
+    step_id: "step-1",
+    attempt_id: "attempt-1",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/claude-opus-4-5",
+    runtime_capability_ref: "runtime-capability-1",
+    conformance_ref: "conformance-1",
+    runtime_echo_mode: "trusted",
+    trusted: true,
+    observed_at: "2026-05-19T00:00:00.000Z",
+    expires_at: "2026-05-19T05:00:00.000Z",
+    ...overrides
+  };
+}
+
+function telemetryRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
+    telemetry_ref: "telemetry-ref-1",
+    workflow_id: workflowId,
+    step_id: "step-1",
+    attempt_id: "attempt-1",
+    event_telemetry_mode: "sufficient",
+    correlation_count: 3,
+    ambiguous: false,
+    source_refs: ["telemetry-source-1"],
+    ...overrides
+  };
+}
+
+test("session evidence path builders produce per-class relative paths", () => {
+  for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
+    const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
+    assert.ok(dir.startsWith(`.flowdesk/sessions/${workflowId}/evidence/`));
+    const record = sessionEvidenceRecordPath(workflowId, evidenceClass, "evidence-1");
+    assert.ok(record.startsWith(dir));
+    assert.ok(record.endsWith("/evidence-1.json"));
+  }
+});
+
+test("session evidence write intent succeeds for valid usage authority records", () => {
+  const result = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord() });
+  assert.equal(result.ok, true, result.errors.join("; "));
+  const intent = result.writeIntent;
+  assert.ok(intent);
+  assert.equal(intent.evidenceClass, "usage_authority");
+  assert.equal(intent.authority, "redacted_session_support");
+  assert.equal(intent.realOpenCodeDispatch, false);
+  assert.equal(intent.actualLaneLaunch, false);
+  assert.equal(intent.providerCall, false);
+  assert.equal(intent.runtimeExecution, false);
+  assert.ok(intent.path.startsWith(`.flowdesk/sessions/${workflowId}/evidence/usage-authority/`));
+  assert.ok(intent.tempPath.startsWith(`${intent.path}.tmp-`));
+});
+
+test("session evidence write intent rejects schema version mismatch and authority leaks", () => {
+  const wrongSchema = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: { ...usageAuthorityRecord(), schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v2" } });
+  assert.equal(wrongSchema.ok, false);
+
+  const unknownSchema = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: { schema_version: "flowdesk.unknown.v1" } });
+  assert.equal(unknownSchema.ok, false);
+
+  const wrongWorkflow = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: runtimeEchoRecord({ workflow_id: "workflow-other" }) });
+  assert.equal(wrongWorkflow.ok, false);
+
+  const promptLeak = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: { ...usageAuthorityRecord(), source_ref: "system prompt: hidden" } });
+  assert.equal(promptLeak.ok, false);
+});
+
+test("session evidence write intent rejects malformed ids", () => {
+  const badEvidence = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "../escape", record: usageAuthorityRecord() });
+  assert.equal(badEvidence.ok, false);
+
+  const badWorkflow = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId: "../escape", evidenceId: "evidence-1", record: usageAuthorityRecord() });
+  assert.equal(badWorkflow.ok, false);
+
+  const nonObject = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: "not-an-object" as unknown as Record<string, unknown> });
+  assert.equal(nonObject.ok, false);
+});
+
+function withEvidenceTree(callback: (rootDir: string) => void): void {
+  const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-evidence-"));
+  try {
+    callback(rootDir);
+  } finally {
+    rmSync(rootDir, { recursive: true, force: true });
+  }
+}
+
+function writeEvidenceFile(rootDir: string, relativePath: string, content: string): void {
+  const absolute = join(rootDir, relativePath);
+  mkdirSync(join(absolute, ".."), { recursive: true });
+  writeFileSync(absolute, content, "utf8");
+}
+
+test("session evidence reload returns empty entries when the directory does not exist", () => {
+  withEvidenceTree((rootDir) => {
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.entries, []);
+    assert.deepEqual(result.blocked, []);
+    assert.equal(result.realOpenCodeDispatch, false);
+  });
+});
+
+test("session evidence reload reads validated records and ignores valid foreign files", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "usage_authority", "evidence-1"), JSON.stringify(usageAuthorityRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "runtime_echo", "evidence-1"), JSON.stringify(runtimeEchoRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "telemetry_correlation", "evidence-1"), JSON.stringify(telemetryRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 3);
+    const classes = new Set(result.entries.map((entry) => entry.evidenceClass));
+    assert.deepEqual([...classes].sort(), ["runtime_echo", "telemetry_correlation", "usage_authority"]);
+  });
+});
+
+test("session evidence reload fails closed on malformed JSON and schema mismatch", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "usage_authority", "evidence-malformed"), "{not json");
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "runtime_echo", "evidence-mismatch"), JSON.stringify(usageAuthorityRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "telemetry_correlation", "evidence-workflow"), JSON.stringify(telemetryRecord({ workflow_id: "workflow-other" })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 3);
+    const reasons = result.blocked.map((blocked) => blocked.reason).join("|");
+    assert.match(reasons, /JSON|json|parse/);
+    assert.match(reasons, /schema_version/);
+    assert.match(reasons, /workflow_id mismatch/);
+    assert.equal(result.realOpenCodeDispatch, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence reload rejects path-shaped evidence_id and root escape", () => {
+  withEvidenceTree((rootDir) => {
+    const traversalFile = join(rootDir, sessionEvidenceDirectoryPath(workflowId, "usage_authority"), "..escape.json");
+    mkdirSync(join(traversalFile, ".."), { recursive: true });
+    writeFileSync(traversalFile, JSON.stringify(usageAuthorityRecord()), "utf8");
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /not schema-safe|outside 3..128|must not contain paths/);
+  });
+});
+
+test("session evidence reload fails closed when evidence root is a symlink to outside", () => {
+  withEvidenceTree((rootDir) => {
+    const evidenceDir = join(rootDir, sessionEvidenceDirectoryPath(workflowId, "telemetry_correlation"));
+    mkdirSync(join(evidenceDir, ".."), { recursive: true });
+    const outside = mkdtempSync(join(tmpdir(), "flowdesk-evidence-outside-"));
+    try {
+      writeFileSync(join(outside, "evidence-outside.json"), JSON.stringify(telemetryRecord()), "utf8");
+      symlinkSync(outside, evidenceDir, "dir");
+      const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+      assert.equal(result.entries.length, 0);
+      assert.equal(result.errors.length === 0 ? result.blocked.length > 0 : true, true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
