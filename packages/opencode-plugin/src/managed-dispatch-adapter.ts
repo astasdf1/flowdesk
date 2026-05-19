@@ -4,7 +4,7 @@ import { evaluateManagedDispatchBetaGuardBoundaryV1 } from "@flowdesk/core";
 export const flowdeskManagedDispatchBetaAdapterProfile = "managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
 
 export type FlowDeskManagedDispatchBetaDispatchMethodV1 = "promptAsync" | "prompt";
-export type FlowDeskManagedDispatchBetaDispatchStatusV1 = "blocked_before_dispatch" | "dispatch_accepted" | "dispatch_completed";
+export type FlowDeskManagedDispatchBetaDispatchStatusV1 = "blocked_before_dispatch" | "dispatch_accepted" | "dispatch_completed" | "dispatch_failed";
 
 export interface FlowDeskManagedDispatchBetaDispatchRequestV1 {
   sessionId: string;
@@ -61,7 +61,25 @@ export interface FlowDeskManagedDispatchBetaDispatchResultV1 {
   verification: FlowDeskManagedDispatchBetaVerificationStatusV1;
 }
 
-export type FlowDeskManagedDispatchBetaAdapterResultV1 = FlowDeskManagedDispatchBetaBlockedResultV1 | FlowDeskManagedDispatchBetaDispatchResultV1;
+export interface FlowDeskManagedDispatchBetaDispatchFailedResultV1 {
+  adapterProfile: typeof flowdeskManagedDispatchBetaAdapterProfile;
+  status: "dispatch_failed";
+  dispatchAttempted: true;
+  dispatchMethod: FlowDeskManagedDispatchBetaDispatchMethodV1;
+  guardDecision: GuardBoundaryDecisionV1;
+  sessionId: string;
+  agent: string;
+  model: {
+    providerID: string;
+    modelID: string;
+  };
+  directory?: string;
+  redactedErrorCategory: "provider_api" | "runtime" | "unknown";
+  authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1;
+  verification: FlowDeskManagedDispatchBetaVerificationStatusV1;
+}
+
+export type FlowDeskManagedDispatchBetaAdapterResultV1 = FlowDeskManagedDispatchBetaBlockedResultV1 | FlowDeskManagedDispatchBetaDispatchResultV1 | FlowDeskManagedDispatchBetaDispatchFailedResultV1;
 
 export interface FlowDeskManagedDispatchBetaPromptOptionsV1 {
   path: { id: string };
@@ -176,7 +194,25 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   if (dispatch === undefined) return blocked(input.boundaryInput, guardDecision, "Injected OpenCode client is missing the requested session prompt method.");
 
   const options = dispatchOptions(input.request, model, text);
-  const response = await dispatch.call(input.client.session, options);
+  let response: unknown;
+  try {
+    response = await dispatch.call(input.client.session, options);
+  } catch {
+    return {
+      adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
+      status: "dispatch_failed",
+      dispatchAttempted: true,
+      dispatchMethod,
+      guardDecision,
+      sessionId: input.request.sessionId,
+      agent: input.request.agent,
+      model,
+      ...(input.request.directory === undefined ? {} : { directory: input.request.directory }),
+      redactedErrorCategory: "provider_api",
+      authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
+      verification: verificationFor(input.boundaryInput)
+    };
+  }
   return {
     adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
     status: dispatchMethod === "promptAsync" ? "dispatch_accepted" : "dispatch_completed",

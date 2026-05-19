@@ -3,6 +3,7 @@ import type {
   FlowDeskRelease1MinimumPortableCommandName,
   FlowDeskRelease1MinimumToolName,
   FlowDeskToolRequestEnvelopeV1,
+  ManagedDispatchBetaBoundaryInputV1,
   SafeNextAction
 } from "@flowdesk/core";
 import {
@@ -20,6 +21,12 @@ import {
 } from "./index.js";
 import { createFlowDeskLocalNonDispatchAdapterSession, type FlowDeskLocalClockV1, type FlowDeskLocalNonDispatchAdapterSessionV1, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
 import {
+  dispatchManagedDispatchBetaPromptV1,
+  type FlowDeskManagedDispatchBetaAdapterResultV1,
+  type FlowDeskManagedDispatchBetaDispatchRequestV1,
+  type FlowDeskManagedDispatchBetaOpenCodeClientV1
+} from "./managed-dispatch-adapter.js";
+import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
   getFlowDeskRelease1HandlerReadinessSummary,
   getFlowDeskRelease1ProductionReadinessSummary,
@@ -33,6 +40,8 @@ export const flowdeskFds1SchemaConversionProbeOption = "fds1SchemaConversionProb
 export const flowdeskLocalNonDispatchAdapterOption = "localNonDispatchAdapter" as const;
 export const flowdeskNaturalLanguageRoutingOption = "naturalLanguageRouting" as const;
 export const flowdeskDurableStateRootOption = "durableStateRoot" as const;
+export const flowdeskManagedDispatchBetaAdapterOption = "managedDispatchBetaAdapter" as const;
+export const flowdeskManagedDispatchBetaToolName = "flowdesk_managed_dispatch_beta" as const;
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
@@ -57,6 +66,11 @@ const disabledAuthority = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isManagedDispatchBetaClient(value: unknown): value is FlowDeskManagedDispatchBetaOpenCodeClientV1 {
+  if (!isRecord(value) || !isRecord(value.session)) return false;
+  return typeof value.session.prompt === "function" || typeof value.session.promptAsync === "function";
 }
 
 function boundedText(value: string, fallback: string): string {
@@ -341,6 +355,56 @@ export function createFlowDeskNaturalLanguageRoutingTools(now = new Date(), sess
   };
 }
 
+function redactedManagedDispatchBetaToolResult(result: FlowDeskManagedDispatchBetaAdapterResultV1): Record<string, unknown> {
+  return {
+    adapterProfile: result.adapterProfile,
+    status: result.status,
+    dispatchAttempted: result.dispatchAttempted,
+    guardDecision: result.guardDecision,
+    authority: result.authority,
+    verification: result.verification,
+    ...(result.dispatchAttempted ? {
+      dispatchMethod: result.dispatchMethod,
+      sessionId: result.sessionId,
+      agent: result.agent,
+      model: result.model,
+      ...("redactedErrorCategory" in result ? { redactedErrorCategory: result.redactedErrorCategory } : {}),
+      responseObserved: "response" in result && result.response !== undefined
+    } : { redactedBlockReason: result.redactedBlockReason })
+  };
+}
+
+export function createFlowDeskManagedDispatchBetaOptInTools(client: FlowDeskManagedDispatchBetaOpenCodeClientV1): Record<string, FlowDeskOpenCodeTool> {
+  return {
+    [flowdeskManagedDispatchBetaToolName]: tool({
+      description: "FlowDesk Release 2 managed-dispatch beta opt-in tool; requires full Guard evidence and calls only the injected OpenCode SDK client without fallback.",
+      args: {
+        boundaryInput: tool.schema.record(tool.schema.string(), tool.schema.unknown()).describe("Complete ManagedDispatchBetaBoundaryInputV1 evidence bundle; no raw prompts or provider payloads."),
+        request: tool.schema.record(tool.schema.string(), tool.schema.unknown()).describe("Bounded managed dispatch request with session, agent, provider-qualified model id, and approved prompt summary/text.")
+      },
+      async execute(input) {
+        const record: Record<string, unknown> = isRecord(input) ? input : {};
+        if (!isRecord(record.boundaryInput) || !isRecord(record.request)) {
+          return JSON.stringify({
+            adapterProfile: "managed_dispatch_beta_real_opencode_dispatch_adapter",
+            status: "blocked_before_dispatch",
+            dispatchAttempted: false,
+            redactedBlockReason: "Managed-dispatch beta requires boundaryInput and request records.",
+            authority: { ...disabledAuthority, toolAuthority: false },
+            verification: { defaultRelease1ServerBehaviorUnchanged: true }
+          });
+        }
+        const result = await dispatchManagedDispatchBetaPromptV1({
+          client,
+          boundaryInput: record.boundaryInput as unknown as ManagedDispatchBetaBoundaryInputV1,
+          request: record.request as unknown as FlowDeskManagedDispatchBetaDispatchRequestV1
+        });
+        return JSON.stringify(redactedManagedDispatchBetaToolResult(result));
+      }
+    })
+  };
+}
+
 export function createFlowDeskNaturalLanguageChatMessageHook(now: FlowDeskLocalClockV1 = () => new Date(), session = createFlowDeskLocalNonDispatchAdapterSession(now)) {
   const recentSuggestionCards = new Map<string, number>();
   return async function message(input: unknown, output: FlowDeskChatMessageOutput): Promise<void> {
@@ -385,8 +449,20 @@ function durableStateRootFromOptions(options?: PluginOptions): string | undefine
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
-const flowdeskServerPlugin: Plugin = async (_input, options) => {
+function isManagedDispatchBetaAdapterEnabled(options?: PluginOptions): boolean {
+  const value = options?.[flowdeskManagedDispatchBetaAdapterOption];
+  return value === true || (isRecord(value) && value.enabled === true);
+}
+
+function managedDispatchBetaClientFrom(input: unknown, options?: PluginOptions): FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined {
+  const option = options?.[flowdeskManagedDispatchBetaAdapterOption];
+  if (isRecord(option) && isManagedDispatchBetaClient(option.client)) return option.client;
+  return isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+}
+
+const flowdeskServerPlugin: Plugin = async (input, options) => {
   const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, { durableStateRootDir: durableStateRootFromOptions(options) }) : undefined;
+  const managedDispatchBetaClient = isManagedDispatchBetaAdapterEnabled(options) ? managedDispatchBetaClientFrom(input, options) : undefined;
   const tools: Record<string, FlowDeskOpenCodeTool> = {
     [flowdeskPreSpikeDoctorToolName]: tool({
       description: "Report FlowDesk plugin load status without enabling real dispatch, provider calls, or runtime execution.",
@@ -417,6 +493,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
   if (isFds1SchemaConversionProbeEnabled(options)) Object.assign(tools, createFlowDeskFds1SchemaConversionProbeTools());
   if (isLocalNonDispatchAdapterEnabled(options)) Object.assign(tools, createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession));
   if (isNaturalLanguageRoutingEnabled(options)) Object.assign(tools, createFlowDeskNaturalLanguageRoutingTools(new Date(), localSession));
+  if (managedDispatchBetaClient !== undefined) Object.assign(tools, createFlowDeskManagedDispatchBetaOptInTools(managedDispatchBetaClient));
   if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
   return { tool: tools, "chat.message": createFlowDeskNaturalLanguageChatMessageHook(() => new Date(), localSession) };
 };

@@ -6,6 +6,7 @@ import type {
   FlowDeskManagedDispatchBetaPolicyV1,
   FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
   FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
+  FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskUsageSnapshotV1,
   GuardApprovedDispatchV1,
@@ -18,7 +19,7 @@ import {
   type FlowDeskManagedDispatchBetaOpenCodeClientV1,
   type FlowDeskManagedDispatchBetaPromptOptionsV1
 } from "./managed-dispatch-adapter.js";
-import flowdeskOpenCodeServerPlugin, { flowdeskChatIntakeToolName, flowdeskPreSpikeDoctorToolName } from "./server.js";
+import flowdeskOpenCodeServerPlugin, { flowdeskChatIntakeToolName, flowdeskManagedDispatchBetaAdapterOption, flowdeskManagedDispatchBetaToolName, flowdeskPreSpikeDoctorToolName } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
 
@@ -164,6 +165,34 @@ function telemetryCorrelation(overrides: Partial<FlowDeskManagedDispatchBetaTele
   };
 }
 
+function usageAuthorityEvidence(overrides: Partial<FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1> = {}): FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1 {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+    authority_ref: "usage-authority-123",
+    usage_snapshot_ref: "usage-123",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/sonnet-4",
+    model_family: "sonnet-4",
+    source_kind: "openusage",
+    source_version_ref: "openusage-version-123",
+    auth_profile_ref: "auth-profile-123",
+    auth_evidence_ref: "auth-evidence-123",
+    credential_scope_ref: "principal-scope-123",
+    account_boundary_ref: "account-boundary-123",
+    quota_evidence_ref: "quota-evidence-123",
+    usage_acquired: true,
+    reset_time: "2026-05-17T01:00:00.000Z",
+    reset_bucket: "provider-window-123",
+    source_ref: "usage-source-123",
+    conformance_ref: "usage-conformance-123",
+    redacted_evidence_refs: ["usage-evidence-123"],
+    trusted: true,
+    observed_at: now,
+    expires_at: "2026-05-17T00:10:00.000Z",
+    ...overrides
+  };
+}
+
 function managedDispatchInput(overrides: Partial<ManagedDispatchBetaBoundaryInputV1> = {}): ManagedDispatchBetaBoundaryInputV1 {
   return {
     configHash: "config-hash-123",
@@ -175,6 +204,10 @@ function managedDispatchInput(overrides: Partial<ManagedDispatchBetaBoundaryInpu
     guardApproval: guardApproval(),
     bindingEvidence: bindingEvidence(),
     usageSnapshot: dispatchableUsage(),
+    usageAuthorityEvidence: usageAuthorityEvidence(),
+    expectedAuthProfileRef: "auth-profile-123",
+    expectedCredentialScopeRef: "principal-scope-123",
+    expectedAccountBoundaryRef: "account-boundary-123",
     providerHealthSnapshot: dispatchableHealth(),
     runtimeEchoEvidence: runtimeEchoEvidence(),
     conformanceRuntimeMetadata: conformanceMetadata(),
@@ -301,6 +334,21 @@ test("managed dispatch beta adapter blocks request model mismatch before fake cl
   assert.equal(promptAsyncCalls.length, 0);
 });
 
+test("managed dispatch beta adapter blocks unpinned usage authority before fake client calls", async () => {
+  const { client, promptCalls, promptAsyncCalls } = fakeClient();
+  const result = await dispatchManagedDispatchBetaPromptV1({
+    client,
+    boundaryInput: managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ source_ref: "usage-source-other" }) }),
+    request: dispatchRequest()
+  });
+
+  assert.equal(result.status, "blocked_before_dispatch");
+  assert.equal(result.dispatchAttempted, false);
+  assert.equal(result.guardDecision.status, "blocked");
+  assert.equal(promptCalls.length, 0);
+  assert.equal(promptAsyncCalls.length, 0);
+});
+
 test("default server and plugin scaffold remain Release 1 non-dispatch", async () => {
   assert.equal(flowdeskPluginScaffold.productionToolRegistration, "release1-non-dispatch-command-backed");
   assert.equal(flowdeskPluginScaffold.runtimeBoundary.realOpenCodeDispatch, "disabled");
@@ -319,4 +367,26 @@ test("default server and plugin scaffold remain Release 1 non-dispatch", async (
   assert.equal(result.actualLaneLaunch, false);
   assert.equal(result.fallbackAuthority, false);
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("managed dispatch beta server tool is explicit opt-in and redacts SDK response", async () => {
+  const { client, promptAsyncCalls } = fakeClient();
+  const defaultHooks = await flowdeskOpenCodeServerPlugin.server({ client } as never);
+  assert.equal(Object.keys(defaultHooks.tool ?? {}).includes(flowdeskManagedDispatchBetaToolName), false);
+
+  const hooks = await flowdeskOpenCodeServerPlugin.server({ client } as never, {
+    [flowdeskManagedDispatchBetaAdapterOption]: true,
+    localNonDispatchAdapter: false,
+    naturalLanguageRouting: false
+  });
+  const betaTool = hooks.tool?.[flowdeskManagedDispatchBetaToolName];
+  assert.ok(betaTool);
+
+  const raw = await betaTool.execute({ boundaryInput: managedDispatchInput(), request: dispatchRequest() }, undefined as never);
+  const result = JSON.parse(raw) as Record<string, unknown>;
+  assert.equal(result.status, "dispatch_accepted");
+  assert.equal(result.dispatchAttempted, true);
+  assert.equal(result.responseObserved, false);
+  assert.equal("response" in result, false);
+  assert.equal(promptAsyncCalls.length, 1);
 });
