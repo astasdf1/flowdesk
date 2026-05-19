@@ -454,6 +454,8 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
   assert.ok(compatibility.refs.some((ref) => ref.startsWith("production-readiness-passed-")));
   assert.ok(providerReadiness);
   assert.equal(providerReadiness.category, "degraded_mode_warning");
+  assert.match(providerReadiness.summary, /auth readiness and fresh real usage\/quota\/reset evidence/);
+  assert.ok(providerReadiness.refs.includes("all-model-auth-usage-required"));
   assert.equal(response.provider_health_summary.dispatchability, "non_dispatchable");
   assert.deepEqual(response.disabled_modes, ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"]);
   assert.equal(JSON.stringify(response).includes("provider_payload"), false);
@@ -517,6 +519,21 @@ test("usage diagnostic handler reports unknown usage as non-dispatchable", () =>
   assert.deepEqual(response.uncertainty_flags, ["unknown"]);
   assert.equal(response.provider_health_snapshot_ref, "health-123");
   assertNoRuntimeAuthority(result);
+});
+
+test("usage diagnostic handler excludes every concrete provider without auth and real usage evidence", () => {
+  for (const provider_family of ["claude", "gemini", "openai", "opencode_go", "z_ai"] as const) {
+    const result = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_usage", { ...requestFixture("flowdesk_usage"), provider_family }, { diagnostic: { nowIso, sourceRef: "doctor-auth-readiness-123" } });
+    assert.equal(result.handlerMode, "command_backed_diagnostic_handler");
+    assert.equal(result.ok, true);
+    const response = result.response as FlowDeskUsageResponseV1;
+    assert.equal(response.dispatchability, "non_dispatchable");
+    assert.equal(response.provider_health_snapshot_ref, `health-auth-missing-${provider_family}-req-fds1-fixture`);
+    assert.match(response.user_message, /models are excluded/);
+    assert.match(response.user_message, /usage\/quota\/reset evidence/);
+    assert.equal(JSON.stringify(response).includes("provider_payload"), false);
+    assertNoRuntimeAuthority(result);
+  }
 });
 
 test("export-debug diagnostic handler returns redacted section summaries only", () => {

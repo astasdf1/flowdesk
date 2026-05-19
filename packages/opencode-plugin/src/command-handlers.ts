@@ -19,9 +19,11 @@ import type {
   FlowDeskStatusCommandInputV1,
   FlowDeskUsageRequestV1,
   FlowDeskUsageResponseV1,
+  ProviderFamily,
   ValidationResult
 } from "@flowdesk/core";
 import {
+  createAuthMissingProviderHealthSnapshotV1,
   evaluateFlowDeskFakeRuntimeCommandV1,
   evaluateFlowDeskGuardedDryRunCommandV1,
   evaluateFlowDeskPlanCommandV1,
@@ -30,6 +32,7 @@ import {
   FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
   getDoctorFailureCategoryOutcomeV1,
   invalid,
+  providerFamilyRequiresAuthReadinessV1,
   valid,
   validateDoctorRequestV1,
   validateSchemaArtifactValue
@@ -134,6 +137,15 @@ function diagnosticDeleteAfter(context: FlowDeskCommandBackedHandlerContextV1): 
   return context.diagnostic?.deleteAfterIso ?? "2026-05-18T00:00:00.000Z";
 }
 
+function authRequiredProviderLabel(providerFamily: ProviderFamily): string {
+  if (providerFamily === "claude") return "Claude";
+  if (providerFamily === "openai") return "OpenAI";
+  if (providerFamily === "gemini") return "Gemini";
+  if (providerFamily === "opencode_go") return "OpenCode Go";
+  if (providerFamily === "z_ai") return "z.ai";
+  return "Provider";
+}
+
 function doctorSectionFor(section: DoctorSectionResultV1["section"], category: DoctorFailureCategoryV1, request: FlowDeskDoctorRequestV1, summary: string, refs: readonly string[]) {
   const runId = safeDiagnosticId("doctor-run", request);
   const outcome = getDoctorFailureCategoryOutcomeV1(category);
@@ -154,7 +166,7 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1): DoctorSectionResul
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
     doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`]),
-    doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless fresh official evidence is available.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only"]),
+    doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior and cannot grant runtime dispatch.", ["doctor-policy-project-ref"])
   ];
   if (request.check_scope === "all") return allSections;
@@ -235,14 +247,24 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1): FlowDeskAbort
 function evaluateUsageDiagnostic(request: FlowDeskUsageRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskUsageResponseV1 {
   const id = requestId(request);
   const usageSnapshotRef = `usage-${id}`;
+  const authMissingHealth = providerFamilyRequiresAuthReadinessV1(request.provider_family)
+    ? createAuthMissingProviderHealthSnapshotV1({
+      snapshotId: `health-auth-missing-${request.provider_family}-${id}`,
+      providerFamily: request.provider_family,
+      observedAt: diagnosticNow(context),
+      sourceRef: context.diagnostic?.sourceRef ?? "flowdesk-auth-readiness-diagnostic"
+    })
+    : undefined;
   return {
     schema_version: "flowdesk.usage.response.v1",
     ok: true,
     status: "diagnostic_only",
     safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"],
-    user_message: request.refresh ? "FlowDesk reported usage as unknown without provider calls or persisted refresh." : "FlowDesk reported cached usage availability as unknown and non-dispatchable.",
+    user_message: authMissingHealth !== undefined
+      ? `${authRequiredProviderLabel(request.provider_family)} models are excluded until auth readiness and real usage/quota/reset evidence are available for the exact provider/model/account scope; FlowDesk made no provider call.`
+      : request.refresh ? "FlowDesk reported usage as unknown without provider calls or persisted refresh." : "FlowDesk reported cached usage availability as unknown and non-dispatchable.",
     usage_snapshot_ref: usageSnapshotRef,
-    provider_health_snapshot_ref: context.diagnostic?.providerHealthSnapshotRef ?? `health-${id}`,
+    provider_health_snapshot_ref: authMissingHealth?.snapshot_id ?? context.diagnostic?.providerHealthSnapshotRef ?? `health-${id}`,
     freshness: "unknown",
     dispatchability: "non_dispatchable",
     uncertainty_flags: ["unknown"]
