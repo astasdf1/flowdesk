@@ -1446,3 +1446,31 @@ export interface FlowDeskTopTierReviewVerdictV1 {
   safe_next_actions: SafeNextAction[];
   dispatch_authority_enabled: false;
 }
+
+export const FLOWDESK_PLANNED_MODE_FIELD_LABELS = ["top_tier_multi_perspective_review_mode"] as const;
+export type FlowDeskPlannedModeFieldLabel = (typeof FLOWDESK_PLANNED_MODE_FIELD_LABELS)[number];
+
+export const FLOWDESK_PLANNED_MODE_FIELD_STATES = ["disabled", "planned", "conformance_ready", "release_gate_ready"] as const;
+export type FlowDeskPlannedModeFieldState = (typeof FLOWDESK_PLANNED_MODE_FIELD_STATES)[number];
+
+export const FLOWDESK_FORBIDDEN_MODE_FIELD_STATES = ["enabled", "active", "dispatch_ready", "approved", "authorized"] as const;
+
+export interface FlowDeskPlannedModeFieldV1 {
+  label: FlowDeskPlannedModeFieldLabel;
+  state: FlowDeskPlannedModeFieldState;
+  dispatch_authority_enabled: false;
+}
+
+export function flowDeskPlannedModeFieldToString(entry: FlowDeskPlannedModeFieldV1): string {
+  return `${entry.label}=${entry.state}`;
+}
+
+export function createFlowDeskPlannedTopTierMultiPerspectiveReviewModeFieldV1(state: FlowDeskPlannedModeFieldState = "planned"): FlowDeskPlannedModeFieldV1 {
+  return {
+    label: "top_tier_multi_perspective_review_mode",
+    state,
+    dispatch_authority_enabled: false
+  };
+}
+
+export const FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF = flowDeskPlannedModeFieldToString(createFlowDeskPlannedTopTierMultiPerspectiveReviewModeFieldV1());

@@ -1564,6 +1564,9 @@ const TOP_TIER_REVIEW_INVENTORY_DECISIONS = ["ready", "blocked", "policy_change_
 const TOP_TIER_REVIEW_VERDICT_LABELS = ["pass", "changes_required", "blocked", "inconclusive"] as const;
 const TOP_TIER_REVIEW_FINDING_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
 const TOP_TIER_REVIEW_UNCERTAINTY_LEVELS = ["low", "medium", "high", "unknown"] as const;
+const PLANNED_MODE_FIELD_LABELS = ["top_tier_multi_perspective_review_mode"] as const;
+const PLANNED_MODE_FIELD_STATES = ["disabled", "planned", "conformance_ready", "release_gate_ready"] as const;
+const FORBIDDEN_PLANNED_MODE_FIELD_STATES = ["enabled", "active", "dispatch_ready", "approved", "authorized"] as const;
 
 const FORBIDDEN_REVIEWER_AUTHORITY_KEYS = [
   "trusted",
@@ -1695,4 +1698,25 @@ export function validateTopTierReviewVerdictV1(value: unknown): ValidationResult
     value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier review verdict"),
     validateNoForbiddenRawPayloads(value, "top_tier_review_verdict")
   ]);
+}
+
+export function validateFlowDeskPlannedModeFieldV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("planned mode field must be an object");
+  return combine([
+    rejectUnknownProperties(value, ["label", "state", "dispatch_authority_enabled"]),
+    requireFields(value, ["label", "state", "dispatch_authority_enabled"]),
+    isEnumValue(value.label, PLANNED_MODE_FIELD_LABELS) ? valid() : invalid("planned mode field label is invalid"),
+    typeof value.state === "string" && (FORBIDDEN_PLANNED_MODE_FIELD_STATES as readonly string[]).includes(value.state) ? invalid(`planned mode field state cannot be "${value.state}" without a release gate`) : valid(),
+    isEnumValue(value.state, PLANNED_MODE_FIELD_STATES) ? valid() : invalid("planned mode field state is invalid"),
+    value.dispatch_authority_enabled === false ? valid() : invalid("planned mode field cannot enable dispatch authority"),
+    validateNoForbiddenRawPayloads(value, "planned_mode_field")
+  ]);
+}
+
+export function validateFlowDeskPlannedModeFieldEntryStringV1(entry: unknown): ValidationResult {
+  if (typeof entry !== "string" || entry.length === 0 || entry.length > 200) return invalid("planned mode field entry must be a bounded string");
+  const parts = entry.split("=");
+  if (parts.length !== 2) return invalid("planned mode field entry must be in label=state form");
+  const [label, state] = parts;
+  return validateFlowDeskPlannedModeFieldV1({ label, state, dispatch_authority_enabled: false });
 }
