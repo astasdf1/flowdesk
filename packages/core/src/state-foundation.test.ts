@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   FLOWDESK_WORKFLOW_ACTIVE_PATH,
   type FlowDeskStateWriteIntent,
   getRelease1ProductionToolRegistry,
+  loadFlowDeskDurableWorkflowState,
   prepareActiveAttemptLockWriteIntent,
   prepareAttemptRecordWriteIntent,
   prepareAuditEventWriteIntent,
@@ -303,6 +304,53 @@ test("validated write intents materialize durable .flowdesk files atomically", (
   }
 });
 
+test("durable workflow state reloads validated workflow and lane records", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-state-load-"));
+  try {
+    const activeIntent = prepareWorkflowActiveWriteIntent(workflowActive(), { workflowId, attemptId }).writeIntent;
+    const workflowIntent = prepareWorkflowRecordWriteIntent(workflowRecord()).writeIntent;
+    const attemptIntent = prepareAttemptRecordWriteIntent(attemptRecord()).writeIntent;
+    const laneIntent = prepareLaneRecordWriteIntent(sessionId, laneRecord()).writeIntent;
+    assert.ok(activeIntent);
+    assert.ok(workflowIntent);
+    assert.ok(attemptIntent);
+    assert.ok(laneIntent);
+    const written = applyWriteIntentsToDurableState(root, [activeIntent, workflowIntent, attemptIntent, laneIntent], { now: validationClock });
+    assert.equal(written.ok, true);
+
+    const loaded = loadFlowDeskDurableWorkflowState(root, { workflowId, sessionId, now: validationClock });
+    assert.equal(loaded.ok, true);
+    assert.equal(loaded.snapshot?.active?.active_workflow_id, workflowId);
+    assert.equal(loaded.snapshot?.workflow?.workflow_id, workflowId);
+    assert.equal(loaded.snapshot?.currentAttempt?.attempt_id, attemptId);
+    assert.equal(loaded.snapshot?.laneRecords.length, 1);
+    assert.equal(loaded.realOpenCodeDispatch, false);
+    assert.equal(loaded.runtimeExecution, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("durable workflow state reload fails closed on malformed persisted records", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-state-load-malformed-"));
+  try {
+    const activeIntent = prepareWorkflowActiveWriteIntent(workflowActive(), { workflowId, attemptId }).writeIntent;
+    const workflowIntent = prepareWorkflowRecordWriteIntent(workflowRecord()).writeIntent;
+    assert.ok(activeIntent);
+    assert.ok(workflowIntent);
+    const written = applyWriteIntentsToDurableState(root, [activeIntent, workflowIntent], { now: validationClock });
+    assert.equal(written.ok, true);
+    writeFileSync(join(root, workflowRecordPath(workflowId)), JSON.stringify({ ...workflowRecord(), raw_prompt: "system prompt leak" }), "utf8");
+
+    const loaded = loadFlowDeskDurableWorkflowState(root, { workflowId, sessionId, now: validationClock });
+    assert.equal(loaded.ok, false);
+    assert.equal(loaded.providerCall, false);
+    assert.equal(loaded.actualLaneLaunch, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("invalid persisted records fail closed before write intents", () => {
   assert.equal(prepareWorkflowRecordWriteIntent({ ...workflowRecord(), unknown: true } as never).ok, false);
   assert.equal(prepareAuditRecordWriteIntent(sessionId, { ...auditRecord(), provider_payload: "raw" } as never).ok, false);
@@ -435,7 +483,7 @@ test("debug export manifest accepts redacted section summaries only", () => {
   assert.equal(validateDebugExportManifestV1({ ...debugManifest(), partial_deletion_warning: 123 }).ok, false);
 });
 
-test("core foundation has no OMO/OMC runtime dependency, nested opencode run, child process launch, or production plugin registration", () => {
+test("core foundation has no OMO/OMC runtime dependency, nested opencode run, or child process launch", () => {
   const corePackage = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
   const dependencyNames = Object.keys({ ...(corePackage.dependencies ?? {}), ...(corePackage.devDependencies ?? {}) }).join(" ").toLowerCase();
   assert.equal(/\b(omo|omc|oh-my-claudecode)\b/.test(dependencyNames), false);
@@ -447,5 +495,5 @@ test("core foundation has no OMO/OMC runtime dependency, nested opencode run, ch
     .join("\n");
   assert.equal(/opencode\s+run/.test(sourceText), false);
   assert.equal(/node:child_process|child_process|\bspawn\s*\(|\bexec\s*\(/.test(sourceText), false);
-  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+  assert.ok(getRelease1ProductionToolRegistry().length > 0);
 });
