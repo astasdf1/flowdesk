@@ -19,6 +19,7 @@ import {
   applyWriteIntentsToDurableState,
   applyWriteIntentsToInMemoryState,
   invalid,
+  loadFlowDeskDurableWorkflowState,
   mergePolicyPacksV1,
   prepareAttemptRecordWriteIntent,
   prepareLaneRecordWriteIntent,
@@ -95,6 +96,7 @@ interface LocalAdapterState {
   durableStateRootDir?: string;
   durableStateWrites: number;
   lastDurableStateWriteApplied: boolean;
+  lastDurableStateReadErrors: string[];
 }
 
 interface LocalPendingConfirmation {
@@ -585,7 +587,20 @@ function recordRunState(state: LocalAdapterState, request: Record<string, unknow
 }
 
 function statusContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): NonNullable<FlowDeskCommandBackedHandlerContextV1["status"]> {
-  if (state.workflow === undefined || state.active === undefined) updateWorkflowState(state, request, parts, "ready_to_run");
+  const requestedWorkflowId = workflowIdFrom(request);
+  if (state.durableStateRootDir !== undefined && (state.workflow === undefined || state.workflow.workflow_id !== requestedWorkflowId)) {
+    const loaded = loadFlowDeskDurableWorkflowState(state.durableStateRootDir, { workflowId: requestedWorkflowId, sessionId: "session-local", now: parts.nowMs });
+    state.lastDurableStateReadErrors = loaded.ok ? [] : loaded.errors;
+    if (loaded.ok && loaded.snapshot !== undefined) {
+      state.active = loaded.snapshot.active;
+      state.workflow = loaded.snapshot.workflow;
+      state.currentAttempt = loaded.snapshot.currentAttempt;
+      state.laneRecords = loaded.snapshot.laneRecords;
+    }
+  } else {
+    state.lastDurableStateReadErrors = [];
+  }
+  if (state.lastDurableStateReadErrors.length === 0 && (state.workflow === undefined || state.active === undefined)) updateWorkflowState(state, request, parts, "ready_to_run");
   return {
     active: state.active,
     workflow: state.workflow,
@@ -649,7 +664,7 @@ function clockDate(clock: FlowDeskLocalClockV1): Date {
 }
 
 export function createFlowDeskLocalNonDispatchAdapterSession(now: FlowDeskLocalClockV1 = new Date(), permissionProvider = createFlowDeskLocalNonDispatchPermissionProvider(), options: FlowDeskLocalNonDispatchAdapterSessionOptionsV1 = {}): FlowDeskLocalNonDispatchAdapterSessionV1 {
-  const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map(), durableStateRootDir: options.durableStateRootDir, durableStateWrites: 0, lastDurableStateWriteApplied: false };
+  const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map(), durableStateRootDir: options.durableStateRootDir, durableStateWrites: 0, lastDurableStateWriteApplied: false, lastDurableStateReadErrors: [] };
   return {
     state,
     evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1 {
@@ -676,7 +691,11 @@ export function createFlowDeskLocalNonDispatchAdapterSession(now: FlowDeskLocalC
       if (handler.ok && toolName === "flowdesk_plan") stateWriteApplied = recordPlanningState(state, record, parts);
       if (handler.ok && toolName === "flowdesk_run") stateWriteApplied = recordRunState(state, record, parts, permissionProvider);
       if (handler.ok && toolName === "flowdesk_abort") cancelPendingConfirmation(state, record, parts);
-      const adapterValidation = handler.ok && (toolName === "flowdesk_plan" || toolName === "flowdesk_run") && !stateWriteApplied ? invalid("local adapter state write failed") : valid();
+      const adapterValidation = state.lastDurableStateReadErrors.length > 0
+        ? invalid(...state.lastDurableStateReadErrors)
+        : handler.ok && (toolName === "flowdesk_plan" || toolName === "flowdesk_run") && !stateWriteApplied
+          ? invalid("local adapter state write failed")
+          : valid();
       return {
         ...adapterValidation,
         adapterProfile: flowdeskLocalNonDispatchAdapterProfile,
