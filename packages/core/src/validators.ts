@@ -1561,6 +1561,9 @@ const TOP_TIER_REVIEWER_PERSPECTIVES = ["policy_security", "architecture", "veri
 const TOP_TIER_BINDING_AVAILABILITY_STATES = ["registered_available", "registered_unavailable", "registered_blocked"] as const;
 const TOP_TIER_LANE_INCLUSION_STATES = ["included", "excluded", "blocked"] as const;
 const TOP_TIER_REVIEW_INVENTORY_DECISIONS = ["ready", "blocked", "policy_change_required"] as const;
+const TOP_TIER_REVIEW_VERDICT_LABELS = ["pass", "changes_required", "blocked", "inconclusive"] as const;
+const TOP_TIER_REVIEW_FINDING_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
+const TOP_TIER_REVIEW_UNCERTAINTY_LEVELS = ["low", "medium", "high", "unknown"] as const;
 
 const FORBIDDEN_REVIEWER_AUTHORITY_KEYS = [
   "trusted",
@@ -1645,5 +1648,51 @@ export function validateTopTierReviewBindingInventoryV1(value: unknown): Validat
     validateStringArray(value.safe_next_actions, "safe_next_actions", SAFE_NEXT_ACTIONS, 8),
     value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier review binding inventory"),
     validateNoForbiddenRawPayloads(value, "top_tier_review_binding_inventory")
+  ]);
+}
+
+function validateTopTierReviewFindingV1(value: unknown, label: string): ValidationResult {
+  if (!isRecord(value)) return invalid(`${label} must be an object`);
+  return combine([
+    rejectUnknownProperties(value, ["finding_id", "severity", "category", "summary_label", "evidence_refs", "required_fix_label"]),
+    requireFields(value, ["finding_id", "severity", "category", "summary_label", "evidence_refs", "required_fix_label"]),
+    rejectForbiddenAuthorityKeys(value, label),
+    validateOpaqueId(value.finding_id, `${label}.finding_id`),
+    isEnumValue(value.severity, TOP_TIER_REVIEW_FINDING_SEVERITIES) ? valid() : invalid(`${label}.severity is invalid`),
+    isEnumValue(value.category, REDACTED_ERROR_CATEGORIES) ? valid() : invalid(`${label}.category is invalid`),
+    typeof value.summary_label === "string" && value.summary_label.length > 0 && value.summary_label.length <= 200 ? validateNoForbiddenRawPayloads(value.summary_label, `${label}.summary_label`) : invalid(`${label}.summary_label is required`),
+    validateOpaqueRefArray(value.evidence_refs, `${label}.evidence_refs`, 20),
+    typeof value.required_fix_label === "string" && value.required_fix_label.length > 0 && value.required_fix_label.length <= 200 ? validateNoForbiddenRawPayloads(value.required_fix_label, `${label}.required_fix_label`) : invalid(`${label}.required_fix_label is required`),
+    validateNoForbiddenRawPayloads(value, label)
+  ]);
+}
+
+export function validateTopTierReviewVerdictV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("top tier review verdict must be an object");
+  const findingsArray = Array.isArray(value.findings) ? value.findings : [];
+  return combine([
+    validateSchemaArtifactValue("flowdesk.top_tier_review_verdict.v1", value),
+    rejectForbiddenAuthorityKeys(value, "top tier review verdict"),
+    validateOpaqueId(value.verdict_id, "verdict_id"),
+    validateOpaqueId(value.workflow_id, "workflow_id"),
+    validateOpaqueRef(value.lane_plan_ref, "lane_plan_ref"),
+    validateOpaqueRef(value.binding_ref, "binding_ref"),
+    isEnumValue(value.perspective, TOP_TIER_REVIEWER_PERSPECTIVES) ? valid() : invalid("perspective is invalid"),
+    typeof value.source === "string" && value.source.length > 0 && value.source.length <= 64 && /^[a-z][a-z0-9_]*$/.test(value.source) ? validateNoForbiddenRawPayloads(value.source, "source") : invalid("source must be a bounded lowercase reviewer binding label"),
+    validateTimestamp(value.created_at, "created_at"),
+    typeof value.redaction_version === "string" && value.redaction_version.length > 0 && value.redaction_version.length <= 128 ? validateNoForbiddenRawPayloads(value.redaction_version, "redaction_version") : invalid("redaction_version is required"),
+    Array.isArray(value.findings) ? valid() : invalid("findings must be an array"),
+    findingsArray.length <= 20 ? valid() : invalid("findings exceeds max items 20"),
+    combine(findingsArray.map((finding, index) => validateTopTierReviewFindingV1(finding, `findings[${index}]`))),
+    validateOpaqueRefArray(value.evidence_refs, "evidence_refs", 20),
+    isEnumValue(value.uncertainty, TOP_TIER_REVIEW_UNCERTAINTY_LEVELS) ? valid() : invalid("uncertainty is invalid"),
+    Array.isArray(value.required_fixes) ? valid() : invalid("required_fixes must be an array"),
+    Array.isArray(value.required_fixes) && value.required_fixes.length <= 20 ? valid() : invalid("required_fixes exceeds max items 20"),
+    validateStringArray(value.required_fixes, "required_fixes", undefined, 20),
+    Array.isArray(value.required_fixes) ? combine(value.required_fixes.map((fix, index) => typeof fix === "string" && fix.length > 0 && fix.length <= 200 ? valid() : invalid(`required_fixes[${index}] must be a bounded string`))) : valid(),
+    isEnumValue(value.verdict_label, TOP_TIER_REVIEW_VERDICT_LABELS) ? valid() : invalid("verdict_label is invalid"),
+    validateStringArray(value.safe_next_actions, "safe_next_actions", SAFE_NEXT_ACTIONS, 8),
+    value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier review verdict"),
+    validateNoForbiddenRawPayloads(value, "top_tier_review_verdict")
   ]);
 }
