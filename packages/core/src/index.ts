@@ -36,6 +36,7 @@ export * from "./guarded-dry-run.js";
 export * from "./hook-harness.js";
 export * from "./plan.js";
 export * from "./provider-failures.js";
+export * from "./provider-usage-collector.js";
 export * from "./redaction.js";
 export * from "./release1-contracts.js";
 export * from "./retry.js";

@@ -1,0 +1,611 @@
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import { homedir, userInfo } from "node:os";
+import * as path from "node:path";
+import type {
+  FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
+  FlowDeskProviderHealthSnapshotV1,
+  FlowDeskUsageSnapshotV1,
+  ProviderFamily
+} from "./release1-contracts.js";
+
+type ConcreteProviderFamily = Exclude<ProviderFamily, "unknown" | "all">;
+type CollectorProviderFamily = Extract<ConcreteProviderFamily, "claude" | "openai" | "gemini">;
+type UsageUncertainty = "available" | "insufficient" | "unknown" | "stale" | "provider_refused";
+
+export interface FlowDeskProviderUsageCollectorTargetV1 {
+  providerFamily: CollectorProviderFamily;
+  providerQualifiedModelId: string;
+  modelFamily: string;
+  usageSnapshotId: string;
+  authorityRef: string;
+  sourceRef: string;
+  conformanceRef: string;
+  redactedEvidenceRefs: readonly string[];
+  observedAt?: string;
+  freshnessTtlMinutes?: number;
+}
+
+export interface FlowDeskProviderUsageAcquisitionConfigV1 {
+  enabled?: boolean;
+  homeDir?: string;
+  providers?: readonly CollectorProviderFamily[];
+  claudeOAuthUsage?: boolean;
+  codexLiveUsage?: boolean;
+  geminiProjectId?: string;
+  geminiQuota?: boolean;
+}
+
+export interface FlowDeskProviderUsageCollectorOptionsV1 {
+  filesystem?: FlowDeskProviderUsageFileSystemV1;
+  env?: Record<string, string | undefined>;
+  fetch?: FlowDeskProviderUsageFetchV1;
+  execFile?: FlowDeskProviderUsageExecFileV1;
+  now?: () => number;
+}
+
+export interface FlowDeskProviderUsageFileSystemV1 {
+  exists(path: string): boolean;
+  readFile(path: string): string;
+}
+
+export interface FlowDeskProviderUsageFetchResponseV1 {
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+}
+
+export interface FlowDeskProviderUsageFetchRequestV1 {
+  method: "GET" | "POST";
+  headers: Record<string, string>;
+  body?: string;
+}
+
+export type FlowDeskProviderUsageFetchV1 = (url: string, init: FlowDeskProviderUsageFetchRequestV1) => Promise<FlowDeskProviderUsageFetchResponseV1>;
+export type FlowDeskProviderUsageExecFileV1 = (file: string, args: string[]) => string;
+
+export interface FlowDeskProviderUsageCollectorResultV1 {
+  ok: boolean;
+  source_kind: "provider_native";
+  usageSnapshot: FlowDeskUsageSnapshotV1;
+  providerHealthSnapshot: FlowDeskProviderHealthSnapshotV1;
+  usageAuthorityEvidence?: FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1;
+  redacted_reason?: string;
+}
+
+interface ProviderBucket {
+  resetBucket: string;
+  remaining: number | null;
+  resetAt?: string;
+  uncertainty: UsageUncertainty;
+}
+
+interface ProviderCollection {
+  providerFamily: CollectorProviderFamily;
+  modelFamily: string;
+  authProfileRef?: string;
+  authEvidenceRef?: string;
+  credentialScopeRef?: string;
+  accountBoundaryRef?: string;
+  quotaEvidenceRef?: string;
+  bucket?: ProviderBucket;
+  failureClass: FlowDeskProviderHealthSnapshotV1["failure_class"];
+  availabilityState: FlowDeskProviderHealthSnapshotV1["availability_state"];
+  redactedReason?: string;
+}
+
+interface RemainingPercentInput {
+  usedPercent?: number | null;
+  utilizationPercent?: number | null;
+  remainingPercent?: number | null;
+  remainingFraction?: number | null;
+  remainingAmount?: string | null;
+  resetAt?: string | null;
+  resetAtUnixSeconds?: number | null;
+  resetAfterSeconds?: number | null;
+  observedAt?: number;
+  expiredResetBehavior?: "stale" | "reset_to_full";
+}
+
+interface RemainingPercentResult {
+  remaining: number | null;
+  used: number | null;
+  reset_at?: string;
+  uncertainty: UsageUncertainty;
+}
+
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_OAUTH_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
+const CODEX_DEFAULT_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api";
+const CODEX_KEYRING_SERVICE = "Codex Auth";
+const GEMINI_OAUTH_CLIENT_ID = "FLOWDESK_GEMINI_OAUTH_CLIENT_ID_PLACEHOLDER";
+const GEMINI_OAUTH_CLIENT_SECRET = "FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET_PLACEHOLDER";
+const GEMINI_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const GEMINI_CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal";
+
+const defaultFilesystem: FlowDeskProviderUsageFileSystemV1 = {
+  exists: (filePath) => fs.existsSync(filePath),
+  readFile: (filePath) => fs.readFileSync(filePath, "utf-8")
+};
+
+export async function collectManagedDispatchBetaUsageEvidenceV1(
+  target: FlowDeskProviderUsageCollectorTargetV1,
+  acquisition: FlowDeskProviderUsageAcquisitionConfigV1 | undefined,
+  options: FlowDeskProviderUsageCollectorOptionsV1 = {}
+): Promise<FlowDeskProviderUsageCollectorResultV1> {
+  const observedAtMs = options.now?.() ?? Date.now();
+  const observedAt = target.observedAt ?? new Date(observedAtMs).toISOString();
+  const ttlMinutes = target.freshnessTtlMinutes ?? 5;
+  const collection = acquisition?.enabled === true && (acquisition.providers === undefined || acquisition.providers.includes(target.providerFamily))
+    ? await collectProvider(target.providerFamily, acquisition, options, observedAtMs)
+    : refusedCollection(target.providerFamily, target.modelFamily, "provider usage acquisition is disabled");
+
+  const bucket = collection.bucket;
+  const resetAt = bucket?.resetAt;
+  const usageOk = bucket !== undefined && bucket.remaining !== null && bucket.remaining > 0 && resetAt !== undefined && bucket.uncertainty === "available";
+  const usageSnapshot: FlowDeskUsageSnapshotV1 = usageOk
+    ? {
+      schema_version: "flowdesk.usage_snapshot.v1",
+      snapshot_id: target.usageSnapshotId,
+      provider_family: target.providerFamily,
+      model_family: target.modelFamily,
+      freshness: "fresh",
+      freshness_ttl: ttlMinutes,
+      reset_time: resetAt,
+      reset_bucket: bucket.resetBucket,
+      dispatchability: "dispatchable",
+      uncertainty_flags: [],
+      source_ref: target.sourceRef
+    }
+    : unknownUsageSnapshot(target, collection, ttlMinutes);
+
+  const providerHealthSnapshot: FlowDeskProviderHealthSnapshotV1 = {
+    schema_version: "flowdesk.provider_health_snapshot.v1",
+    snapshot_id: `health-${target.usageSnapshotId}`,
+    provider_family: target.providerFamily,
+    model_family: target.modelFamily,
+    observed_at: observedAt,
+    freshness: usageOk ? "fresh" : "unknown",
+    freshness_ttl: usageOk ? ttlMinutes : 0,
+    source_surface: "usage_collector",
+    availability_state: usageOk ? "healthy" : collection.availabilityState,
+    failure_class: usageOk ? "none" : collection.failureClass,
+    telemetry_ref: `telemetry-${target.usageSnapshotId}`,
+    dispatchability: usageOk ? "dispatchable" : "non_dispatchable",
+    source_ref: target.sourceRef,
+    safe_remediation: usageOk ? "Usage collector acquired fresh auth-bound usage evidence." : "Refresh provider auth and usage evidence before managed dispatch."
+  };
+
+  if (!usageOk || collection.authProfileRef === undefined || collection.authEvidenceRef === undefined || collection.credentialScopeRef === undefined || collection.accountBoundaryRef === undefined || collection.quotaEvidenceRef === undefined) {
+    return { ok: false, source_kind: "provider_native", usageSnapshot, providerHealthSnapshot, redacted_reason: collection.redactedReason ?? "usage evidence is unavailable" };
+  }
+
+  return {
+    ok: true,
+    source_kind: "provider_native",
+    usageSnapshot,
+    providerHealthSnapshot,
+    usageAuthorityEvidence: {
+      schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+      authority_ref: target.authorityRef,
+      usage_snapshot_ref: usageSnapshot.snapshot_id,
+      provider_family: target.providerFamily,
+      provider_qualified_model_id: target.providerQualifiedModelId,
+      model_family: target.modelFamily,
+      source_kind: "provider_native",
+      source_version_ref: `collector-${target.providerFamily}-v1`,
+      auth_profile_ref: collection.authProfileRef,
+      auth_evidence_ref: collection.authEvidenceRef,
+      credential_scope_ref: collection.credentialScopeRef,
+      account_boundary_ref: collection.accountBoundaryRef,
+      quota_evidence_ref: collection.quotaEvidenceRef,
+      usage_acquired: true,
+      reset_time: usageSnapshot.reset_time,
+      reset_bucket: usageSnapshot.reset_bucket,
+      source_ref: usageSnapshot.source_ref,
+      conformance_ref: target.conformanceRef,
+      redacted_evidence_refs: [...target.redactedEvidenceRefs],
+      trusted: true,
+      observed_at: observedAt,
+      expires_at: new Date(Date.parse(observedAt) + ttlMinutes * 60_000).toISOString()
+    }
+  };
+}
+
+async function collectProvider(providerFamily: CollectorProviderFamily, acquisition: FlowDeskProviderUsageAcquisitionConfigV1, options: FlowDeskProviderUsageCollectorOptionsV1, observedAt: number): Promise<ProviderCollection> {
+  if (providerFamily === "claude") return collectClaudeUsage(acquisition, options, observedAt);
+  if (providerFamily === "openai") return collectCodexUsage(acquisition, options, observedAt);
+  return collectGeminiUsage(acquisition, options, observedAt);
+}
+
+async function collectClaudeUsage(acquisition: FlowDeskProviderUsageAcquisitionConfigV1, options: FlowDeskProviderUsageCollectorOptionsV1, observedAt: number): Promise<ProviderCollection> {
+  const defaults = () => [bucket("claude-5h", "%", null, undefined, "unknown"), bucket("claude-weekly", "%", null, undefined, "unknown")];
+  if (acquisition.claudeOAuthUsage === false) return refusedCollection("claude", "claude", "claude oauth usage is disabled");
+  const fetcher = options.fetch ?? (globalThis as { fetch?: FlowDeskProviderUsageFetchV1 }).fetch;
+  if (!fetcher) return refusedCollection("claude", "claude", "fetch is unavailable");
+  const homeDir = normalizeHomeDir(acquisition.homeDir, options.env);
+  const filesystem = options.filesystem ?? defaultFilesystem;
+  const creds = await readClaudeOAuthCredentials(homeDir, filesystem, options);
+  if (!creds?.accessToken) return refusedCollection("claude", "claude", "claude auth evidence is missing");
+  const accessToken = await resolveClaudeAccessToken(creds, fetcher, observedAt);
+  if (!accessToken) return refusedCollection("claude", "claude", "claude auth refresh failed");
+  try {
+    const response = await fetcher(CLAUDE_OAUTH_USAGE_URL, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}`, "anthropic-beta": "oauth-2025-04-20", "Content-Type": "application/json" }
+    });
+    if (!response.ok) return refusedCollection("claude", "claude", "claude usage endpoint refused");
+    const payload = JSON.parse(await response.text()) as unknown;
+    const buckets = claudeOAuthBuckets(payload, observedAt, defaults());
+    return availableCollection("claude", "claude", "claude-oauth", "claude-oauth", firstDispatchableBucket(buckets) ?? buckets[0] ?? defaults()[0]);
+  } catch {
+    return refusedCollection("claude", "claude", "claude usage collection failed");
+  }
+}
+
+async function collectCodexUsage(acquisition: FlowDeskProviderUsageAcquisitionConfigV1, options: FlowDeskProviderUsageCollectorOptionsV1, observedAt: number): Promise<ProviderCollection> {
+  if (acquisition.codexLiveUsage === false) return refusedCollection("openai", "gpt", "codex live usage is disabled");
+  const fetcher = options.fetch ?? (globalThis as { fetch?: FlowDeskProviderUsageFetchV1 }).fetch;
+  if (!fetcher) return refusedCollection("openai", "gpt", "fetch is unavailable");
+  const homeDir = normalizeHomeDir(acquisition.homeDir, options.env);
+  const filesystem = options.filesystem ?? defaultFilesystem;
+  const configDirs = codexConfigDirs(homeDir, options.env);
+  const credentials = readCodexCredentials(configDirs, filesystem, options);
+  if (!credentials) return refusedCollection("openai", "gpt", "codex auth evidence is missing");
+  const tokens = isRecord(credentials.auth.tokens) ? credentials.auth.tokens : undefined;
+  const accessToken = tokens ? stringField(tokens, "access_token") : "";
+  if (!accessToken) return refusedCollection("openai", "gpt", "codex access token is missing");
+  const accountId = tokens ? firstNonEmpty(stringField(tokens, "account_id"), stringField(credentials.auth, "account_id")) : stringField(credentials.auth, "account_id");
+  try {
+    const response = await fetcher(codexUsageUrl(resolveCodexBaseUrl(credentials.configDir, filesystem)), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", ...(accountId ? { "ChatGPT-Account-Id": accountId } : {}), "User-Agent": "codex-cli" }
+    });
+    if (!response.ok) return refusedCollection("openai", "gpt", "codex usage endpoint refused");
+    const bucketValue = codexLiveBucket(JSON.parse(await response.text()), observedAt);
+    return availableCollection("openai", "gpt", "codex-live", firstNonEmpty(accountId, "codex-account"), bucketValue);
+  } catch {
+    return refusedCollection("openai", "gpt", "codex usage collection failed");
+  }
+}
+
+async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionConfigV1, options: FlowDeskProviderUsageCollectorOptionsV1, observedAt: number): Promise<ProviderCollection> {
+  if (acquisition.geminiQuota === false) return refusedCollection("gemini", "gemini", "gemini quota is disabled");
+  const fetcher = options.fetch ?? (globalThis as { fetch?: FlowDeskProviderUsageFetchV1 }).fetch;
+  if (!fetcher) return refusedCollection("gemini", "gemini", "fetch is unavailable");
+  const homeDir = normalizeHomeDir(acquisition.homeDir, options.env);
+  const filesystem = options.filesystem ?? defaultFilesystem;
+  const credsPath = geminiCredentialPaths(homeDir, options.env).find((candidate) => filesystem.exists(candidate));
+  if (!credsPath) return refusedCollection("gemini", "gemini", "gemini auth evidence is missing");
+  try {
+    const creds = JSON.parse(filesystem.readFile(credsPath)) as unknown;
+    const refreshToken = isRecord(creds) ? stringField(creds, "refresh_token") : "";
+    if (!refreshToken) return refusedCollection("gemini", "gemini", "gemini refresh token is missing");
+    const accessToken = await refreshGeminiAccessToken(refreshToken, fetcher);
+    const env = options.env ?? {};
+    let projectId = firstNonEmpty(env.GOOGLE_CLOUD_PROJECT, env.GOOGLE_CLOUD_PROJECT_ID, acquisition.geminiProjectId);
+    const details = await codeAssistPost("loadCodeAssist", { cloudaicompanionProject: projectId, metadata: { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI", duetProject: projectId } }, accessToken, fetcher);
+    projectId = firstNonEmpty(projectId, stringField(details, "cloudaicompanionProject"));
+    if (!projectId) return refusedCollection("gemini", "gemini", "gemini project boundary is missing");
+    const quota = await codeAssistPost("retrieveUserQuota", { project: projectId }, accessToken, fetcher);
+    const bucketValue = geminiQuotaBucket(quota, observedAt);
+    return availableCollection("gemini", "gemini", "gemini-code-assist", projectId, bucketValue);
+  } catch {
+    return refusedCollection("gemini", "gemini", "gemini usage collection failed");
+  }
+}
+
+function availableCollection(providerFamily: CollectorProviderFamily, modelFamily: string, authProfile: string, accountBoundary: string, providerBucket: ProviderBucket): ProviderCollection {
+  if (providerBucket.remaining === null || providerBucket.remaining <= 0 || providerBucket.uncertainty !== "available") {
+    return { providerFamily, modelFamily, bucket: providerBucket, failureClass: "rate_limited", availabilityState: "unavailable", redactedReason: "usage is not available" };
+  }
+  return {
+    providerFamily,
+    modelFamily,
+    authProfileRef: safeRef("auth-profile", providerFamily, authProfile),
+    authEvidenceRef: safeRef("auth-evidence", providerFamily, authProfile),
+    credentialScopeRef: safeRef("principal-scope", providerFamily, authProfile),
+    accountBoundaryRef: safeRef("account-boundary", providerFamily, accountBoundary),
+    quotaEvidenceRef: safeRef("quota-evidence", providerFamily, providerBucket.resetBucket, String(providerBucket.remaining), providerBucket.resetAt ?? "unknown"),
+    bucket: providerBucket,
+    failureClass: "none",
+    availabilityState: "healthy"
+  };
+}
+
+function refusedCollection(providerFamily: CollectorProviderFamily, modelFamily: string, redactedReason: string): ProviderCollection {
+  return { providerFamily, modelFamily, failureClass: "auth_missing", availabilityState: "unavailable", redactedReason };
+}
+
+function unknownUsageSnapshot(target: FlowDeskProviderUsageCollectorTargetV1, collection: ProviderCollection, ttlMinutes: number): FlowDeskUsageSnapshotV1 {
+  const uncertainty = collection.bucket?.uncertainty === "stale" ? "stale" : collection.bucket?.uncertainty === "provider_refused" ? "refused" : "unknown";
+  return {
+    schema_version: "flowdesk.usage_snapshot.v1",
+    snapshot_id: target.usageSnapshotId,
+    provider_family: target.providerFamily,
+    model_family: target.modelFamily,
+    freshness: uncertainty === "stale" ? "stale" : "unknown",
+    freshness_ttl: uncertainty === "stale" ? ttlMinutes : 0,
+    reset_time: collection.bucket?.resetAt ?? "unknown",
+    reset_bucket: collection.bucket?.resetBucket ?? "unknown",
+    dispatchability: "non_dispatchable",
+    uncertainty_flags: [uncertainty],
+    source_ref: target.sourceRef
+  };
+}
+
+function claudeOAuthBuckets(payload: unknown, observedAt: number, defaults: ProviderBucket[]): ProviderBucket[] {
+  const record = isRecord(payload) ? payload : {};
+  return [
+    claudeUsageBucket("claude-5h", defaults[0], record.five_hour, observedAt),
+    claudeUsageBucket("claude-weekly", defaults[1], record.seven_day, observedAt)
+  ];
+}
+
+function claudeUsageBucket(resetBucket: string, defaultBucket: ProviderBucket | undefined, value: unknown, observedAt: number): ProviderBucket {
+  const rawBucket = isRecord(value) ? value : undefined;
+  if (!rawBucket || !defaultBucket) return defaultBucket ?? bucket(resetBucket, "%", null, undefined, "unknown");
+  const calculated = calculateRemainingUsagePercent({ utilizationPercent: numberField(rawBucket, "utilization"), resetAt: stringField(rawBucket, "resets_at"), observedAt, expiredResetBehavior: "reset_to_full" });
+  return bucket(resetBucket, "%", calculated.remaining, calculated.reset_at, calculated.uncertainty);
+}
+
+function codexLiveBucket(payload: unknown, observedAt: number): ProviderBucket {
+  const record = isRecord(payload) ? payload : {};
+  const rateLimitPayload = isRecord(record.rate_limit_status) ? record.rate_limit_status : record;
+  const details = firstRecord(rateLimitPayload.rate_limit, record.rate_limit);
+  const primary = firstRecord(details?.primary_window, details?.primary, details);
+  return codexRateLimitBucket("openai-gpt-5h", primary, observedAt);
+}
+
+function codexRateLimitBucket(resetBucket: string, rateLimit: Record<string, unknown> | undefined, observedAt: number): ProviderBucket {
+  if (!rateLimit) return bucket(resetBucket, "%", null, undefined, "unknown");
+  const reportedRemainingPercent = numberField(rateLimit, "remaining_percent") ?? numberField(rateLimit, "remainingPercent");
+  const usedPercent = numberField(rateLimit, "used_percent") ?? numberField(rateLimit, "usedPercent");
+  const resetUnix = numberField(rateLimit, "reset_at") ?? numberField(rateLimit, "resets_at") ?? numberField(rateLimit, "resetsAt");
+  const resetAfterSeconds = numberField(rateLimit, "reset_after_seconds") ?? numberField(rateLimit, "resetAfterSeconds");
+  const calculated = calculateRemainingUsagePercent({ remainingPercent: reportedRemainingPercent, usedPercent, resetAtUnixSeconds: resetUnix, resetAfterSeconds, observedAt, expiredResetBehavior: "stale" });
+  return bucket(resetBucket, "%", calculated.remaining, calculated.reset_at, calculated.uncertainty);
+}
+
+function geminiQuotaBucket(quota: Record<string, unknown>, observedAt: number): ProviderBucket {
+  const quotaBuckets = Array.isArray(quota.buckets) ? quota.buckets.filter(isRecord) : [];
+  let selected: ProviderBucket | undefined;
+  for (const quotaBucket of quotaBuckets) {
+    const modelId = stringField(quotaBucket, "modelId").toLowerCase();
+    const resetBucket = modelId.includes("flash-lite") || modelId.includes("flash_lite") ? "gemini-flash-lite-daily" : modelId.includes("flash") ? "gemini-flash-daily" : modelId.includes("pro") ? "gemini-pro-daily" : "";
+    if (!resetBucket) continue;
+    const remainingPercent = calculateRemainingUsagePercent({ remainingFraction: numberField(quotaBucket, "remainingFraction"), remainingAmount: stringField(quotaBucket, "remainingAmount"), resetAt: stringField(quotaBucket, "resetTime"), observedAt, expiredResetBehavior: "stale" });
+    const candidate = bucket(resetBucket, "%", remainingPercent.remaining, remainingPercent.reset_at, remainingPercent.uncertainty);
+    if (selected === undefined || selected.remaining === null || (candidate.remaining !== null && candidate.remaining < selected.remaining)) selected = candidate;
+  }
+  return selected ?? bucket("gemini-unknown-daily", "%", null, undefined, "unknown");
+}
+
+function firstDispatchableBucket(buckets: ProviderBucket[]): ProviderBucket | undefined {
+  return buckets.find((candidate) => candidate.remaining !== null && candidate.remaining > 0 && candidate.resetAt !== undefined && candidate.uncertainty === "available");
+}
+
+async function readClaudeOAuthCredentials(homeDir: string, filesystem: FlowDeskProviderUsageFileSystemV1, options: FlowDeskProviderUsageCollectorOptionsV1): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number } | null> {
+  const keychainCreds = readClaudeKeychainCredentials(options);
+  if (keychainCreds) return keychainCreds;
+  const credentialsPath = claudeConfigDirs(homeDir, options.env).map((configDir) => path.join(configDir, ".credentials.json")).find((candidate) => filesystem.exists(candidate));
+  if (!credentialsPath) return null;
+  try {
+    return normalizeClaudeCredentials(JSON.parse(filesystem.readFile(credentialsPath)) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function readClaudeKeychainCredentials(options: FlowDeskProviderUsageCollectorOptionsV1): { accessToken: string; refreshToken?: string; expiresAt?: number } | null {
+  const credentialCommand = options.execFile;
+  if (!credentialCommand) return null;
+  const service = claudeKeychainServiceName(options.env);
+  const candidateAccounts: Array<string | undefined> = [];
+  try {
+    const username = userInfo().username?.trim();
+    if (username) candidateAccounts.push(username);
+  } catch {}
+  candidateAccounts.push(undefined);
+  for (const account of candidateAccounts) {
+    try {
+      const args = account ? ["find-generic-password", "-s", service, "-a", account, "-w"] : ["find-generic-password", "-s", service, "-w"];
+      const creds = normalizeClaudeCredentials(JSON.parse(credentialCommand("/usr/bin/security", args)) as unknown);
+      if (creds) return creds;
+    } catch {}
+  }
+  return null;
+}
+
+function normalizeClaudeCredentials(value: unknown): { accessToken: string; refreshToken?: string; expiresAt?: number } | null {
+  if (!isRecord(value)) return null;
+  const nested = isRecord(value.claudeAiOauth) ? value.claudeAiOauth : value;
+  const accessToken = firstNonEmpty(stringField(nested, "accessToken"), stringField(nested, "access_token"));
+  if (!accessToken) return null;
+  const refreshToken = firstNonEmpty(stringField(nested, "refreshToken"), stringField(nested, "refresh_token"));
+  const expiresAt = numberField(nested, "expiresAt") ?? numberField(nested, "expires_at");
+  return { accessToken, ...(refreshToken ? { refreshToken } : {}), ...(expiresAt === undefined ? {} : { expiresAt }) };
+}
+
+async function resolveClaudeAccessToken(creds: { accessToken: string; refreshToken?: string; expiresAt?: number }, fetcher: FlowDeskProviderUsageFetchV1, observedAt: number): Promise<string | null> {
+  const expiresAt = creds.expiresAt === undefined || creds.expiresAt > 10_000_000_000 ? creds.expiresAt : creds.expiresAt * 1000;
+  if (expiresAt === undefined || expiresAt > observedAt + 60_000) return creds.accessToken;
+  if (!creds.refreshToken) return null;
+  const form = new URLSearchParams({ grant_type: "refresh_token", refresh_token: creds.refreshToken, client_id: CLAUDE_OAUTH_CLIENT_ID });
+  const response = await fetcher(CLAUDE_OAUTH_REFRESH_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form.toString() });
+  if (!response.ok) return null;
+  const parsed = JSON.parse(await response.text()) as unknown;
+  return isRecord(parsed) ? firstNonEmpty(stringField(parsed, "access_token"), stringField(parsed, "accessToken")) || null : null;
+}
+
+function readCodexCredentials(configDirs: string[], filesystem: FlowDeskProviderUsageFileSystemV1, options: FlowDeskProviderUsageCollectorOptionsV1): { auth: Record<string, unknown>; configDir: string } | null {
+  for (const configDir of configDirs) {
+    const authPath = path.join(configDir, "auth.json");
+    if (!filesystem.exists(authPath)) continue;
+    try {
+      const auth = JSON.parse(filesystem.readFile(authPath)) as unknown;
+      if (isRecord(auth)) return { auth, configDir };
+    } catch {}
+  }
+  const credentialCommand = options.execFile;
+  const configDir = configDirs[0];
+  if (!configDir || !credentialCommand) return null;
+  try {
+    const auth = JSON.parse(credentialCommand("/usr/bin/security", ["find-generic-password", "-s", CODEX_KEYRING_SERVICE, "-a", codexKeyringAccount(configDir), "-w"])) as unknown;
+    if (isRecord(auth)) return { auth, configDir };
+  } catch {}
+  return null;
+}
+
+function resolveCodexBaseUrl(configDir: string, filesystem: FlowDeskProviderUsageFileSystemV1): string {
+  const configPath = path.join(configDir, "config.toml");
+  if (!filesystem.exists(configPath)) return CODEX_DEFAULT_CHATGPT_BASE_URL;
+  const match = filesystem.readFile(configPath).match(/^\s*chatgpt_base_url\s*=\s*["']([^"']+)["']/m);
+  if (!match?.[1]) return CODEX_DEFAULT_CHATGPT_BASE_URL;
+  const base = match[1].replace(/\/+$/, "");
+  return base.endsWith("/backend-api") ? base : `${base}/backend-api`;
+}
+
+function codexUsageUrl(baseUrl: string): string {
+  return baseUrl.includes("/backend-api") ? `${baseUrl}/wham/usage` : `${baseUrl}/api/codex/usage`;
+}
+
+async function refreshGeminiAccessToken(refreshToken: string, fetcher: FlowDeskProviderUsageFetchV1): Promise<string> {
+  const form = new URLSearchParams({ client_id: GEMINI_OAUTH_CLIENT_ID, client_secret: GEMINI_OAUTH_CLIENT_SECRET, refresh_token: refreshToken, grant_type: "refresh_token" });
+  const response = await fetcher(GEMINI_TOKEN_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form.toString() });
+  if (!response.ok) throw new Error(`Gemini token refresh failed: ${response.status}`);
+  const parsed = JSON.parse(await response.text()) as unknown;
+  const accessToken = isRecord(parsed) ? stringField(parsed, "access_token") : "";
+  if (!accessToken) throw new Error("Gemini token refresh returned no access token");
+  return accessToken;
+}
+
+async function codeAssistPost(method: string, body: Record<string, unknown>, accessToken: string, fetcher: FlowDeskProviderUsageFetchV1): Promise<Record<string, unknown>> {
+  const response = await fetcher(`${GEMINI_CODE_ASSIST_ENDPOINT}:${method}`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(`Gemini ${method} failed: ${response.status}`);
+  const parsed = JSON.parse(await response.text()) as unknown;
+  return isRecord(parsed) ? parsed : {};
+}
+
+function calculateRemainingUsagePercent(input: RemainingPercentInput): RemainingPercentResult {
+  const observedAt = input.observedAt ?? Date.now();
+  const resetAt = resolveResetAt(input, observedAt);
+  const expiredBehavior = input.expiredResetBehavior ?? "stale";
+  if (resetAt && Date.parse(resetAt) <= observedAt) return expiredBehavior === "reset_to_full" ? availableResult(100, 0, resetAt) : { remaining: null, used: null, reset_at: resetAt, uncertainty: "stale" };
+  const directRemaining = firstFinite(input.remainingPercent, percentFromFraction(input.remainingFraction), percentFromRemainingAmount(input.remainingAmount));
+  if (directRemaining !== null) {
+    const remaining = clampPercent(directRemaining);
+    return availableResult(remaining, 100 - remaining, resetAt);
+  }
+  const used = firstFinite(input.usedPercent, input.utilizationPercent);
+  if (used !== null) {
+    const usedPercent = clampPercent(used);
+    return availableResult(100 - usedPercent, usedPercent, resetAt);
+  }
+  return { remaining: null, used: null, ...(resetAt ? { reset_at: resetAt } : {}), uncertainty: "unknown" };
+}
+
+function availableResult(remaining: number, used: number, resetAt: string | undefined): RemainingPercentResult {
+  return { remaining, used, ...(resetAt ? { reset_at: resetAt } : {}), uncertainty: remaining > 0 ? "available" : "insufficient" };
+}
+
+function resolveResetAt(input: RemainingPercentInput, observedAt: number): string | undefined {
+  if (typeof input.resetAt === "string" && input.resetAt.trim() !== "") {
+    const parsed = Date.parse(input.resetAt);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+  }
+  if (typeof input.resetAtUnixSeconds === "number" && Number.isFinite(input.resetAtUnixSeconds) && input.resetAtUnixSeconds > 0) return new Date(input.resetAtUnixSeconds * 1000).toISOString();
+  if (typeof input.resetAfterSeconds === "number" && Number.isFinite(input.resetAfterSeconds) && input.resetAfterSeconds > 0) return new Date(observedAt + input.resetAfterSeconds * 1000).toISOString();
+  return undefined;
+}
+
+function bucket(resetBucket: string, unit: string, remaining: number | null, resetAt: string | undefined, uncertainty: UsageUncertainty): ProviderBucket {
+  void unit;
+  return { resetBucket, remaining, ...(resetAt ? { resetAt } : {}), uncertainty };
+}
+
+function claudeConfigDirs(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
+  return uniqueNonEmpty([env?.CLAUDE_CONFIG_DIR, path.join(homeDir, ".claude")]);
+}
+
+function codexConfigDirs(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
+  return uniqueNonEmpty([env?.CODEX_HOME, path.join(homeDir, ".codex")]);
+}
+
+function geminiCredentialPaths(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
+  const geminiHome = env?.GEMINI_CLI_HOME;
+  return uniqueNonEmpty([geminiHome ? path.join(geminiHome, ".gemini", "oauth_creds.json") : undefined, geminiHome ? path.join(geminiHome, "oauth_creds.json") : undefined, path.join(homeDir, ".gemini", "oauth_creds.json")]);
+}
+
+function claudeKeychainServiceName(env: Record<string, string | undefined> | undefined): string {
+  const configDir = env?.CLAUDE_CONFIG_DIR;
+  const defaultService = configDir ? `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}` : "Claude Code-credentials";
+  return firstNonEmpty(env?.CLAUDE_CODE_KEYCHAIN_SERVICE, env?.CLAUDE_KEYCHAIN_SERVICE) || defaultService;
+}
+
+function normalizeHomeDir(configuredHome: string | undefined, env: Record<string, string | undefined> | undefined): string {
+  return firstNonEmpty(configuredHome, env?.HOME, env?.USERPROFILE) || homedir();
+}
+
+function codexKeyringAccount(configDir: string): string {
+  return `cli|${createHash("sha256").update(configDir).digest("hex").slice(0, 16)}`;
+}
+
+function safeRef(prefix: string, ...parts: string[]): string {
+  return `${prefix}-${createHash("sha256").update(parts.join("\u001f")).digest("hex").slice(0, 16)}`;
+}
+
+function percentFromFraction(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value * 100 : null;
+}
+
+function percentFromRemainingAmount(raw: string | null | undefined): number | null {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return null;
+  if (value.endsWith("%")) {
+    const parsed = Number.parseFloat(value.slice(0, -1));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (value.includes("/")) {
+    const [left, right] = value.split("/", 2).map((part) => Number.parseFloat(part.trim()));
+    return Number.isFinite(left) && Number.isFinite(right) && right > 0 ? (left / right) * 100 : null;
+  }
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed > 1 ? parsed : parsed * 100;
+}
+
+function firstFinite(...values: Array<number | null | undefined>): number | null {
+  return values.find((value) => typeof value === "number" && Number.isFinite(value)) ?? null;
+}
+
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, value));
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string {
+  return values.find((value) => typeof value === "string" && value.trim() !== "")?.trim() ?? "";
+}
+
+function stringField(record: Record<string, unknown> | undefined, field: string): string {
+  const value = record?.[field];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberField(record: Record<string, unknown> | undefined, field: string): number | undefined {
+  const value = record?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  return values.find(isRecord);
+}
+
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.trim() !== "").map((value) => value.trim()))];
+}
