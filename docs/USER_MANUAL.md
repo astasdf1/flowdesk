@@ -58,17 +58,24 @@ If you say “run”, “execute”, “진행”, or “실행” in chat, Flow
 
 ### First Successful Flow
 
-1. Install FlowDesk only when a pinned OpenCode-compatible installer or development profile is available. If no installer exists yet, this repository is documentation/specification only.
-2. Run `/flowdesk-doctor` after installation. It checks whether FlowDesk can safely route chat, use command fallback, write redacted state, diagnose provider health and usage readiness, and run Release 1 dry-run or fake-runtime paths.
-3. Ask in chat for the work you want, for example: `Use FlowDesk to plan the smallest safe docs update.`
-4. Review the displayed plan, scope, delegated lane summaries when available, required approval, and safe next actions.
-5. Use `/flowdesk-run` only after the plan is ready. In Release 1 this produces a guarded dry-run or deterministic fake-runtime result, not real OpenCode dispatch.
-6. Use `/flowdesk-status` to inspect the workflow state, delegated lane state, checkpoint, blocker, audit reference, and safe next action.
-7. If the run blocks or fails, use `/flowdesk-resume`, `/flowdesk-retry`, `/flowdesk-abort`, `/flowdesk-usage`, or `/flowdesk-export-debug` exactly as FlowDesk suggests.
+1. Install FlowDesk through the Release 1 bootstrap CLI from the local `@flowdesk/opencode-plugin` package bin or an approved equivalent package install. This repository keeps packages private until public release packaging is explicitly approved.
+2. Preview the install first. The preview writes nothing:
+
+   ```text
+   flowdesk-install-release1 --profile-root <opencode-profile-dir> --durable-root <flowdesk-state-dir> --target-profile <profile-ref> --confirmation <confirmation-ref> --expires-at <iso-time>
+   ```
+
+3. Re-run with the exact approval phrase printed by the preview using `--approve "<exact phrase>"`.
+4. Run `/flowdesk-doctor` after installation. It checks whether FlowDesk can safely route chat, use command fallback, write redacted state, diagnose provider health and usage readiness, and run Release 1 dry-run or fake-runtime paths.
+5. Ask in chat for the work you want, for example: `Use FlowDesk to plan the smallest safe docs update.`
+6. Review the displayed plan, scope, delegated lane summaries when available, required approval, and safe next actions.
+7. Use `/flowdesk-run` only after the plan is ready. In Release 1 this produces a guarded dry-run or deterministic fake-runtime result, not real OpenCode dispatch.
+8. Use `/flowdesk-status` to inspect the workflow state, delegated lane state, checkpoint, blocker, audit reference, and safe next action.
+9. If the run blocks or fails, use `/flowdesk-resume`, `/flowdesk-retry`, `/flowdesk-abort`, `/flowdesk-usage`, or `/flowdesk-export-debug` exactly as FlowDesk suggests.
 
 If chat routing is unavailable, the same flow remains available through portable commands: doctor, plan, run, status, resume, retry, abort, usage, and export-debug.
 
-Installer bootstrap is narrower than normal FlowDesk operation. It should back up the selected OpenCode profile, write a redacted bootstrap report, and hand evidence to `/flowdesk-doctor`. Rollback should touch only the selected profile/config entries covered by the backup and must preserve provider authentication. Do not paste raw OpenCode profile contents, credentials, provider auth entries, or filesystem paths into chat or debug requests.
+Installer bootstrap is narrower than normal FlowDesk operation. It backs up the selected OpenCode profile, writes portable command files, writes a redacted bootstrap report, and hands evidence to `/flowdesk-doctor`. Rollback should touch only the selected profile/config entries covered by the backup and must preserve provider authentication. Do not paste raw OpenCode profile contents, credentials, provider auth entries, or filesystem paths into chat or debug requests. Bootstrap does not launch lanes, call providers, enable real dispatch, switch providers/models, or grant hard chat cancellation/no-reply authority; Release 1 registration remains non-dispatch command-backed only.
 
 ## When Claude, an API, or a Model Is Unavailable
 

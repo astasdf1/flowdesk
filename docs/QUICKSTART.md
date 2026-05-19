@@ -12,17 +12,27 @@ FlowDesk does not run real OpenCode dispatch in Release 1. It does not claim aut
 
 ## Happy Path
 
-If FlowDesk has not been implemented or installed for your pinned OpenCode version yet, this quickstart describes the intended Release 1 experience rather than runnable commands.
+Use the Release 1 bootstrap CLI from the local `@flowdesk/opencode-plugin` package bin or an approved equivalent package install. Packages are still private in this repository, so do not treat this as a public npm publishing instruction.
 
-1. Install FlowDesk with a pinned OpenCode-compatible installer or development profile.
-2. Run `/flowdesk-doctor`.
-3. Ask in chat: `Use FlowDesk to plan this task and show me the guarded steps.`
-4. Review the plan, lane summaries, and any required approval.
-5. Continue with `/flowdesk-run` when FlowDesk presents it as the guarded command-backed dry-run or fake-runtime step.
-6. Check `/flowdesk-status` for workflow state and subagent lane status.
-7. Follow any suggested recovery command.
+1. Build and test the workspace: `npm run build` and `npm test`.
+2. Preview bootstrap installation without writing files:
 
-During install, FlowDesk should create a timestamped backup and a redacted bootstrap report before changing the selected OpenCode profile. If install fails, use the installer’s rollback guidance or run `/flowdesk-doctor` and `/flowdesk-export-debug`; do not manually paste raw OpenCode config, credentials, provider auth entries, or profile contents into FlowDesk.
+   ```text
+   flowdesk-install-release1 --profile-root <opencode-profile-dir> --durable-root <flowdesk-state-dir> --target-profile <profile-ref> --confirmation <confirmation-ref> --expires-at <iso-time>
+   ```
+
+3. Copy the exact approval phrase printed by the preview.
+4. Re-run the same command with `--approve "<exact phrase>"`.
+5. Run `/flowdesk-doctor`.
+6. Ask in chat: `Use FlowDesk to plan this task and show me the guarded steps.`
+7. Review the plan, lane summaries, and any required approval.
+8. Continue with `/flowdesk-run` when FlowDesk presents it as the guarded command-backed dry-run or fake-runtime step.
+9. Check `/flowdesk-status` for workflow state and subagent lane status.
+10. Follow any suggested recovery command.
+
+During install, FlowDesk creates a timestamped backup, portable `/flowdesk-*` command files, a redacted bootstrap report, and a doctor handoff before changing the selected OpenCode profile. The preview path writes nothing. If install fails, use the installer’s rollback guidance or run `/flowdesk-doctor` and `/flowdesk-export-debug`; do not manually paste raw OpenCode config, credentials, provider auth entries, or profile contents into FlowDesk.
+
+Bootstrap does not launch lanes, call providers, enable real dispatch, switch providers/models, or grant hard chat cancellation/no-reply authority. Release 1 production registration is limited to non-dispatch command-backed handlers.
 
 ## Command Fallback
 
