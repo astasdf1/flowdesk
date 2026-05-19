@@ -1191,6 +1191,31 @@ export interface FlowDeskManagedDispatchBetaPolicyV1 {
   audit_ref: OpaqueRef;
 }
 
+export interface FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1 {
+  schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1";
+  authority_ref: OpaqueRef;
+  usage_snapshot_ref: OpaqueRef;
+  provider_family: Exclude<ProviderFamily, "unknown" | "all">;
+  provider_qualified_model_id: string;
+  model_family: string;
+  source_kind: "provider_native" | "dex_conductor" | "openusage";
+  source_version_ref: OpaqueRef;
+  auth_profile_ref: OpaqueRef;
+  auth_evidence_ref: OpaqueRef;
+  credential_scope_ref: OpaqueRef;
+  account_boundary_ref: OpaqueRef;
+  quota_evidence_ref: OpaqueRef;
+  usage_acquired: true;
+  reset_time: IsoTimestamp;
+  reset_bucket: string;
+  source_ref: OpaqueRef;
+  conformance_ref: OpaqueRef;
+  redacted_evidence_refs: OpaqueRef[];
+  trusted: true;
+  observed_at: IsoTimestamp;
+  expires_at: IsoTimestamp;
+}
+
 export interface FlowDeskManagedDispatchBetaBindingEvidenceV1 {
   schema_version: "flowdesk.managed_dispatch_beta.binding_evidence.v1";
   binding_ref: OpaqueRef;

@@ -6,6 +6,7 @@ import type {
   FlowDeskManagedDispatchBetaPolicyV1,
   FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
   FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
+  FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
   FlowDeskNonDispatchPermissionV1,
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskUsageSnapshotV1,
@@ -22,6 +23,7 @@ import {
   validateManagedDispatchBetaProviderHealthEvidenceV1,
   validateManagedDispatchBetaRuntimeEchoEvidenceV1,
   validateManagedDispatchBetaTelemetryCorrelationV1,
+  validateManagedDispatchBetaUsageAuthorityEvidenceV1,
   validateManagedDispatchBetaUsageEvidenceV1,
   validateOpaqueRef,
   validateProviderHealthSnapshotV1,
@@ -64,6 +66,10 @@ export interface ManagedDispatchBetaBoundaryInputV1 {
   guardApproval?: GuardApprovedDispatchV1;
   bindingEvidence?: FlowDeskManagedDispatchBetaBindingEvidenceV1;
   usageSnapshot?: FlowDeskUsageSnapshotV1;
+  usageAuthorityEvidence?: FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1;
+  expectedAuthProfileRef?: OpaqueRef;
+  expectedCredentialScopeRef?: OpaqueRef;
+  expectedAccountBoundaryRef?: OpaqueRef;
   providerHealthSnapshot?: FlowDeskProviderHealthSnapshotV1;
   runtimeEchoEvidence?: FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1;
   conformanceRuntimeMetadata?: FlowDeskConformanceRuntimeMetadataV1;
@@ -78,6 +84,13 @@ export interface ManagedDispatchBetaBoundaryInputV1 {
 
 function fail(check: GuardCheckV1["check"], ref?: string): GuardCheckV1 {
   return { check, result: "fail", ...(ref === undefined ? {} : { ref }) };
+}
+
+function modelFamilyFromProviderQualifiedModelId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const separator = value.indexOf("/");
+  if (separator <= 0 || separator === value.length - 1) return undefined;
+  return value.slice(separator + 1);
 }
 
 function pass(check: GuardCheckV1["check"], ref?: string): GuardCheckV1 {
@@ -167,6 +180,7 @@ export function evaluateManagedDispatchBetaGuardBoundaryV1(input: ManagedDispatc
   const checks: GuardCheckV1[] = [];
   const providerFamily = input.guardApproval?.provider_family;
   const providerQualifiedModelId = input.guardApproval?.provider_qualified_model_id;
+  const modelFamily = modelFamilyFromProviderQualifiedModelId(providerQualifiedModelId);
   const usageSnapshotRef = input.usageSnapshot?.snapshot_id;
   const providerHealthSnapshotRef = input.providerHealthSnapshot?.snapshot_id;
   const runtimeCapabilityRef = input.guardApproval?.runtime_capability_ref ?? input.runtimeEchoEvidence?.runtime_capability_ref;
@@ -179,11 +193,15 @@ export function evaluateManagedDispatchBetaGuardBoundaryV1(input: ManagedDispatc
     expectedAttemptId: input.attemptId,
     expectedProviderFamily: providerFamily,
     expectedProviderQualifiedModelId: providerQualifiedModelId,
+    expectedModelFamily: modelFamily,
     expectedUsageSnapshotRef: usageSnapshotRef,
     expectedProviderHealthSnapshotRef: providerHealthSnapshotRef,
     expectedRuntimeCapabilityRef: runtimeCapabilityRef,
     expectedPreDispatchAuditRef: preDispatchAuditRef,
     expectedConformanceRef: input.runtimeEchoEvidence?.conformance_ref,
+    expectedAuthProfileRef: input.expectedAuthProfileRef,
+    expectedCredentialScopeRef: input.expectedCredentialScopeRef,
+    expectedAccountBoundaryRef: input.expectedAccountBoundaryRef,
     now: input.now
   };
 
@@ -235,6 +253,21 @@ export function evaluateManagedDispatchBetaGuardBoundaryV1(input: ManagedDispatc
     return boundaryDecision("blocked", "usage", "Usage evidence is missing, stale, ambiguous, or non-dispatchable.", checks);
   }
   checks.push(pass("usage", usageSnapshotRef));
+
+  if (input.usageAuthorityEvidence === undefined) {
+    checks.push(fail("usage", usageSnapshotRef));
+    return boundaryDecision("blocked", "usage", "Pinned usage authority evidence is required for managed-dispatch beta.", checks);
+  }
+  if (input.expectedAuthProfileRef === undefined || input.expectedCredentialScopeRef === undefined || input.expectedAccountBoundaryRef === undefined) {
+    checks.push(fail("usage", input.usageAuthorityEvidence.authority_ref));
+    return boundaryDecision("blocked", "usage", "Explicit auth profile, credential scope, and account boundary refs are required for exact model eligibility.", checks);
+  }
+  const usageAuthorityResult = validateManagedDispatchBetaUsageAuthorityEvidenceV1(input.usageAuthorityEvidence, input.usageSnapshot, evidenceOptions);
+  if (!usageAuthorityResult.ok) {
+    checks.push(fail("usage", input.usageAuthorityEvidence.authority_ref));
+    return boundaryDecision("blocked", "usage", "Usage authority evidence is missing, stale, mismatched, or untrusted.", checks);
+  }
+  checks.push(pass("usage", input.usageAuthorityEvidence.authority_ref));
 
   if (input.providerHealthSnapshot === undefined) {
     checks.push(fail("provider_health", providerHealthSnapshotRef));

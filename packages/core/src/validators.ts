@@ -18,6 +18,7 @@ import type {
   FlowDeskHookHarnessResponseV1,
   FlowDeskLaneRecordV1,
   FlowDeskLaneSummaryArtifactV1,
+  FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
   FlowDeskPlanRequestV1,
   FlowDeskPlanResponseV1,
   FlowDeskPlanSummaryArtifactV1,
@@ -86,12 +87,23 @@ export interface ManagedDispatchBetaEvidenceValidationOptionsV1 {
   expectedAttemptId?: string;
   expectedProviderFamily?: ProviderFamily;
   expectedProviderQualifiedModelId?: string;
+  expectedModelFamily?: string;
   expectedUsageSnapshotRef?: string;
   expectedProviderHealthSnapshotRef?: string;
   expectedRuntimeCapabilityRef?: string;
   expectedPreDispatchAuditRef?: string;
   expectedConformanceRef?: string;
+  expectedAuthProfileRef?: string;
+  expectedCredentialScopeRef?: string;
+  expectedAccountBoundaryRef?: string;
   now?: number;
+}
+
+function validateConcreteProviderQualifiedModelId(value: unknown, label = "provider_qualified_model_id"): ValidationResult {
+  const result = validateProviderQualifiedModelId(value);
+  if (!result.ok) return result;
+  const model = (value as string).split("/")[1] ?? "";
+  return /(^|[-_.:])(latest|default|auto)($|[-_.:])/i.test(model) ? invalid(`${label} must be a concrete non-alias model id`) : valid();
 }
 
 export function valid(): ValidationResult {
@@ -1050,7 +1062,54 @@ export function validateManagedDispatchBetaUsageEvidenceV1(value: unknown, optio
     value.reset_bucket !== "unknown" ? valid() : invalid("managed dispatch beta usage requires provider-native reset_bucket evidence"),
     value.dispatchability === "dispatchable" ? valid() : invalid("managed dispatch beta usage must be dispatchable"),
     uncertainty.length === 0 ? valid() : invalid("managed dispatch beta usage uncertainty is ambiguous"),
-    options?.expectedProviderFamily !== undefined && value.provider_family !== options.expectedProviderFamily ? invalid("usage provider_family mismatch") : valid()
+    options?.expectedProviderFamily !== undefined && value.provider_family !== options.expectedProviderFamily ? invalid("usage provider_family mismatch") : valid(),
+    options?.expectedModelFamily !== undefined && value.model_family !== options.expectedModelFamily ? invalid("usage model_family mismatch") : valid()
+  ]);
+}
+
+export function validateManagedDispatchBetaUsageAuthorityEvidenceV1(value: unknown, usage: FlowDeskUsageSnapshotV1, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  if (!isRecord(value)) return invalid("managed dispatch beta usage authority evidence must be an object");
+  const authority = value as Partial<FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1>;
+  const authorityProviderFamily = value.provider_family as ProviderFamily | undefined;
+  return combine([
+    rejectUnknownProperties(value, ["schema_version", "authority_ref", "usage_snapshot_ref", "provider_family", "provider_qualified_model_id", "model_family", "source_kind", "source_version_ref", "auth_profile_ref", "auth_evidence_ref", "credential_scope_ref", "account_boundary_ref", "quota_evidence_ref", "usage_acquired", "reset_time", "reset_bucket", "source_ref", "conformance_ref", "redacted_evidence_refs", "trusted", "observed_at", "expires_at"]),
+    requireFields(value, ["schema_version", "authority_ref", "usage_snapshot_ref", "provider_family", "provider_qualified_model_id", "model_family", "source_kind", "source_version_ref", "auth_profile_ref", "auth_evidence_ref", "credential_scope_ref", "account_boundary_ref", "quota_evidence_ref", "usage_acquired", "reset_time", "reset_bucket", "source_ref", "conformance_ref", "redacted_evidence_refs", "trusted", "observed_at", "expires_at"]),
+    value.schema_version === "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1" ? valid() : invalid("usage authority evidence schema_version is invalid"),
+    validateOpaqueRef(value.authority_ref, "authority_ref"),
+    validateOpaqueRef(value.usage_snapshot_ref, "usage_snapshot_ref"),
+    value.usage_snapshot_ref === usage.snapshot_id ? valid() : invalid("usage authority usage_snapshot_ref mismatch"),
+    validateProviderFamily(authorityProviderFamily),
+    authorityProviderFamily === "unknown" || authorityProviderFamily === "all" ? invalid("usage authority provider_family must be concrete") : valid(),
+    options?.expectedProviderFamily !== undefined && authorityProviderFamily !== options.expectedProviderFamily ? invalid("usage authority provider_family mismatch") : valid(),
+    authorityProviderFamily === usage.provider_family ? valid() : invalid("usage authority usage provider_family mismatch"),
+    validateConcreteProviderQualifiedModelId(value.provider_qualified_model_id, "usage authority provider_qualified_model_id"),
+    options?.expectedProviderQualifiedModelId !== undefined && value.provider_qualified_model_id !== options.expectedProviderQualifiedModelId ? invalid("usage authority provider_qualified_model_id mismatch") : valid(),
+    typeof authority.model_family === "string" && authority.model_family.length > 0 && authority.model_family.length <= 120 ? validateNoForbiddenRawPayloads(authority.model_family, "usage authority model_family") : invalid("usage authority model_family is required"),
+    authority.model_family === usage.model_family ? valid() : invalid("usage authority model_family mismatch"),
+    options?.expectedModelFamily !== undefined && authority.model_family !== options.expectedModelFamily ? invalid("usage authority expected model_family mismatch") : valid(),
+    isEnumValue(value.source_kind, ["provider_native", "dex_conductor", "openusage"]) ? valid() : invalid("usage authority source_kind is invalid"),
+    validateOpaqueRef(value.source_version_ref, "source_version_ref"),
+    validateOpaqueRef(value.auth_profile_ref, "auth_profile_ref"),
+    options?.expectedAuthProfileRef !== undefined && value.auth_profile_ref !== options.expectedAuthProfileRef ? invalid("usage authority auth_profile_ref mismatch") : valid(),
+    validateOpaqueRef(value.auth_evidence_ref, "auth_evidence_ref"),
+    validateOpaqueRef(value.credential_scope_ref, "credential_scope_ref"),
+    options?.expectedCredentialScopeRef !== undefined && value.credential_scope_ref !== options.expectedCredentialScopeRef ? invalid("usage authority credential_scope_ref mismatch") : valid(),
+    validateOpaqueRef(value.account_boundary_ref, "account_boundary_ref"),
+    options?.expectedAccountBoundaryRef !== undefined && value.account_boundary_ref !== options.expectedAccountBoundaryRef ? invalid("usage authority account_boundary_ref mismatch") : valid(),
+    validateOpaqueRef(value.quota_evidence_ref, "quota_evidence_ref"),
+    value.usage_acquired === true ? valid() : invalid("usage authority requires actual usage acquisition"),
+    validateTimestamp(value.reset_time, "usage authority reset_time"),
+    value.reset_time === usage.reset_time ? valid() : invalid("usage authority reset_time mismatch"),
+    typeof authority.reset_bucket === "string" && authority.reset_bucket.length > 0 && authority.reset_bucket !== "unknown" ? validateNoForbiddenRawPayloads(authority.reset_bucket, "usage authority reset_bucket") : invalid("usage authority reset_bucket is required"),
+    authority.reset_bucket === usage.reset_bucket ? valid() : invalid("usage authority reset_bucket mismatch"),
+    validateOpaqueRef(value.source_ref, "source_ref"),
+    value.source_ref === usage.source_ref ? valid() : invalid("usage authority source_ref mismatch"),
+    validateOpaqueRef(value.conformance_ref, "usage authority conformance_ref"),
+    validateOpaqueRefArray(value.redacted_evidence_refs, "usage authority redacted_evidence_refs", 20),
+    Array.isArray(value.redacted_evidence_refs) && value.redacted_evidence_refs.length > 0 ? valid() : invalid("usage authority redacted_evidence_refs are required"),
+    value.trusted === true ? valid() : invalid("usage authority evidence must be trusted"),
+    validateTimestamp(value.observed_at, "usage authority observed_at"),
+    validateFutureTimestamp(value.expires_at, "usage authority expires_at", options?.now)
   ]);
 }
 
