@@ -99,6 +99,8 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.top_tier_reviewer_lane_plan.v1": ["schema_version", "lane_plan_id", "binding_ref", "perspective", "inclusion_state", "reason_label", "safe_next_actions", "dispatch_authority_enabled"],
   "flowdesk.top_tier_review_binding_inventory.v1": ["schema_version", "inventory_id", "workflow_id", "plan_revision_id", "created_at", "redaction_version", "registered_binding_refs", "available_binding_refs", "unavailable_binding_refs", "blocked_binding_refs", "lane_plan_refs", "max_concurrent_lane_count", "budget_cap_label", "quota_reserve_label", "timeout_label", "retry_budget_label", "inventory_decision", "safe_next_actions", "dispatch_authority_enabled"],
   "flowdesk.top_tier_review_verdict.v1": ["schema_version", "verdict_id", "workflow_id", "lane_plan_ref", "binding_ref", "perspective", "source", "created_at", "redaction_version", "findings", "evidence_refs", "uncertainty", "required_fixes", "verdict_label", "safe_next_actions", "dispatch_authority_enabled"],
+  "flowdesk.top_tier_reviewer_lane_probe.request.v1": ["schema_version", "probe_id", "binding_ref", "lane_plan_ref", "channel", "agent_id", "provider_qualified_model_id", "perspective", "auth_evidence_ref", "usage_evidence_ref", "quota_evidence_ref", "provider_health_ref", "runtime_echo_ref", "telemetry_ref", "policy_pack_eligibility_ref", "redaction_version", "fake_runtime", "dispatch_authority_enabled"],
+  "flowdesk.top_tier_reviewer_lane_probe.result.v1": ["schema_version", "probe_id", "channel", "outcome", "observed_at", "evidence_refs", "safe_next_actions", "dispatch_authority_enabled", "provider_call_made", "lane_launch_made"],
   "flowdesk.reference_search.request.v1": ["schema_version"]
 } satisfies Record<string, readonly string[]>;
 
@@ -139,7 +141,8 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.lane_summary.v1": ["attempt_id", "started_at", "completed_at", "failure_class", "invocation_ref_kind", "retry_count", "verdict_status", "log_ref", "debug_ref"],
   "flowdesk.verification_summary.v1": ["attempt_id", "failure_category"],
   "flowdesk.policy_pack.v1": ["retention_override", "usage_policy_override", "provider_health_policy_override", "hook_policy_override"],
-  "flowdesk.non_dispatch_permission.v1": ["workflow_id", "audit_ref"]
+  "flowdesk.non_dispatch_permission.v1": ["workflow_id", "audit_ref"],
+  "flowdesk.top_tier_reviewer_lane_probe.result.v1": ["failure_label"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {

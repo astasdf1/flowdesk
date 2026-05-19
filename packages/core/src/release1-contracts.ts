@@ -1474,3 +1474,44 @@ export function createFlowDeskPlannedTopTierMultiPerspectiveReviewModeFieldV1(st
 }
 
 export const FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF = flowDeskPlannedModeFieldToString(createFlowDeskPlannedTopTierMultiPerspectiveReviewModeFieldV1());
+
+export const FLOWDESK_TOP_TIER_REVIEWER_LANE_PROBE_CHANNELS = ["subtask_true_command_lane", "injected_sdk_client"] as const;
+export type FlowDeskTopTierReviewerLaneProbeChannel = (typeof FLOWDESK_TOP_TIER_REVIEWER_LANE_PROBE_CHANNELS)[number];
+
+export const FLOWDESK_TOP_TIER_REVIEWER_LANE_PROBE_OUTCOMES = ["probe_pass", "probe_fail_closed", "probe_invalid"] as const;
+export type FlowDeskTopTierReviewerLaneProbeOutcome = (typeof FLOWDESK_TOP_TIER_REVIEWER_LANE_PROBE_OUTCOMES)[number];
+
+export interface FlowDeskTopTierReviewerLaneProbeRequestV1 {
+  schema_version: "flowdesk.top_tier_reviewer_lane_probe.request.v1";
+  probe_id: OpaqueId;
+  binding_ref: OpaqueRef;
+  lane_plan_ref: OpaqueRef;
+  channel: FlowDeskTopTierReviewerLaneProbeChannel;
+  agent_id: typeof FLOWDESK_CANONICAL_REVIEW_AGENT_ID;
+  provider_qualified_model_id: string;
+  perspective: FlowDeskTopTierReviewPerspective;
+  auth_evidence_ref: OpaqueRef;
+  usage_evidence_ref: OpaqueRef;
+  quota_evidence_ref: OpaqueRef;
+  provider_health_ref: OpaqueRef;
+  runtime_echo_ref: OpaqueRef;
+  telemetry_ref: OpaqueRef;
+  policy_pack_eligibility_ref: OpaqueRef;
+  redaction_version: string;
+  fake_runtime: true;
+  dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskTopTierReviewerLaneProbeResultV1 {
+  schema_version: "flowdesk.top_tier_reviewer_lane_probe.result.v1";
+  probe_id: OpaqueId;
+  channel: FlowDeskTopTierReviewerLaneProbeChannel;
+  outcome: FlowDeskTopTierReviewerLaneProbeOutcome;
+  failure_label?: string;
+  observed_at: IsoTimestamp;
+  evidence_refs: OpaqueRef[];
+  safe_next_actions: SafeNextAction[];
+  dispatch_authority_enabled: false;
+  provider_call_made: false;
+  lane_launch_made: false;
+}

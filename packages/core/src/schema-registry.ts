@@ -181,6 +181,8 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.top_tier_reviewer_lane_plan.v1", "top-tier-reviewer-lane-plan", "FlowDeskTopTierReviewerLanePlanV1", "later_release"),
   artifactEntry("flowdesk.top_tier_review_binding_inventory.v1", "top-tier-review-binding-inventory", "FlowDeskTopTierReviewBindingInventoryV1", "later_release"),
   artifactEntry("flowdesk.top_tier_review_verdict.v1", "top-tier-review-verdict", "FlowDeskTopTierReviewVerdictV1", "later_release"),
+  artifactEntry("flowdesk.top_tier_reviewer_lane_probe.request.v1", "top-tier-reviewer-lane-probe-request", "FlowDeskTopTierReviewerLaneProbeRequestV1", "later_release"),
+  artifactEntry("flowdesk.top_tier_reviewer_lane_probe.result.v1", "top-tier-reviewer-lane-probe-result", "FlowDeskTopTierReviewerLaneProbeResultV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
