@@ -1339,3 +1339,73 @@ export interface FlowDeskAuditRefSummaryV1 {
   created_at: IsoTimestamp;
   redaction_version: string;
 }
+
+export const FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES = [
+  "policy_security",
+  "architecture",
+  "verification_implementation"
+] as const;
+export type FlowDeskTopTierReviewPerspective = (typeof FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES)[number];
+
+export const FLOWDESK_TOP_TIER_BINDING_AVAILABILITY_STATES = [
+  "registered_available",
+  "registered_unavailable",
+  "registered_blocked"
+] as const;
+export type FlowDeskTopTierBindingAvailability = (typeof FLOWDESK_TOP_TIER_BINDING_AVAILABILITY_STATES)[number];
+
+export const FLOWDESK_TOP_TIER_LANE_INCLUSION_STATES = ["included", "excluded", "blocked"] as const;
+export type FlowDeskTopTierLaneInclusionState = (typeof FLOWDESK_TOP_TIER_LANE_INCLUSION_STATES)[number];
+
+export const FLOWDESK_TOP_TIER_REVIEW_INVENTORY_DECISIONS = ["ready", "blocked", "policy_change_required"] as const;
+export type FlowDeskTopTierReviewInventoryDecision = (typeof FLOWDESK_TOP_TIER_REVIEW_INVENTORY_DECISIONS)[number];
+
+export interface FlowDeskTopTierReviewerBindingV1 {
+  schema_version: "flowdesk.top_tier_reviewer_binding.v1";
+  binding_id: OpaqueId;
+  reviewer_profile_id: typeof FLOWDESK_CANONICAL_REVIEW_AGENT_ID;
+  binding_label: string;
+  provider_family: Exclude<ProviderFamily, "unknown" | "all">;
+  provider_qualified_model_id: string;
+  model_family: string;
+  highest_tier_eligible: true;
+  registry_entry_ref: OpaqueRef;
+  policy_pack_eligibility_ref: OpaqueRef;
+  availability: FlowDeskTopTierBindingAvailability;
+  dispatch_authority_enabled: false;
+  observed_at: IsoTimestamp;
+  expires_at: IsoTimestamp;
+}
+
+export interface FlowDeskTopTierReviewerLanePlanV1 {
+  schema_version: "flowdesk.top_tier_reviewer_lane_plan.v1";
+  lane_plan_id: OpaqueId;
+  binding_ref: OpaqueRef;
+  perspective: FlowDeskTopTierReviewPerspective;
+  inclusion_state: FlowDeskTopTierLaneInclusionState;
+  reason_label: string;
+  safe_next_actions: SafeNextAction[];
+  dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskTopTierReviewBindingInventoryV1 {
+  schema_version: "flowdesk.top_tier_review_binding_inventory.v1";
+  inventory_id: OpaqueId;
+  workflow_id: OpaqueId;
+  plan_revision_id: OpaqueId;
+  created_at: IsoTimestamp;
+  redaction_version: string;
+  registered_binding_refs: OpaqueRef[];
+  available_binding_refs: OpaqueRef[];
+  unavailable_binding_refs: OpaqueRef[];
+  blocked_binding_refs: OpaqueRef[];
+  lane_plan_refs: OpaqueRef[];
+  max_concurrent_lane_count: number;
+  budget_cap_label: string;
+  quota_reserve_label: string;
+  timeout_label: string;
+  retry_budget_label: string;
+  inventory_decision: FlowDeskTopTierReviewInventoryDecision;
+  safe_next_actions: SafeNextAction[];
+  dispatch_authority_enabled: false;
+}
