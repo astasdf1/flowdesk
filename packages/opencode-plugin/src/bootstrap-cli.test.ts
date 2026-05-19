@@ -77,7 +77,7 @@ test("Release 1 bootstrap CLI installs only after exact approval phrase", () => 
     assert.equal(result.exitCode, 0);
     assert.equal(stderr, "");
     assert.match(stdout, /FlowDesk Release 1 bootstrap install complete/);
-    assert.match(stdout, /Production registration: disabled/);
+    assert.match(stdout, /Production registration: release1 non-dispatch command-backed only/);
     assert.match(stdout, /Provider\/runtime dispatch: disabled/);
     for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
       assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), true, commandName);

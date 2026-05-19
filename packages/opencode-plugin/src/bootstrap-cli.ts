@@ -44,7 +44,7 @@ function usage(): string {
     "Usage: flowdesk-install-release1 --profile-root <dir> --durable-root <dir> --target-profile <ref> --confirmation <ref> --expires-at <iso> --approve <exact phrase>",
     "",
     "Release 1 installs portable /flowdesk-* command files and redacted bootstrap artifacts only.",
-    "It does not register production tools, launch lanes, call providers, or enable dispatch.",
+    "It does not launch lanes, call providers, enable dispatch, or grant fallback/hard-chat authority.",
     "",
     "To preview the required approval phrase, omit --approve. No files are written until --approve exactly matches the displayed phrase."
   ].join("\n");
@@ -169,7 +169,7 @@ export function runFlowDeskRelease1BootstrapCli(options: FlowDeskRelease1Bootstr
       "Re-run with this exact approval phrase:",
       requiredPhrase,
       "",
-      "Release 1 remains portable-command-only: no production registration, no provider call, no runtime dispatch."
+      "Release 1 bootstrap remains portable-command-only: non-dispatch registration metadata does not grant provider calls or runtime dispatch."
     ].join("\n")}\n`);
     return { exitCode: 2 };
   }
@@ -201,7 +201,7 @@ export function runFlowDeskRelease1BootstrapCli(options: FlowDeskRelease1Bootstr
     `Bootstrap artifacts written: ${result.bootstrapArtifactsWritten}`,
     `Doctor handoff ref: ${result.doctorHandoffRef ?? "unknown"}`,
     "Safe next actions: /flowdesk-doctor, /flowdesk-status",
-    "Production registration: disabled",
+    "Production registration: release1 non-dispatch command-backed only",
     "Provider/runtime dispatch: disabled"
   ].join("\n")}\n`);
   return { exitCode: 0 };

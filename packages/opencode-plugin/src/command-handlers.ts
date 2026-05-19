@@ -193,7 +193,7 @@ function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1): FlowDeskDoc
     ok: category !== "dispatch_blocking",
     status: category === "dispatch_blocking" ? "blocked" : category === "degraded_mode_warning" ? "degraded" : "diagnostic_only",
     safe_next_actions: [...outcome.safe_next_actions],
-    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results only; no filesystem write occurred in this handler." : "FlowDesk doctor checked Release 1 install, compatibility, provider usage, and policy readiness without production registration, provider calls, or runtime execution.",
+    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results only; no filesystem write occurred in this handler." : "FlowDesk doctor checked Release 1 install, compatibility, provider usage, and policy readiness without real dispatch, provider calls, or runtime execution.",
     doctor_results: doctorSections,
     provider_health_summary: providerHealth,
     compatibility_ref: safeDiagnosticId("compatibility", request),
