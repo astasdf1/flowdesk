@@ -259,6 +259,23 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(result.fallbackAuthority, false);
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
 
+  const doctor = JSON.parse(await intakeTool.execute({
+    schema_version: "flowdesk.chat_intake.request.v1",
+    request_id: "request-nl-doctor",
+    input_mode: "chat_routed",
+    session_ref: "session-nl",
+    redacted_intake_ref: "intake-nl-doctor",
+    intake_summary: "/flowdesk-doctor",
+    source_surface: "chat.message"
+  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  assert.equal(doctor.evaluation?.response?.route_decision, "use_command_fallback");
+  assert.equal(doctor.routedToolName, "flowdesk_doctor");
+  assert.equal(doctor.routedToolResult?.handler?.ok, true);
+  assert.equal(doctor.routedToolResult?.handler?.response?.status, "degraded");
+  assert.equal(doctor.providerCall, false);
+  assert.equal(doctor.runtimeExecution, false);
+  assert.equal(doctor.actualLaneLaunch, false);
+
   const retry = JSON.parse(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-retry",

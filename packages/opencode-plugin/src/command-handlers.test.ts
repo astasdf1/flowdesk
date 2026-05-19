@@ -465,6 +465,12 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
 });
 
 test("doctor diagnostic handler scopes section checks without authorizing runtime", () => {
+  const persisted = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_doctor", doctorRequest({ persist_report: true }));
+  assert.equal(persisted.ok, true);
+  assert.equal(persisted.requestSchemaValid, true);
+  assert.equal((persisted.response as FlowDeskDoctorResponseV1).status, "degraded");
+  assertNoRuntimeAuthority(persisted);
+
   const install = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_doctor", doctorRequest({ check_scope: "install" }));
   assert.equal(install.ok, true);
   const installResponse = install.response as FlowDeskDoctorResponseV1;

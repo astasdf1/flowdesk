@@ -112,6 +112,7 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.chat_intake.response.v1": responseEnvelopeOptional,
   "flowdesk.hook_harness.request.v1": ["chat_intake_mode", "conformance_ref"],
   "flowdesk.hook_harness.response.v1": ["audit_ref"],
+  "flowdesk.doctor.request.v1": ["persist_report"],
   "flowdesk.plan.request.v1": [...requestEnvelopeOptional, "existing_plan_revision_id"],
   "flowdesk.plan.response.v1": responseEnvelopeOptional,
   "flowdesk.run.request.v1": [...requestEnvelopeOptional, "step_id"],
@@ -147,7 +148,7 @@ const optionalFields: Record<string, readonly string[]> = {
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {
   if (fieldName === "status" || fieldName === "freshness" || fieldName === "verdict_status") return "string";
-  if (fieldName.startsWith("is_") || fieldName.startsWith("allow_") || fieldName.startsWith("requires_") || fieldName.endsWith("_eligible") || fieldName.endsWith("_enabled") || fieldName.endsWith("_authorized") || fieldName.endsWith("_bypassed") || fieldName.endsWith("_applied") || fieldName === "ok" || fieldName === "refresh" || fieldName === "unrelated_profile_mutation" || fieldName === "omitted_legacy_runtime_imports") return "boolean";
+  if (fieldName.startsWith("is_") || fieldName.startsWith("allow_") || fieldName.startsWith("requires_") || fieldName.endsWith("_eligible") || fieldName.endsWith("_enabled") || fieldName.endsWith("_authorized") || fieldName.endsWith("_bypassed") || fieldName.endsWith("_applied") || fieldName === "ok" || fieldName === "refresh" || fieldName === "persist_report" || fieldName === "unrelated_profile_mutation" || fieldName === "omitted_legacy_runtime_imports") return "boolean";
   if (fieldName.endsWith("_count") || fieldName === "priority" || fieldName === "freshness_ttl" || fieldName === "byte_count" || fieldName === "file_count") return "number";
   if (fieldName.endsWith("s") || fieldName.endsWith("_refs") || fieldName.endsWith("_hashes") || fieldName === "safe_next_actions" || fieldName === "lane_refs" || fieldName === "uncertainty_flags" || fieldName === "include_sections" || fieldName === "diagnostic_observations") return "array";
   if (["error", "provider_health_summary", "guard_precheck", "blocker", "blocker_summary", "retention", "usage_policy", "provider_health_policy", "hook_policy", "taxonomy", "model_requirements", "retention_override", "usage_policy_override", "provider_health_policy_override", "hook_policy_override"].includes(fieldName)) return "object";
