@@ -57,6 +57,23 @@ export function redactedDebugManifestPath(sessionId: string): string {
   return `${redactedDebugDirectoryPath(sessionId)}/manifest.json`;
 }
 
+export const FLOWDESK_SESSION_EVIDENCE_CLASSES = ["usage_authority", "runtime_echo", "telemetry_correlation"] as const;
+export type FlowDeskSessionEvidenceClass = (typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
+
+const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
+  usage_authority: "usage-authority",
+  runtime_echo: "runtime-echo",
+  telemetry_correlation: "telemetry-correlation"
+};
+
+export function sessionEvidenceDirectoryPath(sessionId: string, evidenceClass: FlowDeskSessionEvidenceClass): string {
+  return `${sessionDirectoryPath(sessionId)}/evidence/${evidenceClassSegment[evidenceClass]}`;
+}
+
+export function sessionEvidenceRecordPath(sessionId: string, evidenceClass: FlowDeskSessionEvidenceClass, evidenceId: string): string {
+  return `${sessionEvidenceDirectoryPath(sessionId, evidenceClass)}/${assertOpaquePathSegment(evidenceId, "evidence_id")}.json`;
+}
+
 export function assertFlowDeskRelativeStatePath(value: string, label = "state path"): string {
   const result = validateFlowDeskRelativeStatePath(value, label);
   if (!result.ok) throw new Error(result.errors.join("; "));
