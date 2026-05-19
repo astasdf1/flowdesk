@@ -5,7 +5,15 @@
   "description": "Core FlowDesk contracts and Release 1 boundaries.",
   "type": "module",
   "files": [
-    "dist"
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map",
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.d.ts.map",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.js.map",
+    "!dist/.tsbuildinfo"
   ],
   "exports": {
     ".": {
