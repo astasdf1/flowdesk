@@ -32,6 +32,8 @@ export interface FlowDeskProviderUsageAcquisitionConfigV1 {
   providers?: readonly CollectorProviderFamily[];
   claudeOAuthUsage?: boolean;
   codexLiveUsage?: boolean;
+  geminiOAuthClientId?: string;
+  geminiOAuthClientSecret?: string;
   geminiProjectId?: string;
   geminiQuota?: boolean;
 }
@@ -119,8 +121,6 @@ const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
 const CODEX_DEFAULT_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api";
 const CODEX_KEYRING_SERVICE = "Codex Auth";
-const GEMINI_OAUTH_CLIENT_ID = "FLOWDESK_GEMINI_OAUTH_CLIENT_ID_PLACEHOLDER";
-const GEMINI_OAUTH_CLIENT_SECRET = "FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET_PLACEHOLDER";
 const GEMINI_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const GEMINI_CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal";
 
@@ -282,8 +282,11 @@ async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionC
     const creds = JSON.parse(filesystem.readFile(credsPath)) as unknown;
     const refreshToken = isRecord(creds) ? stringField(creds, "refresh_token") : "";
     if (!refreshToken) return refusedCollection("gemini", "gemini", "gemini refresh token is missing");
-    const accessToken = await refreshGeminiAccessToken(refreshToken, fetcher);
     const env = options.env ?? {};
+    const clientId = firstNonEmpty(acquisition.geminiOAuthClientId, env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID);
+    const clientSecret = firstNonEmpty(acquisition.geminiOAuthClientSecret, env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET);
+    if (!clientId || !clientSecret) return refusedCollection("gemini", "gemini", "gemini oauth client evidence is missing");
+    const accessToken = await refreshGeminiAccessToken(refreshToken, clientId, clientSecret, fetcher);
     let projectId = firstNonEmpty(env.GOOGLE_CLOUD_PROJECT, env.GOOGLE_CLOUD_PROJECT_ID, acquisition.geminiProjectId);
     const details = await codeAssistPost("loadCodeAssist", { cloudaicompanionProject: projectId, metadata: { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI", duetProject: projectId } }, accessToken, fetcher);
     projectId = firstNonEmpty(projectId, stringField(details, "cloudaicompanionProject"));
@@ -471,8 +474,8 @@ function codexUsageUrl(baseUrl: string): string {
   return baseUrl.includes("/backend-api") ? `${baseUrl}/wham/usage` : `${baseUrl}/api/codex/usage`;
 }
 
-async function refreshGeminiAccessToken(refreshToken: string, fetcher: FlowDeskProviderUsageFetchV1): Promise<string> {
-  const form = new URLSearchParams({ client_id: GEMINI_OAUTH_CLIENT_ID, client_secret: GEMINI_OAUTH_CLIENT_SECRET, refresh_token: refreshToken, grant_type: "refresh_token" });
+async function refreshGeminiAccessToken(refreshToken: string, clientId: string, clientSecret: string, fetcher: FlowDeskProviderUsageFetchV1): Promise<string> {
+  const form = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" });
   const response = await fetcher(GEMINI_TOKEN_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form.toString() });
   if (!response.ok) throw new Error(`Gemini token refresh failed: ${response.status}`);
   const parsed = JSON.parse(await response.text()) as unknown;

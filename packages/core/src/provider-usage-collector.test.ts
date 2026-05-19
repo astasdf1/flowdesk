@@ -116,7 +116,7 @@ test("Gemini Code Assist collector produces provider-native usage authority evid
     return response({ buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0.5, resetTime: "2026-05-18T00:00:00.000Z" }] });
   };
 
-  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"] }, { filesystem, fetch: fetcher, now: () => observedAtMs });
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
 
   assertCollectorEvidenceValid(result);
   assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-daily");
