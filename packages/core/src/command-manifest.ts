@@ -35,7 +35,7 @@ export interface FlowDeskCommandManifestEntryV1 {
   stateOutputs: readonly string[];
   schemaCompatibilityStatus: Release1SchemaCompatibilityStatus;
   schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation";
-  productionRegistrationEligible: false;
+  productionRegistrationEligible: true;
   dispatchApprovalEligible: false;
   fallbackAuthority: false;
   hardCancelOrNoReplyAuthority: false;
@@ -106,7 +106,7 @@ function templateFor(commandName: FlowDeskRelease1MinimumPortableCommandName, to
       `Fixture prefix: ${requestEntry.fixturePrefix}`,
       "Template mode: inert static command manifest.",
       "User action: collect bounded options and return schema-valid redacted refs.",
-      "Safety: FDS-1 uses runtime-closed validation; production registration remains blocked until command-backed handlers exist."
+      "Safety: FDS-1 uses runtime-closed validation; registration is limited to command-backed non-dispatch handlers."
     ].join("\n")
   };
 }
@@ -129,7 +129,7 @@ function manifestEntry(commandName: FlowDeskRelease1MinimumPortableCommandName, 
     stateOutputs: requestEntry.toolContract.stateOutputs,
     schemaCompatibilityStatus: requestEntry.toolContract.schemaCompatibilityStatus,
     schemaCompatibilityReadiness: "compatible_with_runtime_closed_validation",
-    productionRegistrationEligible: false,
+    productionRegistrationEligible: true,
     dispatchApprovalEligible: false,
     fallbackAuthority: false,
     hardCancelOrNoReplyAuthority: false,
@@ -253,7 +253,7 @@ export function validateFlowDeskCommandManifestEntry(entry: unknown): Validation
     JSON.stringify(entry.stateOutputs) === JSON.stringify(contract.stateOutputs) ? valid() : invalid("stateOutputs do not match registry"),
     entry.schemaCompatibilityStatus === "compatible_runtime_closed_validation" ? valid() : invalid("schemaCompatibilityStatus must reflect runtime-closed compatibility"),
     entry.schemaCompatibilityReadiness === "compatible_with_runtime_closed_validation" ? valid() : invalid("schemaCompatibilityReadiness must reflect runtime-closed compatibility"),
-    entry.productionRegistrationEligible === false ? valid() : invalid("productionRegistrationEligible must be false"),
+    entry.productionRegistrationEligible === true ? valid() : invalid("productionRegistrationEligible must be true for Release 1 minimum command-backed handlers"),
     entry.dispatchApprovalEligible === false ? valid() : invalid("dispatchApprovalEligible must be false"),
     entry.fallbackAuthority === false ? valid() : invalid("fallbackAuthority must be false"),
     entry.hardCancelOrNoReplyAuthority === false ? valid() : invalid("hardCancelOrNoReplyAuthority must be false"),

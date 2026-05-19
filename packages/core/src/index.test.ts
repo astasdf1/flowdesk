@@ -192,12 +192,12 @@ test("all registry entries have deterministic closed schema artifacts", () => {
   }
 });
 
-test("Release 1 minimum tools are identified but production registration remains blocked", () => {
+test("Release 1 minimum tools are eligible for non-dispatch production registration", () => {
   assert.deepEqual(getRelease1RegisteredToolNames().sort(), [...RELEASE_1_PRODUCTION_MINIMUM_TOOL_NAMES].sort());
-  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+  assert.deepEqual([...new Set(getRelease1ProductionToolRegistry().map((entry) => entry.toolName))].sort(), [...RELEASE_1_PRODUCTION_MINIMUM_TOOL_NAMES].sort());
   const minimumToolEntries = RELEASE_1_SCHEMA_REGISTRY.filter((entry) => entry.release1MinimumTool && entry.kind.startsWith("tool_"));
   assert.ok(minimumToolEntries.length > 0);
-  assert.ok(minimumToolEntries.every((entry) => entry.productionRegistrationEligible === false));
+  assert.ok(minimumToolEntries.every((entry) => entry.productionRegistrationEligible === true));
   assert.ok(minimumToolEntries.every((entry) => entry.toolContract?.schemaCompatibilityStatus === "compatible_runtime_closed_validation"));
   assert.ok(minimumToolEntries.every((entry) => entry.toolContract?.schemaCompatibilityReadiness === "compatible_with_runtime_closed_validation"));
 });

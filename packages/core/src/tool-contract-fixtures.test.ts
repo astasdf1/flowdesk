@@ -95,8 +95,8 @@ test("FDS-1 fixture catalog excludes optional diagnostics from the minimum catal
   assert.equal(FLOWDESK_FDS1_FIXTURE_CATALOG.every((entry) => entry.diagnosticOnly === false), true);
 });
 
-test("FDS-1 fixture foundation has no production registration or runtime authority", () => {
-  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+test("FDS-1 fixture foundation has no fixture-side registration or runtime authority", () => {
+  assert.ok(getRelease1ProductionToolRegistry().length > 0);
   assert.equal(FLOWDESK_FDS1_PRE_SPIKE_PRODUCTION_FIXTURE_REGISTRY.length, 0);
   assert.equal(getFlowDeskFds1PreSpikeProductionFixtureRegistry().length, 0);
   for (const fixtureEntry of FLOWDESK_FDS1_FIXTURE_CATALOG) {

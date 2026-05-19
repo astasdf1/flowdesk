@@ -17,7 +17,7 @@ export interface Release1SchemaMetadata {
   fixturePrefix: string;
   interfaceName: string;
   kind: Release1SchemaRegistryKind;
-  productionRegistrationEligible: false;
+  productionRegistrationEligible: boolean;
   release1MinimumTool: boolean;
   registrationStatus: Release1ToolRegistrationStatus;
   toolName?: string;
@@ -70,7 +70,7 @@ function toolEntry(
     fixturePrefix,
     interfaceName,
     kind,
-    productionRegistrationEligible: false,
+    productionRegistrationEligible: release1MinimumTool,
     release1MinimumTool,
     registrationStatus: status,
     toolName,

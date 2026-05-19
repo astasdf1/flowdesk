@@ -59,12 +59,12 @@ test("Checkpoint 5 manifest entries are registry-backed and fixture prefixes mat
   }
 });
 
-test("Checkpoint 5 manifest is inert, non-authorizing, and production-registration disabled", () => {
-  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+test("Checkpoint 5 manifest is production-eligible only for non-authorizing command handlers", () => {
+  assert.ok(getRelease1ProductionToolRegistry().length > 0);
   assert.equal(FLOWDESK_PRE_SPIKE_PRODUCTION_COMMAND_REGISTRY.length, 0);
   assert.equal(getFlowDeskPreSpikeProductionCommandRegistry().length, 0);
   for (const entry of FLOWDESK_RELEASE_1_COMMAND_MANIFEST) {
-    assert.equal(entry.productionRegistrationEligible, false);
+    assert.equal(entry.productionRegistrationEligible, true);
     assert.equal(entry.dispatchApprovalEligible, false);
     assert.equal(entry.fallbackAuthority, false);
     assert.equal(entry.hardCancelOrNoReplyAuthority, false);
@@ -129,7 +129,7 @@ test("Checkpoint 5 manifest excludes optional diagnostics from the minimum comma
 test("Checkpoint 5 command entry validator fails closed on forged authority or schema drift", () => {
   const entry = FLOWDESK_RELEASE_1_COMMAND_MANIFEST[0];
   assert.ok(entry);
-  assert.equal(validateFlowDeskCommandManifestEntry({ ...entry, productionRegistrationEligible: true }).ok, false);
+  assert.equal(validateFlowDeskCommandManifestEntry({ ...entry, productionRegistrationEligible: false }).ok, false);
   assert.equal(validateFlowDeskCommandManifestEntry({ ...entry, dispatchApprovalEligible: true }).ok, false);
   assert.equal(validateFlowDeskCommandManifestEntry({ ...entry, fallbackAuthority: true }).ok, false);
   assert.equal(validateFlowDeskCommandManifestEntry({ ...entry, hardCancelOrNoReplyAuthority: true }).ok, false);

@@ -562,5 +562,5 @@ test("Checkpoint 4 source safety keeps production plugin registration and runtim
   assert.equal(/opencode\s+run/.test(sourceText), false);
   assert.equal(/@oh-my-claudecode|oh-my-claudecode|omo\/|omc\//i.test(sourceText), false);
   assert.equal(/productionToolRegistration\s*:\s*["']enabled["']/.test(sourceText), false);
-  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+  assert.ok(getRelease1ProductionToolRegistry().length > 0);
 });
