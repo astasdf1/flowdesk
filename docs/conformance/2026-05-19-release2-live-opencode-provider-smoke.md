@@ -162,6 +162,52 @@ Follow-up SDK smoke confirmed that the successful `session.prompt` response and 
 
 The first attempt used descriptive mode field labels containing `prompt` and was correctly rejected by redaction validation as prompt-shaped metadata. The passing smoke used schema-safe labels such as `sdk-response-provider-id`, `sdk-response-model-id`, and `sdk-session-message-correlation`.
 
+## Provider-Native Usage Collector Smoke
+
+Follow-up live credentialed usage collector smoke ran the FlowDesk internal provider-native collector against the approved local auth surfaces. The smoke printed only schema results, reset bucket labels, and validator booleans. It did not persist raw credentials, raw provider responses, raw quota bodies, account ids, or token values.
+
+Initial Claude collection exposed a porting mismatch: FlowDesk looked for the older `Claude Code` keychain service while the working DEX Conductor collector and the local environment use `Claude Code-credentials` or a config-dir-hashed `Claude Code-credentials-*` service. FlowDesk was corrected to use the DEX-compatible service name. The same live run also showed that this account's Claude five-hour bucket can report utilization without parseable reset evidence, while the weekly bucket has reset evidence. FlowDesk was corrected to select the first available Claude bucket with positive remaining usage and a parseable reset timestamp rather than hard-pinning the five-hour bucket.
+
+Final redacted smoke result:
+
+```json
+{
+  "observedAt": "2026-05-19T06:12:13.158Z",
+  "allPassed": true,
+  "providers": [
+    {
+      "provider": "claude",
+      "sourceKind": "provider_native",
+      "usageAcquired": true,
+      "usageValidationOk": true,
+      "providerHealthValidationOk": true,
+      "usageAuthorityValidationOk": true,
+      "resetBucket": "claude-weekly"
+    },
+    {
+      "provider": "openai",
+      "sourceKind": "provider_native",
+      "usageAcquired": true,
+      "usageValidationOk": true,
+      "providerHealthValidationOk": true,
+      "usageAuthorityValidationOk": true,
+      "resetBucket": "openai-gpt-5h"
+    },
+    {
+      "provider": "gemini",
+      "sourceKind": "provider_native",
+      "usageAcquired": true,
+      "usageValidationOk": true,
+      "providerHealthValidationOk": true,
+      "usageAuthorityValidationOk": true,
+      "resetBucket": "gemini-pro-daily"
+    }
+  ]
+}
+```
+
+This resolves the collector-implementation and local credentialed usage-acquisition blocker for the tested Claude, OpenAI/Codex, and Gemini Code Assist paths. It is still a local smoke, not production enablement by itself; production Release 2 still requires durable production-path evidence persistence, configured verification evidence, doctor/profile policy for auth dependencies, and explicit release approval.
+
 ## R2 Gate Assessment
 
 Evidence now available:
@@ -176,17 +222,17 @@ Evidence now available:
 8. FlowDesk durable audit write intent and gate evaluation remain fail-closed when usage evidence is missing.
 9. Durable pre-dispatch audit ordering before a live OpenAI SDK call is proven in smoke form.
 10. Runtime echo and telemetry evidence schemas validate against redacted SDK response/session correlation evidence.
+11. The internal provider-native collector acquired and validated live auth-bound usage/quota/reset evidence for the tested Claude, OpenAI/Codex, and Gemini Code Assist paths.
 
 Evidence still missing for production Release 2 enablement:
 
-1. Fresh provider-native usage/quota/reset evidence for the exact provider/model family.
-2. Provider-native collector credentials or provider-header propagation at the OpenCode SDK boundary.
-3. FlowDesk-managed trusted runtime echo artifact persisted as a durable artifact in the production path.
-4. Sufficient correlated telemetry persisted as a durable artifact in the production path.
-5. Configured verification evidence after dispatch.
-6. Doctor/profile policy for external auth/provider plugin dependencies such as local Anthropic non-pure mode.
-7. Default server opt-in wiring and doctor-visible production enablement remain intentionally absent.
+1. The live usage smoke has not yet been wired into a durable production conformance command that persists only redacted evidence refs and can be rerun by `/flowdesk-doctor` or an approved release gate.
+2. FlowDesk-managed trusted runtime echo artifact persisted as a durable artifact in the production path.
+3. Sufficient correlated telemetry persisted as a durable artifact in the production path.
+4. Configured verification evidence after dispatch.
+5. Doctor/profile policy for external auth/provider plugin dependencies such as local Anthropic non-pure mode and Gemini auth/API-key readiness; absent auth excludes affected models.
+6. Doctor-visible production enablement remains absent. The default server remains Release 1 non-dispatch; actual model runs are connected only through explicit managed-dispatch beta opt-in wiring.
 
 ## Conclusion
 
-The environment can perform live OpenCode provider dispatch through OpenAI and the official SDK surface, non-pure headless SDK dispatch can reach Anthropic Sonnet, durable audit ordering before a live SDK call is proven, and runtime echo/telemetry schemas validate against redacted SDK response/session correlation evidence. Release 2 production dispatch remains gated because provider-native usage/quota/reset evidence, durable production-path echo/telemetry persistence, configured verification, external plugin policy, and production opt-in wiring are not yet complete.
+The environment can perform live OpenCode provider dispatch through OpenAI and the official SDK surface, non-pure headless SDK dispatch can reach Anthropic Sonnet, durable audit ordering before a live SDK call is proven, runtime echo/telemetry schemas validate against redacted SDK response/session correlation evidence, and FlowDesk now has explicit opt-in server wiring for the guarded managed-dispatch beta adapter. The internal provider-native usage collector also acquired and validated live auth-bound usage/quota/reset evidence for the tested Claude, OpenAI/Codex, and Gemini Code Assist paths. Release 2 production dispatch remains gated on durable production-path evidence persistence, configured verification, external plugin/profile policy, doctor-visible production enablement, and production approval.

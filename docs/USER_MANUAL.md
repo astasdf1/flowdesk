@@ -86,6 +86,8 @@ FlowDesk separates two checks that may look similar:
 
 In Release 1, provider health is diagnostic only. FlowDesk may warn, block, degrade to fake-runtime output, or show safe next actions. It must not automatically switch from Claude to another provider, switch models, or run real provider work.
 
+Every concrete provider/model is auth- and usage-gated. If OpenCode or a pinned collector cannot prove the required auth plugin/API key/OAuth readiness and fresh real usage/quota/reset evidence for the exact provider, model, account/project, and auth scope, FlowDesk excludes the affected models and reports non-dispatchable diagnostics such as `auth_missing` or unknown usage. Current internal collector logic can check Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota when explicitly wired and credentialed, but real dispatch still requires live conformance evidence for the exact account/auth binding. FlowDesk does not try another model or provider automatically.
+
 If Claude, an API, or a selected model is unavailable:
 
 ```text
@@ -94,7 +96,7 @@ If Claude, an API, or a selected model is unavailable:
 /flowdesk-doctor
 ```
 
-Follow the safe next action shown by FlowDesk. Common fixes are refreshing provider auth outside FlowDesk, waiting for a rate-limit reset, checking your OpenCode provider/model config, refreshing OpenCode's model list, reducing the request to a guarded dry-run, or using fake-runtime mode until the provider is healthy again.
+Follow the safe next action shown by FlowDesk. Common fixes are refreshing provider auth outside FlowDesk, installing or enabling the required OpenCode auth plugin, registering the provider API key where needed, waiting for a rate-limit reset, checking your OpenCode provider/model config, refreshing OpenCode's model list, reducing the request to a guarded dry-run, or using fake-runtime mode until the provider is healthy again.
 
 Use `/flowdesk-retry` only when FlowDesk offers it. In Release 1, retry creates a new safe planning or fake-runtime attempt. It is not a hidden provider fallback.
 
@@ -255,7 +257,7 @@ Abnormal request:
 Claude is unavailable, but run anyway with whatever model is available.
 ```
 
-What FlowDesk does: stale, unknown, refused, shared-limit-suspected, or fallback-derived usage is non-dispatchable for real provider/model selection. Provider health problems such as missing or expired auth, provider outage, rate limit, unavailable model, transport timeout, provider error, OpenCode provider-load failure, or ambiguous telemetry can block or degrade the affected path. Release 1 dry-run and fake-runtime paths may still show warnings or block only the parts that depend on provider readiness. Missing provider auth blocks real dispatch without exposing credentials. FlowDesk does not automatically switch provider/model in Release 1.
+What FlowDesk does: stale, unknown, refused, shared-limit-suspected, fallback-derived, or non-exact usage is non-dispatchable for real provider/model selection. Provider health problems such as missing or expired auth, provider outage, rate limit, unavailable model, transport timeout, provider error, OpenCode provider-load failure, or ambiguous telemetry can block or degrade the affected path. Release 1 dry-run and fake-runtime paths may still show warnings or block only the parts that depend on provider readiness. Missing provider auth, missing actual usage/quota/reset evidence, alias model ids, or mismatched account/auth scope block real dispatch without exposing credentials. FlowDesk does not automatically switch provider/model in Release 1.
 
 For OpenCode Go or z.ai, this also means FlowDesk will not use provider-side balance behavior, model substitution, coding-plan mode, or a suggested alternate model as fallback authority. Those signals can be displayed as diagnostics only.
 
