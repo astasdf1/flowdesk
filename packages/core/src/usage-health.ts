@@ -35,6 +35,29 @@ export interface ProviderHealthDiagnosticOptions {
   safeRemediation?: string;
 }
 
+export type AuthReadinessRequiredProviderFamilyV1 = Exclude<ProviderFamily, "unknown" | "all">;
+
+export interface AuthMissingProviderHealthOptions {
+  snapshotId: string;
+  providerFamily: AuthReadinessRequiredProviderFamilyV1;
+  modelFamily?: string;
+  observedAt: string;
+  sourceRef: string;
+}
+
+export function providerFamilyRequiresAuthReadinessV1(providerFamily: ProviderFamily): providerFamily is AuthReadinessRequiredProviderFamilyV1 {
+  return providerFamily !== "unknown" && providerFamily !== "all";
+}
+
+function providerLabel(providerFamily: AuthReadinessRequiredProviderFamilyV1): string {
+  if (providerFamily === "claude") return "Claude";
+  if (providerFamily === "openai") return "OpenAI";
+  if (providerFamily === "gemini") return "Gemini";
+  if (providerFamily === "opencode_go") return "OpenCode Go";
+  if (providerFamily === "z_ai") return "z.ai";
+  return "Provider";
+}
+
 export function createUnknownUsageSnapshotV1(options: UnknownUsageSnapshotOptions): FlowDeskUsageSnapshotV1 {
   return {
     schema_version: "flowdesk.usage_snapshot.v1",
@@ -79,6 +102,20 @@ export function createProviderHealthDiagnosticSnapshotV1(options: ProviderHealth
     source_ref: options.sourceRef,
     safe_remediation: options.safeRemediation ?? diagnostic.safe_remediation
   };
+}
+
+export function createAuthMissingProviderHealthSnapshotV1(options: AuthMissingProviderHealthOptions): FlowDeskProviderHealthSnapshotV1 {
+  const label = providerLabel(options.providerFamily);
+  return createProviderHealthDiagnosticSnapshotV1({
+    snapshotId: options.snapshotId,
+    providerFamily: options.providerFamily,
+    modelFamily: options.modelFamily,
+    observedAt: options.observedAt,
+    sourceRef: options.sourceRef,
+    availabilityState: "unavailable",
+    failureClass: "auth_missing",
+    safeRemediation: `${label} models are excluded until auth readiness and real usage/quota/reset evidence are proven outside FlowDesk.`
+  });
 }
 
 export function createOpenCodeGoUnknownProviderHealthSnapshotV1(snapshotId: string, sourceRef: string, observedAt: string, modelFamily = "unknown"): FlowDeskProviderHealthSnapshotV1 {

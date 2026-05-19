@@ -8,6 +8,7 @@ import type {
   FlowDeskManagedDispatchBetaPolicyV1,
   FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
   FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
+  FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
   FlowDeskNonDispatchPermissionV1,
   FlowDeskPolicyPackV1,
   FlowDeskProjectConfigV1,
@@ -17,6 +18,7 @@ import type {
   GuardRequestV1
 } from "./index.js";
 import {
+  createAuthMissingProviderHealthSnapshotV1,
   createOpenCodeGoUnknownProviderHealthSnapshotV1,
   createOpenCodeGoUnknownUsageSnapshotV1,
   createProviderHealthDiagnosticSnapshotV1,
@@ -27,6 +29,7 @@ import {
   evaluateManagedDispatchBetaGuardBoundaryV1,
   evaluateRealDispatchPreconditionsV1,
   mergePolicyPacksV1,
+  providerFamilyRequiresAuthReadinessV1,
   rejectMergedUsageProviderAuthorityV1,
   validateEffectivePolicyV1,
   validateManagedDispatchBetaApprovalFreshnessV1,
@@ -281,6 +284,34 @@ function telemetryCorrelation(overrides: Partial<FlowDeskManagedDispatchBetaTele
   };
 }
 
+function usageAuthorityEvidence(overrides: Partial<FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1> = {}): FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1 {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+    authority_ref: "usage-authority-123",
+    usage_snapshot_ref: "usage-123",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/sonnet-4",
+    model_family: "sonnet-4",
+    source_kind: "openusage",
+    source_version_ref: "openusage-version-123",
+    auth_profile_ref: "auth-profile-123",
+    auth_evidence_ref: "auth-evidence-123",
+    credential_scope_ref: "principal-scope-123",
+    account_boundary_ref: "account-boundary-123",
+    quota_evidence_ref: "quota-evidence-123",
+    usage_acquired: true,
+    reset_time: "2026-05-17T01:00:00.000Z",
+    reset_bucket: "provider-window-123",
+    source_ref: "usage-source-123",
+    conformance_ref: "usage-conformance-123",
+    redacted_evidence_refs: ["usage-evidence-123"],
+    trusted: true,
+    observed_at: now,
+    expires_at: "2026-05-17T00:10:00.000Z",
+    ...overrides
+  };
+}
+
 function managedDispatchInput(overrides: Partial<Parameters<typeof evaluateManagedDispatchBetaGuardBoundaryV1>[0]> = {}): Parameters<typeof evaluateManagedDispatchBetaGuardBoundaryV1>[0] {
   return {
     configHash: "config-hash-123",
@@ -292,6 +323,10 @@ function managedDispatchInput(overrides: Partial<Parameters<typeof evaluateManag
     guardApproval: guardApproval(),
     bindingEvidence: bindingEvidence(),
     usageSnapshot: dispatchableUsage(),
+    usageAuthorityEvidence: usageAuthorityEvidence(),
+    expectedAuthProfileRef: "auth-profile-123",
+    expectedCredentialScopeRef: "principal-scope-123",
+    expectedAccountBoundaryRef: "account-boundary-123",
     providerHealthSnapshot: dispatchableHealth(),
     runtimeEchoEvidence: runtimeEchoEvidence(),
     conformanceRuntimeMetadata: conformanceMetadata(),
@@ -403,6 +438,25 @@ test("OpenCode Go and z.ai helpers report unknown non-dispatchable diagnostics w
   }
 });
 
+test("all concrete provider auth readiness helpers exclude models when auth or real usage evidence is absent", () => {
+  assert.equal(providerFamilyRequiresAuthReadinessV1("claude"), true);
+  assert.equal(providerFamilyRequiresAuthReadinessV1("gemini"), true);
+  assert.equal(providerFamilyRequiresAuthReadinessV1("openai"), true);
+  assert.equal(providerFamilyRequiresAuthReadinessV1("opencode_go"), true);
+  assert.equal(providerFamilyRequiresAuthReadinessV1("z_ai"), true);
+  assert.equal(providerFamilyRequiresAuthReadinessV1("unknown"), false);
+  assert.equal(providerFamilyRequiresAuthReadinessV1("all"), false);
+  for (const providerFamily of ["claude", "gemini", "openai", "opencode_go", "z_ai"] as const) {
+    const health = createAuthMissingProviderHealthSnapshotV1({ snapshotId: `health-${providerFamily}-auth-missing`, providerFamily, observedAt: now, sourceRef: "doctor-auth-readiness-123" });
+    assert.equal(validateProviderHealthSnapshotV1(health).ok, true);
+    assert.equal(health.availability_state, "unavailable");
+    assert.equal(health.failure_class, "auth_missing");
+    assert.equal(health.dispatchability, "non_dispatchable");
+    assert.match(health.safe_remediation, /models are excluded/);
+    assert.match(health.safe_remediation, /usage\/quota\/reset evidence/);
+  }
+});
+
 test("Guard boundary blocks real dispatch and requires non-dispatch audit preconditions", () => {
   const policy = mergePolicyPacksV1(projectConfig(), [policyPack()], { effectivePolicyId: "effective-123", computedAt: now, auditRef: "audit-123" });
   const real = evaluateGuardBoundaryV1({ operation: "real-opencode-dispatch", configHash: "config-hash-123", policy, auditRef: "audit-123", conformanceRef: "conformance-123" });
@@ -478,6 +532,10 @@ test("managed-dispatch beta evaluator is eligible only with all trusted evidence
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ guardApproval: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ bindingEvidence: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ expectedAuthProfileRef: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ expectedCredentialScopeRef: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ expectedAccountBoundaryRef: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ runtimeEchoEvidence: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ conformanceRuntimeMetadata: undefined })).status, "blocked");
@@ -497,6 +555,17 @@ test("managed-dispatch beta fails closed on stale mismatched ambiguous or untrus
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ bindingEvidence: bindingEvidence({ trusted: false as never }) })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ bindingEvidence: bindingEvidence({ attempt_id: "attempt-other" }) })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: { ...dispatchableUsage(), reset_time: "unknown" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: { ...dispatchableUsage(), model_family: "opus-4" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ source_kind: "dex_conductor" }) })).status, "eligible");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ provider_qualified_model_id: "claude/latest" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ auth_profile_ref: "auth-profile-other" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ credential_scope_ref: "principal-scope-456" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ account_boundary_ref: "account-boundary-other" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ usage_acquired: false as never }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ reset_time: "2026-05-17T02:00:00.000Z" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ model_family: "opus-4" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ reset_bucket: "provider-window-other" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageAuthorityEvidence: usageAuthorityEvidence({ trusted: false as never }) })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: { ...dispatchableUsage(), uncertainty_flags: ["telemetry_ambiguous"], dispatchability: "non_dispatchable" } })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: { ...dispatchableHealth(), observed_at: "2026-05-16T23:00:00.000Z" } })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: { ...dispatchableHealth(), availability_state: "degraded", dispatchability: "diagnostic_only" } })).status, "blocked");
