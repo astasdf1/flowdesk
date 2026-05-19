@@ -46,5 +46,6 @@ export * from "./state-paths.js";
 export * from "./state-store.js";
 export * from "./status.js";
 export * from "./tool-contract-fixtures.js";
+export * from "./top-tier-reviewer-lane-probe.js";
 export * from "./usage-health.js";
 export * from "./validators.js";

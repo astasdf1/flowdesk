@@ -217,7 +217,7 @@ export function validateProviderQualifiedModelId(value: unknown): ValidationResu
 
 export function validateNoForbiddenRawPayloads(value: unknown, label = "payload"): ValidationResult {
   const errors: string[] = [];
-    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "runtime_echo_mode", "runtime_echo_validation"]);
+    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref"]);
   const visit = (current: unknown, path: string): void => {
     if (typeof current === "string") {
       const lower = current.toLowerCase();
@@ -1719,4 +1719,53 @@ export function validateFlowDeskPlannedModeFieldEntryStringV1(entry: unknown): V
   if (parts.length !== 2) return invalid("planned mode field entry must be in label=state form");
   const [label, state] = parts;
   return validateFlowDeskPlannedModeFieldV1({ label, state, dispatch_authority_enabled: false });
+}
+
+const TOP_TIER_REVIEWER_LANE_PROBE_CHANNELS = ["subtask_true_command_lane", "injected_sdk_client"] as const;
+const TOP_TIER_REVIEWER_LANE_PROBE_OUTCOMES = ["probe_pass", "probe_fail_closed", "probe_invalid"] as const;
+
+export function validateTopTierReviewerLaneProbeRequestV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("top tier reviewer lane probe request must be an object");
+  return combine([
+    validateSchemaArtifactValue("flowdesk.top_tier_reviewer_lane_probe.request.v1", value),
+    rejectForbiddenAuthorityKeys(value, "top tier reviewer lane probe request"),
+    validateOpaqueId(value.probe_id, "probe_id"),
+    validateOpaqueRef(value.binding_ref, "binding_ref"),
+    validateOpaqueRef(value.lane_plan_ref, "lane_plan_ref"),
+    isEnumValue(value.channel, TOP_TIER_REVIEWER_LANE_PROBE_CHANNELS) ? valid() : invalid("channel is invalid"),
+    value.agent_id === "reviewer" ? valid() : invalid("agent_id must be canonical reviewer"),
+    validateConcreteProviderQualifiedModelId(value.provider_qualified_model_id, "probe provider_qualified_model_id"),
+    isEnumValue(value.perspective, TOP_TIER_REVIEWER_PERSPECTIVES) ? valid() : invalid("perspective is invalid"),
+    validateOpaqueRef(value.auth_evidence_ref, "auth_evidence_ref"),
+    validateOpaqueRef(value.usage_evidence_ref, "usage_evidence_ref"),
+    validateOpaqueRef(value.quota_evidence_ref, "quota_evidence_ref"),
+    validateOpaqueRef(value.provider_health_ref, "provider_health_ref"),
+    validateOpaqueRef(value.runtime_echo_ref, "runtime_echo_ref"),
+    validateOpaqueRef(value.telemetry_ref, "telemetry_ref"),
+    validateOpaqueRef(value.policy_pack_eligibility_ref, "policy_pack_eligibility_ref"),
+    typeof value.redaction_version === "string" && value.redaction_version.length > 0 && value.redaction_version.length <= 128 ? validateNoForbiddenRawPayloads(value.redaction_version, "redaction_version") : invalid("redaction_version is required"),
+    value.fake_runtime === true ? valid() : invalid("fake_runtime must be true for probe requests"),
+    value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for probe requests"),
+    validateNoForbiddenRawPayloads(value, "top_tier_reviewer_lane_probe_request")
+  ]);
+}
+
+export function validateTopTierReviewerLaneProbeResultV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("top tier reviewer lane probe result must be an object");
+  return combine([
+    validateSchemaArtifactValue("flowdesk.top_tier_reviewer_lane_probe.result.v1", value),
+    rejectForbiddenAuthorityKeys(value, "top tier reviewer lane probe result"),
+    validateOpaqueId(value.probe_id, "probe_id"),
+    isEnumValue(value.channel, TOP_TIER_REVIEWER_LANE_PROBE_CHANNELS) ? valid() : invalid("channel is invalid"),
+    isEnumValue(value.outcome, TOP_TIER_REVIEWER_LANE_PROBE_OUTCOMES) ? valid() : invalid("outcome is invalid"),
+    value.failure_label === undefined || (typeof value.failure_label === "string" && value.failure_label.length > 0 && value.failure_label.length <= 200) ? valid() : invalid("failure_label must be a bounded string when present"),
+    value.failure_label === undefined ? valid() : validateNoForbiddenRawPayloads(value.failure_label, "failure_label"),
+    validateTimestamp(value.observed_at, "observed_at"),
+    validateOpaqueRefArray(value.evidence_refs, "evidence_refs", 20),
+    validateStringArray(value.safe_next_actions, "safe_next_actions", SAFE_NEXT_ACTIONS, 8),
+    value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for probe results"),
+    value.provider_call_made === false ? valid() : invalid("provider_call_made must be false for probe results"),
+    value.lane_launch_made === false ? valid() : invalid("lane_launch_made must be false for probe results"),
+    validateNoForbiddenRawPayloads(value, "top_tier_reviewer_lane_probe_result")
+  ]);
 }
