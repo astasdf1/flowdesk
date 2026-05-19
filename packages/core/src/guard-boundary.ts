@@ -1,15 +1,32 @@
 import { validateEffectivePolicyV1, validateNonDispatchPermissionV1 } from "./config-policy.js";
 import type {
+  FlowDeskConformanceRuntimeMetadataV1,
   FlowDeskEffectivePolicyV1,
+  FlowDeskManagedDispatchBetaBindingEvidenceV1,
+  FlowDeskManagedDispatchBetaPolicyV1,
+  FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
+  FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
   FlowDeskNonDispatchPermissionV1,
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskUsageSnapshotV1,
+  GuardApprovedDispatchV1,
   GuardCheckV1,
   GuardRequestV1,
   OpaqueRef,
   RedactedErrorCategory
 } from "./release1-contracts.js";
-import { validateProviderHealthSnapshotV1, validateUsageSnapshotV1 } from "./validators.js";
+import {
+  validateManagedDispatchBetaApprovalFreshnessV1,
+  validateManagedDispatchBetaBindingEvidenceV1,
+  validateManagedDispatchBetaPolicyV1,
+  validateManagedDispatchBetaProviderHealthEvidenceV1,
+  validateManagedDispatchBetaRuntimeEchoEvidenceV1,
+  validateManagedDispatchBetaTelemetryCorrelationV1,
+  validateManagedDispatchBetaUsageEvidenceV1,
+  validateOpaqueRef,
+  validateProviderHealthSnapshotV1,
+  validateUsageSnapshotV1
+} from "./validators.js";
 
 export type GuardBoundaryOperationV1 = "real-opencode-dispatch" | "guarded-dry-run" | "fake-runtime" | "command-steering";
 export type GuardBoundaryStatusV1 = "blocked" | "eligible" | "diagnostic_only";
@@ -35,6 +52,28 @@ export interface GuardBoundaryDecisionV1 {
   redacted_reason: string;
   required_checks: GuardCheckV1[];
   safe_next_actions: readonly ["/flowdesk-doctor", "/flowdesk-status"];
+}
+
+export interface ManagedDispatchBetaBoundaryInputV1 {
+  configHash: string;
+  policyPackHashes: readonly string[];
+  workflowId: string;
+  stepId: string;
+  attemptId: string;
+  betaPolicy?: FlowDeskManagedDispatchBetaPolicyV1;
+  guardApproval?: GuardApprovedDispatchV1;
+  bindingEvidence?: FlowDeskManagedDispatchBetaBindingEvidenceV1;
+  usageSnapshot?: FlowDeskUsageSnapshotV1;
+  providerHealthSnapshot?: FlowDeskProviderHealthSnapshotV1;
+  runtimeEchoEvidence?: FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1;
+  conformanceRuntimeMetadata?: FlowDeskConformanceRuntimeMetadataV1;
+  telemetryCorrelation?: FlowDeskManagedDispatchBetaTelemetryCorrelationV1;
+  preDispatchAuditRef?: OpaqueRef;
+  configuredVerificationRef?: OpaqueRef;
+  fallbackOrReselectionAllowed?: boolean;
+  hardChatAuthorityAllowed?: boolean;
+  ambiguityQuarantined?: boolean;
+  now?: number;
 }
 
 function fail(check: GuardCheckV1["check"], ref?: string): GuardCheckV1 {
@@ -122,4 +161,124 @@ export function evaluateRealDispatchPreconditionsV1(request: GuardRequestV1, usa
   else checks.push(pass("provider_health", request.provider_health_snapshot_ref));
   checks.push(fail("policy"));
   return boundaryDecision("blocked", "policy", "Release 1 real dispatch remains blocked even when diagnostic snapshots are present.", checks);
+}
+
+export function evaluateManagedDispatchBetaGuardBoundaryV1(input: ManagedDispatchBetaBoundaryInputV1): GuardBoundaryDecisionV1 {
+  const checks: GuardCheckV1[] = [];
+  const providerFamily = input.guardApproval?.provider_family;
+  const providerQualifiedModelId = input.guardApproval?.provider_qualified_model_id;
+  const usageSnapshotRef = input.usageSnapshot?.snapshot_id;
+  const providerHealthSnapshotRef = input.providerHealthSnapshot?.snapshot_id;
+  const runtimeCapabilityRef = input.guardApproval?.runtime_capability_ref ?? input.runtimeEchoEvidence?.runtime_capability_ref;
+  const preDispatchAuditRef = input.preDispatchAuditRef;
+  const evidenceOptions = {
+    expectedConfigHash: input.configHash,
+    expectedPolicyPackHashes: input.policyPackHashes,
+    expectedWorkflowId: input.workflowId,
+    expectedStepId: input.stepId,
+    expectedAttemptId: input.attemptId,
+    expectedProviderFamily: providerFamily,
+    expectedProviderQualifiedModelId: providerQualifiedModelId,
+    expectedUsageSnapshotRef: usageSnapshotRef,
+    expectedProviderHealthSnapshotRef: providerHealthSnapshotRef,
+    expectedRuntimeCapabilityRef: runtimeCapabilityRef,
+    expectedPreDispatchAuditRef: preDispatchAuditRef,
+    expectedConformanceRef: input.runtimeEchoEvidence?.conformance_ref,
+    now: input.now
+  };
+
+  if (input.betaPolicy === undefined) {
+    checks.push(fail("policy"));
+    return boundaryDecision("blocked", "policy", "Managed-dispatch beta policy mode is required.", checks);
+  }
+  const policyResult = validateManagedDispatchBetaPolicyV1(input.betaPolicy, evidenceOptions);
+  if (!policyResult.ok) {
+    checks.push(fail("policy", input.betaPolicy.audit_ref));
+    return boundaryDecision("blocked", "policy", "Managed-dispatch beta policy failed closed validation.", checks);
+  }
+  checks.push(pass("policy", input.betaPolicy.audit_ref));
+
+  if (input.fallbackOrReselectionAllowed === true || input.hardChatAuthorityAllowed === true || input.ambiguityQuarantined !== true) {
+    checks.push(fail("policy"));
+    return boundaryDecision("blocked", "policy", "Managed-dispatch beta forbids fallback, hard chat authority, and non-quarantined ambiguity.", checks);
+  }
+
+  if (input.guardApproval === undefined) {
+    checks.push(fail("approval"));
+    return boundaryDecision("blocked", "policy", "GuardApprovedDispatch evidence is required.", checks);
+  }
+  const approvalResult = validateManagedDispatchBetaApprovalFreshnessV1(input.guardApproval, evidenceOptions);
+  if (!approvalResult.ok) {
+    checks.push(fail("approval"));
+    return boundaryDecision("blocked", "policy", "GuardApprovedDispatch is stale, mismatched, replay-like, or malformed.", checks);
+  }
+  checks.push(pass("approval", input.guardApproval.guard_decision_id));
+
+  if (input.bindingEvidence === undefined) {
+    checks.push(fail("conformance"));
+    return boundaryDecision("blocked", "conformance", "Trusted provider/model binding evidence is required.", checks);
+  }
+  const bindingResult = validateManagedDispatchBetaBindingEvidenceV1(input.bindingEvidence, evidenceOptions);
+  if (!bindingResult.ok) {
+    checks.push(fail("conformance", input.bindingEvidence.binding_ref));
+    return boundaryDecision("blocked", "conformance", "Provider/model binding evidence is missing, untrusted, stale, or mismatched.", checks);
+  }
+  checks.push(pass("conformance", input.bindingEvidence.binding_ref));
+
+  if (input.usageSnapshot === undefined) {
+    checks.push(fail("usage", usageSnapshotRef));
+    return boundaryDecision("blocked", "usage", "Fresh dispatchable usage evidence is required.", checks);
+  }
+  const usageResult = validateManagedDispatchBetaUsageEvidenceV1(input.usageSnapshot, evidenceOptions);
+  if (!usageResult.ok) {
+    checks.push(fail("usage", usageSnapshotRef));
+    return boundaryDecision("blocked", "usage", "Usage evidence is missing, stale, ambiguous, or non-dispatchable.", checks);
+  }
+  checks.push(pass("usage", usageSnapshotRef));
+
+  if (input.providerHealthSnapshot === undefined) {
+    checks.push(fail("provider_health", providerHealthSnapshotRef));
+    return boundaryDecision("blocked", "provider_health", "Fresh dispatchable provider health evidence is required.", checks);
+  }
+  const healthResult = validateManagedDispatchBetaProviderHealthEvidenceV1(input.providerHealthSnapshot, evidenceOptions);
+  if (!healthResult.ok) {
+    checks.push(fail("provider_health", providerHealthSnapshotRef));
+    return boundaryDecision("blocked", "provider_health", "Provider health evidence is missing, stale, unhealthy, or non-dispatchable.", checks);
+  }
+  checks.push(pass("provider_health", providerHealthSnapshotRef));
+
+  if (input.runtimeEchoEvidence === undefined || input.conformanceRuntimeMetadata === undefined) {
+    checks.push(fail("runtime_compatibility", runtimeCapabilityRef), fail("conformance"));
+    return boundaryDecision("blocked", "conformance", "Trusted runtime echo and conformance metadata are required.", checks);
+  }
+  const runtimeEchoResult = validateManagedDispatchBetaRuntimeEchoEvidenceV1(input.runtimeEchoEvidence, input.conformanceRuntimeMetadata, evidenceOptions);
+  if (!runtimeEchoResult.ok) {
+    checks.push(fail("runtime_compatibility", runtimeCapabilityRef), fail("conformance", input.runtimeEchoEvidence.conformance_ref));
+    return boundaryDecision("blocked", "conformance", "Runtime echo or conformance metadata is untrusted, stale, mismatched, or insufficient.", checks);
+  }
+  checks.push(pass("runtime_compatibility", runtimeCapabilityRef), pass("conformance", input.runtimeEchoEvidence.conformance_ref));
+
+  if (input.telemetryCorrelation === undefined) {
+    checks.push(fail("conformance"));
+    return boundaryDecision("blocked", "conformance", "Sufficient telemetry correlation evidence is required.", checks);
+  }
+  const telemetryResult = validateManagedDispatchBetaTelemetryCorrelationV1(input.telemetryCorrelation, evidenceOptions);
+  if (!telemetryResult.ok) {
+    checks.push(fail("conformance", input.telemetryCorrelation.telemetry_ref));
+    return boundaryDecision("blocked", "conformance", "Telemetry correlation is insufficient, ambiguous, or mismatched.", checks);
+  }
+  checks.push(pass("conformance", input.telemetryCorrelation.telemetry_ref));
+
+  if (preDispatchAuditRef === undefined || !validateOpaqueRef(preDispatchAuditRef, "pre_dispatch_audit_ref").ok || input.guardApproval.pre_dispatch_audit_ref !== preDispatchAuditRef) {
+    checks.push(fail("audit", preDispatchAuditRef));
+    return boundaryDecision("blocked", "audit", "Durable pre-dispatch audit reference is required and must match Guard approval.", checks);
+  }
+  checks.push(pass("audit", preDispatchAuditRef));
+
+  if (input.configuredVerificationRef === undefined || !validateOpaqueRef(input.configuredVerificationRef, "configured_verification_ref").ok) {
+    checks.push(fail("conformance"));
+    return boundaryDecision("blocked", "conformance", "Configured verification reference is required before managed dispatch beta eligibility.", checks);
+  }
+
+  return boundaryDecision("eligible", "runtime", "Eligible for managed-dispatch beta only; evaluator does not perform dispatch.", checks);
 }

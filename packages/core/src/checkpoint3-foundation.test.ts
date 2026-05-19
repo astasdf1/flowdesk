@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import type { FlowDeskNonDispatchPermissionV1, FlowDeskPolicyPackV1, FlowDeskProjectConfigV1 } from "./index.js";
+import type {
+  FlowDeskConformanceRuntimeMetadataV1,
+  FlowDeskManagedDispatchBetaBindingEvidenceV1,
+  FlowDeskManagedDispatchBetaPolicyV1,
+  FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
+  FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
+  FlowDeskNonDispatchPermissionV1,
+  FlowDeskPolicyPackV1,
+  FlowDeskProjectConfigV1,
+  FlowDeskProviderHealthSnapshotV1,
+  FlowDeskUsageSnapshotV1,
+  GuardApprovedDispatchV1,
+  GuardRequestV1
+} from "./index.js";
 import {
   createOpenCodeGoUnknownProviderHealthSnapshotV1,
   createOpenCodeGoUnknownUsageSnapshotV1,
@@ -11,9 +24,14 @@ import {
   createZAiUnknownProviderHealthSnapshotV1,
   createZAiUnknownUsageSnapshotV1,
   evaluateGuardBoundaryV1,
+  evaluateManagedDispatchBetaGuardBoundaryV1,
+  evaluateRealDispatchPreconditionsV1,
   mergePolicyPacksV1,
   rejectMergedUsageProviderAuthorityV1,
   validateEffectivePolicyV1,
+  validateManagedDispatchBetaApprovalFreshnessV1,
+  validateManagedDispatchBetaBindingEvidenceV1,
+  validateManagedDispatchBetaRuntimeEchoEvidenceV1,
   validateNonDispatchPermissionV1,
   validatePolicyPackV1,
   validateProjectConfigV1,
@@ -118,6 +136,173 @@ function permission(expiresAt = "2026-05-18T00:00:00.000Z", permissionClass: Flo
     policy_pack_hash: "policy-hash-123",
     release_mode: "release1" as const,
     audit_ref: "audit-123"
+  };
+}
+
+function dispatchableUsage(): FlowDeskUsageSnapshotV1 {
+  return {
+    schema_version: "flowdesk.usage_snapshot.v1",
+    snapshot_id: "usage-123",
+    provider_family: "claude",
+    model_family: "sonnet-4",
+    freshness: "fresh",
+    freshness_ttl: 5,
+    reset_time: "2026-05-17T01:00:00.000Z",
+    reset_bucket: "provider-window-123",
+    dispatchability: "dispatchable",
+    uncertainty_flags: [],
+    source_ref: "usage-source-123"
+  };
+}
+
+function dispatchableHealth(): FlowDeskProviderHealthSnapshotV1 {
+  return {
+    schema_version: "flowdesk.provider_health_snapshot.v1",
+    snapshot_id: "health-123",
+    provider_family: "claude",
+    model_family: "sonnet-4",
+    observed_at: now,
+    freshness: "fresh",
+    freshness_ttl: 10,
+    source_surface: "provider_smoke_test",
+    availability_state: "healthy",
+    failure_class: "none",
+    telemetry_ref: "telemetry-123",
+    dispatchability: "dispatchable",
+    source_ref: "health-source-123",
+    safe_remediation: "No action needed."
+  };
+}
+
+function managedDispatchBetaPolicy(): FlowDeskManagedDispatchBetaPolicyV1 {
+  return {
+    release_mode: "managed_dispatch_beta",
+    policy_mode: "managed_dispatch_beta",
+    config_hash: "config-hash-123",
+    policy_pack_hashes: ["policy-hash-123"],
+    fallback_reselection_mode: "disabled",
+    hard_chat_authority: "disabled",
+    require_quarantine_on_ambiguity: true,
+    audit_ref: "audit-123"
+  };
+}
+
+function guardApproval(overrides: Partial<GuardApprovedDispatchV1> = {}): GuardApprovedDispatchV1 {
+  return {
+    schema_version: "flowdesk.guard_approved_dispatch.v1",
+    guard_decision_id: "guard-decision-123",
+    workflow_id: "workflow-123",
+    step_id: "step-123",
+    attempt_id: "attempt-123",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/sonnet-4",
+    usage_snapshot_ref: "usage-123",
+    provider_health_snapshot_ref: "health-123",
+    runtime_capability_ref: "runtime-123",
+    pre_dispatch_audit_ref: "audit-123",
+    expires_at: "2026-05-17T00:10:00.000Z",
+    ...overrides
+  };
+}
+
+function bindingEvidence(overrides: Partial<FlowDeskManagedDispatchBetaBindingEvidenceV1> = {}): FlowDeskManagedDispatchBetaBindingEvidenceV1 {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.binding_evidence.v1",
+    binding_ref: "binding-123",
+    workflow_id: "workflow-123",
+    step_id: "step-123",
+    attempt_id: "attempt-123",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/sonnet-4",
+    source: "guard_approved_dispatch",
+    trusted: true,
+    created_at: now,
+    expires_at: "2026-05-17T00:10:00.000Z",
+    ...overrides
+  };
+}
+
+function conformanceMetadata(overrides: Partial<FlowDeskConformanceRuntimeMetadataV1> = {}): FlowDeskConformanceRuntimeMetadataV1 {
+  return {
+    schema_version: "flowdesk.conformance_runtime_metadata.v1",
+    opencode_version: "1.14.40",
+    checked_at: now,
+    plugin_package: "@flowdesk/opencode-plugin",
+    plugin_version_or_commit: "plugin-commit-123",
+    chat_intake_mode: "blocking",
+    command_alias_mode: "portable_only",
+    dispatch_mode: "real-opencode-dispatch",
+    runtime_echo_mode: "trusted",
+    event_telemetry_mode: "sufficient",
+    provider_health_mode: "dispatch_gate_ready",
+    fallback_reselection_mode: "disabled",
+    diagnostics_surface_mode: "doctor_usage_status_debug",
+    lane_observability_mode: "openable_refs",
+    hook_harness_mode: "enforce",
+    tui_mode: "unsupported",
+    mode_fields: ["PluginInput.client", "session.safe_metadata"],
+    evidence_refs: ["conformance-evidence-123"],
+    disabled_modes: ["managed_fallback", "hard_chat_blocking"],
+    ...overrides
+  };
+}
+
+function runtimeEchoEvidence(overrides: Partial<FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1> = {}): FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1 {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1",
+    runtime_echo_ref: "runtime-echo-123",
+    workflow_id: "workflow-123",
+    step_id: "step-123",
+    attempt_id: "attempt-123",
+    provider_family: "claude",
+    provider_qualified_model_id: "claude/sonnet-4",
+    runtime_capability_ref: "runtime-123",
+    conformance_ref: "conformance-123",
+    runtime_echo_mode: "trusted",
+    trusted: true,
+    observed_at: now,
+    expires_at: "2026-05-17T00:10:00.000Z",
+    ...overrides
+  };
+}
+
+function telemetryCorrelation(overrides: Partial<FlowDeskManagedDispatchBetaTelemetryCorrelationV1> = {}): FlowDeskManagedDispatchBetaTelemetryCorrelationV1 {
+  return {
+    schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
+    telemetry_ref: "telemetry-123",
+    workflow_id: "workflow-123",
+    step_id: "step-123",
+    attempt_id: "attempt-123",
+    event_telemetry_mode: "sufficient",
+    correlation_count: 2,
+    ambiguous: false,
+    source_refs: ["telemetry-source-123"],
+    ...overrides
+  };
+}
+
+function managedDispatchInput(overrides: Partial<Parameters<typeof evaluateManagedDispatchBetaGuardBoundaryV1>[0]> = {}): Parameters<typeof evaluateManagedDispatchBetaGuardBoundaryV1>[0] {
+  return {
+    configHash: "config-hash-123",
+    policyPackHashes: ["policy-hash-123"],
+    workflowId: "workflow-123",
+    stepId: "step-123",
+    attemptId: "attempt-123",
+    betaPolicy: managedDispatchBetaPolicy(),
+    guardApproval: guardApproval(),
+    bindingEvidence: bindingEvidence(),
+    usageSnapshot: dispatchableUsage(),
+    providerHealthSnapshot: dispatchableHealth(),
+    runtimeEchoEvidence: runtimeEchoEvidence(),
+    conformanceRuntimeMetadata: conformanceMetadata(),
+    telemetryCorrelation: telemetryCorrelation(),
+    preDispatchAuditRef: "audit-123",
+    configuredVerificationRef: "verification-123",
+    fallbackOrReselectionAllowed: false,
+    hardChatAuthorityAllowed: false,
+    ambiguityQuarantined: true,
+    now: Date.parse(now),
+    ...overrides
   };
 }
 
@@ -242,6 +427,85 @@ test("Guard boundary blocks real dispatch and requires non-dispatch audit precon
   assert.equal(dryRunStateWriteOnly.status, "blocked");
   const eligible = evaluateGuardBoundaryV1({ operation: "fake-runtime", configHash: "config-hash-123", workflowId: "workflow-123", scopeRef: "scope-123", policy, auditRef: "audit-123", runtimeCapabilityRef: "runtime-123", nonDispatchPermission: permission(), now: Date.parse(now) });
   assert.equal(eligible.status, "eligible");
+});
+
+test("Release 1 real dispatch preconditions remain blocked with dispatchable diagnostics", () => {
+  const request: GuardRequestV1 = {
+    schema_version: "flowdesk.guard_request.v1",
+    guard_request_id: "guard-request-123",
+    workflow_id: "workflow-123",
+    step_id: "step-123",
+    attempt_id: "attempt-123",
+    requested_operation: "real-opencode-dispatch",
+    taxonomy: {
+      primary_category: "coding",
+      difficulty_drivers: [],
+      coupling_scope: "few_files",
+      algorithmic_hardness: "low",
+      architecture_hardness: "low",
+      migration_state_hardness: "none",
+      domain_uncertainty: "low",
+      verification_hardness: "moderate",
+      operational_risk: "low",
+      policy_professional_boundary: "ordinary"
+    },
+    usage_snapshot_ref: "usage-123",
+    provider_health_snapshot_ref: "health-123",
+    runtime_capability_ref: "runtime-123",
+    pre_run_audit_ref: "audit-123"
+  };
+  const decision = evaluateRealDispatchPreconditionsV1(request, dispatchableUsage(), dispatchableHealth());
+  assert.equal(decision.status, "blocked");
+  assert.equal(decision.reason_category, "policy");
+  assert.ok(decision.required_checks.some((check) => check.check === "usage" && check.result === "pass"));
+  assert.ok(decision.required_checks.some((check) => check.check === "provider_health" && check.result === "pass"));
+  assert.ok(decision.required_checks.some((check) => check.check === "policy" && check.result === "fail"));
+});
+
+test("managed-dispatch beta evaluator is eligible only with all trusted evidence", () => {
+  const eligible = evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput());
+  assert.equal(eligible.status, "eligible");
+  assert.ok(eligible.required_checks.some((check) => check.check === "approval" && check.result === "pass"));
+  assert.ok(eligible.required_checks.some((check) => check.check === "usage" && check.result === "pass"));
+  assert.ok(eligible.required_checks.some((check) => check.check === "provider_health" && check.result === "pass"));
+  assert.ok(eligible.required_checks.some((check) => check.check === "audit" && check.result === "pass"));
+
+  assert.equal(validateManagedDispatchBetaApprovalFreshnessV1(guardApproval(), { expectedWorkflowId: "workflow-123", expectedStepId: "step-123", expectedAttemptId: "attempt-123", expectedProviderFamily: "claude", expectedProviderQualifiedModelId: "claude/sonnet-4", expectedUsageSnapshotRef: "usage-123", expectedProviderHealthSnapshotRef: "health-123", expectedRuntimeCapabilityRef: "runtime-123", expectedPreDispatchAuditRef: "audit-123", now: Date.parse(now) }).ok, true);
+  assert.equal(validateManagedDispatchBetaBindingEvidenceV1(bindingEvidence(), { expectedWorkflowId: "workflow-123", expectedStepId: "step-123", expectedAttemptId: "attempt-123", expectedProviderFamily: "claude", expectedProviderQualifiedModelId: "claude/sonnet-4", now: Date.parse(now) }).ok, true);
+  assert.equal(validateManagedDispatchBetaRuntimeEchoEvidenceV1(runtimeEchoEvidence(), conformanceMetadata(), { expectedWorkflowId: "workflow-123", expectedStepId: "step-123", expectedAttemptId: "attempt-123", expectedProviderFamily: "claude", expectedProviderQualifiedModelId: "claude/sonnet-4", expectedRuntimeCapabilityRef: "runtime-123", expectedConformanceRef: "conformance-123", now: Date.parse(now) }).ok, true);
+
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ betaPolicy: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ guardApproval: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ bindingEvidence: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ runtimeEchoEvidence: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ conformanceRuntimeMetadata: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ telemetryCorrelation: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ preDispatchAuditRef: undefined })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ configuredVerificationRef: undefined })).status, "blocked");
+});
+
+test("managed-dispatch beta fails closed on stale mismatched ambiguous or untrusted evidence", () => {
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ betaPolicy: { ...managedDispatchBetaPolicy(), policy_mode: "release1" as never } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ fallbackOrReselectionAllowed: true })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ hardChatAuthorityAllowed: true })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ ambiguityQuarantined: false })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ guardApproval: guardApproval({ expires_at: now }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ guardApproval: guardApproval({ workflow_id: "workflow-other" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ guardApproval: guardApproval({ provider_qualified_model_id: "openai/gpt-5" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ bindingEvidence: bindingEvidence({ trusted: false as never }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ bindingEvidence: bindingEvidence({ attempt_id: "attempt-other" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: { ...dispatchableUsage(), reset_time: "unknown" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ usageSnapshot: { ...dispatchableUsage(), uncertainty_flags: ["telemetry_ambiguous"], dispatchability: "non_dispatchable" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: { ...dispatchableHealth(), observed_at: "2026-05-16T23:00:00.000Z" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: { ...dispatchableHealth(), availability_state: "degraded", dispatchability: "diagnostic_only" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ providerHealthSnapshot: { ...dispatchableHealth(), source_surface: "manual_report" } })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ runtimeEchoEvidence: runtimeEchoEvidence({ runtime_echo_mode: "untrusted" as never }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ conformanceRuntimeMetadata: conformanceMetadata({ event_telemetry_mode: "partial" }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ telemetryCorrelation: telemetryCorrelation({ ambiguous: true as never }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ telemetryCorrelation: telemetryCorrelation({ correlation_count: 1 }) })).status, "blocked");
+  assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ preDispatchAuditRef: "audit-other" })).status, "blocked");
 });
 
 test("Guard boundary binds non-dispatch permissions to workflow scope audit and source", () => {

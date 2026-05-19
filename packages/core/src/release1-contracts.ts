@@ -1180,6 +1180,59 @@ export interface FlowDeskConformanceEvidenceRecordV1 {
   source_refs: OpaqueRef[];
 }
 
+export interface FlowDeskManagedDispatchBetaPolicyV1 {
+  release_mode: "managed_dispatch_beta";
+  policy_mode: "managed_dispatch_beta";
+  config_hash: string;
+  policy_pack_hashes: string[];
+  fallback_reselection_mode: "disabled";
+  hard_chat_authority: "disabled";
+  require_quarantine_on_ambiguity: true;
+  audit_ref: OpaqueRef;
+}
+
+export interface FlowDeskManagedDispatchBetaBindingEvidenceV1 {
+  schema_version: "flowdesk.managed_dispatch_beta.binding_evidence.v1";
+  binding_ref: OpaqueRef;
+  workflow_id: OpaqueId;
+  step_id: OpaqueId;
+  attempt_id: OpaqueId;
+  provider_family: Exclude<ProviderFamily, "unknown" | "all">;
+  provider_qualified_model_id: string;
+  source: "guard_approved_dispatch";
+  trusted: true;
+  created_at: IsoTimestamp;
+  expires_at: IsoTimestamp;
+}
+
+export interface FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1 {
+  schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1";
+  runtime_echo_ref: OpaqueRef;
+  workflow_id: OpaqueId;
+  step_id: OpaqueId;
+  attempt_id: OpaqueId;
+  provider_family: Exclude<ProviderFamily, "unknown" | "all">;
+  provider_qualified_model_id: string;
+  runtime_capability_ref: OpaqueRef;
+  conformance_ref: OpaqueRef;
+  runtime_echo_mode: "trusted";
+  trusted: true;
+  observed_at: IsoTimestamp;
+  expires_at: IsoTimestamp;
+}
+
+export interface FlowDeskManagedDispatchBetaTelemetryCorrelationV1 {
+  schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1";
+  telemetry_ref: OpaqueRef;
+  workflow_id: OpaqueId;
+  step_id: OpaqueId;
+  attempt_id: OpaqueId;
+  event_telemetry_mode: "sufficient";
+  correlation_count: number;
+  ambiguous: false;
+  source_refs: OpaqueRef[];
+}
+
 export interface FlowDeskAuditEventV1 {
   schema_version: "flowdesk.audit_event.v1";
   event_id: OpaqueId;

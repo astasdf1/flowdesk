@@ -78,6 +78,22 @@ export interface ValidationResult {
   errors: string[];
 }
 
+export interface ManagedDispatchBetaEvidenceValidationOptionsV1 {
+  expectedConfigHash?: string;
+  expectedPolicyPackHashes?: readonly string[];
+  expectedWorkflowId?: string;
+  expectedStepId?: string;
+  expectedAttemptId?: string;
+  expectedProviderFamily?: ProviderFamily;
+  expectedProviderQualifiedModelId?: string;
+  expectedUsageSnapshotRef?: string;
+  expectedProviderHealthSnapshotRef?: string;
+  expectedRuntimeCapabilityRef?: string;
+  expectedPreDispatchAuditRef?: string;
+  expectedConformanceRef?: string;
+  now?: number;
+}
+
 export function valid(): ValidationResult {
   return { ok: true, errors: [] };
 }
@@ -945,6 +961,171 @@ export function validateGuardApprovedDispatchV1(value: unknown): ValidationResul
 export function assertGuardApprovedDispatchV1(value: unknown): asserts value is GuardApprovedDispatchV1 {
   const result = validateGuardApprovedDispatchV1(value);
   if (!result.ok) throw new Error(result.errors.join("; "));
+}
+
+function validateFutureTimestamp(value: unknown, label: string, now?: number): ValidationResult {
+  const timestampResult = validateTimestamp(value, label);
+  if (!timestampResult.ok || now === undefined) return timestampResult;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) && parsed > now ? valid() : invalid(`${label} is expired`);
+}
+
+function validateProviderAndModelBinding(value: { provider_family?: unknown; provider_qualified_model_id?: unknown }, label: string, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  const family = value.provider_family as ProviderFamily | undefined;
+  const modelProvider = typeof value.provider_qualified_model_id === "string" ? value.provider_qualified_model_id.split("/")[0] : undefined;
+  return combine([
+    validateProviderFamily(family),
+    family === "unknown" || family === "all" ? invalid(`${label}.provider_family must be concrete`) : valid(),
+    validateProviderQualifiedModelId(value.provider_qualified_model_id),
+    typeof family === "string" && modelProvider !== undefined && modelProvider !== family ? invalid(`${label}.provider_qualified_model_id provider mismatch`) : valid(),
+    options?.expectedProviderFamily !== undefined && family !== options.expectedProviderFamily ? invalid(`${label}.provider_family mismatch`) : valid(),
+    options?.expectedProviderQualifiedModelId !== undefined && value.provider_qualified_model_id !== options.expectedProviderQualifiedModelId ? invalid(`${label}.provider_qualified_model_id mismatch`) : valid()
+  ]);
+}
+
+export function validateManagedDispatchBetaPolicyV1(value: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  if (!isRecord(value)) return invalid("managed dispatch beta policy must be an object");
+  return combine([
+    rejectUnknownProperties(value, ["release_mode", "policy_mode", "config_hash", "policy_pack_hashes", "fallback_reselection_mode", "hard_chat_authority", "require_quarantine_on_ambiguity", "audit_ref"]),
+    requireFields(value, ["release_mode", "policy_mode", "config_hash", "policy_pack_hashes", "fallback_reselection_mode", "hard_chat_authority", "require_quarantine_on_ambiguity", "audit_ref"]),
+    value.release_mode === "managed_dispatch_beta" ? valid() : invalid("managed dispatch beta policy release_mode is invalid"),
+    value.policy_mode === "managed_dispatch_beta" ? valid() : invalid("managed dispatch beta policy mode is invalid"),
+    validateOpaqueRef(value.config_hash, "config_hash"),
+    options?.expectedConfigHash !== undefined && value.config_hash !== options.expectedConfigHash ? invalid("config_hash mismatch") : valid(),
+    validateOpaqueRefArray(value.policy_pack_hashes, "policy_pack_hashes"),
+    options?.expectedPolicyPackHashes !== undefined && JSON.stringify(value.policy_pack_hashes) !== JSON.stringify([...options.expectedPolicyPackHashes]) ? invalid("policy_pack_hashes mismatch") : valid(),
+    value.fallback_reselection_mode === "disabled" ? valid() : invalid("managed dispatch beta fallback must be disabled"),
+    value.hard_chat_authority === "disabled" ? valid() : invalid("managed dispatch beta hard chat authority must be disabled"),
+    value.require_quarantine_on_ambiguity === true ? valid() : invalid("managed dispatch beta must quarantine on ambiguity"),
+    validateOpaqueRef(value.audit_ref, "audit_ref")
+  ]);
+}
+
+export function validateManagedDispatchBetaApprovalFreshnessV1(value: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  const approvalResult = validateGuardApprovedDispatchV1(value);
+  if (!approvalResult.ok || !isRecord(value)) return approvalResult;
+  return combine([
+    validateFutureTimestamp(value.expires_at, "guard dispatch approval expires_at", options?.now),
+    options?.expectedWorkflowId !== undefined && value.workflow_id !== options.expectedWorkflowId ? invalid("guard approval workflow_id mismatch") : valid(),
+    options?.expectedStepId !== undefined && value.step_id !== options.expectedStepId ? invalid("guard approval step_id mismatch") : valid(),
+    options?.expectedAttemptId !== undefined && value.attempt_id !== options.expectedAttemptId ? invalid("guard approval attempt_id mismatch") : valid(),
+    validateProviderAndModelBinding(value, "guard approval", options),
+    options?.expectedUsageSnapshotRef !== undefined && value.usage_snapshot_ref !== options.expectedUsageSnapshotRef ? invalid("guard approval usage_snapshot_ref mismatch") : valid(),
+    options?.expectedProviderHealthSnapshotRef !== undefined && value.provider_health_snapshot_ref !== options.expectedProviderHealthSnapshotRef ? invalid("guard approval provider_health_snapshot_ref mismatch") : valid(),
+    options?.expectedRuntimeCapabilityRef !== undefined && value.runtime_capability_ref !== options.expectedRuntimeCapabilityRef ? invalid("guard approval runtime_capability_ref mismatch") : valid(),
+    options?.expectedPreDispatchAuditRef !== undefined && value.pre_dispatch_audit_ref !== options.expectedPreDispatchAuditRef ? invalid("guard approval pre_dispatch_audit_ref mismatch") : valid()
+  ]);
+}
+
+export function validateManagedDispatchBetaBindingEvidenceV1(value: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  if (!isRecord(value)) return invalid("managed dispatch beta binding evidence must be an object");
+  return combine([
+    rejectUnknownProperties(value, ["schema_version", "binding_ref", "workflow_id", "step_id", "attempt_id", "provider_family", "provider_qualified_model_id", "source", "trusted", "created_at", "expires_at"]),
+    requireFields(value, ["schema_version", "binding_ref", "workflow_id", "step_id", "attempt_id", "provider_family", "provider_qualified_model_id", "source", "trusted", "created_at", "expires_at"]),
+    value.schema_version === "flowdesk.managed_dispatch_beta.binding_evidence.v1" ? valid() : invalid("binding evidence schema_version is invalid"),
+    validateOpaqueRef(value.binding_ref, "binding_ref"),
+    validateOpaqueId(value.workflow_id, "workflow_id"),
+    validateOpaqueId(value.step_id, "step_id"),
+    validateOpaqueId(value.attempt_id, "attempt_id"),
+    options?.expectedWorkflowId !== undefined && value.workflow_id !== options.expectedWorkflowId ? invalid("binding evidence workflow_id mismatch") : valid(),
+    options?.expectedStepId !== undefined && value.step_id !== options.expectedStepId ? invalid("binding evidence step_id mismatch") : valid(),
+    options?.expectedAttemptId !== undefined && value.attempt_id !== options.expectedAttemptId ? invalid("binding evidence attempt_id mismatch") : valid(),
+    validateProviderAndModelBinding(value, "binding evidence", options),
+    value.source === "guard_approved_dispatch" ? valid() : invalid("binding evidence source is untrusted"),
+    value.trusted === true ? valid() : invalid("binding evidence must be trusted"),
+    validateTimestamp(value.created_at, "binding evidence created_at"),
+    validateFutureTimestamp(value.expires_at, "binding evidence expires_at", options?.now)
+  ]);
+}
+
+export function validateManagedDispatchBetaUsageEvidenceV1(value: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  const result = validateUsageSnapshotV1(value);
+  if (!result.ok || !isRecord(value)) return result;
+  const uncertainty = Array.isArray(value.uncertainty_flags) ? value.uncertainty_flags : [];
+  const ttlMinutes = typeof value.freshness_ttl === "number" ? value.freshness_ttl : Number.NaN;
+  return combine([
+    value.freshness === "fresh" ? valid() : invalid("managed dispatch beta usage must be fresh"),
+    ttlMinutes > 0 ? valid() : invalid("managed dispatch beta usage freshness_ttl must be positive"),
+    value.reset_time !== "unknown" ? valid() : invalid("managed dispatch beta usage requires provider-native reset_time evidence"),
+    value.reset_bucket !== "unknown" ? valid() : invalid("managed dispatch beta usage requires provider-native reset_bucket evidence"),
+    value.dispatchability === "dispatchable" ? valid() : invalid("managed dispatch beta usage must be dispatchable"),
+    uncertainty.length === 0 ? valid() : invalid("managed dispatch beta usage uncertainty is ambiguous"),
+    options?.expectedProviderFamily !== undefined && value.provider_family !== options.expectedProviderFamily ? invalid("usage provider_family mismatch") : valid()
+  ]);
+}
+
+export function validateManagedDispatchBetaProviderHealthEvidenceV1(value: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  const result = validateProviderHealthSnapshotV1(value);
+  if (!result.ok || !isRecord(value)) return result;
+  const observedAt = typeof value.observed_at === "string" ? Date.parse(value.observed_at) : Number.NaN;
+  const ttlMinutes = typeof value.freshness_ttl === "number" ? value.freshness_ttl : Number.NaN;
+  const freshUntil = observedAt + ttlMinutes * 60_000;
+  return combine([
+    value.freshness === "fresh" ? valid() : invalid("managed dispatch beta provider health must be fresh"),
+    ttlMinutes > 0 ? valid() : invalid("managed dispatch beta provider health freshness_ttl must be positive"),
+    options?.now !== undefined && (!Number.isFinite(freshUntil) || freshUntil <= options.now) ? invalid("managed dispatch beta provider health is stale") : valid(),
+    value.availability_state === "healthy" ? valid() : invalid("managed dispatch beta provider health must be healthy"),
+    value.failure_class === "none" ? valid() : invalid("managed dispatch beta provider health failure class must be none"),
+    value.dispatchability === "dispatchable" ? valid() : invalid("managed dispatch beta provider health must be dispatchable"),
+    value.source_surface === "provider_smoke_test" || value.source_surface === "usage_collector" || value.source_surface === "plugin_event" ? valid() : invalid("managed dispatch beta provider health requires OpenCode-native or provider-native evidence"),
+    options?.expectedProviderFamily !== undefined && value.provider_family !== options.expectedProviderFamily ? invalid("provider health provider_family mismatch") : valid()
+  ]);
+}
+
+export function validateManagedDispatchBetaRuntimeEchoEvidenceV1(value: unknown, conformanceMetadata: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  if (!isRecord(value)) return invalid("managed dispatch beta runtime echo evidence must be an object");
+  const conformanceResult = validateConformanceRuntimeMetadataV1(conformanceMetadata);
+  const conformanceRecord = isRecord(conformanceMetadata) ? conformanceMetadata : {};
+  return combine([
+    rejectUnknownProperties(value, ["schema_version", "runtime_echo_ref", "workflow_id", "step_id", "attempt_id", "provider_family", "provider_qualified_model_id", "runtime_capability_ref", "conformance_ref", "runtime_echo_mode", "trusted", "observed_at", "expires_at"]),
+    requireFields(value, ["schema_version", "runtime_echo_ref", "workflow_id", "step_id", "attempt_id", "provider_family", "provider_qualified_model_id", "runtime_capability_ref", "conformance_ref", "runtime_echo_mode", "trusted", "observed_at", "expires_at"]),
+    value.schema_version === "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1" ? valid() : invalid("runtime echo evidence schema_version is invalid"),
+    validateOpaqueRef(value.runtime_echo_ref, "runtime_echo_ref"),
+    validateOpaqueId(value.workflow_id, "workflow_id"),
+    validateOpaqueId(value.step_id, "step_id"),
+    validateOpaqueId(value.attempt_id, "attempt_id"),
+    options?.expectedWorkflowId !== undefined && value.workflow_id !== options.expectedWorkflowId ? invalid("runtime echo evidence workflow_id mismatch") : valid(),
+    options?.expectedStepId !== undefined && value.step_id !== options.expectedStepId ? invalid("runtime echo evidence step_id mismatch") : valid(),
+    options?.expectedAttemptId !== undefined && value.attempt_id !== options.expectedAttemptId ? invalid("runtime echo evidence attempt_id mismatch") : valid(),
+    validateProviderAndModelBinding(value, "runtime echo evidence", options),
+    validateOpaqueRef(value.runtime_capability_ref, "runtime_capability_ref"),
+    options?.expectedRuntimeCapabilityRef !== undefined && value.runtime_capability_ref !== options.expectedRuntimeCapabilityRef ? invalid("runtime echo evidence runtime_capability_ref mismatch") : valid(),
+    validateOpaqueRef(value.conformance_ref, "conformance_ref"),
+    options?.expectedConformanceRef !== undefined && value.conformance_ref !== options.expectedConformanceRef ? invalid("runtime echo evidence conformance_ref mismatch") : valid(),
+    value.runtime_echo_mode === "trusted" ? valid() : invalid("runtime echo evidence must be trusted"),
+    value.trusted === true ? valid() : invalid("runtime echo evidence must be trusted"),
+    validateTimestamp(value.observed_at, "runtime echo evidence observed_at"),
+    validateFutureTimestamp(value.expires_at, "runtime echo evidence expires_at", options?.now),
+    conformanceResult,
+    conformanceRecord.dispatch_mode === "real-opencode-dispatch" ? valid() : invalid("conformance dispatch_mode is not managed-dispatch ready"),
+    conformanceRecord.runtime_echo_mode === "trusted" ? valid() : invalid("conformance runtime echo is not trusted"),
+    conformanceRecord.event_telemetry_mode === "sufficient" ? valid() : invalid("conformance telemetry is insufficient"),
+    conformanceRecord.provider_health_mode === "dispatch_gate_ready" ? valid() : invalid("conformance provider health is not dispatch-gate ready"),
+    conformanceRecord.fallback_reselection_mode === "disabled" ? valid() : invalid("conformance fallback reselection must be disabled"),
+    conformanceRecord.hook_harness_mode === "enforce" ? valid() : invalid("conformance hook harness must enforce")
+  ]);
+}
+
+export function validateManagedDispatchBetaTelemetryCorrelationV1(value: unknown, options?: ManagedDispatchBetaEvidenceValidationOptionsV1): ValidationResult {
+  if (!isRecord(value)) return invalid("managed dispatch beta telemetry correlation must be an object");
+  return combine([
+    rejectUnknownProperties(value, ["schema_version", "telemetry_ref", "workflow_id", "step_id", "attempt_id", "event_telemetry_mode", "correlation_count", "ambiguous", "source_refs"]),
+    requireFields(value, ["schema_version", "telemetry_ref", "workflow_id", "step_id", "attempt_id", "event_telemetry_mode", "correlation_count", "ambiguous", "source_refs"]),
+    value.schema_version === "flowdesk.managed_dispatch_beta.telemetry_correlation.v1" ? valid() : invalid("telemetry correlation schema_version is invalid"),
+    validateOpaqueRef(value.telemetry_ref, "telemetry_ref"),
+    validateOpaqueId(value.workflow_id, "workflow_id"),
+    validateOpaqueId(value.step_id, "step_id"),
+    validateOpaqueId(value.attempt_id, "attempt_id"),
+    options?.expectedWorkflowId !== undefined && value.workflow_id !== options.expectedWorkflowId ? invalid("telemetry correlation workflow_id mismatch") : valid(),
+    options?.expectedStepId !== undefined && value.step_id !== options.expectedStepId ? invalid("telemetry correlation step_id mismatch") : valid(),
+    options?.expectedAttemptId !== undefined && value.attempt_id !== options.expectedAttemptId ? invalid("telemetry correlation attempt_id mismatch") : valid(),
+    value.event_telemetry_mode === "sufficient" ? valid() : invalid("telemetry correlation is insufficient"),
+    validateNonNegativeInteger(value.correlation_count, "telemetry correlation_count"),
+    typeof value.correlation_count === "number" && value.correlation_count >= 2 ? valid() : invalid("telemetry correlation_count is insufficient"),
+    value.ambiguous === false ? valid() : invalid("telemetry correlation is ambiguous"),
+    validateOpaqueRefArray(value.source_refs, "telemetry source_refs", 20),
+    Array.isArray(value.source_refs) && value.source_refs.length > 0 ? valid() : invalid("telemetry source_refs are required")
+  ]);
 }
 
 export function validateAttemptRecordV1(value: unknown): ValidationResult {
