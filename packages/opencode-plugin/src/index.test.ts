@@ -8,11 +8,11 @@ import {
   hasProductionOpenCodeRegistration
 } from "./index.js";
 
-test("plugin scaffold exposes identity without production registration", () => {
+test("plugin scaffold exposes Release 1 non-dispatch production registration", () => {
   assert.equal(flowdeskOpencodePluginPackageName, "@flowdesk/opencode-plugin");
   assert.equal(flowdeskPluginId, "flowdesk");
-  assert.equal(flowdeskPluginScaffold.productionToolRegistration, "not-implemented");
+  assert.equal(flowdeskPluginScaffold.productionToolRegistration, "release1-non-dispatch-command-backed");
   assert.equal(flowdeskPluginScaffold.runtimeBoundary.realOpenCodeDispatch, "disabled");
-  assert.equal(hasProductionOpenCodeRegistration(), false);
-  assert.match(describeFlowDeskPluginScaffold(), /not-implemented/);
+  assert.equal(hasProductionOpenCodeRegistration(), true);
+  assert.match(describeFlowDeskPluginScaffold(), /release1-non-dispatch-command-backed/);
 });

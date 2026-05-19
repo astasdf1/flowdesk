@@ -83,7 +83,7 @@ interface ChatMessageHooks {
 
 test("server plugin defaults to safe local command-backed chat mode", async () => {
   assert.equal(flowdeskOpenCodeServerPlugin.id, "flowdesk");
-  assert.equal(hasProductionOpenCodeRegistration(), false);
+  assert.equal(hasProductionOpenCodeRegistration(), true);
   assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(getFlowDeskPreSpikeProductionToolRegistry().length, 0);
 
@@ -93,7 +93,7 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
 
   const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
   assert.ok(doctor);
-  assert.equal(doctor.description.includes("without enabling production tools"), true);
+  assert.equal(doctor.description.includes("without enabling real dispatch"), true);
   assert.deepEqual(doctor.args, {});
 
   const result = JSON.parse(await doctor.execute({}, undefined as never)) as Record<string, unknown>;
@@ -102,29 +102,25 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
   assert.equal(result.probeRegistrationProfile, "disabled");
   assert.equal(result.localNonDispatchAdapterProfile, "local_non_dispatch_command_adapter");
   assert.equal(result.naturalLanguageRoutingProfile, "chat_steering_command_backed_non_dispatch");
-  assert.equal(result.productionPromotionGate, "blocked_production_opencode_registration_disabled");
-  assert.equal(result.productionOpenCodeRegistration, false);
-  assert.equal(result.productionToolRegistration, "not-implemented");
+  assert.equal(result.productionPromotionGate, "release1_non_dispatch_command_registration_ready");
+  assert.equal(result.productionOpenCodeRegistration, true);
+  assert.equal(result.productionToolRegistration, "release1-non-dispatch-command-backed");
   assert.deepEqual(result.release1HandlerReadiness, {
     totalTools: 9,
     diagnosticScaffoldAvailable: 5,
     coreEvaluatorAvailable: 4,
     schemaOnlyPending: 0,
-    productionReady: false,
-    productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
+    productionReady: true,
+    productionPromotionGate: "release1_command_backed_handlers_ready"
   });
   assert.deepEqual(result.release1ProductionReadiness, {
     totalChecks: 8,
-    passedChecks: 5,
-    blockedChecks: 3,
-    productionReady: false,
-    productionPromotionGate: "blocked_release1_production_readiness_incomplete",
-    blockedReasons: [
-      "production adapters do not yet bind write-capable handlers to scoped non-dispatch audit/debug/state write intents",
-      "production adapters do not yet inject and verify fresh scoped non-dispatch permissions at the tool boundary",
-      "default server exposes safe local command-backed tools, but production adapter registration remains blocked until audit/write and permission boundaries are proven"
-    ],
-    productionRegistrationEligible: false,
+    passedChecks: 8,
+    blockedChecks: 0,
+    productionReady: true,
+    productionPromotionGate: "release1_non_dispatch_registration_ready",
+    blockedReasons: [],
+    productionRegistrationEligible: true,
     realOpenCodeDispatch: false,
     actualLaneLaunch: false,
     providerCall: false,
@@ -153,7 +149,7 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
     [flowdeskNaturalLanguageRoutingOption]: false
   });
   assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, ...Object.keys(localTools)]);
-  assert.equal(hasProductionOpenCodeRegistration(), false);
+  assert.equal(hasProductionOpenCodeRegistration(), true);
 
   const planFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_plan" && entry.schemaKind === "tool_request");
   const statusFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_status" && entry.schemaKind === "tool_request");
@@ -231,7 +227,7 @@ test("server plugin allows explicit opt-out of local tools and natural-language 
   assert.ok(doctor);
   const result = JSON.parse(await doctor.execute({}, undefined as never)) as Record<string, unknown>;
   assert.equal(result.naturalLanguageRoutingProfile, "chat_steering_command_backed_non_dispatch");
-  assert.equal(result.productionOpenCodeRegistration, false);
+  assert.equal(result.productionOpenCodeRegistration, true);
   assert.equal(result.providerCall, false);
 });
 
@@ -568,6 +564,61 @@ test("local adapter can opt into durable .flowdesk state materialization", () =>
     assert.equal(status.localState.durableStateMode, "durable_flowdesk_root");
     assert.equal(status.providerCall, false);
     assert.equal(status.runtimeExecution, false);
+
+    const reloadedSession = createFlowDeskLocalNonDispatchAdapterSession(new Date("2026-05-17T00:00:00.000Z"), undefined, { durableStateRootDir: root });
+    const reloadedStatus = reloadedSession.evaluate("flowdesk_status", {
+      schema_version: "flowdesk.status.request.v1",
+      request_id: "request-durable-status-reload",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-durable-plan",
+      session_ref: "session-durable-plan",
+      redacted_intake_ref: "intake-durable-status-reload",
+      detail_level: "summary"
+    });
+    assert.equal(reloadedStatus.handler.ok, true);
+    const reloadedResponse = reloadedStatus.handler.response as { workflow_id?: unknown; workflow_state?: unknown } | undefined;
+    assert.equal(reloadedResponse?.workflow_id, "workflow-durable-plan");
+    assert.equal(reloadedResponse?.workflow_state, "ready_to_run");
+    assert.equal(reloadedStatus.localState.workflowState, "ready_to_run");
+    assert.equal(reloadedStatus.localState.laneRecords, 1);
+    assert.equal(reloadedStatus.providerCall, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("local adapter fails closed when durable state reload is malformed", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-local-adapter-reload-blocked-"));
+  try {
+    const session = createFlowDeskLocalNonDispatchAdapterSession(new Date("2026-05-17T00:00:00.000Z"), undefined, { durableStateRootDir: root });
+    const plan = session.evaluate("flowdesk_plan", {
+      schema_version: "flowdesk.plan.request.v1",
+      request_id: "request-durable-malformed-plan",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-durable-malformed",
+      session_ref: "session-durable-malformed",
+      redacted_intake_ref: "intake-durable-malformed-plan",
+      goal_summary: "구현 계획을 세워줘",
+      scope_summary: "FlowDesk natural-language chat intake routed to command-backed planning.",
+      risk_hint: "ordinary Release 1 command-backed steering only"
+    });
+    assert.equal(plan.ok, true);
+    writeFileSync(join(root, ".flowdesk/workflows/workflow-durable-malformed/workflow.json"), JSON.stringify({ raw_prompt: "system prompt leak" }), "utf8");
+
+    const reloadedSession = createFlowDeskLocalNonDispatchAdapterSession(new Date("2026-05-17T00:00:00.000Z"), undefined, { durableStateRootDir: root });
+    const status = reloadedSession.evaluate("flowdesk_status", {
+      schema_version: "flowdesk.status.request.v1",
+      request_id: "request-durable-malformed-status",
+      input_mode: "chat_routed",
+      workflow_id: "workflow-durable-malformed",
+      session_ref: "session-durable-malformed",
+      redacted_intake_ref: "intake-durable-malformed-status",
+      detail_level: "summary"
+    });
+    assert.equal(status.ok, false);
+    assert.equal(status.localState.stateWriteApplied, false);
+    assert.equal(status.providerCall, false);
+    assert.equal(status.runtimeExecution, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -786,7 +837,7 @@ test("server plugin can expose sandbox-only FDS-1 production-shape probe tools",
     [flowdeskFds1SchemaConversionProbeOption]: true
   });
   assert.deepEqual(Object.keys(hooks.tool ?? {}), [flowdeskPreSpikeDoctorToolName, ...Object.keys(probeTools)]);
-  assert.equal(hasProductionOpenCodeRegistration(), false);
+  assert.equal(hasProductionOpenCodeRegistration(), true);
   assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(getFlowDeskPreSpikeProductionToolRegistry().length, 0);
 

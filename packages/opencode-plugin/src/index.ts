@@ -10,7 +10,7 @@ export const flowdeskPluginScaffold = {
   packageName: flowdeskOpencodePluginPackageName,
   pluginId: flowdeskPluginId,
   releaseScope: flowdeskRelease1Scope,
-  productionToolRegistration: "not-implemented",
+  productionToolRegistration: "release1-non-dispatch-command-backed",
   runtimeBoundary: flowdeskNoRealDispatchBoundary,
   supportedPhase0Modes: ["dry-run", "fake-runtime"]
 } as const;
@@ -19,8 +19,8 @@ export function describeFlowDeskPluginScaffold(): string {
   return `${flowdeskPluginScaffold.packageName}: ${flowdeskPluginScaffold.productionToolRegistration}`;
 }
 
-export function hasProductionOpenCodeRegistration(): false {
-  return false;
+export function hasProductionOpenCodeRegistration(): true {
+  return true;
 }
 
 export * from "./bootstrap-cli.js";

@@ -389,7 +389,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
   const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, { durableStateRootDir: durableStateRootFromOptions(options) }) : undefined;
   const tools: Record<string, FlowDeskOpenCodeTool> = {
     [flowdeskPreSpikeDoctorToolName]: tool({
-      description: "Report FlowDesk plugin load status without enabling production tools or dispatch.",
+      description: "Report FlowDesk plugin load status without enabling real dispatch, provider calls, or runtime execution.",
       args: {},
       async execute() {
         return JSON.stringify({
@@ -398,7 +398,7 @@ const flowdeskServerPlugin: Plugin = async (_input, options) => {
           probeRegistrationProfile: isFds1SchemaConversionProbeEnabled(options) ? "sandbox_conformance_probe_only" : "disabled",
           localNonDispatchAdapterProfile: isLocalNonDispatchAdapterEnabled(options) ? flowdeskLocalNonDispatchAdapterProfile : "disabled",
           naturalLanguageRoutingProfile: isNaturalLanguageRoutingEnabled(options) ? "chat_steering_command_backed_non_dispatch" : "disabled",
-          productionPromotionGate: "blocked_production_opencode_registration_disabled",
+          productionPromotionGate: "release1_non_dispatch_command_registration_ready",
           productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
           productionToolRegistration: flowdeskPluginScaffold.productionToolRegistration,
           release1HandlerReadiness: getFlowDeskRelease1HandlerReadinessSummary(),

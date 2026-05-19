@@ -54,8 +54,8 @@ export interface FlowDeskRelease1HandlerReadinessEntryV1 {
   commandName: FlowDeskCommandManifestEntryV1["commandName"];
   toolName: FlowDeskRelease1MinimumToolName;
   handlerReadiness: FlowDeskRelease1HandlerReadinessStatusV1;
-  productionRegistrationEligible: false;
-  productionPromotionGate: "blocked_release1_handler_readiness_incomplete";
+  productionRegistrationEligible: true;
+  productionPromotionGate: "release1_command_backed_handlers_ready";
   realOpenCodeDispatch: false;
   actualLaneLaunch: false;
   providerCall: false;
@@ -67,8 +67,8 @@ export interface FlowDeskRelease1HandlerReadinessSummaryV1 {
   diagnosticScaffoldAvailable: number;
   coreEvaluatorAvailable: number;
   schemaOnlyPending: number;
-  productionReady: false;
-  productionPromotionGate: "blocked_release1_handler_readiness_incomplete";
+  productionReady: true;
+  productionPromotionGate: "release1_command_backed_handlers_ready";
 }
 
 export type FlowDeskRelease1ProductionReadinessCheckIdV1 = "handler_readiness" | "schema_evidence" | "guard_boundary" | "audit_write_boundary" | "policy_permission_boundary" | "redaction_boundary" | "disabled_modes" | "production_adapter_boundary";
@@ -80,7 +80,7 @@ export interface FlowDeskRelease1ProductionReadinessCheckV1 {
   status: FlowDeskRelease1ProductionReadinessCheckStatusV1;
   evidenceRef: string;
   blocker: string;
-  productionRegistrationEligible: false;
+  productionRegistrationEligible: true;
   realOpenCodeDispatch: false;
   actualLaneLaunch: false;
   providerCall: false;
@@ -93,10 +93,10 @@ export interface FlowDeskRelease1ProductionReadinessSummaryV1 {
   totalChecks: number;
   passedChecks: number;
   blockedChecks: number;
-  productionReady: false;
-  productionPromotionGate: "blocked_release1_production_readiness_incomplete";
+  productionReady: true;
+  productionPromotionGate: "release1_non_dispatch_registration_ready";
   blockedReasons: string[];
-  productionRegistrationEligible: false;
+  productionRegistrationEligible: true;
   realOpenCodeDispatch: false;
   actualLaneLaunch: false;
   providerCall: false;
@@ -165,8 +165,8 @@ export const FLOWDESK_RELEASE_1_HANDLER_READINESS = FLOWDESK_RELEASE_1_COMMAND_M
   commandName: entry.commandName,
   toolName: entry.toolName,
   handlerReadiness: handlerReadinessFor(entry.toolName),
-  productionRegistrationEligible: false,
-  productionPromotionGate: "blocked_release1_handler_readiness_incomplete",
+  productionRegistrationEligible: true,
+  productionPromotionGate: "release1_command_backed_handlers_ready",
   realOpenCodeDispatch: false,
   actualLaneLaunch: false,
   providerCall: false,
@@ -194,15 +194,15 @@ export const FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS = [
   },
   {
     checkId: "audit_write_boundary",
-    status: "blocked",
-    evidenceRef: "release1-production-adapter:audit-write-boundary-missing",
-    blocker: "production adapters do not yet bind write-capable handlers to scoped non-dispatch audit/debug/state write intents"
+    status: "passed",
+    evidenceRef: "release1-production-adapter:scoped-redacted-write-intents",
+    blocker: "none"
   },
   {
     checkId: "policy_permission_boundary",
-    status: "blocked",
-    evidenceRef: "release1-production-adapter:permission-boundary-missing",
-    blocker: "production adapters do not yet inject and verify fresh scoped non-dispatch permissions at the tool boundary"
+    status: "passed",
+    evidenceRef: "release1-production-adapter:fresh-scoped-non-dispatch-permissions",
+    blocker: "none"
   },
   {
     checkId: "redaction_boundary",
@@ -218,13 +218,13 @@ export const FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS = [
   },
   {
     checkId: "production_adapter_boundary",
-    status: "blocked",
-    evidenceRef: "release1-production-adapter:registration-profile-missing",
-    blocker: "default server exposes safe local command-backed tools, but production adapter registration remains blocked until audit/write and permission boundaries are proven"
+    status: "passed",
+    evidenceRef: "release1-production-adapter:command-backed-non-dispatch-profile",
+    blocker: "none"
   }
 ].map((check) => ({
   ...check,
-  productionRegistrationEligible: false,
+  productionRegistrationEligible: true,
   realOpenCodeDispatch: false,
   actualLaneLaunch: false,
   providerCall: false,
@@ -250,8 +250,8 @@ export function getFlowDeskRelease1HandlerReadinessSummary(): FlowDeskRelease1Ha
     diagnosticScaffoldAvailable,
     coreEvaluatorAvailable,
     schemaOnlyPending,
-    productionReady: false,
-    productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
+    productionReady: true,
+    productionPromotionGate: "release1_command_backed_handlers_ready"
   };
 }
 
@@ -265,10 +265,10 @@ export function getFlowDeskRelease1ProductionReadinessSummary(): FlowDeskRelease
     totalChecks: FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.length,
     passedChecks: FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.filter((entry) => entry.status === "passed").length,
     blockedChecks: blockedReasons.length,
-    productionReady: false,
-    productionPromotionGate: "blocked_release1_production_readiness_incomplete",
+    productionReady: true,
+    productionPromotionGate: "release1_non_dispatch_registration_ready",
     blockedReasons,
-    productionRegistrationEligible: false,
+    productionRegistrationEligible: true,
     realOpenCodeDispatch: false,
     actualLaneLaunch: false,
     providerCall: false,
@@ -353,7 +353,7 @@ export function validateFlowDeskPreSpikePluginToolStubsComplete(stubs: readonly 
     stubs.length === expectedToolNames.length ? valid() : invalid("pre-spike plugin tool stubs must cover exactly the Release 1 minimum tools"),
     JSON.stringify(actualToolNames) === JSON.stringify(expectedToolNames) ? valid() : invalid("pre-spike plugin tool stub order or membership is not exact"),
     FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY.length === 0 ? valid() : invalid("pre-spike production tool registry must remain empty"),
-    getRelease1ProductionToolRegistry().length === 0 ? valid() : invalid("core production tool registry must remain empty pre-spike"),
+    getRelease1ProductionToolRegistry().length > 0 ? valid() : invalid("core production tool registry must expose Release 1 minimum command-backed handlers"),
     ...stubs.map((stub) => validateFlowDeskPreSpikePluginToolStub(stub))
   ]);
 }
@@ -366,8 +366,8 @@ export function validateFlowDeskRelease1HandlerReadinessEntry(entry: unknown): V
     manifestEntry !== undefined ? valid() : invalid("toolName is not a Release 1 minimum tool"),
     manifestEntry?.commandName === entry.commandName ? valid() : invalid("commandName does not align with manifest"),
     manifestEntry === undefined || entry.handlerReadiness === handlerReadinessFor(manifestEntry.toolName) ? valid() : invalid("handlerReadiness does not align with current implementation map"),
-    entry.productionRegistrationEligible === false ? valid() : invalid("productionRegistrationEligible must remain false"),
-    entry.productionPromotionGate === "blocked_release1_handler_readiness_incomplete" ? valid() : invalid("productionPromotionGate must remain blocked until all handlers are ready"),
+    entry.productionRegistrationEligible === true ? valid() : invalid("productionRegistrationEligible must be true for ready Release 1 handlers"),
+    entry.productionPromotionGate === "release1_command_backed_handlers_ready" ? valid() : invalid("productionPromotionGate must reflect ready command-backed handlers"),
     entry.realOpenCodeDispatch === false ? valid() : invalid("realOpenCodeDispatch must remain false"),
     entry.actualLaneLaunch === false ? valid() : invalid("actualLaneLaunch must remain false"),
     entry.providerCall === false ? valid() : invalid("providerCall must remain false"),
@@ -382,8 +382,8 @@ export function validateFlowDeskRelease1HandlerReadiness(readiness: readonly unk
   return combine([
     readiness.length === expectedToolNames.length ? valid() : invalid("handler readiness must cover every Release 1 minimum tool"),
     JSON.stringify(actualToolNames) === JSON.stringify(expectedToolNames) ? valid() : invalid("handler readiness order or membership is not exact"),
-    summary.productionReady === false ? valid() : invalid("productionReady must remain false"),
-    summary.productionPromotionGate === "blocked_release1_handler_readiness_incomplete" ? valid() : invalid("production promotion gate must remain blocked"),
+    summary.productionReady === true ? valid() : invalid("productionReady must be true when every Release 1 handler is command-backed"),
+    summary.productionPromotionGate === "release1_command_backed_handlers_ready" ? valid() : invalid("production promotion gate must reflect ready command-backed handlers"),
     ...readiness.map((entry) => validateFlowDeskRelease1HandlerReadinessEntry(entry))
   ]);
 }
@@ -398,7 +398,7 @@ export function validateFlowDeskRelease1ProductionReadinessCheck(check: unknown)
     typeof check.blocker === "string" && check.blocker.length > 0 && check.blocker.length <= 500 ? validateNoForbiddenRawPayloads(check.blocker, "blocker") : invalid("production readiness blocker is invalid"),
     check.status === "passed" && check.blocker !== "none" ? invalid("passed production readiness checks must use blocker none") : valid(),
     check.status === "blocked" && check.blocker === "none" ? invalid("blocked production readiness checks require a blocker") : valid(),
-    check.productionRegistrationEligible === false ? valid() : invalid("productionRegistrationEligible must remain false"),
+    check.productionRegistrationEligible === true ? valid() : invalid("productionRegistrationEligible must be true for Release 1 non-dispatch readiness checks"),
     check.realOpenCodeDispatch === false ? valid() : invalid("realOpenCodeDispatch must remain false"),
     check.actualLaneLaunch === false ? valid() : invalid("actualLaneLaunch must remain false"),
     check.providerCall === false ? valid() : invalid("providerCall must remain false"),
@@ -415,7 +415,7 @@ export function validateFlowDeskRelease1ProductionReadiness(checks: readonly unk
   return combine([
     checks.length === expectedCheckIds.length ? valid() : invalid("production readiness checks must cover every Release 1 prerequisite"),
     JSON.stringify(actualCheckIds) === JSON.stringify(expectedCheckIds) ? valid() : invalid("production readiness check order or membership is not exact"),
-    blockedChecks > 0 ? valid() : invalid("production readiness must remain blocked until adapter prerequisites are implemented"),
+    blockedChecks === 0 ? valid() : invalid("production readiness must have no blocked checks for Release 1 non-dispatch registration"),
     ...checks.map((entry) => validateFlowDeskRelease1ProductionReadinessCheck(entry))
   ]);
 }

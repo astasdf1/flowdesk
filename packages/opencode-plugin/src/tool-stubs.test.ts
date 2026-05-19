@@ -27,7 +27,7 @@ import {
   validateFlowDeskRelease1ProductionReadinessCheck
 } from "./index.js";
 
-test("pre-spike plugin tool stubs cover the Release 1 minimum tools without production registration", () => {
+test("pre-spike plugin tool stubs stay sandbox-only while Release 1 registers command-backed tools", () => {
   assert.equal(hasPassingFds1SchemaConversionSpike(), true);
   assert.equal(FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.length, 9);
   assert.deepEqual(
@@ -37,7 +37,10 @@ test("pre-spike plugin tool stubs cover the Release 1 minimum tools without prod
   assert.deepEqual(getFlowDeskPreSpikePluginToolStubs(), FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS);
   assert.deepEqual(getFlowDeskPreSpikeProductionToolRegistry(), FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY);
   assert.equal(FLOWDESK_PRE_SPIKE_PRODUCTION_TOOL_REGISTRY.length, 0);
-  assert.equal(getRelease1ProductionToolRegistry().length, 0);
+  assert.deepEqual(
+    [...new Set(getRelease1ProductionToolRegistry().map((entry) => entry.toolName))].sort(),
+    FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName).sort()
+  );
   assert.equal(validateFlowDeskPreSpikePluginToolStubsComplete().ok, true);
 });
 
@@ -68,7 +71,7 @@ test("pre-spike plugin tool stub metadata remains blocked and non-authorizing", 
   }
 });
 
-test("Release 1 handler readiness tracks evaluator-backed tools without production registration", () => {
+test("Release 1 handler readiness tracks command-backed production-eligible tools", () => {
   assert.deepEqual(
     FLOWDESK_RELEASE_1_HANDLER_READINESS.map((entry) => entry.toolName),
     FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName)
@@ -82,8 +85,8 @@ test("Release 1 handler readiness tracks evaluator-backed tools without producti
     diagnosticScaffoldAvailable: 5,
     coreEvaluatorAvailable: 4,
     schemaOnlyPending: 0,
-    productionReady: false,
-    productionPromotionGate: "blocked_release1_handler_readiness_incomplete"
+    productionReady: true,
+    productionPromotionGate: "release1_command_backed_handlers_ready"
   });
 
   const readinessByTool = Object.fromEntries(FLOWDESK_RELEASE_1_HANDLER_READINESS.map((entry) => [entry.toolName, entry.handlerReadiness]));
@@ -98,8 +101,8 @@ test("Release 1 handler readiness tracks evaluator-backed tools without producti
   assert.equal(readinessByTool.flowdesk_export_debug, "diagnostic_scaffold_available");
 
   for (const entry of FLOWDESK_RELEASE_1_HANDLER_READINESS) {
-    assert.equal(entry.productionRegistrationEligible, false);
-    assert.equal(entry.productionPromotionGate, "blocked_release1_handler_readiness_incomplete");
+    assert.equal(entry.productionRegistrationEligible, true);
+    assert.equal(entry.productionPromotionGate, "release1_command_backed_handlers_ready");
     assert.equal(entry.realOpenCodeDispatch, false);
     assert.equal(entry.actualLaneLaunch, false);
     assert.equal(entry.providerCall, false);
@@ -132,28 +135,26 @@ test("pre-spike plugin tool stub runner validates fixtures but never accepts exe
   }
 });
 
-test("Release 1 production readiness stays blocked until adapter prerequisites are proven", () => {
+test("Release 1 production readiness is limited to non-dispatch registration", () => {
   assert.deepEqual(getFlowDeskRelease1ProductionReadinessChecks(), FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS);
   assert.equal(validateFlowDeskRelease1ProductionReadiness().ok, true);
 
   const summary = getFlowDeskRelease1ProductionReadinessSummary();
   assert.equal(summary.totalChecks, 8);
-  assert.equal(summary.passedChecks, 5);
-  assert.equal(summary.blockedChecks, 3);
-  assert.equal(summary.productionReady, false);
-  assert.equal(summary.productionPromotionGate, "blocked_release1_production_readiness_incomplete");
-  assert.equal(summary.productionRegistrationEligible, false);
+  assert.equal(summary.passedChecks, 8);
+  assert.equal(summary.blockedChecks, 0);
+  assert.equal(summary.productionReady, true);
+  assert.equal(summary.productionPromotionGate, "release1_non_dispatch_registration_ready");
+  assert.equal(summary.productionRegistrationEligible, true);
   assert.equal(summary.realOpenCodeDispatch, false);
   assert.equal(summary.providerCall, false);
   assert.equal(summary.runtimeExecution, false);
   assert.equal(summary.fallbackAuthority, false);
   assert.equal(summary.hardCancelOrNoReplyAuthority, false);
-  assert.ok(summary.blockedReasons.some((reason) => reason.includes("write-capable handlers")));
-  assert.ok(summary.blockedReasons.some((reason) => reason.includes("non-dispatch permissions")));
-  assert.ok(summary.blockedReasons.some((reason) => reason.includes("production adapter registration remains blocked")));
+  assert.deepEqual(summary.blockedReasons, []);
 
   for (const check of FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS) {
-    assert.equal(check.productionRegistrationEligible, false, check.checkId);
+    assert.equal(check.productionRegistrationEligible, true, check.checkId);
     assert.equal(check.realOpenCodeDispatch, false, check.checkId);
     assert.equal(check.actualLaneLaunch, false, check.checkId);
     assert.equal(check.providerCall, false, check.checkId);
@@ -184,15 +185,15 @@ test("pre-spike plugin tool stubs reject forged authority and Release 1 real dis
   assert.equal(validateFlowDeskPreSpikePluginToolStub({ ...runStub, providerCall: true }).ok, false);
   const readyRun = FLOWDESK_RELEASE_1_HANDLER_READINESS.find((entry) => entry.toolName === "flowdesk_run");
   assert.ok(readyRun);
-  assert.equal(validateFlowDeskRelease1HandlerReadinessEntry({ ...readyRun, productionRegistrationEligible: true }).ok, false);
+  assert.equal(validateFlowDeskRelease1HandlerReadinessEntry({ ...readyRun, productionRegistrationEligible: false }).ok, false);
   assert.equal(validateFlowDeskRelease1HandlerReadinessEntry({ ...readyRun, realOpenCodeDispatch: true }).ok, false);
   assert.equal(validateFlowDeskRelease1HandlerReadinessEntry({ ...readyRun, handlerReadiness: "schema_only_pending" }).ok, false);
   assert.equal(validateFlowDeskRelease1HandlerReadiness(FLOWDESK_RELEASE_1_HANDLER_READINESS.filter((entry) => entry.toolName !== "flowdesk_abort")).ok, false);
-  const blockedProductionCheck = FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.find((entry) => entry.status === "blocked");
-  assert.ok(blockedProductionCheck);
-  assert.equal(validateFlowDeskRelease1ProductionReadinessCheck({ ...blockedProductionCheck, productionRegistrationEligible: true }).ok, false);
-  assert.equal(validateFlowDeskRelease1ProductionReadinessCheck({ ...blockedProductionCheck, blocker: "raw provider payload" }).ok, false);
-  assert.equal(validateFlowDeskRelease1ProductionReadiness(FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.map((entry) => ({ ...entry, status: "passed" as const, blocker: "none" }))).ok, false);
+  const productionCheck = FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS[0];
+  assert.ok(productionCheck);
+  assert.equal(validateFlowDeskRelease1ProductionReadinessCheck({ ...productionCheck, productionRegistrationEligible: false }).ok, false);
+  assert.equal(validateFlowDeskRelease1ProductionReadinessCheck({ ...productionCheck, blocker: "raw provider payload" }).ok, false);
+  assert.equal(validateFlowDeskRelease1ProductionReadiness(FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.map((entry, index) => index === 0 ? { ...entry, status: "blocked" as const, blocker: "missing scoped evidence" } : entry)).ok, false);
   assert.equal(validateFlowDeskRelease1ProductionReadiness(FLOWDESK_RELEASE_1_PRODUCTION_READINESS_CHECKS.filter((entry) => entry.checkId !== "audit_write_boundary")).ok, false);
   assert.equal(validateFlowDeskPreSpikePluginToolStubsComplete(FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.slice(1)).ok, false);
 });
