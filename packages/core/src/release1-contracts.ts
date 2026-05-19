@@ -1409,3 +1409,40 @@ export interface FlowDeskTopTierReviewBindingInventoryV1 {
   safe_next_actions: SafeNextAction[];
   dispatch_authority_enabled: false;
 }
+
+export const FLOWDESK_TOP_TIER_REVIEW_VERDICT_LABELS = ["pass", "changes_required", "blocked", "inconclusive"] as const;
+export type FlowDeskTopTierReviewVerdictLabel = (typeof FLOWDESK_TOP_TIER_REVIEW_VERDICT_LABELS)[number];
+
+export const FLOWDESK_TOP_TIER_REVIEW_FINDING_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
+export type FlowDeskTopTierReviewFindingSeverity = (typeof FLOWDESK_TOP_TIER_REVIEW_FINDING_SEVERITIES)[number];
+
+export const FLOWDESK_TOP_TIER_REVIEW_UNCERTAINTY_LEVELS = ["low", "medium", "high", "unknown"] as const;
+export type FlowDeskTopTierReviewUncertaintyLevel = (typeof FLOWDESK_TOP_TIER_REVIEW_UNCERTAINTY_LEVELS)[number];
+
+export interface FlowDeskTopTierReviewFindingV1 {
+  finding_id: OpaqueId;
+  severity: FlowDeskTopTierReviewFindingSeverity;
+  category: RedactedErrorCategory;
+  summary_label: string;
+  evidence_refs: OpaqueRef[];
+  required_fix_label: string;
+}
+
+export interface FlowDeskTopTierReviewVerdictV1 {
+  schema_version: "flowdesk.top_tier_review_verdict.v1";
+  verdict_id: OpaqueId;
+  workflow_id: OpaqueId;
+  lane_plan_ref: OpaqueRef;
+  binding_ref: OpaqueRef;
+  perspective: FlowDeskTopTierReviewPerspective;
+  source: string;
+  created_at: IsoTimestamp;
+  redaction_version: string;
+  findings: FlowDeskTopTierReviewFindingV1[];
+  evidence_refs: OpaqueRef[];
+  uncertainty: FlowDeskTopTierReviewUncertaintyLevel;
+  required_fixes: string[];
+  verdict_label: FlowDeskTopTierReviewVerdictLabel;
+  safe_next_actions: SafeNextAction[];
+  dispatch_authority_enabled: false;
+}

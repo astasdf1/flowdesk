@@ -98,6 +98,7 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.top_tier_reviewer_binding.v1": ["schema_version", "binding_id", "reviewer_profile_id", "binding_label", "provider_family", "provider_qualified_model_id", "model_family", "highest_tier_eligible", "registry_entry_ref", "policy_pack_eligibility_ref", "availability", "dispatch_authority_enabled", "observed_at", "expires_at"],
   "flowdesk.top_tier_reviewer_lane_plan.v1": ["schema_version", "lane_plan_id", "binding_ref", "perspective", "inclusion_state", "reason_label", "safe_next_actions", "dispatch_authority_enabled"],
   "flowdesk.top_tier_review_binding_inventory.v1": ["schema_version", "inventory_id", "workflow_id", "plan_revision_id", "created_at", "redaction_version", "registered_binding_refs", "available_binding_refs", "unavailable_binding_refs", "blocked_binding_refs", "lane_plan_refs", "max_concurrent_lane_count", "budget_cap_label", "quota_reserve_label", "timeout_label", "retry_budget_label", "inventory_decision", "safe_next_actions", "dispatch_authority_enabled"],
+  "flowdesk.top_tier_review_verdict.v1": ["schema_version", "verdict_id", "workflow_id", "lane_plan_ref", "binding_ref", "perspective", "source", "created_at", "redaction_version", "findings", "evidence_refs", "uncertainty", "required_fixes", "verdict_label", "safe_next_actions", "dispatch_authority_enabled"],
   "flowdesk.reference_search.request.v1": ["schema_version"]
 } satisfies Record<string, readonly string[]>;
 
