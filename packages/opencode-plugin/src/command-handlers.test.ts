@@ -445,13 +445,36 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
   assert.equal(result.coreEvaluationOk, true);
   const response = result.response as FlowDeskDoctorResponseV1;
   assert.equal(response.schema_version, "flowdesk.doctor.response.v1");
-  assert.match(response.doctor_results[0]?.summary ?? "", /production readiness remains blocked/);
-  assert.ok(response.doctor_results[0]?.refs.some((ref) => ref.startsWith("production-readiness-blocked-")));
+  assert.deepEqual(response.doctor_results.map((section) => section.section), ["migration_cleanup", "opencode_plugin_compatibility", "provider_usage_readiness", "policy_project_safety"]);
+  const compatibility = response.doctor_results.find((section) => section.section === "opencode_plugin_compatibility");
+  const providerReadiness = response.doctor_results.find((section) => section.section === "provider_usage_readiness");
+  assert.ok(compatibility);
+  assert.match(compatibility.summary, /non-dispatch command registration is ready/);
+  assert.equal(compatibility.category, "informational");
+  assert.ok(compatibility.refs.some((ref) => ref.startsWith("production-readiness-passed-")));
+  assert.ok(providerReadiness);
+  assert.equal(providerReadiness.category, "degraded_mode_warning");
   assert.equal(response.provider_health_summary.dispatchability, "non_dispatchable");
   assert.deepEqual(response.disabled_modes, ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"]);
   assert.equal(JSON.stringify(response).includes("provider_payload"), false);
   assert.equal(JSON.stringify(response).includes("/Users/"), false);
   assertNoRuntimeAuthority(result);
+});
+
+test("doctor diagnostic handler scopes section checks without authorizing runtime", () => {
+  const install = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_doctor", doctorRequest({ check_scope: "install" }));
+  assert.equal(install.ok, true);
+  const installResponse = install.response as FlowDeskDoctorResponseV1;
+  assert.deepEqual(installResponse.doctor_results.map((section) => section.section), ["migration_cleanup"]);
+  assert.equal(installResponse.status, "diagnostic_only");
+  assertNoRuntimeAuthority(install);
+
+  const runtime = evaluateFlowDeskCommandBackedHandlerV1("flowdesk_doctor", doctorRequest({ check_scope: "runtime" }));
+  assert.equal(runtime.ok, true);
+  const runtimeResponse = runtime.response as FlowDeskDoctorResponseV1;
+  assert.deepEqual(runtimeResponse.doctor_results.map((section) => section.section), ["opencode_plugin_compatibility"]);
+  assert.equal(runtimeResponse.status, "diagnostic_only");
+  assertNoRuntimeAuthority(runtime);
 });
 
 test("doctor diagnostic handler rejects semantic request enum drift before response", () => {

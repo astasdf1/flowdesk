@@ -134,31 +134,46 @@ function diagnosticDeleteAfter(context: FlowDeskCommandBackedHandlerContextV1): 
   return context.diagnostic?.deleteAfterIso ?? "2026-05-18T00:00:00.000Z";
 }
 
-function doctorCategoryFor(request: FlowDeskDoctorRequestV1): DoctorFailureCategoryV1 {
-  if (request.check_scope === "usage" || request.check_scope === "provider_health") return "degraded_mode_warning";
-  if (request.check_scope === "install" || request.check_scope === "policy") return "informational";
-  return "dispatch_blocking";
-}
-
-function doctorSectionFor(category: DoctorFailureCategoryV1, request: FlowDeskDoctorRequestV1) {
+function doctorSectionFor(section: DoctorSectionResultV1["section"], category: DoctorFailureCategoryV1, request: FlowDeskDoctorRequestV1, summary: string, refs: readonly string[]) {
   const runId = safeDiagnosticId("doctor-run", request);
-  const section: DoctorSectionResultV1["section"] = category === "degraded_mode_warning" ? "provider_usage_readiness" : category === "informational" && request.check_scope === "policy" ? "policy_project_safety" : category === "informational" ? "migration_cleanup" : "opencode_plugin_compatibility";
   const outcome = getDoctorFailureCategoryOutcomeV1(category);
-  const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   return {
     schema_version: "flowdesk.doctor_section_result.v1" as const,
     run_id: runId,
     section,
     category,
-    summary: category === "dispatch_blocking" ? `FlowDesk Release 1 production readiness remains blocked by ${productionReadiness.blockedChecks} non-dispatch prerequisite checks.` : category === "degraded_mode_warning" ? "FlowDesk reports provider usage and health as diagnostic-only unless fresh official evidence is available." : "FlowDesk doctor completed a redacted diagnostic scaffold check without production mutation.",
+    summary,
     safe_next_actions: [...outcome.safe_next_actions],
-    refs: [`doctor-${category}-ref`, `production-readiness-blocked-${productionReadiness.blockedChecks}`],
+    refs: [...refs],
     redaction_version: "redaction-v1"
   };
 }
 
+function doctorSectionsFor(request: FlowDeskDoctorRequestV1): DoctorSectionResultV1[] {
+  const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
+  const allSections = [
+    doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`]),
+    doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless fresh official evidence is available.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only"]),
+    doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior and cannot grant runtime dispatch.", ["doctor-policy-project-ref"])
+  ];
+  if (request.check_scope === "all") return allSections;
+  if (request.check_scope === "install") return allSections.filter((section) => section.section === "migration_cleanup");
+  if (request.check_scope === "policy") return allSections.filter((section) => section.section === "policy_project_safety");
+  if (request.check_scope === "usage" || request.check_scope === "provider_health") return allSections.filter((section) => section.section === "provider_usage_readiness");
+  return allSections.filter((section) => section.section === "opencode_plugin_compatibility");
+}
+
+function mostSevereDoctorCategory(sections: readonly DoctorSectionResultV1[]): DoctorFailureCategoryV1 {
+  if (sections.some((section) => section.category === "dispatch_blocking")) return "dispatch_blocking";
+  if (sections.some((section) => section.category === "chat_mode_disable")) return "chat_mode_disable";
+  if (sections.some((section) => section.category === "degraded_mode_warning")) return "degraded_mode_warning";
+  return "informational";
+}
+
 function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1): FlowDeskDoctorResponseV1 {
-  const category = doctorCategoryFor(request);
+  const doctorSections = doctorSectionsFor(request);
+  const category = mostSevereDoctorCategory(doctorSections);
   const outcome = getDoctorFailureCategoryOutcomeV1(category);
   const providerHealth = category === "degraded_mode_warning" ? {
     provider_family: "unknown" as const,
@@ -178,8 +193,8 @@ function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1): FlowDeskDoc
     ok: category !== "dispatch_blocking",
     status: category === "dispatch_blocking" ? "blocked" : category === "degraded_mode_warning" ? "degraded" : "diagnostic_only",
     safe_next_actions: [...outcome.safe_next_actions],
-    user_message: request.persist_report ? "FlowDesk doctor prepared a redacted diagnostic report reference only; no filesystem write occurred in this handler." : "FlowDesk doctor completed a redacted diagnostic check without production registration, provider calls, or runtime execution.",
-    doctor_results: [doctorSectionFor(category, request)],
+    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results only; no filesystem write occurred in this handler." : "FlowDesk doctor checked Release 1 install, compatibility, provider usage, and policy readiness without production registration, provider calls, or runtime execution.",
+    doctor_results: doctorSections,
     provider_health_summary: providerHealth,
     compatibility_ref: safeDiagnosticId("compatibility", request),
     disabled_modes: [...outcome.disabled_modes]
