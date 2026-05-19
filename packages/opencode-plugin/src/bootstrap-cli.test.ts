@@ -96,5 +96,5 @@ test("Release 1 bootstrap CLI installs only after exact approval phrase", () => 
 
 test("Release 1 bootstrap CLI exposes package bin without dispatch authority", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as Record<string, unknown>;
-  assert.deepEqual(packageJson.bin, { "flowdesk-install-release1": "./dist/bootstrap-cli.js" });
+  assert.deepEqual(packageJson.bin, { "flowdesk-install-release1": "dist/bootstrap-cli.js" });
 });
