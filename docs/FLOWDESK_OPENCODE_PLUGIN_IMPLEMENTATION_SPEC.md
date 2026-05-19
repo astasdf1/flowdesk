@@ -675,11 +675,11 @@ Release 1 persisted artifact schemas must be generated from these named contract
 
 Release 1 tool schemas must be authored through OpenCode's official Zod-based plugin tool API and exported to JSON Schema artifacts for review and tests. FlowDesk does not claim arbitrary JSON Schema compatibility for plugin tool args. Raw JSON Schema args, mixed Zod/raw args, unions, recursive schemas, nullable fields, transforms, and provider-specific schema tricks remain unsupported unless a pinned conformance report explicitly narrows or promotes them.
 
-Production tool registration remains disabled until every registered Release 1 tool has a passing runtime-closed schema compatibility artifact, production handlers exist, and the applicable Guard, audit, dispatch, runtime, and policy gates are satisfied. Provider-facing `additionalProperties: false` emission is a documented caveat for OpenCode 1.14.40, not a production blocker by itself when FlowDesk runtime validation rejects unknown properties before execution.
+Production tool registration is allowed only for Release 1 command-backed non-dispatch handlers after every registered Release 1 tool has a passing runtime-closed schema compatibility artifact, production handlers exist, and the applicable Guard, audit, redaction, disabled-mode, and policy checks are satisfied. Provider-facing `additionalProperties: false` emission is a documented caveat for OpenCode 1.14.40, not a production blocker by itself when FlowDesk runtime validation rejects unknown properties before execution.
 
 Promotion order is strict:
 
-1. Release 1 production handlers are implemented and verified while OpenCode production registration remains disabled.
+1. Release 1 production handlers are implemented and verified before OpenCode production registration is promoted.
 2. Plugin tool schema evidence proves the pinned OpenCode plugin path, provider/model transforms, and FlowDesk runtime validation preserve the selected FDS boundary.
 3. Production OpenCode registration is enabled only for command-backed non-dispatch handlers after doctor, schema, Guard, audit, policy, redaction, and disabled-mode checks pass.
 4. Telemetry and runtime-echo conformance is proven before any real dispatch path is implemented.

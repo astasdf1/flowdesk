@@ -8,11 +8,11 @@ Scope: isolated disposable OpenCode sandbox with a sandbox-local home and projec
 
 ## Verdict
 
-The sandbox probe is a **runtime-closed compatibility pass** for the FDS-1 Release 1 minimum tool shape and direct tool execution. It is **not** production OpenCode registration approval.
+The sandbox probe is a **runtime-closed compatibility pass** for the FDS-1 Release 1 minimum tool shape and direct tool execution. By itself, it is **not** production OpenCode registration approval.
 
 The compatibility boundary is FlowDesk runtime-closed validation. OpenCode 1.14.40 registers plugin tools from `tool({ args, execute })` by wrapping raw Zod shapes with `z.object(def.args)`. The resulting provider-facing JSON Schema contains the expected properties and required fields, but does not emit `additionalProperties: false`. FlowDesk's canonical schema artifacts are closed and the handler-level validator rejects unknown properties before any privileged behavior, so provider-facing closedness remains a documented caveat rather than the FDS-1 compatibility blocker.
 
-Production registration remains disabled until production handlers and the wider release gates are implemented and approved. It does not depend on proving provider-facing `additionalProperties: false` emission when FlowDesk runtime validation remains closed.
+Production registration has since been promoted only for Release 1 non-dispatch command-backed handlers after production handlers and the wider non-dispatch release gates were implemented and verified. That promotion does not depend on proving provider-facing `additionalProperties: false` emission when FlowDesk runtime validation remains closed.
 
 The caveat to preserve is that provider-facing schema closedness is unproven for this OpenCode conversion path.
 
@@ -62,8 +62,8 @@ This failure does not create a runtime dispatch vulnerability in the current imp
 
 ## Next Workflow
 
-1. Keep production tool registration disabled.
+1. Keep the sandbox probe non-authorizing and separate from the Release 1 non-dispatch production registration surface.
 2. Preserve the sandbox-only probe as conformance tooling.
 3. Preserve the explicit compatibility note for OpenCode 1.14.40 raw-shape schemas: provider-facing `additionalProperties: false` is missing/null, while FlowDesk runtime validation remains closed.
-4. Do not flip any production registration flag until the production handler, Guard, audit, dispatch, runtime, and policy gates are separately satisfied.
+4. Do not use this probe to enable real dispatch, provider calls, actual lane launch, fallback/reselection, or hard chat cancellation.
 5. Re-run the sandbox probe and negative unknown-property probes after any FDS profile or OpenCode conversion-path change.
