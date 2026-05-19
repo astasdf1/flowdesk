@@ -8,7 +8,7 @@ FlowDesk must not enable real OpenCode dispatch or hard managed chat control bas
 
 OpenCode 1.14.40 local isolated PoC completed on 2026-05-15, with an FDS-1 runtime-closed schema conversion probe added on 2026-05-18, Release 1 packaging/bootstrap smoke evidence added on 2026-05-19, Release 2 core/adapter fake-client smoke evidence added on 2026-05-19, and live OpenCode 1.14.50 provider smoke evidence added on 2026-05-19. The evidence supports Release 1 as a General-Use MVP with chat-routed command-backed workflows, tested hook-harness containment surfaces, FDS-1 compatibility through FlowDesk runtime-closed validation, local package/bin smoke, and non-dispatch command-backed production registration. It also proves an opt-in Release 2 adapter boundary can fail closed before dispatch and call the injected OpenCode SDK `session.prompt`/`promptAsync` surface only after all core gate evidence is present. The live smoke proves OpenAI provider dispatch through the official SDK surface and exposes provider/model identity in the response; direct CLI diagnostics can reach tested Anthropic Sonnet/Opus ids, pure headless SDK mode fails for Anthropic because it skips the local external auth/provider plugin, and non-pure headless SDK mode succeeds for Anthropic Sonnet. OpenCode model catalog metadata is available, but it does not expose provider-native quota/reset authority or forward provider rate-limit headers through the SDK response. A FlowDesk-bound audit/gate smoke remains fail-closed when usage evidence is missing, a live-call ordering smoke proves durable audit write before live OpenAI SDK prompt, runtime echo/telemetry smoke validates redacted SDK response/session correlation against the current schemas, and internal collector unit evidence now covers Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota. Production Release 2 dispatch, hard managed chat control, provider/API/model managed fallback, actual lane launch, durable production-path echo/telemetry persistence, configured verification, credentialed live collector binding, and doctor-visible opt-in remain gated. See `conformance/2026-05-15-opencode-1.14.40-poc.md`, `conformance/2026-05-18-fds1-schema-conversion-probe.md`, `conformance/2026-05-19-release1-packaging-bootstrap-smoke.md`, `conformance/2026-05-19-release2-managed-dispatch-beta-core-adapter-smoke.md`, and `conformance/2026-05-19-release2-live-opencode-provider-smoke.md`.
 
-Tri-model internal reviewer lanes are a planned Release 2.5 or Release 3 entry capability, not completed behavior. Current evidence does not prove production internal subtask review, dedicated Claude/GPT/Gemini reviewer lanes, arbitrary agent/model override lanes, or release approval for those paths.
+Top-tier multi-perspective internal reviewer lanes are a planned Release 2.5 or Release 3 entry capability, not completed behavior. Current evidence does not prove production internal subtask review, registered highest-tier reviewer fan-out, same-model multi-agent perspective review, arbitrary agent/model override lanes, or release approval for those paths.
 
 ## Outputs
 
@@ -37,10 +37,9 @@ Minimum fields:
   "fallback_reselection_mode": "disabled|diagnostic_only|guarded_real_dispatch_ready",
   "diagnostics_surface_mode": "none|status_only|doctor_usage_status|doctor_usage_status_debug",
   "lane_observability_mode": "none|command_summary|openable_refs",
-  "tri_model_review_mode": "disabled|planned|conformance_ready|release_gate_ready",
   "hook_harness_mode": "enforce|observe|off",
   "tui_mode": "ux_only|unsupported",
-  "mode_fields": [],
+  "mode_fields": ["top_tier_multi_perspective_review_mode=disabled|planned|conformance_ready|release_gate_ready"],
   "evidence_refs": [],
   "disabled_modes": []
 }
@@ -72,7 +71,7 @@ The remaining gates must be resolved in dependency order. A later gate cannot be
 5. **Single-step managed dispatch beta:** enable one low-risk real dispatch step only when trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, configured verification, and quarantine-on-ambiguity all pass.
 6. **Hard managed chat and cancellation:** prove `blocking` chat/no-reply/cancellation with e2e evidence for no duplicate assistant reply, pending tool abort, lane cleanup, and audit state transitions. Until then, chat remains steering and abort remains best-effort.
 7. **Actual delegated lane launch:** promote lane launch only after managed dispatch also proves task ref capture, reference-kind separation, incomplete-result detection, timeout/correlation handling, redacted status/debug refs, and bounded retry behavior.
-8. **Dedicated tri-model reviewer lanes and arbitrary overrides:** promote only after actual delegated lane launch also proves internal `subtask: true` or injected SDK/client routing, explicit agent binding, concrete provider-qualified model ids, binding registry evidence, fresh auth/usage/quota evidence, fresh provider health, runtime echo, telemetry persistence, typed reviewer output schema, no silent fallback, and no `opencode run` production path.
+8. **Dedicated top-tier multi-perspective reviewer lanes and arbitrary overrides:** promote only after actual delegated lane launch also proves internal `subtask: true` or injected SDK/client routing, explicit agent binding, concrete provider-qualified model ids, binding registry evidence, fresh auth/usage/quota evidence, fresh provider health, runtime echo, telemetry persistence, typed reviewer output schema, same-model multi-agent perspective separation, no silent fallback, and no `opencode run` production path. Registered highest-tier models drive the model set; missing unregistered providers do not block review by themselves.
 9. **Managed fallback/reselection:** keep automatic provider/model switching last. It requires every real-dispatch gate plus runtime compatibility, policy eligibility, fresh usage, fresh provider health, durable pre-dispatch audit for the new binding, a new attempt id, and explicit Guard approval.
 
 Each queue item must produce a redacted conformance artifact, a doctor-consumable compatibility result, and tests proving both the pass path and fail-closed behavior before the next gate is promoted.
@@ -486,30 +485,35 @@ Fail behavior:
 2. Workflows depending on the invalid profile are blocked or rerouted only to policy-compatible profiles.
 3. `/flowdesk-doctor` reports `dispatch_blocking` when a required profile is invalid for a privileged workflow.
 
-### 7AC. Dedicated Tri-Model Reviewer Lanes and Agent/Model Overrides
+### 7AC. Dedicated Top-Tier Multi-Perspective Reviewer Lanes and Agent/Model Overrides
 
 Questions:
 
 1. Can FlowDesk launch a reviewer lane through internal OpenCode `subtask: true` command binding or an injected SDK/client path without nested `opencode run`?
-2. Can the lane request bind `agent: reviewer` plus a dedicated reviewer binding for Claude Opus reviewer, GPT frontier reviewer, or Gemini Pro reviewer?
-3. Can each binding resolve to a concrete provider-qualified model id from the model binding registry, not an alias or provider-hidden gateway?
+2. Can the review request bind `agent: reviewer` plus every registered highest-tier available reviewer/model binding from the active registry and Policy Pack?
+3. Can each binding resolve to a concrete provider-qualified model id from the model binding registry, not an alias, lower-tier substitution, or provider-hidden gateway?
 4. Can arbitrary agent/model override requests be constrained by the same registry, Policy Pack, Guard evidence, usage, provider health, runtime echo, and telemetry gates?
 5. Can each reviewer lane persist redacted runtime echo, telemetry, usage evidence refs, provider health refs, binding refs, output schema status, and final typed review verdict?
 6. Can FlowDesk prove that reviewer lanes return typed critical review outputs only and do not approve dispatch, replace Guard, replace verification, or self-approve?
-7. Can unavailable Claude, GPT, or Gemini reviewer bindings fail closed without silent degradation to fewer providers, a lower model, a different agent, or an unapproved fallback?
+7. Can unavailable registered highest-tier reviewer bindings be excluded or blocked with explicit inventory evidence without silent degradation to a lower model, different provider, or unapproved fallback?
+8. Can FlowDesk prove deterministic definitions for `registered`, `available`, `highest-tier`, reviewer perspective, same-model multi-agent assignment, maximum concurrency, cost budget, quota reserve, timeout, and retry budget?
+9. Can each review run persist a redacted reviewer binding inventory snapshot showing registered, available, included, excluded, and blocked bindings plus perspective assignments with evidence refs and safe next actions?
 
 Pass criteria:
 
-1. `tri_model_review_mode` is `conformance_ready` or `release_gate_ready` only when all three dedicated reviewer bindings pass: Claude Opus reviewer, GPT frontier reviewer, and Gemini Pro reviewer.
-2. Every reviewer lane has a concrete provider-qualified model id, runtime model id when different, canonical `reviewer` profile id, dedicated binding label, auth evidence ref, usage/quota/reset evidence ref, Provider Health Snapshot ref, runtime echo evidence ref, telemetry ref, and output schema validation result.
+1. `mode_fields` may report `top_tier_multi_perspective_review_mode=conformance_ready` or `release_gate_ready` only when the review run uses every registered highest-tier available reviewer/model binding and preserves the required reviewer perspective set. Missing unregistered providers do not block this mode.
+2. Every reviewer lane has a concrete provider-qualified model id, runtime model id when different, canonical `reviewer` profile id, reviewer perspective id, dedicated binding label, auth evidence ref, usage/quota/reset evidence ref, Provider Health Snapshot ref, runtime echo evidence ref, telemetry ref, and output schema validation result.
 3. The reviewer output schema includes findings, severity, evidence refs, uncertainty, required fixes, and verdict labels. The schema states that verdict labels are review outputs, not dispatch approval.
 4. Arbitrary agent/model override lanes reject unregistered bindings, alias model ids, stale retired ids, missing auth, stale usage, missing quota/reset evidence, provider health failure, runtime echo mismatch, telemetry loss, and Policy Pack denial.
 5. Production orchestration evidence comes from internal OpenCode `subtask: true` lanes or injected SDK/client calls. `opencode run` evidence is accepted only for diagnostics, smoke tests, compatibility probes, or fake-runtime harnesses.
 6. No silent fallback occurs. A blocked reviewer lane returns a safe next action such as refresh usage, wait, reduce scope, choose human review where policy permits, retry with the same approved binding after fresh evidence, or stop.
+7. `Registered` means enrolled in the model binding registry and enabled by the active Policy Pack. `Available` means the same binding has fresh auth, usage/quota/reset, provider health, runtime compatibility, runtime echo, telemetry, and budget/reserve evidence for the run. `Highest-tier` means registry-marked highest review tier for the provider or model family after conformance proves concrete id and capability metadata.
+8. The registered highest-tier available model set drives model fan-out. If only one highest-tier model is registered and available, FlowDesk must still run multiple reviewer perspectives against that model with separate lane records. If maximum concurrency, cost budget, quota reserve, timeout, or retry budget cannot include every registered highest-tier binding and required perspective, the run blocks or asks for an explicit policy-compatible configuration change.
+9. A redacted reviewer binding inventory snapshot records registered, available, included, excluded, and blocked bindings, plus perspective assignments, highest-tier eligibility refs, availability refs, budget/concurrency decisions, and safe next actions.
 
 Fail behavior:
 
-1. Set `tri_model_review_mode` to `disabled` or `planned`.
+1. Set the `mode_fields` entry `top_tier_multi_perspective_review_mode` to `disabled` or `planned`.
 2. Keep Release 1 command-backed non-dispatch behavior unchanged.
 3. Keep Release 2 managed dispatch beta opt-in and blocked for any path that depends on failed review lane evidence.
 4. Degrade to status, debug export, retry planning, or human review where policy permits. Do not replace the missing reviewer with another provider, model family, lower tier, or generic `reviewer` lane without a new Guard-approved binding.
@@ -612,8 +616,8 @@ Fail behavior:
 | Delegation | lane status summary fields and failure classes | Yes | Yes | Yes |
 | Delegation | launch failure, timeout, abnormal exit, schema failure, and lost correlation detection | Best effort | Yes | Yes |
 | Delegation | reference-kind separation, aborted invocation handling, incomplete verdict detection, and bounded retry records | Yes | Yes | Yes |
-| Review lanes | Claude Opus reviewer, GPT frontier reviewer, and Gemini Pro reviewer as canonical `reviewer` bindings | No, planned only | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
-| Review lanes | provider-qualified concrete model ids, fresh auth/usage/quota evidence, runtime echo, telemetry persistence, output schema, and no silent fallback | No | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
+| Review lanes | every registered highest-tier available reviewer/model binding as canonical `reviewer` extensions, with same-model multi-agent perspective assignment when only one top model is registered | No, planned only | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
+| Review lanes | provider-qualified concrete model ids, fresh auth/usage/quota evidence, runtime echo, telemetry persistence, output schema, top-tier eligibility, perspective separation, and no silent fallback | No | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
 | Overrides | arbitrary agent/model override constrained by binding registry and Guard evidence | No | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
 | Delegation | clickable or openable redacted lane refs | No, unless proven | No, unless proven | No, unless proven |
 | Hook harness | `enforce` denies/rewrites/routes unsafe attempts and fails closed | Yes | Yes | Yes |
@@ -651,7 +655,7 @@ Federated registry rows marked `If enabled` are not prerequisites for real dispa
 | Provider usage source research and internal collector | OpenAI and Anthropic expose documented admin/rate-limit/header surfaces; Google Cloud exposes Cloud Quotas/Monitoring surfaces for supported services; DEX Conductor/OpenUsage collector patterns have been ported into FlowDesk core for Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota; this local shell has no provider/admin keys and OpenCode SDK responses do not forward provider rate-limit headers | collector logic unit-tested; live credentialed conformance gate unsatisfied |
 | Release 2 audit/gate smoke | FlowDesk-bound audit write intent can write a redacted audit record while authority flags remain false; missing usage evidence still blocks the managed-dispatch beta gate; follow-up smoke proves durable audit write before live OpenAI SDK prompt; gate now requires explicit auth profile, credential scope, account boundary, concrete non-alias model id, actual usage acquisition, quota evidence, reset time, and reset bucket in pinned usage-authority evidence | fail-closed gate evidence plus live-call audit ordering smoke |
 | Release 2 echo/telemetry smoke | SDK `session.prompt` response and `session.messages` expose provider/model, assistant message id, session correlation, part lifecycle, and message count; redacted evidence records validate against runtime echo and telemetry schemas | schema-level trusted echo/telemetry path proven; production persistence still gated |
-| Tri-model internal review lanes | Dedicated Claude Opus reviewer, GPT frontier reviewer, and Gemini Pro reviewer lanes are now normative planned capability, but no production internal subtask review evidence or release approval exists | planned only; not implemented or verified |
+| Top-tier multi-perspective internal review lanes | Fan-out to every registered highest-tier available reviewer/model lane is now normative planned capability, with same-model multi-agent perspective review when only one top model is registered, but no production internal subtask review evidence or release approval exists | planned only; not implemented or verified |
 
 Release 1 interpretation: the current product target is a General-Use MVP where chat is the normal entry point and accepted requests route into guarded command-backed workflows. Heavy workflow authoring should be represented through delegated records, fake-runtime lane summaries, command/status summaries, or degraded fallback records. Provider/API/model failures are surfaced through doctor, usage, status, retry guidance, and debug export, but Release 1 does not perform real automatic provider/model fallback. Actual OpenCode subtask/model/provider lane launch remains disabled until a later release gate proves safe launch, schema, status, redacted observability, trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh provider health, Guard approval, and durable pre-dispatch audit. Hard managed chat control, real OpenCode dispatch, automatic provider/model fallback, trusted real-provider echo, sufficient event telemetry, perfect clickable lane UI, and colon aliases remain gated. Production registration is limited to Release 1 non-dispatch command-backed handlers.
 
