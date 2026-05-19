@@ -33,7 +33,7 @@ The spec incorporates the current OpenCode-plugin-first FlowDesk design:
 3. Automatic real natural-language managed dispatch is supported only when a verified blocking OpenCode chat-intake capability exists. Release 1 chat routing may wrap or route requests toward FlowDesk command-backed flows without claiming hard interception.
 4. FlowDesk Guard is the sole dispatch authority.
 5. `/flowdesk:*` and portable `/flowdesk-*` commands are setup, status, recovery, diagnostics, and fallback controls, not the primary UX.
-6. Plugin-managed workflows must not use nested `opencode run`.
+6. Plugin-managed workflows must not use nested `opencode run` as a production orchestration mechanism. Production orchestration must use conformance-proven internal OpenCode command lanes with `subtask: true`, or an injected SDK/client path, with explicit `agent` and concrete provider-qualified `model` binding in both cases.
 7. Patent, legal, and medical-device regulatory capabilities are source-grounded research helpers, not professional advice or signoff engines.
 8. Release 1 must not rely on broad invisible prefix injection. Chat routing may classify and steer, but it must not secretly rewrite most ordinary user input or imply that FlowDesk fully handled the turn unless blocking chat intake is conformance-proven.
 
@@ -61,6 +61,8 @@ All implementation work must be traced to a final target feature and to the rele
 | Subagent lane observability | Release 1 | Status card or command summary schema, openable reference conformance gate, event/log/debug ref schema, redaction rules, fallback commands |
 | OpenCode conformance | Release 1 and every later release | Compatibility artifact, evidence matrix, schema-conversion gate, release-mode disable rules |
 | Real OpenCode dispatch | Release 2+ | Trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, Guard approval, durable pre-dispatch audit |
+| Internal agent/model lane routing | Release 2.5 or Release 3 entry | OpenCode `subtask: true` command lane or injected SDK/client path, explicit agent id, concrete provider-qualified model id, binding registry entry, runtime echo, telemetry persistence, no nested `opencode run`, Guard-compatible override policy |
+| Dedicated tri-model reviewer lanes | Release 2.5 or Release 3 entry | Canonical `reviewer` profile extensions for Claude Opus reviewer, GPT frontier reviewer, and Gemini Pro reviewer, provider-qualified concrete model ids, fresh auth/usage/quota evidence, runtime echo, telemetry persistence, typed critical review schema, no silent fallback, no approval authority |
 | Managed model/provider fallback and reselection | Release 2+ | Fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, new attempt id, explicit Guard approval |
 | Operational intelligence and proposal optimization | Release 3+ | Proposal/fan-out/scoring schemas, usage reserve, cadence limits, advisory-only ranking gates |
 | GitHub/private ledger and external DB migration | Release 3+ | Canonical forbidden payload enforcement, hash-chain, partition/rollup/archive/migration schemas, OIDC identity |
@@ -86,6 +88,8 @@ If a target feature lacks one of the required contracts above, implementation mu
 13. No Release 1 path may automatically switch provider or model. Provider/API/model outages in Release 1 are diagnostic, status, degraded-mode, or fake-runtime signals only.
 14. No provider health snapshot, hook observation, status UI, conformance artifact, model output, or runtime echo may approve dispatch or fallback.
 15. No Release 1 path may depend on broad invisible prompt or prefix injection. Message mutation is allowed only for transparent steering, command-backed routing, or conformance-proven containment; it is not a substitute for approval, blocking intake, or Guard.
+16. No production orchestration path may use `opencode run` to launch delegated authoring, reviewer lanes, review fan-out, arbitrary agent/model override lanes, or normal multi-model orchestration. Those paths must use conformance-proven internal OpenCode subtask lanes or injected SDK/client calls with explicit `agent` and provider-qualified concrete `model` binding.
+17. No dedicated reviewer profile may replace the canonical `reviewer` id, approve dispatch, replace Guard, self-approve, or turn a critical review into user approval. Dedicated Claude Opus, GPT frontier, and Gemini Pro reviewers are bindings of the `reviewer` capability profile, not separate authority classes.
 
 Bootstrap exception: the installer may perform a narrow set of setup mutations before normal Guard operation exists, but only under the bootstrap authority model in section 6.5.
 
@@ -258,7 +262,7 @@ Usage Availability Snapshot rules:
 5. Usage snapshots may persist only normalized dispatchability fields, freshness metadata, provider/model family identifiers, reset bucket metadata, uncertainty flags, and redacted source references.
 6. Usage snapshots must not persist provider response bodies, account identifiers beyond a redacted stable reference, raw local session excerpts, auth headers, API keys, or model-generated usage claims.
 
-OpenUsage-style usage checking may be used as a reference pattern, not as authority. FlowDesk may borrow the pattern of a provider capability matrix and explicit source labels for each metric, such as provider API truth, local observed history, response `usage` accounting, rate-limit/header probe, authenticated diagnostic probe, or inferred estimate. A Usage Availability Snapshot that relies on local observed history, including OpenCode SQLite/history style evidence, must label the source as local-only and may not claim account-wide quota truth across devices or sessions. FlowDesk must not copy browser cookie extraction, HAR capture, provider console scraping, undocumented subscription or quota endpoints, permissive local HTTP cache assumptions, or unmerged OpenCode `/usage` pull request behavior into Release 1. If an external OpenUsage-compatible local API is integrated later, it must be opt-in, loopback-only, version-pinned, redacted, and represented through existing `source_ref` and uncertainty fields rather than new raw payload fields.
+OpenUsage-style usage checking may be used as a reference pattern, not as authority by default. FlowDesk may borrow the pattern of a provider capability matrix and explicit source labels for each metric, such as provider API truth, local observed history, response `usage` accounting, rate-limit/header probe, authenticated diagnostic probe, or inferred estimate. A Usage Availability Snapshot that relies on local observed history, including OpenCode SQLite/history style evidence, must label the source as local-only and may not claim account-wide quota truth across devices or sessions. FlowDesk must not copy browser cookie extraction, HAR capture, provider console scraping, undocumented subscription or quota endpoints, permissive local HTTP cache assumptions, or unmerged OpenCode `/usage` pull request behavior into Release 1. FlowDesk's internal provider-native collector may implement pinned DEX Conductor/OpenUsage-style acquisition logic for Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota, but it may emit trusted managed-dispatch usage authority only when it actually acquires auth-bound usage/quota/reset evidence and redacts all raw provider payloads. If DEX Conductor or an external OpenUsage-compatible local API is used as Release 2 evidence, it must be opt-in, loopback-only, version-pinned, redacted, continuously auditable, and bound by a conformance artifact proving the exact provider, concrete non-alias model id, model family, auth profile, credential scope, account/project boundary, actual usage acquisition, quota evidence, reset time, reset bucket, and source authority. Managed-dispatch beta represents that proof as `flowdesk.managed_dispatch_beta.usage_authority_evidence.v1`, matching the Usage Snapshot `snapshot_id`, `provider_family`, `model_family`, `reset_time`, `reset_bucket`, and `source_ref` plus the Guard-approved provider-qualified model id without storing raw provider payloads.
 
 Provider Health Snapshot minimum fields:
 
@@ -283,6 +287,8 @@ Provider Health Snapshot rules:
 3. Health snapshots may persist only normalized provider/model family labels, availability state, failure class, freshness metadata, coarse retry bucket, dispatchability, and redacted source references.
 4. Health snapshots must not persist raw provider errors, provider payloads, credential values, auth headers, prompts, transcripts, raw runtime echoes, raw logs, raw file paths, stack traces, or account identifiers beyond a redacted stable reference.
 5. A provider smoke test may be used only as a diagnostic or conformance probe unless a later release gate proves it as part of real dispatch. It must not become plugin-level automatic cross-provider fallback.
+6. Every concrete provider family requires explicit auth readiness and real usage/quota/reset evidence before any model is eligible. If auth plugin readiness, API key/OAuth readiness, credential scope, account boundary, usage acquisition, quota evidence, or reset evidence is absent or stale, FlowDesk records a non-dispatchable diagnostic such as `auth_missing`, marks the affected models non-dispatchable, and excludes them rather than dispatching, falling back, or reselecting automatically.
+7. Managed-dispatch beta actual OpenCode SDK calls may be exposed only through an explicit opt-in server tool that receives a complete evidence bundle and calls the guarded adapter. The default Release 1 server registration must not expose the beta tool.
 
 Provider/API/model failure classes:
 
@@ -715,6 +721,14 @@ opencode run ...
 
 The old subprocess adapter pattern is allowed only in a compatibility or fake-runtime test harness. `opencode run` may be used manually or in CI as a provider smoke test, auth/plugin diagnostic, or compatibility probe, but it must not implement FlowDesk's delegated authoring lanes, subagent execution, review fan-out, or normal multi-model orchestration. Treat every external `opencode run` invocation as one non-interactive OpenCode session with cold-start, plugin-loading, provider-loading, auth-loading, and in-session sequencing behavior. Shell-level parallel process launch is not evidence of coordinated parallel model execution, trusted model/agent binding, lane status correlation, cancellation semantics, or runtime echo.
 
+Production orchestration binding rule:
+
+1. A delegated lane, reviewer lane, review fan-out lane, or arbitrary agent/model override lane must be launched only through a conformance-proven internal OpenCode command lane with `subtask: true`, or through an injected SDK/client path whose call boundary is owned by FlowDesk and tested with the same evidence bundle.
+2. The launch request must name an explicit FlowDesk agent profile id, a concrete provider-qualified model id, the runtime model id where OpenCode uses a different value, and the binding registry entry that allowed the pair. Unqualified aliases such as `opus`, `gpt`, `gemini`, `best`, `latest`, or provider-hidden gateways are not production bindings.
+3. The arbitrary override path is allowed only as a guarded override: the requested agent/model pair must exist in the model binding registry, pass Policy Pack constraints, pass fresh auth/usage/quota and Provider Health Snapshot gates when provider/model selection is involved, and produce runtime echo plus telemetry that matches the approved binding.
+4. Override lanes cannot silently fall back, downgrade, substitute a model, change provider, or change agent class. A mismatch, unavailable model, stale usage snapshot, missing auth, missing quota evidence, or missing echo blocks the lane and returns a safe next action.
+5. Reviewer lanes return typed critical review outputs only. They may report findings, uncertainty, required fixes, and schema-valid verdict labels, but they do not approve dispatch, replace Guard, replace configured verification, or self-approve the work they review.
+
 ### 6.5 Privileged Operation Gate
 
 A privileged operation is any filesystem write, shell execution, network call, provider/model routing, OpenCode session mutation, config mutation, audit mutation, reference retrieval, debug export, plugin install/migration, or runtime dispatch.
@@ -874,7 +888,7 @@ OpenCode-feasible delegation basis:
 Minimum contract:
 
 1. Policy Pack must set maximum concurrent lanes per workflow and per lane class. Release 1 defaults must be conservative and must not imply real provider fan-out.
-2. Workflow authoring must be split into lane classes where useful: `planning_draft`, `planning_refine`, `planning_review`, `research`, `documentation`, `verification`, and `diagnostics`.
+2. Workflow authoring must be split into lane classes where useful: `planning_draft`, `planning_refine`, `planning_review`, `critical_review`, `research`, `documentation`, `verification`, and `diagnostics`.
 3. Non-mutating exploration, documentation lookup, and independent review lanes may run in parallel when their inputs are redacted and their outputs are treated as untrusted until verified.
 4. Main-agent context input to a lane must be a redacted task envelope, not a raw prompt or transcript. Main-agent output from a lane must be a compact typed summary plus opaque references.
 5. Guard decisions, user approval decisions, final dispatch selection, and Oracle-style architecture decisions that the plan depends on are blocking lanes. FlowDesk must not execute a dependent step before those decisions complete.
@@ -887,6 +901,15 @@ Minimum contract:
 12. The delegation reliability supervisor may retry an invocation failure once with corrected invocation metadata, and may retry once through a fresh compatible lane route when safe and non-destructive. Retries must be recorded with a new attempt/ref and must not silently switch provider, model, or authority class unless a later release gate and Guard approve that binding.
 
 Release 1 lane behavior is limited to delegated authoring records, fake-runtime lane summaries, command/status summaries, and degraded fallback records. Any actual OpenCode subtask/model/provider lane launch requires the managed-dispatch gate: trusted binding, trusted runtime echo, sufficient telemetry, fresh usage when provider/model selection is involved, fresh provider health, Guard approval for privileged work, and durable pre-dispatch audit.
+
+Planned dedicated reviewer profile bindings for Release 2.5 or Release 3 entry:
+
+1. FlowDesk must support three dedicated reviewer profiles or lanes for multi-model critical review when the release gate permits actual lane launch: Claude Opus reviewer, GPT frontier reviewer, and Gemini Pro reviewer.
+2. These are extensions of the canonical `reviewer` capability profile. The canonical `reviewer` id remains the policy and audit anchor, while each dedicated lane records a binding such as `reviewer` plus `claude_opus`, `gpt_frontier`, or `gemini_pro` binding metadata. They must not reintroduce `critic` as a canonical id.
+3. Each dedicated reviewer binding must resolve through the model binding registry to a concrete provider-qualified model id, for example an Anthropic Claude Opus model, an OpenAI GPT frontier model, or a Google Gemini Pro model. The registry must reject aliases, stale retired ids, provider-hidden ids, and account-unavailable ids.
+4. The three reviewer lanes are preferred for high-risk or critical multi-model critical review when fresh auth, usage, quota/reset, provider health, runtime compatibility, runtime echo, telemetry, and policy evidence all pass. If one lane is unavailable, FlowDesk must not silently degrade to two reviewers or a single family. It must return safe feedback such as refresh usage, wait, reduce scope, choose a policy-compatible human review path, or request explicit user action where policy permits.
+5. A tri-model review run must persist redacted telemetry and lane records for each reviewer: requested binding, approved binding, runtime echo match, provider family, model family, usage evidence ref, Provider Health Snapshot ref, output schema status, and final typed review verdict. It must not persist raw prompts, transcripts, provider payloads, runtime echo bodies, raw tool data, raw file contents, or raw paths.
+6. Tri-model reviewer outputs use a typed critical review schema with findings, severity, evidence refs, uncertainty, required fixes, and verdict labels such as `pass`, `changes_required`, `blocked`, or `inconclusive`. These verdict labels are review outputs only. Guard, user approval, and configured verification remain separate gates.
 
 Minimum lane status summary fields:
 
@@ -1416,7 +1439,7 @@ Managed fallback or provider/model reselection is not Release 1 behavior. Releas
 
 Future Release 2+ managed fallback/reselection may proceed only when every condition below passes for the new provider/model binding:
 
-1. Fresh provider-native Usage Availability Snapshot tied to the exact provider/model family.
+1. Fresh provider-native or pinned local Usage Availability Snapshot tied to the exact provider, concrete non-alias model id, model family, auth profile, credential scope, account/project boundary, actual usage acquisition, quota evidence, reset time, and reset bucket.
 2. Fresh Provider Health Snapshot with `dispatchability=dispatchable` and no unresolved provider/API/model failure class.
 3. Runtime compatibility and OpenCode conformance for the new provider/model, command shape, runtime variant, and lane or dispatch surface.
 4. Policy Pack eligibility, user approval where required, budget/reserve checks, and professional-boundary checks.
@@ -1424,7 +1447,7 @@ Future Release 2+ managed fallback/reselection may proceed only when every condi
 6. Sufficient telemetry for the enabled real-dispatch and recovery modes.
 7. Durable redacted pre-dispatch audit for the new binding before any provider call.
 8. A new attempt id. Fallback must never reuse the failed attempt id as if it were the same execution.
-9. Explicit FlowDesk Guard approval for the new provider/model binding and scope.
+9. Explicit FlowDesk Guard approval for the new provider/model/account/auth binding and scope.
 
 Fallback/reselection must be blocked when any required input is stale, unknown, refused, shared-limit-suspected, fallback-derived, model-generated, telemetry-ambiguous, policy-ineligible, runtime-incompatible, untrusted, unaudited, or missing Guard approval. A fallback-derived usage or health snapshot cannot justify another fallback.
 
@@ -1744,7 +1767,7 @@ Common status and recovery copy:
 | State | User-facing message template | Safe next actions |
 |---|---|---|
 | stale usage | `Blocked: provider usage is stale, so FlowDesk cannot safely choose a model.` | `/flowdesk-usage`, `/flowdesk-doctor` |
-| missing provider auth | `Blocked: provider authentication was not found or cannot be checked without exposing secrets.` | configure provider auth, `/flowdesk-doctor` |
+| missing provider auth | `Blocked: provider authentication or exact auth-scope evidence was not found or cannot be checked without exposing secrets. Affected models are excluded until auth readiness and real usage/quota/reset evidence are available.` | configure provider auth, `/flowdesk-doctor` |
 | expired provider auth | `Blocked: provider authentication appears expired or rejected. FlowDesk cannot safely use this provider.` | refresh provider auth outside FlowDesk, `/flowdesk-doctor` |
 | provider unavailable | `Degraded: the provider appears unavailable. Release 1 can show status, diagnostics, or fake-runtime output, but it will not switch providers automatically.` | `/flowdesk-status`, `/flowdesk-usage`, `/flowdesk-doctor` |
 | rate limited | `Blocked: the provider reports a limit. FlowDesk will not fall back to another provider without a later release gate and Guard approval.` | wait for reset, `/flowdesk-usage`, `/flowdesk-status` |
@@ -1988,5 +2011,5 @@ These items are not open blockers for Release 1 documentation or scaffolding. Th
 
 1. **OpenCode tool schema subset:** Release 1 uses FDS-1 through FlowDesk runtime-closed validation. OpenCode provider-facing `additionalProperties: false` emission remains a caveat, while production tool registration stays disabled until production handlers and release gates are satisfied.
 2. **Npm scope:** `@flowdesk/*` is the normative implementation target for Release 1. A private organization scope requires a newer ADR before package publication.
-3. **Provider usage and health collectors:** Release 1 implements display/freshness/diagnostic contracts and fake/local fixtures. Mandatory provider-native usage collectors and provider health collectors for real dispatch or managed fallback/reselection are a Release 2 gate and must be specified before `real-opencode-dispatch` is enabled.
+3. **Provider usage and health collectors:** Release 1 implements display/freshness/diagnostic contracts and fake/local fixtures. FlowDesk core now contains Release 2 candidate provider-native usage collector logic for Claude OAuth, Codex/OpenAI, and Gemini Code Assist, but real dispatch or managed fallback/reselection still requires live credentialed conformance binding, provider health collector integration, and production approval before `real-opencode-dispatch` is enabled.
 4. **Reference-pack jurisdictions:** Specialist reference packs are not Release 1 scope. The first jurisdictions are a Release 4 gate and must be specified before any specialist workflow or `flowdesk_reference_search` registration.
