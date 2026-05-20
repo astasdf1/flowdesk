@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
   prepareFlowDeskSessionEvidenceWriteIntentV1,
   reloadFlowDeskSessionEvidenceV1,
@@ -123,6 +124,59 @@ test("session evidence write intent rejects malformed ids", () => {
 
   const nonObject = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: "not-an-object" as unknown as Record<string, unknown> });
   assert.equal(nonObject.ok, false);
+});
+
+test("session evidence apply writes intents durably and reloads them", () => {
+  withEvidenceTree((rootDir) => {
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord()];
+    const intents = records.map((record, index) => {
+      const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
+      assert.equal(prepared.ok, true, prepared.errors.join("; "));
+      assert.ok(prepared.writeIntent);
+      return prepared.writeIntent;
+    });
+
+    const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
+    assert.equal(applied.ok, true, applied.errors.join("; "));
+    assert.equal(applied.writtenPaths.length, 3);
+    assert.equal(applied.providerCall, false);
+    assert.equal(applied.runtimeExecution, false);
+
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+    assert.equal(reloaded.entries.length, 3);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(FLOWDESK_SESSION_EVIDENCE_CLASSES));
+  });
+});
+
+test("session evidence apply rejects forged intents before writing later entries", () => {
+  withEvidenceTree((rootDir) => {
+    const first = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord() });
+    const forged = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-2", record: runtimeEchoRecord() });
+    assert.ok(first.writeIntent);
+    assert.ok(forged.writeIntent);
+    const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [
+      first.writeIntent,
+      { ...forged.writeIntent, path: sessionEvidenceRecordPath(workflowId, "runtime_echo", "evidence-other") }
+    ]);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.writtenPaths.length, 1);
+    assert.match(applied.errors.join("; "), /path does not match/);
+
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(reloaded.entries.length, 1);
+    assert.equal(reloaded.entries[0].evidenceClass, "usage_authority");
+  });
+});
+
+test("session evidence apply rejects escaping temp paths", () => {
+  withEvidenceTree((rootDir) => {
+    const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord() });
+    assert.ok(prepared.writeIntent);
+    const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [{ ...prepared.writeIntent, tempPath: `${prepared.writeIntent.path}.tmp-../../escape` }]);
+    assert.equal(applied.ok, false);
+    assert.deepEqual(applied.writtenPaths, []);
+  });
 });
 
 function withEvidenceTree(callback: (rootDir: string) => void): void {
