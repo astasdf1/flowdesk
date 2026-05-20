@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_FDS1_FIXTURE_CATALOG,
-  FLOWDESK_RELEASE_1_COMMAND_MANIFEST
+  FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
+  prepareFlowDeskSessionEvidenceWriteIntentV1
 } from "@flowdesk/core";
 import { tool } from "@opencode-ai/plugin";
 import {
@@ -22,7 +24,8 @@ import flowdeskOpenCodeServerPlugin, {
   flowdeskFds1SchemaConversionProbeOption,
   flowdeskLocalNonDispatchAdapterOption,
   flowdeskNaturalLanguageRoutingOption,
-  flowdeskPreSpikeDoctorToolName
+  flowdeskPreSpikeDoctorToolName,
+  flowdeskProductionEnablementOption
 } from "./server.js";
 
 interface LocalAdapterTestResult {
@@ -34,6 +37,7 @@ interface LocalAdapterTestResult {
     responseSchemaValid?: unknown;
     response?: {
       status?: unknown;
+      doctor_results?: { section?: unknown; refs?: string[] }[];
       plan_revision_id?: unknown;
       workflow_id?: unknown;
       workflow_state?: unknown;
@@ -691,6 +695,56 @@ test("server option wires durable state root into local routing session", async 
     assert.equal(plan.routedToolResult?.localState?.durableStateMode, "durable_flowdesk_root");
     assert.equal(plan.routedToolResult?.localState?.durableStateWriteApplied, true);
     assert.equal(existsSync(join(root, ".flowdesk/workflows/workflow-server-durable/workflow.json")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("server option wires production enablement evidence into doctor diagnostics", async () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-server-production-evidence-"));
+  const workflowId = "workflow-local";
+  try {
+    const records = [
+      { schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1", authority_ref: "usage-authority-server" },
+      { schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1", workflow_id: workflowId, runtime_echo_ref: "runtime-echo-server" },
+      { schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1", workflow_id: workflowId, telemetry_ref: "telemetry-server" }
+    ];
+    const intents = records.map((record, index) => {
+      const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-server-${index + 1}`, record });
+      assert.equal(prepared.ok, true, prepared.errors.join("; "));
+      assert.ok(prepared.writeIntent);
+      return prepared.writeIntent;
+    });
+    const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, intents);
+    assert.equal(applied.ok, true, applied.errors.join("; "));
+
+    const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+      [flowdeskLocalNonDispatchAdapterOption]: true,
+      [flowdeskNaturalLanguageRoutingOption]: false,
+      [flowdeskDurableStateRootOption]: root,
+      [flowdeskProductionEnablementOption]: {
+        enabled: true,
+        preDispatchAuditRef: "audit-pre-dispatch-server",
+        configuredVerificationRef: "configured-verification-server",
+        externalAuthPolicyRef: "external-auth-policy-server",
+        providerPolicyRef: "provider-policy-server",
+        allowIncompleteConformance: true
+      }
+    }) as ChatMessageHooks;
+    const doctorTool = hooks.tool?.flowdesk_doctor;
+    assert.ok(doctorTool);
+    const doctorFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_doctor" && entry.schemaKind === "tool_request");
+    assert.ok(doctorFixture);
+    const doctor = JSON.parse(await doctorTool.execute({ ...doctorFixture.categories["valid.minimal"].sample, request_id: "request-production-doctor", check_scope: "all", profile: "test" }, undefined as never)) as LocalAdapterTestResult;
+    assert.equal(doctor.handler?.ok, true);
+    const compatibility = doctor.handler?.response?.doctor_results?.find((section) => section.section === "opencode_plugin_compatibility");
+    assert.ok(compatibility);
+    assert.ok(compatibility.refs?.includes("production_enablement_state=configured"));
+    assert.ok(compatibility.refs?.includes("production_blocker=approval_missing"));
+    assert.ok(compatibility.refs?.includes("production_uncertainty=opencode_subtask_lifecycle_unproven"));
+    assert.equal(doctor.providerCall, false);
+    assert.equal(doctor.runtimeExecution, false);
+    assert.equal(doctor.actualLaneLaunch, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

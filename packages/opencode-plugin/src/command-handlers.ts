@@ -11,6 +11,7 @@ import type {
   FlowDeskFakeRuntimeCommandInputV1,
   FlowDeskGuardedDryRunCommandInputV1,
   FlowDeskPlanCommandInputV1,
+  FlowDeskProductionEnablementEvaluationV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskResumeRequestV1,
   FlowDeskResumeResponseV1,
@@ -57,6 +58,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     deleteAfterIso?: string;
     sourceRef?: string;
     providerHealthSnapshotRef?: string;
+    productionEnablement?: FlowDeskProductionEnablementEvaluationV1;
   };
 }
 
@@ -162,11 +164,25 @@ function doctorSectionFor(section: DoctorSectionResultV1["section"], category: D
   };
 }
 
-function doctorSectionsFor(request: FlowDeskDoctorRequestV1): DoctorSectionResultV1[] {
+function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const evaluation = context.diagnostic?.productionEnablement;
+  if (evaluation === undefined) return ["production_enablement_state=disabled", "production_evidence_persistence=implemented_core_contract"];
+  return [
+    `production_enablement_state=${evaluation.state}`,
+    `production_enablement_doctor_ref=${evaluation.doctor_state_ref}`,
+    `production_managed_dispatch_ready=${evaluation.managed_dispatch_ready}`,
+    `production_dispatch_authority_enabled=${evaluation.dispatch_authority_enabled}`,
+    ...evaluation.blocker_labels.map((label) => `production_blocker=${label}`),
+    ...evaluation.uncertainty_labels.map((label) => `production_uncertainty=${label}`)
+  ];
+}
+
+function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
+  const enablementRefs = productionEnablementRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; Release 2/2.5 production enablement is explicit opt-in and evidence-tracked.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, "production_enablement_state=disabled", "production_evidence_persistence=implemented_core_contract"]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; Release 2/2.5 production enablement is explicit opt-in and evidence-tracked.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "external_auth_provider_policy_gate=required"])
   ];
@@ -184,8 +200,8 @@ function mostSevereDoctorCategory(sections: readonly DoctorSectionResultV1[]): D
   return "informational";
 }
 
-function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1): FlowDeskDoctorResponseV1 {
-  const doctorSections = doctorSectionsFor(request);
+function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskDoctorResponseV1 {
+  const doctorSections = doctorSectionsFor(request, context);
   const category = mostSevereDoctorCategory(doctorSections);
   const outcome = getDoctorFailureCategoryOutcomeV1(category);
   const providerHealth = category === "degraded_mode_warning" ? {
@@ -305,7 +321,7 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
   if (!requestResult.ok) return result("request_schema_invalid", toolName, requestResult, invalid("response unavailable when request schema is invalid"), undefined, false);
 
   if (toolName === "flowdesk_doctor") {
-    const response = evaluateDoctorDiagnostic(request as FlowDeskDoctorRequestV1);
+    const response = evaluateDoctorDiagnostic(request as FlowDeskDoctorRequestV1, context);
     return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
   }
 

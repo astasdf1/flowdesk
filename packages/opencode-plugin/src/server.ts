@@ -19,7 +19,7 @@ import {
   flowdeskPluginScaffold,
   hasProductionOpenCodeRegistration
 } from "./index.js";
-import { createFlowDeskLocalNonDispatchAdapterSession, type FlowDeskLocalClockV1, type FlowDeskLocalNonDispatchAdapterSessionV1, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
+import { createFlowDeskLocalNonDispatchAdapterSession, type FlowDeskLocalClockV1, type FlowDeskLocalNonDispatchAdapterSessionV1, type FlowDeskLocalProductionEnablementOptionsV1, flowdeskLocalNonDispatchAdapterProfile } from "./local-adapter.js";
 import {
   dispatchManagedDispatchBetaPromptV1,
   type FlowDeskManagedDispatchBetaAdapterResultV1,
@@ -40,6 +40,7 @@ export const flowdeskFds1SchemaConversionProbeOption = "fds1SchemaConversionProb
 export const flowdeskLocalNonDispatchAdapterOption = "localNonDispatchAdapter" as const;
 export const flowdeskNaturalLanguageRoutingOption = "naturalLanguageRouting" as const;
 export const flowdeskDurableStateRootOption = "durableStateRoot" as const;
+export const flowdeskProductionEnablementOption = "productionEnablement" as const;
 export const flowdeskManagedDispatchBetaAdapterOption = "managedDispatchBetaAdapter" as const;
 export const flowdeskManagedDispatchBetaToolName = "flowdesk_managed_dispatch_beta" as const;
 
@@ -449,6 +450,20 @@ function durableStateRootFromOptions(options?: PluginOptions): string | undefine
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+function productionEnablementFromOptions(options?: PluginOptions): FlowDeskLocalProductionEnablementOptionsV1 | undefined {
+  const value = options?.[flowdeskProductionEnablementOption];
+  if (!isRecord(value) || value.enabled !== true) return undefined;
+  return {
+    enabled: true,
+    ...(typeof value.preDispatchAuditRef === "string" ? { preDispatchAuditRef: value.preDispatchAuditRef } : {}),
+    ...(typeof value.configuredVerificationRef === "string" ? { configuredVerificationRef: value.configuredVerificationRef } : {}),
+    ...(typeof value.externalAuthPolicyRef === "string" ? { externalAuthPolicyRef: value.externalAuthPolicyRef } : {}),
+    ...(typeof value.providerPolicyRef === "string" ? { providerPolicyRef: value.providerPolicyRef } : {}),
+    ...(Array.isArray(value.laneConformanceRefs) && value.laneConformanceRefs.every((ref) => typeof ref === "string") ? { laneConformanceRefs: value.laneConformanceRefs } : {}),
+    ...(typeof value.allowIncompleteConformance === "boolean" ? { allowIncompleteConformance: value.allowIncompleteConformance } : {})
+  };
+}
+
 function isManagedDispatchBetaAdapterEnabled(options?: PluginOptions): boolean {
   const value = options?.[flowdeskManagedDispatchBetaAdapterOption];
   return value === true || (isRecord(value) && value.enabled === true);
@@ -461,7 +476,7 @@ function managedDispatchBetaClientFrom(input: unknown, options?: PluginOptions):
 }
 
 const flowdeskServerPlugin: Plugin = async (input, options) => {
-  const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, { durableStateRootDir: durableStateRootFromOptions(options) }) : undefined;
+  const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, { durableStateRootDir: durableStateRootFromOptions(options), productionEnablement: productionEnablementFromOptions(options) }) : undefined;
   const managedDispatchBetaClient = isManagedDispatchBetaAdapterEnabled(options) ? managedDispatchBetaClientFrom(input, options) : undefined;
   const tools: Record<string, FlowDeskOpenCodeTool> = {
     [flowdeskPreSpikeDoctorToolName]: tool({
