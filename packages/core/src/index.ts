@@ -1,27 +1,27 @@
 export const flowdeskCorePackageName = "@flowdesk/core" as const;
 
 export const flowdeskRelease1Scope = [
-  "guarded-command-backed-workflows",
-  "dry-run",
-  "fake-runtime",
-  "redacted-audit-debug",
-  "no-real-dispatch"
+	"guarded-command-backed-workflows",
+	"dry-run",
+	"fake-runtime",
+	"redacted-audit-debug",
+	"no-real-dispatch",
 ] as const;
 
 export const flowdeskNoRealDispatchBoundary = {
-  releaseGate: "release1-general-use-mvp",
-  realOpenCodeDispatch: "disabled",
-  providerModelFallback: "disabled",
-  hardChatCancelOrNoReply: "disabled",
-  cliSubprocessDispatch: "disabled"
+	releaseGate: "release1-general-use-mvp",
+	realOpenCodeDispatch: "disabled",
+	providerModelFallback: "disabled",
+	hardChatCancelOrNoReply: "disabled",
+	cliSubprocessDispatch: "disabled",
 } as const;
 
 export function describeFlowDeskCoreScaffold(): string {
-  return `${flowdeskCorePackageName}: ${flowdeskNoRealDispatchBoundary.releaseGate}`;
+	return `${flowdeskCorePackageName}: ${flowdeskNoRealDispatchBoundary.releaseGate}`;
 }
 
 export function canUseRealDispatchInRelease1(): false {
-  return false;
+	return false;
 }
 
 export * from "./agent-profiles.js";
@@ -35,11 +35,13 @@ export * from "./guard-boundary.js";
 export * from "./guarded-dry-run.js";
 export * from "./hook-harness.js";
 export * from "./plan.js";
+export * from "./production-enablement.js";
 export * from "./provider-failures.js";
 export * from "./provider-usage-collector.js";
 export * from "./redaction.js";
 export * from "./release1-contracts.js";
 export * from "./retry.js";
+export * from "./reviewer-lane-conformance.js";
 export * from "./schema-artifacts.js";
 export * from "./schema-registry.js";
 export * from "./session-evidence.js";
