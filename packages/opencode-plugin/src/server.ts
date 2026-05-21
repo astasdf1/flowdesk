@@ -2,6 +2,7 @@ import type {
   FlowDeskChatIntakeRequestV1,
   FlowDeskConfiguredVerificationResultV1,
   FlowDeskExternalAuthProviderPolicyResultV1,
+  FlowDeskProductionApprovalDecisionV1,
   FlowDeskRelease1MinimumPortableCommandName,
   FlowDeskRelease1MinimumToolName,
   FlowDeskToolRequestEnvelopeV1,
@@ -464,7 +465,8 @@ function productionEnablementFromOptions(options?: PluginOptions): FlowDeskLocal
     ...(typeof value.providerPolicyRef === "string" ? { providerPolicyRef: value.providerPolicyRef } : {}),
     ...(isRecord(value.externalAuthProviderPolicyResult) ? { externalAuthProviderPolicyResult: value.externalAuthProviderPolicyResult as unknown as FlowDeskExternalAuthProviderPolicyResultV1 } : {}),
     ...(Array.isArray(value.laneConformanceRefs) && value.laneConformanceRefs.every((ref) => typeof ref === "string") ? { laneConformanceRefs: value.laneConformanceRefs } : {}),
-    ...(typeof value.allowIncompleteConformance === "boolean" ? { allowIncompleteConformance: value.allowIncompleteConformance } : {})
+    ...(typeof value.allowIncompleteConformance === "boolean" ? { allowIncompleteConformance: value.allowIncompleteConformance } : {}),
+    ...(isRecord(value.approvalDecision) ? { approvalDecision: value.approvalDecision as unknown as FlowDeskProductionApprovalDecisionV1 } : {})
   };
 }
 
