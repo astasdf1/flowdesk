@@ -68,6 +68,15 @@ function nonNegativeInt(value: unknown, label: string): ValidationResult {
 		: invalid(`${label} must be a non-negative integer`);
 }
 
+function refWithPrefix(value: unknown, label: string, prefixes: readonly string[]): ValidationResult {
+	const opaque = validateOpaqueRef(value, label);
+	if (!opaque.ok) return opaque;
+	const text = value as string;
+	return prefixes.some((prefix) => text.startsWith(prefix))
+		? valid()
+		: invalid(`${label} must use ${prefixes.join("/")} kind prefix`);
+}
+
 export function validateFlowDeskLaneLifecycleRecordV1(
 	value: unknown,
 ): ValidationResult {
@@ -108,19 +117,19 @@ export function validateFlowDeskLaneLifecycleRecordV1(
 	errors.push(...validateOpaqueId(record.lane_id, "lane_id").errors);
 	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
 	errors.push(...validateOpaqueId(record.attempt_id, "attempt_id").errors);
-	errors.push(...validateOpaqueRef(record.parent_session_ref, "parent_session_ref").errors);
-	for (const [value, label] of [
-		[record.child_session_ref, "child_session_ref"],
-		[record.message_ref, "message_ref"],
-		[record.background_task_ref, "background_task_ref"],
-		[record.continuation_session_ref, "continuation_session_ref"],
-		[record.agent_ref, "agent_ref"],
-		[record.verdict_ref, "verdict_ref"],
-		[record.output_ref, "output_ref"],
-		[record.runtime_echo_ref, "runtime_echo_ref"],
-		[record.telemetry_ref, "telemetry_ref"],
+	errors.push(...refWithPrefix(record.parent_session_ref, "parent_session_ref", ["ses-"]).errors);
+	for (const [value, label, prefixes] of [
+		[record.child_session_ref, "child_session_ref", ["ses-"]],
+		[record.message_ref, "message_ref", ["msg-"]],
+		[record.background_task_ref, "background_task_ref", ["bg-"]],
+		[record.continuation_session_ref, "continuation_session_ref", ["ses-"]],
+		[record.agent_ref, "agent_ref", ["agent-"]],
+		[record.verdict_ref, "verdict_ref", ["verdict-"]],
+		[record.output_ref, "output_ref", ["output-"]],
+		[record.runtime_echo_ref, "runtime_echo_ref", ["echo-", "runtime-echo-"]],
+		[record.telemetry_ref, "telemetry_ref", ["telemetry-"]],
 	] as const)
-		if (value !== undefined) errors.push(...validateOpaqueRef(value, label).errors);
+		if (value !== undefined) errors.push(...refWithPrefix(value, label, prefixes).errors);
 	errors.push(
 		...validateConcreteProviderQualifiedModelId(
 			record.provider_qualified_model_id,

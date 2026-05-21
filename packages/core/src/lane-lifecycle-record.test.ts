@@ -51,5 +51,14 @@ test("lane lifecycle rejects ref-kind collapse and authority smuggling", () => {
 		providerCall: true,
 	});
 	assert.equal(bad.ok, false);
-	assert.match(bad.errors.join("|"), /kind-separated|retry_count|runtime authority/);
+	assert.match(bad.errors.join("|"), /kind prefix|kind-separated|retry_count|runtime authority/);
+});
+
+test("lane lifecycle rejects swapped ref kinds", () => {
+	const swapped = validateFlowDeskLaneLifecycleRecordV1(record({
+		background_task_ref: "ses-not-a-background-task",
+		continuation_session_ref: "bg-not-a-session",
+	}));
+	assert.equal(swapped.ok, false);
+	assert.match(swapped.errors.join("|"), /background_task_ref must use bg-|continuation_session_ref must use ses-/);
 });
