@@ -30,6 +30,12 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 4. Fresh public-registry install smoke for `0.1.1` passed in a throwaway profile: 11 tools, `chat.message`, direct doctor/status/usage, and Korean chat-intake routing succeeded with all real-dispatch/lane-launch/fallback/hard cancel authority flags false.
 5. Active OpenCode profile migration from `0.1.0` to `0.1.1` completed at `~/.config/opencode`. The nested `@opencode-ai/plugin@1.15.6` and `@opencode-ai/sdk@1.15.6` resolve under FlowDesk while a separate top-level `@opencode-ai/plugin@1.3.12` remains for other plugins. Module-load smoke from the active profile passed.
 
+## 2026-05-21 Live Runtime Batch
+
+Bounded OpenCode 1.15.5 runtime evidence is recorded in `docs/conformance/2026-05-21-release3-live-runtime-conformance.md`. The batch proved live OpenAI provider dispatch through the opt-in SDK adapter after correct manifest/approval/Guard binding, actual parent/child session creation, and coordinator-controlled three-reviewer fan-out with exact Claude Opus, Gemini Pro, and GPT model bindings. It also proved active-profile FlowDesk tool discovery, FDS-1 runtime unknown-property rejection, chat-message steering without hard no-reply/cancel fields, fallback terminal-blocked contract validation, and advisory-only operational-intelligence artifacts.
+
+The parent-prompted fan-out attempt produced duplicate GPT children and an unmatched Claude sentinel, so FlowDesk must use coordinator-controlled child session creation rather than freeform parent-model fan-out instructions. Hard chat cancellation/no-reply, automatic fallback execution, external writes, and typed reviewer verdict approval remain blocked.
+
 ## Next Safe Actions
 
 1. Convert the blocker inventory into enforceable contracts before any runtime authority is promoted. The critical review consensus requires explicit fail-closed probe outcomes, committed durable writes, atomic approval consumption, deterministic cache invalidation, and bounded fallback depth.
@@ -74,7 +80,7 @@ The dependency-safe order is:
 
 ## Contract Requirements Before Each Gate Can Close
 
-Local contract status as of 2026-05-21: blockers #3 through #11 now have local non-authorizing contract/test foundations. These foundations reduce implementation ambiguity but do not close the live runtime gates. Any proof that touches provider calls, real dispatch, actual lane launch, reviewer fan-out, fallback execution, hard chat authority, active profile mutation, or external writes still requires explicit confirmation and separate conformance evidence.
+Contract status as of 2026-05-21: blockers #3 through #11 have local non-authorizing contract/test foundations, and a bounded live runtime batch has now proven selected OpenCode/provider/lane surfaces under explicit user approval. The live batch closes only the observed provider smoke, opt-in managed-dispatch adapter call, actual child session launch, coordinator-controlled reviewer fan-out, active-profile tool discovery, FDS-1 runtime validation, and non-authorizing fallback/operational-intelligence artifacts. Hard chat authority, automatic fallback execution, external writes, and typed reviewer verdict approval remain blocked.
 
 ### Blocker #3: FDS-1 Schema Conversion
 
