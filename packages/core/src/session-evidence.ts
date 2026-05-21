@@ -334,6 +334,8 @@ export function applyFlowDeskSessionEvidenceWriteIntentsV1(
 	const writtenPaths: string[] = [];
 	const root = resolve(rootDir);
 	try {
+		const seenTargets = new Set<string>();
+		const seenTemps = new Set<string>();
 		for (const intent of intents) {
 			const intentResult = validateSessionEvidenceWriteIntent(intent);
 			if (!intentResult.ok)
@@ -345,6 +347,20 @@ export function applyFlowDeskSessionEvidenceWriteIntentsV1(
 				};
 			const target = safeJoin(root, intent.path);
 			const temp = safeJoin(root, intent.tempPath);
+			if (seenTargets.has(target))
+				return {
+					...invalid("session evidence batch contains duplicate target path"),
+					rootDir: root,
+					writtenPaths,
+					...disabledEvidenceAuthority,
+				};
+			if (seenTemps.has(temp))
+				return {
+					...invalid("session evidence batch contains duplicate temp path"),
+					rootDir: root,
+					writtenPaths,
+					...disabledEvidenceAuthority,
+				};
 			if (dirname(target) !== dirname(temp))
 				return {
 					...invalid("session evidence tempPath must stay beside target path"),
@@ -352,6 +368,8 @@ export function applyFlowDeskSessionEvidenceWriteIntentsV1(
 					writtenPaths,
 					...disabledEvidenceAuthority,
 				};
+			seenTargets.add(target);
+			seenTemps.add(temp);
 		}
 		for (const intent of intents) {
 			const target = safeJoin(root, intent.path);

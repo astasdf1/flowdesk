@@ -169,6 +169,19 @@ test("session evidence apply prevalidates forged intents before writing any entr
   });
 });
 
+test("session evidence apply rejects duplicate target paths before writing", () => {
+  withEvidenceTree((rootDir) => {
+    const first = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord() });
+    const second = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord({ authority_ref: "authority-ref-2" }) });
+    assert.ok(first.writeIntent);
+    assert.ok(second.writeIntent);
+    const duplicateTarget = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [first.writeIntent, second.writeIntent]);
+    assert.equal(duplicateTarget.ok, false);
+    assert.match(duplicateTarget.errors.join("; "), /duplicate target path/);
+    assert.deepEqual(duplicateTarget.writtenPaths, []);
+  });
+});
+
 test("session evidence apply rejects escaping temp paths", () => {
   withEvidenceTree((rootDir) => {
     const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord() });
