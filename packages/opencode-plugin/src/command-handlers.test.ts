@@ -418,6 +418,9 @@ function productionEnablement(
 		default_release1_non_dispatch_preserved: true,
 		configured_verification_result: "passed",
 		configured_verification_ref: "configured-verification-123",
+		external_auth_provider_policy_result: "passed",
+		external_auth_policy_ref: "external-auth-policy-123",
+		provider_policy_ref: "provider-policy-123",
 		safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
 		...overrides,
 	};
@@ -661,6 +664,19 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 		compatibility.refs.includes(
 			"production_configured_verification_ref=configured-verification-123",
 		),
+	);
+	assert.ok(
+		compatibility.refs.includes(
+			"production_external_auth_provider_policy_result=passed",
+		),
+	);
+	assert.ok(
+		compatibility.refs.includes(
+			"production_external_auth_policy_ref=external-auth-policy-123",
+		),
+	);
+	assert.ok(
+		compatibility.refs.includes("production_provider_policy_ref=provider-policy-123"),
 	);
 	assert.ok(
 		compatibility.refs.includes(
