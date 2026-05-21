@@ -53,6 +53,8 @@ Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-re
 
 Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has dedicated `production_approval_source` and `dispatch_idempotency` classes, dispatch pre-call readiness has a pure durable evaluator that requires a reloaded idempotency snapshot, reloaded consumed approval source, and reloaded pre-dispatch audit entry, and the explicit opt-in managed-dispatch adapter now requires that durable evaluator before promotion and injected SDK calls. This closes the in-memory consumed-approval provenance gap and local replay-detection gap while preserving default Release 1 non-dispatch behavior.
 
+Local idempotency reservation contract hardening now also prepares durable `reserved` entries and post-reservation `dispatch_failed`/`quarantined` snapshot updates in `@flowdesk/core`. This proves the snapshot materialization shape through session-evidence writes/reloads without enabling provider calls; adapter-side reservation write/reload/update around the injected SDK call remains a later gated integration step.
+
 ## Next Safe Actions
 
 1. Keep the managed-dispatch promotion gate wired only to the explicit opt-in adapter path, preserving the ordering: durable evidence reload, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, promotion gate, then SDK call.
@@ -115,6 +117,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 - Expand evidence classes beyond usage/runtime echo/telemetry where needed for configured verification, sanitized auth, external auth/provider policy, approval, and pre-dispatch audit refs.
 - Production approval source evidence must be durably written/reloaded through its own evidence class and validated with the full approval-source contract before dispatch pre-call readiness can depend on it.
 - Dispatch idempotency snapshots must be durably written/reloaded and checked for reused attempt ids or idempotency keys before dispatch pre-call readiness can proceed.
+- Reservation helpers must prepare `reserved` entries and post-SDK-failure `dispatch_failed`/`quarantined` snapshot updates without enabling dispatch authority; runtime adapter wiring must still prove zero SDK calls when reservation materialization or reload fails.
 - Test malformed, truncated, stale, drifted, cross-workflow, cross-profile, schema-version mismatch, symlink/root escape, partial write, and redaction-failure cases.
 - Doctor output must expose redacted fail-closed state without raw payloads or secret-bearing paths.
 

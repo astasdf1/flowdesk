@@ -16,6 +16,8 @@ This note records local durable-provenance hardening for production approval sou
 
 `flowdesk.dispatch_idempotency_snapshot.v1` is also a first-class durable session-evidence class. `evaluateFlowDeskDispatchIdempotencyReplayV1` blocks a dispatch attempt when its attempt id is already recorded or its idempotency key has already been used in the reloaded snapshot.
 
+`prepareFlowDeskDispatchIdempotencyReservationV1` prepares a local non-authorizing reservation snapshot by appending a `reserved` ledger entry only after replay validation passes. `prepareFlowDeskDispatchIdempotencyStateUpdateV1` prepares follow-up snapshot updates such as `dispatch_failed` or `quarantined` only when the matching attempt/idempotency entry already exists. Both helpers retain `dispatch_authority_enabled=false`, `realOpenCodeDispatch=false`, `providerCall=false`, `runtimeExecution=false`, and `actualLaneLaunch=false`.
+
 `evaluateFlowDeskDispatchAttemptDurablePrecallV1` adds a pure durable readiness layer over the existing object-level pre-call evaluator. It requires:
 
 1. A valid reload result with no blocked evidence entries.
@@ -32,7 +34,7 @@ The explicit opt-in `dispatchManagedDispatchBetaPromptV1` adapter now requires t
 
 Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 
-1. `npm test --workspace @flowdesk/core -- --test-name-pattern "dispatch attempt|session evidence|idempotency"` passed: 263/263 tests in the matched core run.
+1. `npm test --workspace @flowdesk/core -- --test-name-pattern "dispatch attempt|session evidence|idempotency"` passed: 266/266 tests in the matched core run.
 2. LSP diagnostics were clean for changed TypeScript files.
 3. `npm test --workspace @flowdesk/opencode-plugin -- --test-name-pattern "managed dispatch beta adapter|managed dispatch beta server"` passed: 69/69 tests in the matched plugin run after adapter wiring.
 4. `npm run typecheck` passed.
@@ -41,4 +43,4 @@ Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 
 ## Authority State
 
-Managed dispatch remains gated and default Release 1 dispatch remains disabled. This change only prevents later gates from treating arbitrary in-memory approval objects as durable approval-source provenance.
+Managed dispatch remains gated and default Release 1 dispatch remains disabled. This change prevents later gates from treating arbitrary in-memory approval objects as durable approval-source provenance and provides local idempotency reservation/state-update snapshot contracts; it does not yet wire reservation writes around injected SDK calls.
