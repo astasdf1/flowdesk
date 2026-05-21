@@ -45,6 +45,10 @@ Post-live hardening is recorded in `docs/conformance/2026-05-21-release3-authori
 
 Promotion contract evidence is recorded in `docs/conformance/2026-05-21-release3-authority-promotion.md`. The pass adds explicit pure promotion evaluators instead of flipping existing Release 1 booleans, and the opt-in managed-dispatch adapter now requires the managed-dispatch promotion gate after manifest/approval pre-call permission and before injected SDK calls. Managed dispatch can be promoted only from an eligible Guard boundary, SDK pre-call permission, consumed `managed_dispatch_beta` approval, and matching audit/conformance refs. Reviewer verdicts can be accepted only when all canonical perspectives return typed `pass` verdicts with low uncertainty and a consumed `reviewer_fanout` approval. Fallback/reselection can advance only to a new-attempt full re-gate with consumed `fallback_reselection` approval. External writes can be authorized only for controlled redacted targets with dry-run, pre-write audit, redaction policy, content hash, and consumed `external_write` approval. Hard chat authority remains blocked.
 
+## 2026-05-22 Hard Chat Blocked-State Hardening
+
+Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-release3-hard-chat-blocked-state.md`. The local probe contract now treats missing mutation, duplicate assistant reply, timeout/null not fail-closed, or malformed return not fail-closed as `blocked` rather than ordinary `steering_only`. This does not prove `noReply`, `cancel`, or `stop` authority; it prevents incomplete hard-chat observations from being overinterpreted as safe steering evidence.
+
 ## Next Safe Actions
 
 1. Keep the managed-dispatch promotion gate wired only to the explicit opt-in adapter path, preserving the ordering: durable evidence reload, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, promotion gate, then SDK call.
@@ -100,7 +104,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 ### Blocker #4: Chat Hook Hard-Control
 
 - Add explicit outcomes for mutation-only, throw, unsupported `noReply`, unsupported cancel/stop, timeout, null return, malformed return, and duplicate assistant reply.
-- Missing first-class hard-control proof must result in `hardCancelOrNoReplyAuthority=false` and steering-only behavior.
+- Missing first-class hard-control proof must result in `hardCancelOrNoReplyAuthority=false`; timeout/null, malformed-return, duplicate-reply, or no-mutation gaps must be recorded as blocked hard-chat authority rather than ordinary steering-only behavior.
 
 ### Blocker #5: Durable Production Evidence
 

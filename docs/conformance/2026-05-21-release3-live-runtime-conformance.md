@@ -81,7 +81,7 @@ The active OpenCode provider-facing tool conversion was checked, and FlowDesk's 
 - Contract artifact: `flowdesk.chat_hook_authority_probe.v1`, `probe_id=probe-release3-live-chat-hook-20260521`, `outcome=steering_only`.
 - Remaining failure labels: `throw_blocking_unproven`, `no_reply_unproven`, `cancel_or_stop_unproven`, `timeout_or_null_not_fail_closed`, `malformed_return_not_fail_closed`.
 
-Hard chat cancellation/no-reply authority remains unproven and disabled.
+Hard chat cancellation/no-reply authority remains unproven and disabled. Follow-up local hardening on 2026-05-22 classifies timeout/null and malformed-return fail-closed gaps as blocked hard-chat authority, not as sufficient steering-only proof.
 
 ## Blocker #10: Fallback/Reselection
 
