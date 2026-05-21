@@ -96,6 +96,8 @@ export function validateFlowDeskOperationalIntelligenceScoreV1(value: unknown): 
 	else for (const [index, label] of record.blocked_labels.entries())
 		errors.push(...validateOpaqueRef(label, `blocked_labels[${index}]`).errors);
 	if (typeof record.advisory_score !== "number" || record.advisory_score < 0 || record.advisory_score > 100) errors.push("advisory_score must be 0..100");
+	if (record.hard_filter_state === "passed" && (record.blocked_labels?.length ?? 0) > 0) errors.push("passed hard filters cannot carry blocked_labels");
+	if (record.hard_filter_state === "blocked" && (record.blocked_labels?.length ?? 0) === 0) errors.push("blocked hard filters require blocked_labels");
 	if (record.hard_filter_state === "blocked" && record.advisory_score !== 0) errors.push("blocked hard filters must zero advisory_score");
 	if (record.advisory_only !== true || record.dispatch_authority_enabled !== false || record.approval_authority_enabled !== false || record.external_write_authority_enabled !== false) errors.push("operational intelligence must remain advisory-only");
 	errors.push(...validateNoForbiddenRawPayloads(record, "operational_intelligence_score").errors);
@@ -121,6 +123,7 @@ export function validateFlowDeskReferencePackV1(value: unknown): ValidationResul
 	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
 	errors.push(...refs(record.source_refs, "source_refs").errors);
 	errors.push(...refs(record.source_hash_refs, "source_hash_refs").errors);
+	if (Array.isArray(record.source_refs) && Array.isArray(record.source_hash_refs) && record.source_refs.length !== record.source_hash_refs.length) errors.push("source_refs and source_hash_refs must align one-to-one");
 	if (record.schema_version !== "flowdesk.reference_pack.v1") errors.push("reference pack schema_version is invalid");
 	if (record.specialist_signoff !== false || record.professional_advice !== false || record.advisory_only !== true || record.external_write_authority_enabled !== false) errors.push("reference pack cannot act as signoff or external write authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "reference_pack").errors);

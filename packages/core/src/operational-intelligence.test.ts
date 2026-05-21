@@ -30,6 +30,12 @@ test("operational intelligence blocks scoring authority when hard filters fail",
 	assert.equal(validateFlowDeskOperationalIntelligenceScoreV1(score).ok, true);
 	const forged = validateFlowDeskOperationalIntelligenceScoreV1({ ...score, dispatch_authority_enabled: true });
 	assert.equal(forged.ok, false);
+	const missingReason = validateFlowDeskOperationalIntelligenceScoreV1({ ...score, blocked_labels: [] });
+	assert.equal(missingReason.ok, false);
+	assert.match(missingReason.errors.join("; "), /require blocked_labels/);
+	const impossiblePassed = validateFlowDeskOperationalIntelligenceScoreV1({ ...score, hard_filter_state: "passed", advisory_score: 90 });
+	assert.equal(impossiblePassed.ok, false);
+	assert.match(impossiblePassed.errors.join("; "), /cannot carry blocked_labels/);
 });
 
 test("reference packs cannot act as professional signoff or external-write authority", () => {
@@ -46,6 +52,7 @@ test("reference packs cannot act as professional signoff or external-write autho
 	};
 	assert.equal(validateFlowDeskReferencePackV1(pack).ok, true);
 	assert.equal(validateFlowDeskReferencePackV1({ ...pack, specialist_signoff: true }).ok, false);
+	assert.equal(validateFlowDeskReferencePackV1({ ...pack, source_hash_refs: ["hash-source-1", "hash-source-2"] }).ok, false);
 });
 
 test("operational intelligence contracts reject unknown authority fields", () => {
