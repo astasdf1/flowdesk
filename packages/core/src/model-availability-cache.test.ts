@@ -45,8 +45,13 @@ test("availability cache blocks stale date, aliases, and lower-tier substitution
 	const stale = planFlowDeskReviewerAssignmentsV1({ cache: cache(), localDate: "2026-05-22" });
 	assert.equal(stale.state, "blocked");
 	assert.ok(stale.blocked_labels.includes("cache_not_same_day"));
+	assert.deepEqual(stale.lane_bindings, []);
 	const invalid = validateFlowDeskExactModelAvailabilityCacheV1(cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest", highest_tier_eligible: false }] }));
 	assert.equal(invalid.ok, false);
+	const invalidPlan = planFlowDeskReviewerAssignmentsV1({ cache: cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" }] }), localDate: "2026-05-21" });
+	assert.equal(invalidPlan.state, "blocked");
+	assert.ok(invalidPlan.blocked_labels.includes("cache_invalid"));
+	assert.deepEqual(invalidPlan.lane_bindings, []);
 });
 
 test("availability cache rejects unknown properties and provider drift", () => {

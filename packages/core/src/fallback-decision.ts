@@ -48,9 +48,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function refs(value: unknown, label: string): ValidationResult {
-	if (!Array.isArray(value) || value.length === 0) return invalid(`${label} must be a non-empty array`);
+	if (!Array.isArray(value) || value.length < 3) return invalid(`${label} must include fresh usage, health, and runtime evidence refs`);
 	const errors: string[] = [];
-	for (const [index, ref] of value.entries()) errors.push(...validateOpaqueRef(ref, `${label}[${index}]`).errors);
+	for (const [index, ref] of value.entries()) {
+		errors.push(...validateOpaqueRef(ref, `${label}[${index}]`).errors);
+		if (typeof ref === "string" && /fallback/i.test(ref))
+			errors.push(`${label}[${index}] must not be fallback-derived evidence`);
+	}
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
@@ -91,7 +95,7 @@ export function validateFlowDeskFallbackDecisionV1(value: unknown): ValidationRe
 	errors.push(...validateConcreteProviderQualifiedModelId(record.to_provider_qualified_model_id).errors);
 	if (record.schema_version !== "flowdesk.fallback_decision.v1") errors.push("fallback decision schema_version is invalid");
 	if (!(FLOWDESK_FALLBACK_REASON_LABELS as readonly string[]).includes(record.reason_label ?? "")) errors.push("fallback reason_label is invalid");
-	if (typeof record.depth !== "number" || !Number.isInteger(record.depth) || record.depth < 0) errors.push("fallback depth is invalid");
+	if (typeof record.depth !== "number" || !Number.isInteger(record.depth) || record.depth < 1) errors.push("fallback depth is invalid");
 	if (record.max_depth !== 2) errors.push("fallback max_depth must be 2");
 	if ((record.depth ?? 0) > (record.max_depth ?? 0)) errors.push("fallback depth exceeds max_depth");
 	if (record.parent_attempt_id === record.new_attempt_id) errors.push("fallback must use a new attempt id");

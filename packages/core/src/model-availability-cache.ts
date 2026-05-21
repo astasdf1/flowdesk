@@ -165,14 +165,16 @@ export function planFlowDeskReviewerAssignmentsV1(input: {
 }): FlowDeskReviewerAssignmentPlanV1 {
 	const errors = validateFlowDeskExactModelAvailabilityCacheV1(input.cache).errors;
 	const blockedLabels: string[] = [];
+	if (errors.length > 0) blockedLabels.push("cache_invalid");
 	if (input.cache.local_date !== input.localDate) blockedLabels.push("cache_not_same_day");
 	const eligible = input.cache.entries.filter((entry) => entry.registered && entry.available && entry.highest_tier_eligible);
 	if (eligible.length === 0) blockedLabels.push("no_registered_available_highest_tier_models");
-	const lane_bindings = eligible.length === 0 ? [] : perspectives.map((perspective, index) => {
+	const canBind = errors.length === 0 && blockedLabels.length === 0;
+	const lane_bindings = !canBind ? [] : perspectives.map((perspective, index) => {
 		const entry = eligible[index % eligible.length];
 		return { perspective, entry_id: entry.entry_id, provider_qualified_model_id: entry.provider_qualified_model_id };
 	});
-	const ready = errors.length === 0 && blockedLabels.length === 0;
+	const ready = canBind;
 	return {
 		schema_version: "flowdesk.reviewer_assignment_plan.v1",
 		cache_id: input.cache.cache_id,

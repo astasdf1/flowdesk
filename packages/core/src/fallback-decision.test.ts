@@ -39,3 +39,17 @@ test("fallback decision rejects same attempt, chained depth, and authority", () 
 	assert.equal(result.ok, false);
 	assert.match(result.errors.join("|"), /new attempt|max-depth|runtime authority/);
 });
+
+test("fallback decision rejects missing or fallback-derived fresh evidence", () => {
+	const missingFresh = validateFlowDeskFallbackDecisionV1(decision({ fresh_evidence_refs: ["usage-2"] }));
+	assert.equal(missingFresh.ok, false);
+	assert.match(missingFresh.errors.join("; "), /fresh usage, health, and runtime/);
+
+	const derived = validateFlowDeskFallbackDecisionV1(decision({ fresh_evidence_refs: ["usage-2", "health-2", "fallback-derived-echo"] }));
+	assert.equal(derived.ok, false);
+	assert.match(derived.errors.join("; "), /fallback-derived/);
+
+	const zeroDepth = validateFlowDeskFallbackDecisionV1(decision({ depth: 0 }));
+	assert.equal(zeroDepth.ok, false);
+	assert.match(zeroDepth.errors.join("; "), /depth/);
+});
