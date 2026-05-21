@@ -5,6 +5,7 @@ import {
   createFlowDeskConfiguredVerificationResultV1,
   createFlowDeskExternalAuthProviderPolicyResultV1,
   createFlowDeskProductionApprovalDecisionV1,
+  createFlowDeskSanitizedAuthCaptureResultV1,
   evaluateFlowDeskProductionEnablementV1,
   validateFlowDeskProductionApprovalDecisionV1
 } from "./index.js";
@@ -66,6 +67,24 @@ function baseRefs() {
       checkLabels: ["typecheck", "unit-tests"],
       evidenceRefs: ["verification-evidence-1"]
     }),
+    sanitizedAuthCaptureRef: "sanitized-auth-capture-1",
+    sanitizedAuthCaptureResult: createFlowDeskSanitizedAuthCaptureResultV1({
+      sanitizedAuthCaptureRef: "sanitized-auth-capture-1",
+      durableCaptureRef: "durable-auth-capture-1",
+      workflowId,
+      providerFamily: "claude",
+      providerQualifiedModelId: "claude/sonnet-4",
+      authProfileRef: "auth-profile-claude",
+      authEvidenceRef: "auth-evidence-claude",
+      credentialScopeRef: "principal-scope-claude",
+      accountBoundaryRef: "account-boundary-claude",
+      sanitizerRef: "sanitizer-claude-auth-plugin-v1",
+      sourceRef: "external-auth-source-1",
+      result: "passed",
+      capturedAt: "2026-05-20T00:00:00.000Z",
+      metadataLabels: ["raw-plugin-object-redacted", "scope-bound"],
+      evidenceRefs: ["sanitized-auth-capture-evidence-1"]
+    }),
     externalAuthPolicyRef: "external-auth-policy-1",
     providerPolicyRef: "provider-policy-1",
     externalAuthProviderPolicyResult: createFlowDeskExternalAuthProviderPolicyResultV1({
@@ -110,7 +129,7 @@ test("production enablement becomes dispatch-capable only after explicit approva
     workflowId,
     decision: "approve",
     createdAt: "2026-05-20T00:00:00.000Z",
-    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
   });
 
   const validation = validateFlowDeskProductionApprovalDecisionV1(approval, workflowId);
@@ -139,7 +158,7 @@ test("production enablement reports valid approval diagnostics without dispatch 
     workflowId,
     decision: "deny",
     createdAt: "2026-05-20T00:00:00.000Z",
-    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
   });
   const deniedResult = evaluateFlowDeskProductionEnablementV1({
     workflowId,
@@ -208,7 +227,7 @@ test("production enablement records incomplete conformance as non-blocking uncer
     workflowId,
     decision: "approve",
     createdAt: "2026-05-20T00:00:00.000Z",
-    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "external-auth-policy-1", "provider-policy-1"],
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1"],
     uncertaintyLabels: ["opencode_subtask_lifecycle_unproven"]
   });
 
@@ -346,6 +365,109 @@ test("production enablement does not echo or fold invalid configured verificatio
   assert.ok(!resultWithoutRef.evidence_refs.includes("verification-evidence-1"));
 });
 
+test("production enablement fails closed for missing, failed, or mismatched sanitized auth capture results", () => {
+  const missing = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    preDispatchAuditRef: "audit-1",
+    configuredVerificationRef: "verification-1",
+    configuredVerificationResult: baseRefs().configuredVerificationResult,
+    sanitizedAuthCaptureRef: "sanitized-auth-capture-1",
+    externalAuthPolicyRef: "external-auth-policy-1",
+    providerPolicyRef: "provider-policy-1",
+    externalAuthProviderPolicyResult: baseRefs().externalAuthProviderPolicyResult,
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(missing.state, "blocked");
+  assert.ok(missing.blocker_labels.includes("sanitized_auth_capture_result_missing"));
+
+  const failed = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    sanitizedAuthCaptureResult: createFlowDeskSanitizedAuthCaptureResultV1({
+      sanitizedAuthCaptureRef: "sanitized-auth-capture-1",
+      durableCaptureRef: "durable-auth-capture-1",
+      workflowId,
+      providerFamily: "claude",
+      providerQualifiedModelId: "claude/sonnet-4",
+      authProfileRef: "auth-profile-claude",
+      authEvidenceRef: "auth-evidence-claude",
+      credentialScopeRef: "principal-scope-claude",
+      accountBoundaryRef: "account-boundary-claude",
+      sanitizerRef: "sanitizer-claude-auth-plugin-v1",
+      sourceRef: "external-auth-source-1",
+      result: "failed",
+      capturedAt: "2026-05-20T00:00:00.000Z",
+      metadataLabels: ["raw-plugin-object-unproven"],
+      evidenceRefs: ["sanitized-auth-capture-evidence-1"]
+    }),
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(failed.state, "blocked");
+  assert.ok(failed.blocker_labels.includes("sanitized_auth_capture_failed"));
+
+  const mismatched = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    sanitizedAuthCaptureResult: {
+      ...baseRefs().sanitizedAuthCaptureResult,
+      sanitized_auth_capture_ref: "sanitized-auth-capture-other"
+    },
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(mismatched.state, "blocked");
+  assert.ok(mismatched.blocker_labels.includes("sanitized_auth_capture_invalid"));
+});
+
+test("production enablement does not echo or fold invalid sanitized auth capture artifacts", () => {
+  const invalid = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    preDispatchAuditRef: "audit-1",
+    configuredVerificationRef: "verification-1",
+    configuredVerificationResult: baseRefs().configuredVerificationResult,
+    sanitizedAuthCaptureRef: "sanitized-auth-capture-1",
+    sanitizedAuthCaptureResult: {
+      ...baseRefs().sanitizedAuthCaptureResult,
+      evidence_refs: "leaky-sanitized-auth-ref",
+      raw_plugin_object_persisted: true,
+      token_material_persisted: true,
+      provider_call_made: true,
+      dispatch_authority_enabled: true
+    } as never,
+    externalAuthPolicyRef: "external-auth-policy-1",
+    providerPolicyRef: "provider-policy-1",
+    externalAuthProviderPolicyResult: baseRefs().externalAuthProviderPolicyResult,
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(invalid.state, "blocked");
+  assert.ok(invalid.blocker_labels.includes("sanitized_auth_capture_invalid"));
+  assert.ok(invalid.blocker_labels.includes("sanitized_auth_capture_result_missing"));
+  assert.equal(invalid.sanitized_auth_capture_result, undefined);
+  assert.equal(invalid.sanitized_auth_capture_ref, undefined);
+  assert.ok(!invalid.evidence_refs.includes("leaky-sanitized-auth-ref"));
+
+  const aliasModel = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    sanitizedAuthCaptureResult: {
+      ...baseRefs().sanitizedAuthCaptureResult,
+      provider_qualified_model_id: "claude/latest",
+      evidence_refs: ["alias-sanitized-auth-ref"]
+    },
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(aliasModel.state, "blocked");
+  assert.ok(aliasModel.blocker_labels.includes("sanitized_auth_capture_invalid"));
+  assert.ok(aliasModel.blocker_labels.includes("sanitized_auth_capture_result_missing"));
+  assert.equal(aliasModel.sanitized_auth_capture_result, undefined);
+  assert.equal(aliasModel.sanitized_auth_capture_ref, undefined);
+  assert.ok(!aliasModel.evidence_refs.includes("alias-sanitized-auth-ref"));
+});
+
 test("production enablement fails closed for missing, failed, or mismatched external auth provider policy results", () => {
   const missing = evaluateFlowDeskProductionEnablementV1({
     workflowId,
@@ -456,7 +578,7 @@ test("production enablement does not become dispatch-capable with malformed lane
     workflowId,
     decision: "approve",
     createdAt: "2026-05-20T00:00:00.000Z",
-    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "external-auth-policy-1", "provider-policy-1"]
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1"]
   });
 
   const result = evaluateFlowDeskProductionEnablementV1({

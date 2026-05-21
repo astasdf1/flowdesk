@@ -2,6 +2,8 @@ import type { FlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth
 import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
 import type { FlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
+import type { FlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
+import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
 import type { FlowDeskSessionEvidenceReloadResultV1 } from "./session-evidence.js";
 import type { FlowDeskSessionEvidenceClass } from "./state-paths.js";
 import {
@@ -34,6 +36,9 @@ export const FLOWDESK_PRODUCTION_ENABLEMENT_BLOCKER_LABELS = [
 	"configured_verification_result_missing",
 	"configured_verification_invalid",
 	"configured_verification_failed",
+	"sanitized_auth_capture_result_missing",
+	"sanitized_auth_capture_invalid",
+	"sanitized_auth_capture_failed",
 	"external_auth_policy_missing",
 	"provider_policy_missing",
 	"external_auth_provider_policy_result_missing",
@@ -87,6 +92,8 @@ export interface FlowDeskProductionEnablementInputV1 {
 	preDispatchAuditRef?: string;
 	configuredVerificationRef?: string;
 	configuredVerificationResult?: FlowDeskConfiguredVerificationResultV1;
+	sanitizedAuthCaptureRef?: string;
+	sanitizedAuthCaptureResult?: FlowDeskSanitizedAuthCaptureResultV1;
 	externalAuthPolicyRef?: string;
 	providerPolicyRef?: string;
 	externalAuthProviderPolicyResult?: FlowDeskExternalAuthProviderPolicyResultV1;
@@ -110,6 +117,8 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	safe_next_actions: string[];
 	configured_verification_result?: FlowDeskConfiguredVerificationResultV1["result"];
 	configured_verification_ref?: string;
+	sanitized_auth_capture_result?: FlowDeskSanitizedAuthCaptureResultV1["result"];
+	sanitized_auth_capture_ref?: string;
 	external_auth_provider_policy_result?: FlowDeskExternalAuthProviderPolicyResultV1["result"];
 	external_auth_policy_ref?: string;
 	provider_policy_ref?: string;
@@ -312,6 +321,11 @@ export function evaluateFlowDeskProductionEnablementV1(
 			input.externalAuthPolicyRef,
 			"external_auth_policy_ref",
 		],
+		[
+			"sanitized_auth_capture_result_missing",
+			input.sanitizedAuthCaptureRef,
+			"sanitized_auth_capture_ref",
+		],
 		["provider_policy_missing", input.providerPolicyRef, "provider_policy_ref"],
 	];
 	for (const [blocker, ref, label] of requiredRefs) {
@@ -344,6 +358,31 @@ export function evaluateFlowDeskProductionEnablementV1(
 			blockerLabels.push("configured_verification_result_missing");
 			if (configuredVerificationResult === undefined)
 				errors.push("configured verification result is required");
+		}
+	}
+
+	const sanitizedAuthCaptureResult = input.sanitizedAuthCaptureResult;
+	let validSanitizedAuthCaptureResult:
+		| FlowDeskSanitizedAuthCaptureResultV1
+		| undefined;
+	if (sanitizedAuthCaptureResult !== undefined) {
+		const captureResult = validateFlowDeskSanitizedAuthCaptureResultV1(
+			sanitizedAuthCaptureResult,
+			input.workflowId,
+			input.sanitizedAuthCaptureRef,
+		);
+		errors.push(...captureResult.errors);
+		if (!captureResult.ok) blockerLabels.push("sanitized_auth_capture_invalid");
+		else if (input.sanitizedAuthCaptureRef !== undefined)
+			validSanitizedAuthCaptureResult = sanitizedAuthCaptureResult;
+		if (captureResult.ok && sanitizedAuthCaptureResult.result !== "passed")
+			blockerLabels.push("sanitized_auth_capture_failed");
+	}
+	if (input.sanitizedAuthCaptureRef !== undefined) {
+		if (validSanitizedAuthCaptureResult === undefined) {
+			blockerLabels.push("sanitized_auth_capture_result_missing");
+			if (sanitizedAuthCaptureResult === undefined)
+				errors.push("sanitized auth capture result is required");
 		}
 	}
 
@@ -404,6 +443,8 @@ export function evaluateFlowDeskProductionEnablementV1(
 			input.preDispatchAuditRef,
 			input.configuredVerificationRef,
 			...(validConfiguredVerificationResult?.evidence_refs ?? []),
+			input.sanitizedAuthCaptureRef,
+			...(validSanitizedAuthCaptureResult?.evidence_refs ?? []),
 			input.externalAuthPolicyRef,
 			input.providerPolicyRef,
 			...(validExternalAuthProviderPolicyResult?.evidence_refs ?? []),
@@ -481,6 +522,13 @@ export function evaluateFlowDeskProductionEnablementV1(
 						validExternalAuthProviderPolicyResult.external_auth_policy_ref,
 					provider_policy_ref:
 						validExternalAuthProviderPolicyResult.provider_policy_ref,
+				}),
+		...(validSanitizedAuthCaptureResult === undefined
+			? {}
+			: {
+					sanitized_auth_capture_result: validSanitizedAuthCaptureResult.result,
+					sanitized_auth_capture_ref:
+						validSanitizedAuthCaptureResult.sanitized_auth_capture_ref,
 				}),
 		...(validApprovalDecision === undefined
 			? {}
