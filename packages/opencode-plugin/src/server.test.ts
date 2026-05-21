@@ -744,6 +744,31 @@ test("server option wires production enablement evidence into doctor diagnostics
         },
         externalAuthPolicyRef: "external-auth-policy-server",
         providerPolicyRef: "provider-policy-server",
+        externalAuthProviderPolicyResult: {
+          schema_version: "flowdesk.external_auth_provider_policy_result.v1",
+          external_auth_policy_ref: "external-auth-policy-server",
+          provider_policy_ref: "provider-policy-server",
+          workflow_id: workflowId,
+          provider_family: "claude",
+          provider_qualified_model_id: "claude/sonnet-4",
+          auth_profile_ref: "auth-profile-server",
+          auth_evidence_ref: "auth-evidence-server",
+          credential_scope_ref: "principal-scope-server",
+          account_boundary_ref: "account-boundary-server",
+          sanitizer_ref: "sanitizer-server",
+          source_ref: "external-auth-source-server",
+          result: "passed",
+          sanitized_at: "2026-05-20T00:00:00.000Z",
+          metadata_labels: ["account-boundary-bound", "scope-bound"],
+          evidence_refs: ["external-auth-policy-evidence-server"],
+          raw_auth_object_persisted: false,
+          token_material_persisted: false,
+          provider_call_made: false,
+          runtime_execution_made: false,
+          actual_lane_launch_made: false,
+          dispatch_authority_enabled: false,
+          safe_next_actions: ["/flowdesk-status"]
+        },
         allowIncompleteConformance: true
       }
     }) as ChatMessageHooks;
@@ -757,6 +782,7 @@ test("server option wires production enablement evidence into doctor diagnostics
     assert.ok(compatibility);
     assert.ok(compatibility.refs?.includes("production_enablement_state=configured"));
     assert.ok(compatibility.refs?.includes("production_blocker=approval_missing"));
+    assert.ok(compatibility.refs?.includes("production_external_auth_provider_policy_result=passed"));
     assert.ok(compatibility.refs?.includes("production_uncertainty=opencode_subtask_lifecycle_unproven"));
     assert.equal(doctor.providerCall, false);
     assert.equal(doctor.runtimeExecution, false);

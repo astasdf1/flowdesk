@@ -2,6 +2,7 @@ import type {
   FlowDeskAttemptRecordV1,
   FlowDeskConfiguredVerificationResultV1,
   FlowDeskEffectivePolicyV1,
+  FlowDeskExternalAuthProviderPolicyResultV1,
   FlowDeskLaneRecordV1,
   FlowDeskNonDispatchPermissionV1,
   FlowDeskPolicyPackV1,
@@ -99,6 +100,7 @@ export interface FlowDeskLocalProductionEnablementOptionsV1 {
   configuredVerificationResult?: FlowDeskConfiguredVerificationResultV1;
   externalAuthPolicyRef?: string;
   providerPolicyRef?: string;
+  externalAuthProviderPolicyResult?: FlowDeskExternalAuthProviderPolicyResultV1;
   laneConformanceRefs?: string[];
   allowIncompleteConformance?: boolean;
   approvalDecision?: FlowDeskProductionApprovalDecisionV1;
@@ -653,6 +655,7 @@ function productionEnablementContext(state: LocalAdapterState, request: Record<s
     configuredVerificationResult: state.productionEnablement.configuredVerificationResult,
     externalAuthPolicyRef: state.productionEnablement.externalAuthPolicyRef,
     providerPolicyRef: state.productionEnablement.providerPolicyRef,
+    externalAuthProviderPolicyResult: state.productionEnablement.externalAuthProviderPolicyResult,
     laneConformanceRefs: state.productionEnablement.laneConformanceRefs,
     allowIncompleteConformance: state.productionEnablement.allowIncompleteConformance,
     approvalDecision: state.productionEnablement.approvalDecision

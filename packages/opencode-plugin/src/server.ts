@@ -1,6 +1,7 @@
 import type {
   FlowDeskChatIntakeRequestV1,
   FlowDeskConfiguredVerificationResultV1,
+  FlowDeskExternalAuthProviderPolicyResultV1,
   FlowDeskRelease1MinimumPortableCommandName,
   FlowDeskRelease1MinimumToolName,
   FlowDeskToolRequestEnvelopeV1,
@@ -461,6 +462,7 @@ function productionEnablementFromOptions(options?: PluginOptions): FlowDeskLocal
     ...(isRecord(value.configuredVerificationResult) ? { configuredVerificationResult: value.configuredVerificationResult as unknown as FlowDeskConfiguredVerificationResultV1 } : {}),
     ...(typeof value.externalAuthPolicyRef === "string" ? { externalAuthPolicyRef: value.externalAuthPolicyRef } : {}),
     ...(typeof value.providerPolicyRef === "string" ? { providerPolicyRef: value.providerPolicyRef } : {}),
+    ...(isRecord(value.externalAuthProviderPolicyResult) ? { externalAuthProviderPolicyResult: value.externalAuthProviderPolicyResult as unknown as FlowDeskExternalAuthProviderPolicyResultV1 } : {}),
     ...(Array.isArray(value.laneConformanceRefs) && value.laneConformanceRefs.every((ref) => typeof ref === "string") ? { laneConformanceRefs: value.laneConformanceRefs } : {}),
     ...(typeof value.allowIncompleteConformance === "boolean" ? { allowIncompleteConformance: value.allowIncompleteConformance } : {})
   };
