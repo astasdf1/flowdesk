@@ -12,6 +12,7 @@ import type {
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskRetryPlanningInputV1,
+  FlowDeskSanitizedAuthCaptureResultV1,
   FlowDeskStateWriteIntent,
   FlowDeskWorkflowActiveV1,
   FlowDeskWorkflowRecordV1,
@@ -98,6 +99,8 @@ export interface FlowDeskLocalProductionEnablementOptionsV1 {
   preDispatchAuditRef?: string;
   configuredVerificationRef?: string;
   configuredVerificationResult?: FlowDeskConfiguredVerificationResultV1;
+  sanitizedAuthCaptureRef?: string;
+  sanitizedAuthCaptureResult?: FlowDeskSanitizedAuthCaptureResultV1;
   externalAuthPolicyRef?: string;
   providerPolicyRef?: string;
   externalAuthProviderPolicyResult?: FlowDeskExternalAuthProviderPolicyResultV1;
@@ -653,6 +656,8 @@ function productionEnablementContext(state: LocalAdapterState, request: Record<s
     preDispatchAuditRef: state.productionEnablement.preDispatchAuditRef,
     configuredVerificationRef: state.productionEnablement.configuredVerificationRef,
     configuredVerificationResult: state.productionEnablement.configuredVerificationResult,
+    sanitizedAuthCaptureRef: state.productionEnablement.sanitizedAuthCaptureRef,
+    sanitizedAuthCaptureResult: state.productionEnablement.sanitizedAuthCaptureResult,
     externalAuthPolicyRef: state.productionEnablement.externalAuthPolicyRef,
     providerPolicyRef: state.productionEnablement.providerPolicyRef,
     externalAuthProviderPolicyResult: state.productionEnablement.externalAuthProviderPolicyResult,

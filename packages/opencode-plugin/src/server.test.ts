@@ -742,6 +742,33 @@ test("server option wires production enablement evidence into doctor diagnostics
           dispatch_authority_enabled: false,
           safe_next_actions: ["/flowdesk-status"]
         },
+        sanitizedAuthCaptureRef: "sanitized-auth-capture-server",
+        sanitizedAuthCaptureResult: {
+          schema_version: "flowdesk.sanitized_auth_capture_result.v1",
+          sanitized_auth_capture_ref: "sanitized-auth-capture-server",
+          durable_capture_ref: "durable-auth-capture-server",
+          workflow_id: workflowId,
+          provider_family: "claude",
+          provider_qualified_model_id: "claude/sonnet-4",
+          auth_profile_ref: "auth-profile-server",
+          auth_evidence_ref: "auth-evidence-server",
+          credential_scope_ref: "principal-scope-server",
+          account_boundary_ref: "account-boundary-server",
+          sanitizer_ref: "sanitizer-server",
+          source_ref: "external-auth-source-server",
+          result: "passed",
+          captured_at: "2026-05-20T00:00:00.000Z",
+          metadata_labels: ["raw-plugin-object-redacted", "scope-bound"],
+          evidence_refs: ["sanitized-auth-capture-evidence-server"],
+          raw_auth_object_persisted: false,
+          raw_plugin_object_persisted: false,
+          token_material_persisted: false,
+          provider_call_made: false,
+          runtime_execution_made: false,
+          actual_lane_launch_made: false,
+          dispatch_authority_enabled: false,
+          safe_next_actions: ["/flowdesk-status"]
+        },
         externalAuthPolicyRef: "external-auth-policy-server",
         providerPolicyRef: "provider-policy-server",
         externalAuthProviderPolicyResult: {
@@ -775,7 +802,7 @@ test("server option wires production enablement evidence into doctor diagnostics
           workflow_id: workflowId,
           decision: "deny",
           created_at: "2026-05-20T00:00:00.000Z",
-          required_evidence_refs: ["usage-authority-server", "runtime-echo-server", "telemetry-server", "audit-pre-dispatch-server", "configured-verification-server", "external-auth-policy-server", "provider-policy-server"],
+          required_evidence_refs: ["usage-authority-server", "runtime-echo-server", "telemetry-server", "audit-pre-dispatch-server", "configured-verification-server", "sanitized-auth-capture-server", "external-auth-policy-server", "provider-policy-server"],
           missing_evidence_labels: [],
           uncertainty_labels: [],
           safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
@@ -794,6 +821,8 @@ test("server option wires production enablement evidence into doctor diagnostics
     assert.ok(compatibility);
     assert.ok(compatibility.refs?.includes("production_enablement_state=blocked"));
     assert.ok(compatibility.refs?.includes("production_blocker=approval_denied"));
+    assert.ok(compatibility.refs?.includes("production_sanitized_auth_capture_result=passed"));
+    assert.ok(compatibility.refs?.includes("production_sanitized_auth_capture_ref=sanitized-auth-capture-server"));
     assert.ok(compatibility.refs?.includes("production_external_auth_provider_policy_result=passed"));
     assert.ok(compatibility.refs?.includes("production_approval_decision=deny"));
     assert.ok(compatibility.refs?.includes("production_approval_ref=approval-denied-server"));
@@ -833,6 +862,33 @@ test("server option fails closed for invalid configured verification result diag
           dispatch_authority_enabled: true,
           safe_next_actions: ["/flowdesk-status"]
         },
+        sanitizedAuthCaptureRef: "sanitized-auth-capture-server",
+        sanitizedAuthCaptureResult: {
+          schema_version: "flowdesk.sanitized_auth_capture_result.v1",
+          sanitized_auth_capture_ref: "sanitized-auth-capture-server",
+          durable_capture_ref: "durable-auth-capture-server",
+          workflow_id: "workflow-local",
+          provider_family: "claude",
+          provider_qualified_model_id: "claude/sonnet-4",
+          auth_profile_ref: "auth-profile-server",
+          auth_evidence_ref: "auth-evidence-server",
+          credential_scope_ref: "principal-scope-server",
+          account_boundary_ref: "account-boundary-server",
+          sanitizer_ref: "sanitizer-server",
+          source_ref: "external-auth-source-server",
+          result: "passed",
+          captured_at: "2026-05-20T00:00:00.000Z",
+          metadata_labels: ["raw-plugin-object-redacted"],
+          evidence_refs: "leaky-sanitized-auth-ref",
+          raw_auth_object_persisted: false,
+          raw_plugin_object_persisted: true,
+          token_material_persisted: true,
+          provider_call_made: false,
+          runtime_execution_made: false,
+          actual_lane_launch_made: false,
+          dispatch_authority_enabled: true,
+          safe_next_actions: ["/flowdesk-status"]
+        },
         externalAuthPolicyRef: "external-auth-policy-server",
         providerPolicyRef: "provider-policy-server",
         approvalDecision: {
@@ -861,10 +917,14 @@ test("server option fails closed for invalid configured verification result diag
     assert.ok(compatibility.refs?.includes("production_enablement_state=blocked"));
     assert.ok(compatibility.refs?.includes("production_blocker=configured_verification_invalid"));
     assert.ok(compatibility.refs?.includes("production_blocker=configured_verification_result_missing"));
+    assert.ok(compatibility.refs?.includes("production_blocker=sanitized_auth_capture_invalid"));
+    assert.ok(compatibility.refs?.includes("production_blocker=sanitized_auth_capture_result_missing"));
     assert.ok(compatibility.refs?.includes("production_blocker=approval_mismatched"));
     assert.ok(!compatibility.refs?.some((ref) => ref.startsWith("production_configured_verification_ref=")));
+    assert.ok(!compatibility.refs?.some((ref) => ref.startsWith("production_sanitized_auth_capture_ref=")));
     assert.ok(!compatibility.refs?.some((ref) => ref.startsWith("production_approval_ref=")));
     assert.ok(!compatibility.refs?.some((ref) => ref.includes("leaky-evidence-ref")));
+    assert.ok(!compatibility.refs?.some((ref) => ref.includes("leaky-sanitized-auth-ref")));
     assert.ok(!compatibility.refs?.some((ref) => ref.includes("leaky-approval-ref")));
     assert.equal(doctor.providerCall, false);
     assert.equal(doctor.runtimeExecution, false);

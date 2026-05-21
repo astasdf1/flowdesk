@@ -5,6 +5,7 @@ import type {
   FlowDeskProductionApprovalDecisionV1,
   FlowDeskRelease1MinimumPortableCommandName,
   FlowDeskRelease1MinimumToolName,
+  FlowDeskSanitizedAuthCaptureResultV1,
   FlowDeskToolRequestEnvelopeV1,
   ManagedDispatchBetaBoundaryInputV1,
   SafeNextAction
@@ -461,6 +462,8 @@ function productionEnablementFromOptions(options?: PluginOptions): FlowDeskLocal
     ...(typeof value.preDispatchAuditRef === "string" ? { preDispatchAuditRef: value.preDispatchAuditRef } : {}),
     ...(typeof value.configuredVerificationRef === "string" ? { configuredVerificationRef: value.configuredVerificationRef } : {}),
     ...(isRecord(value.configuredVerificationResult) ? { configuredVerificationResult: value.configuredVerificationResult as unknown as FlowDeskConfiguredVerificationResultV1 } : {}),
+    ...(typeof value.sanitizedAuthCaptureRef === "string" ? { sanitizedAuthCaptureRef: value.sanitizedAuthCaptureRef } : {}),
+    ...(isRecord(value.sanitizedAuthCaptureResult) ? { sanitizedAuthCaptureResult: value.sanitizedAuthCaptureResult as unknown as FlowDeskSanitizedAuthCaptureResultV1 } : {}),
     ...(typeof value.externalAuthPolicyRef === "string" ? { externalAuthPolicyRef: value.externalAuthPolicyRef } : {}),
     ...(typeof value.providerPolicyRef === "string" ? { providerPolicyRef: value.providerPolicyRef } : {}),
     ...(isRecord(value.externalAuthProviderPolicyResult) ? { externalAuthProviderPolicyResult: value.externalAuthProviderPolicyResult as unknown as FlowDeskExternalAuthProviderPolicyResultV1 } : {}),
