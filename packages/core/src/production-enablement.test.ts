@@ -3,6 +3,7 @@ import test from "node:test";
 import type { FlowDeskSessionEvidenceReloadResultV1 } from "./index.js";
 import {
   createFlowDeskConfiguredVerificationResultV1,
+  createFlowDeskExternalAuthProviderPolicyResultV1,
   createFlowDeskProductionApprovalDecisionV1,
   evaluateFlowDeskProductionEnablementV1,
   validateFlowDeskProductionApprovalDecisionV1
@@ -66,7 +67,24 @@ function baseRefs() {
       evidenceRefs: ["verification-evidence-1"]
     }),
     externalAuthPolicyRef: "external-auth-policy-1",
-    providerPolicyRef: "provider-policy-1"
+    providerPolicyRef: "provider-policy-1",
+    externalAuthProviderPolicyResult: createFlowDeskExternalAuthProviderPolicyResultV1({
+      externalAuthPolicyRef: "external-auth-policy-1",
+      providerPolicyRef: "provider-policy-1",
+      workflowId,
+      providerFamily: "claude",
+      providerQualifiedModelId: "claude/sonnet-4",
+      authProfileRef: "auth-profile-claude",
+      authEvidenceRef: "auth-evidence-claude",
+      credentialScopeRef: "principal-scope-claude",
+      accountBoundaryRef: "account-boundary-claude",
+      sanitizerRef: "sanitizer-claude-auth-plugin-v1",
+      sourceRef: "external-auth-source-1",
+      result: "passed",
+      sanitizedAt: "2026-05-20T00:00:00.000Z",
+      metadataLabels: ["account-boundary-bound", "scope-bound"],
+      evidenceRefs: ["external-auth-policy-evidence-1"]
+    })
   };
 }
 
@@ -255,6 +273,110 @@ test("production enablement does not echo or fold invalid configured verificatio
   assert.equal(resultWithoutRef.configured_verification_ref, undefined);
   assert.equal(resultWithoutRef.configured_verification_result, undefined);
   assert.ok(!resultWithoutRef.evidence_refs.includes("verification-evidence-1"));
+});
+
+test("production enablement fails closed for missing, failed, or mismatched external auth provider policy results", () => {
+  const missing = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    preDispatchAuditRef: "audit-1",
+    configuredVerificationRef: "verification-1",
+    configuredVerificationResult: baseRefs().configuredVerificationResult,
+    externalAuthPolicyRef: "external-auth-policy-1",
+    providerPolicyRef: "provider-policy-1",
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(missing.state, "blocked");
+  assert.ok(missing.blocker_labels.includes("external_auth_provider_policy_result_missing"));
+
+  const failed = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    externalAuthProviderPolicyResult: createFlowDeskExternalAuthProviderPolicyResultV1({
+      externalAuthPolicyRef: "external-auth-policy-1",
+      providerPolicyRef: "provider-policy-1",
+      workflowId,
+      providerFamily: "claude",
+      providerQualifiedModelId: "claude/sonnet-4",
+      authProfileRef: "auth-profile-claude",
+      authEvidenceRef: "auth-evidence-claude",
+      credentialScopeRef: "principal-scope-claude",
+      accountBoundaryRef: "account-boundary-claude",
+      sanitizerRef: "sanitizer-claude-auth-plugin-v1",
+      sourceRef: "external-auth-source-1",
+      result: "failed",
+      sanitizedAt: "2026-05-20T00:00:00.000Z",
+      metadataLabels: ["scope-unproven"],
+      evidenceRefs: ["external-auth-policy-evidence-1"]
+    }),
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(failed.state, "blocked");
+  assert.ok(failed.blocker_labels.includes("external_auth_provider_policy_failed"));
+
+  const mismatched = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    externalAuthProviderPolicyResult: {
+      ...baseRefs().externalAuthProviderPolicyResult,
+      external_auth_policy_ref: "external-auth-policy-other"
+    },
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(mismatched.state, "blocked");
+  assert.ok(mismatched.blocker_labels.includes("external_auth_provider_policy_invalid"));
+});
+
+test("production enablement does not echo or fold invalid external auth provider policy artifacts", () => {
+  const invalid = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    preDispatchAuditRef: "audit-1",
+    configuredVerificationRef: "verification-1",
+    configuredVerificationResult: baseRefs().configuredVerificationResult,
+    externalAuthPolicyRef: "external-auth-policy-1",
+    providerPolicyRef: "provider-policy-1",
+    externalAuthProviderPolicyResult: {
+      ...baseRefs().externalAuthProviderPolicyResult,
+      evidence_refs: "leaky-evidence-ref",
+      token_material_persisted: true,
+      provider_call_made: true,
+      dispatch_authority_enabled: true
+    } as never,
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(invalid.state, "blocked");
+  assert.ok(invalid.blocker_labels.includes("external_auth_provider_policy_invalid"));
+  assert.ok(invalid.blocker_labels.includes("external_auth_provider_policy_result_missing"));
+  assert.equal(invalid.external_auth_provider_policy_result, undefined);
+  assert.equal(invalid.external_auth_policy_ref, undefined);
+  assert.equal(invalid.provider_policy_ref, undefined);
+  assert.ok(!invalid.evidence_refs.includes("leaky-evidence-ref"));
+
+  const aliasModel = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    preDispatchAuditRef: "audit-1",
+    configuredVerificationRef: "verification-1",
+    configuredVerificationResult: baseRefs().configuredVerificationResult,
+    externalAuthPolicyRef: "external-auth-policy-1",
+    providerPolicyRef: "provider-policy-1",
+    externalAuthProviderPolicyResult: {
+      ...baseRefs().externalAuthProviderPolicyResult,
+      provider_qualified_model_id: "claude/latest",
+      evidence_refs: ["alias-model-evidence-ref"]
+    },
+    laneConformanceRefs: ["lane-conformance-1"]
+  });
+  assert.equal(aliasModel.state, "blocked");
+  assert.ok(aliasModel.blocker_labels.includes("external_auth_provider_policy_invalid"));
+  assert.ok(aliasModel.blocker_labels.includes("external_auth_provider_policy_result_missing"));
+  assert.equal(aliasModel.external_auth_provider_policy_result, undefined);
+  assert.equal(aliasModel.external_auth_policy_ref, undefined);
+  assert.equal(aliasModel.provider_policy_ref, undefined);
+  assert.ok(!aliasModel.evidence_refs.includes("alias-model-evidence-ref"));
 });
 
 test("production enablement does not become dispatch-capable with malformed lane conformance refs", () => {

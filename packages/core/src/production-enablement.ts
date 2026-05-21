@@ -1,3 +1,5 @@
+import type { FlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
+import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
 import type { FlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import type { FlowDeskSessionEvidenceReloadResultV1 } from "./session-evidence.js";
@@ -34,6 +36,9 @@ export const FLOWDESK_PRODUCTION_ENABLEMENT_BLOCKER_LABELS = [
 	"configured_verification_failed",
 	"external_auth_policy_missing",
 	"provider_policy_missing",
+	"external_auth_provider_policy_result_missing",
+	"external_auth_provider_policy_invalid",
+	"external_auth_provider_policy_failed",
 	"approval_missing",
 	"approval_denied",
 	"approval_mismatched",
@@ -84,6 +89,7 @@ export interface FlowDeskProductionEnablementInputV1 {
 	configuredVerificationResult?: FlowDeskConfiguredVerificationResultV1;
 	externalAuthPolicyRef?: string;
 	providerPolicyRef?: string;
+	externalAuthProviderPolicyResult?: FlowDeskExternalAuthProviderPolicyResultV1;
 	laneConformanceRefs?: string[];
 	allowIncompleteConformance?: boolean;
 	approvalDecision?: FlowDeskProductionApprovalDecisionV1;
@@ -104,6 +110,9 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	safe_next_actions: string[];
 	configured_verification_result?: FlowDeskConfiguredVerificationResultV1["result"];
 	configured_verification_ref?: string;
+	external_auth_provider_policy_result?: FlowDeskExternalAuthProviderPolicyResultV1["result"];
+	external_auth_policy_ref?: string;
+	provider_policy_ref?: string;
 }
 
 const REQUIRED_SESSION_EVIDENCE_CLASSES: FlowDeskSessionEvidenceClass[] = [
@@ -336,6 +345,38 @@ export function evaluateFlowDeskProductionEnablementV1(
 		}
 	}
 
+	const externalAuthProviderPolicyResult = input.externalAuthProviderPolicyResult;
+	let validExternalAuthProviderPolicyResult:
+		| FlowDeskExternalAuthProviderPolicyResultV1
+		| undefined;
+	if (externalAuthProviderPolicyResult !== undefined) {
+		const policyResult = validateFlowDeskExternalAuthProviderPolicyResultV1(
+			externalAuthProviderPolicyResult,
+			input.workflowId,
+			input.externalAuthPolicyRef,
+			input.providerPolicyRef,
+		);
+		errors.push(...policyResult.errors);
+		if (!policyResult.ok)
+			blockerLabels.push("external_auth_provider_policy_invalid");
+		else if (
+			input.externalAuthPolicyRef !== undefined &&
+			input.providerPolicyRef !== undefined
+		)
+			validExternalAuthProviderPolicyResult = externalAuthProviderPolicyResult;
+		if (policyResult.ok && externalAuthProviderPolicyResult.result !== "passed")
+			blockerLabels.push("external_auth_provider_policy_failed");
+	}
+	if (
+		input.externalAuthPolicyRef !== undefined &&
+		input.providerPolicyRef !== undefined &&
+		validExternalAuthProviderPolicyResult === undefined
+	) {
+		blockerLabels.push("external_auth_provider_policy_result_missing");
+		if (externalAuthProviderPolicyResult === undefined)
+			errors.push("external auth provider policy result is required");
+	}
+
 	const laneConformanceRefs = input.laneConformanceRefs ?? [];
 	if (laneConformanceRefs.length === 0) {
 		if (input.allowIncompleteConformance === true)
@@ -363,6 +404,7 @@ export function evaluateFlowDeskProductionEnablementV1(
 			...(validConfiguredVerificationResult?.evidence_refs ?? []),
 			input.externalAuthPolicyRef,
 			input.providerPolicyRef,
+			...(validExternalAuthProviderPolicyResult?.evidence_refs ?? []),
 			...laneConformanceRefs,
 		].filter((ref): ref is string => typeof ref === "string"),
 	);
@@ -423,6 +465,16 @@ export function evaluateFlowDeskProductionEnablementV1(
 					configured_verification_result: validConfiguredVerificationResult.result,
 					configured_verification_ref:
 						validConfiguredVerificationResult.verification_ref,
+				}),
+		...(validExternalAuthProviderPolicyResult === undefined
+			? {}
+			: {
+					external_auth_provider_policy_result:
+						validExternalAuthProviderPolicyResult.result,
+					external_auth_policy_ref:
+						validExternalAuthProviderPolicyResult.external_auth_policy_ref,
+					provider_policy_ref:
+						validExternalAuthProviderPolicyResult.provider_policy_ref,
 				}),
 		safe_next_actions:
 			state === "dispatch_capable"
