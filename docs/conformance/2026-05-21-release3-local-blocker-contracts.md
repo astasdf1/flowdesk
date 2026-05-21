@@ -14,7 +14,7 @@ This note records local-only contracts and tests for the remaining Release 3 blo
 
 ### Blocker #4: Chat Hook Authority Probe
 
-`flowdesk.chat_hook_authority_probe.v1` records steering-only versus hard-control evidence without enabling hard chat authority. Missing `noReply`, cancel/stop, throw-blocking, timeout/null fail-closed, or malformed-return fail-closed proof keeps the result steering-only. Even a complete proof artifact still reports `hardCancelOrNoReplyAuthority=false` until a later release gate explicitly promotes authority.
+`flowdesk.chat_hook_authority_probe.v1` records steering-only versus hard-control evidence without enabling hard chat authority. This initial local contract allowed missing hard-control primitives to remain steering-only, but the 2026-05-22 hardening supersedes the timeout/null and malformed-return portions: timeout/null not fail-closed, malformed returns not fail-closed, duplicate assistant replies, or missing mutation now classify the probe as blocked rather than ordinary steering-only. Even a complete proof artifact still reports `hardCancelOrNoReplyAuthority=false` until a later release gate explicitly promotes authority.
 
 ### Blocker #7 Adapter Pre-Call Gate
 
