@@ -95,7 +95,33 @@ export interface FlowDeskManagedDispatchBetaOpenCodeClientV1 {
   session: {
     prompt?(options: FlowDeskManagedDispatchBetaPromptOptionsV1): unknown | Promise<unknown>;
     promptAsync?(options: FlowDeskManagedDispatchBetaPromptOptionsV1): unknown | Promise<unknown>;
+    children?(options: { path: { id: string }; query?: { directory?: string } }): unknown | Promise<unknown>;
+    messages?(options: { path: { id: string }; query?: { directory?: string } }): unknown | Promise<unknown>;
   };
+}
+
+export interface FlowDeskInjectedSdkLaneObservationRequestV1 {
+  parentSessionId: string;
+  laneId: string;
+  requestedAgent: string;
+  requestedProviderQualifiedModelId: string;
+  directory?: string;
+}
+
+export interface FlowDeskInjectedSdkLaneObservationResultV1 {
+  adapterProfile: "injected_sdk_lane_observation_probe";
+  status: "observed" | "partial" | "observation_unavailable" | "observation_failed";
+  observationAttempted: boolean;
+  parentSessionRef: string;
+  laneId: string;
+  requestedAgentRef: string;
+  requestedModelRef: string;
+  childSessionRef?: string;
+  messageRef?: string;
+  observedAgentRef?: string;
+  observedModelRef?: string;
+  missingLabels: string[];
+  authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1;
 }
 
 function disabledAuthority(): FlowDeskManagedDispatchBetaAuthoritySummaryV1 {
@@ -147,6 +173,110 @@ function parseProviderQualifiedModelId(value: string): { providerID: string; mod
   const modelID = value.slice(separator + 1).trim();
   if (providerID.length === 0 || modelID.length === 0) return undefined;
   return { providerID, modelID };
+}
+
+function refFrom(label: string, value: string): string {
+  const safe = value.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").replaceAll(/-+/g, "-").slice(0, 96);
+  return `${label}-${safe.length > 0 ? safe : "unknown"}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function responseData(value: unknown): unknown {
+  const record = asRecord(value);
+  return record !== undefined && "data" in record ? record.data : value;
+}
+
+function arrayData(value: unknown): unknown[] {
+  const data = responseData(value);
+  if (Array.isArray(data)) return data;
+  const record = asRecord(data);
+  return Array.isArray(record?.items) ? record.items : [];
+}
+
+function modelRef(value: unknown): string | undefined {
+  const record = asRecord(value);
+  if (record === undefined) return undefined;
+  const providerID = typeof record.providerID === "string" ? record.providerID : undefined;
+  const modelID = typeof record.modelID === "string" ? record.modelID : typeof record.id === "string" ? record.id : undefined;
+  return providerID !== undefined && modelID !== undefined ? refFrom("model", `${providerID}-${modelID}`) : undefined;
+}
+
+function firstMessageRef(value: unknown): string | undefined {
+  const messages = arrayData(value);
+  for (const message of messages) {
+    const record = asRecord(message);
+    const info = asRecord(record?.info) ?? record;
+    if (typeof info?.id === "string") return refFrom("message", info.id);
+  }
+  return undefined;
+}
+
+export async function observeInjectedSdkLaneV1(input: {
+  client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+  request: FlowDeskInjectedSdkLaneObservationRequestV1;
+}): Promise<FlowDeskInjectedSdkLaneObservationResultV1> {
+  const base = {
+    adapterProfile: "injected_sdk_lane_observation_probe" as const,
+    parentSessionRef: refFrom("parent-session", input.request.parentSessionId),
+    laneId: input.request.laneId,
+    requestedAgentRef: refFrom("agent", input.request.requestedAgent),
+    requestedModelRef: refFrom("model", input.request.requestedProviderQualifiedModelId),
+    authority: disabledAuthority()
+  };
+  const children = input.client.session.children;
+  if (children === undefined) {
+    return {
+      ...base,
+      status: "observation_unavailable",
+      observationAttempted: false,
+      missingLabels: ["session_children_api_missing"]
+    };
+  }
+  try {
+    const childrenResponse = await children.call(input.client.session, {
+      path: { id: input.request.parentSessionId },
+      ...(input.request.directory === undefined ? {} : { query: { directory: input.request.directory } })
+    });
+    const childRecord = arrayData(childrenResponse).map(asRecord).find((record): record is Record<string, unknown> => record !== undefined);
+    const childSessionId = typeof childRecord?.id === "string" ? childRecord.id : undefined;
+    const childSessionRef = childSessionId === undefined ? undefined : refFrom("child-session", childSessionId);
+    const observedAgentRef = typeof childRecord?.agent === "string" ? refFrom("agent", childRecord.agent) : undefined;
+    const observedModelRef = modelRef(childRecord?.model);
+    let messageRef: string | undefined;
+    if (childSessionId !== undefined && input.client.session.messages !== undefined) {
+      const messagesResponse = await input.client.session.messages.call(input.client.session, {
+        path: { id: childSessionId },
+        ...(input.request.directory === undefined ? {} : { query: { directory: input.request.directory } })
+      });
+      messageRef = firstMessageRef(messagesResponse);
+    }
+    const missingLabels = [
+      childSessionRef === undefined ? "child_session_missing" : undefined,
+      observedAgentRef === undefined ? "observed_agent_missing" : undefined,
+      observedModelRef === undefined ? "observed_model_missing" : undefined,
+      messageRef === undefined ? "message_ref_missing" : undefined,
+    ].filter((label): label is string => label !== undefined);
+    return {
+      ...base,
+      status: missingLabels.length === 0 ? "observed" : "partial",
+      observationAttempted: true,
+      ...(childSessionRef === undefined ? {} : { childSessionRef }),
+      ...(messageRef === undefined ? {} : { messageRef }),
+      ...(observedAgentRef === undefined ? {} : { observedAgentRef }),
+      ...(observedModelRef === undefined ? {} : { observedModelRef }),
+      missingLabels
+    };
+  } catch {
+    return {
+      ...base,
+      status: "observation_failed",
+      observationAttempted: true,
+      missingLabels: ["session_observation_failed"]
+    };
+  }
 }
 
 function promptTextFrom(request: FlowDeskManagedDispatchBetaDispatchRequestV1): string | undefined {
