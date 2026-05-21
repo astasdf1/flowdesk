@@ -172,6 +172,8 @@ function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1
     `production_enablement_doctor_ref=${evaluation.doctor_state_ref}`,
     `production_managed_dispatch_ready=${evaluation.managed_dispatch_ready}`,
     `production_dispatch_authority_enabled=${evaluation.dispatch_authority_enabled}`,
+    ...(evaluation.configured_verification_result === undefined ? [] : [`production_configured_verification_result=${evaluation.configured_verification_result}`]),
+    ...(evaluation.configured_verification_ref === undefined ? [] : [`production_configured_verification_ref=${evaluation.configured_verification_ref}`]),
     ...evaluation.blocker_labels.map((label) => `production_blocker=${label}`),
     ...evaluation.uncertainty_labels.map((label) => `production_uncertainty=${label}`)
   ];

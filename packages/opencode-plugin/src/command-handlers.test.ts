@@ -416,6 +416,8 @@ function productionEnablement(
 		managed_dispatch_ready: false,
 		dispatch_authority_enabled: false,
 		default_release1_non_dispatch_preserved: true,
+		configured_verification_result: "passed",
+		configured_verification_ref: "configured-verification-123",
 		safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
 		...overrides,
 	};
@@ -652,6 +654,14 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 		compatibility.refs.includes("production_dispatch_authority_enabled=false"),
 	);
 	assert.ok(compatibility.refs.includes("production_blocker=approval_missing"));
+	assert.ok(
+		compatibility.refs.includes("production_configured_verification_result=passed"),
+	);
+	assert.ok(
+		compatibility.refs.includes(
+			"production_configured_verification_ref=configured-verification-123",
+		),
+	);
 	assert.ok(
 		compatibility.refs.includes(
 			"production_uncertainty=opencode_subtask_lifecycle_unproven",
