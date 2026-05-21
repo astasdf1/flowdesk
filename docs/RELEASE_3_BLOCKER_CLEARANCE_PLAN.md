@@ -49,6 +49,10 @@ Promotion contract evidence is recorded in `docs/conformance/2026-05-21-release3
 
 Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-release3-hard-chat-blocked-state.md`. The local probe contract now treats missing mutation, duplicate assistant reply, timeout/null not fail-closed, or malformed return not fail-closed as `blocked` rather than ordinary `steering_only`. This does not prove `noReply`, `cancel`, or `stop` authority; it prevents incomplete hard-chat observations from being overinterpreted as safe steering evidence.
 
+## 2026-05-22 Durable Approval Provenance Hardening
+
+Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has a dedicated `production_approval_source` class whose reload path validates the full approval-source contract, and dispatch pre-call readiness has a pure durable evaluator that requires both a reloaded consumed approval source and a reloaded pre-dispatch audit entry. This closes an in-memory provenance gap without enabling provider calls, runtime dispatch, or default Release 1 dispatch.
+
 ## Next Safe Actions
 
 1. Keep the managed-dispatch promotion gate wired only to the explicit opt-in adapter path, preserving the ordering: durable evidence reload, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, promotion gate, then SDK call.
@@ -109,6 +113,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 ### Blocker #5: Durable Production Evidence
 
 - Expand evidence classes beyond usage/runtime echo/telemetry where needed for configured verification, sanitized auth, external auth/provider policy, approval, and pre-dispatch audit refs.
+- Production approval source evidence must be durably written/reloaded through its own evidence class and validated with the full approval-source contract before dispatch pre-call readiness can depend on it.
 - Test malformed, truncated, stale, drifted, cross-workflow, cross-profile, schema-version mismatch, symlink/root escape, partial write, and redaction-failure cases.
 - Doctor output must expose redacted fail-closed state without raw payloads or secret-bearing paths.
 
@@ -121,6 +126,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 ### Blocker #7: Single-Step Managed Dispatch Beta
 
 - Dispatch order is: validate evidence reloads -> validate approval source -> Guard decision -> write manifest -> write and reload pre-dispatch audit -> consume approval -> only then injected SDK call.
+- Local readiness evaluators must distinguish object-level pre-call validation from durable-provenance pre-call validation; provider/runtime dispatch may only depend on the durable path once wired.
 - Injected SDK spy tests must prove zero SDK/provider calls for every pre-call failure.
 - SDK failure after manifest/audit write must update the manifest to failed/quarantined without reusing approval or attempt id.
 

@@ -1,0 +1,38 @@
+# Release 3 Durable Approval Provenance Hardening
+
+Date: 2026-05-22
+
+## Scope
+
+This note records local durable-provenance hardening for production approval sources and dispatch pre-call readiness. It does not enable provider calls, real OpenCode dispatch, actual lane launches, active-profile mutation, external writes, or default Release 1 dispatch.
+
+## Change
+
+`flowdesk.production_approval_source.v1` is now a first-class durable session-evidence class:
+
+1. `production_approval_source` records are written under `.flowdesk/sessions/<workflow>/evidence/production-approval-source/<evidence>.json`.
+2. Session evidence reload validates those records with `validateFlowDeskProductionApprovalSourceV1`, not only by schema id.
+3. Forged authority fields, profile drift, workflow drift, stale expiry, schema mismatch, redaction failures, path traversal, and symlink/root escape continue to fail closed through the session-evidence reload path.
+
+`evaluateFlowDeskDispatchAttemptDurablePrecallV1` adds a pure durable readiness layer over the existing object-level pre-call evaluator. It requires:
+
+1. A valid reload result with no blocked evidence entries.
+2. A reloaded `production_approval_source` record whose `approval_id` matches the dispatch manifest `approval_ref`.
+3. A reloaded `pre_dispatch_audit` entry matching the dispatch manifest `pre_dispatch_audit_ref`.
+4. The existing manifest and consumed-approval scope checks.
+
+The evaluator remains non-authorizing: `dispatch_authority_enabled=false`, `realOpenCodeDispatch=false`, `providerCall=false`, `runtimeExecution=false`, and `actualLaneLaunch=false`.
+
+## Verification
+
+Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
+
+1. `npm test --workspace @flowdesk/core -- --test-name-pattern "session evidence|dispatch attempt"` passed: 259/259 tests in the matched core run.
+2. LSP diagnostics were clean for changed TypeScript files.
+3. `npm run typecheck` passed.
+4. `npm test` passed: 328/328 tests.
+5. `GIT_MASTER=1 git diff --check` passed.
+
+## Authority State
+
+Managed dispatch remains gated and default Release 1 dispatch remains disabled. This change only prevents later gates from treating arbitrary in-memory approval objects as durable approval-source provenance.
