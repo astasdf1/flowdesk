@@ -34,6 +34,7 @@ export * from "./fake-runtime.js";
 export * from "./guard-boundary.js";
 export * from "./guarded-dry-run.js";
 export * from "./hook-harness.js";
+export * from "./lane-observability.js";
 export * from "./plan.js";
 export * from "./production-enablement.js";
 export * from "./provider-failures.js";

@@ -649,7 +649,7 @@ export function assertRetryResponseV1(value: unknown): asserts value is FlowDesk
 export function validateStatusLaneSummaryV1(value: unknown): ValidationResult {
   if (!isRecord(value)) return invalid("status lane summary must be an object");
   return combine([
-    rejectUnknownProperties(value, ["lane_id", "task_ref", "lane_class", "state", "failure_class", "safe_next_action", "refs", "invocation_ref_kind", "retry_count", "verdict_status", "workflow_id", "plan_revision_id", "attempt_id", "created_at", "started_at", "updated_at", "completed_at", "event_refs", "audit_refs", "log_ref", "debug_ref"]),
+    rejectUnknownProperties(value, ["lane_id", "task_ref", "lane_class", "state", "failure_class", "safe_next_action", "refs", "invocation_ref_kind", "retry_count", "verdict_status", "workflow_id", "plan_revision_id", "attempt_id", "created_at", "started_at", "updated_at", "completed_at", "event_refs", "audit_refs", "observability_ref", "log_ref", "debug_ref"]),
     requireFields(value, ["lane_id", "workflow_id", "plan_revision_id", "task_ref", "lane_class", "state", "created_at", "updated_at", "safe_next_action", "refs", "event_refs", "audit_refs"]),
     validateOpaqueId(value.lane_id, "lane_id"),
     validateOpaqueId(value.workflow_id, "workflow_id"),
@@ -672,6 +672,7 @@ export function validateStatusLaneSummaryV1(value: unknown): ValidationResult {
     validateTimestamp(value.updated_at, "updated_at"),
     value.completed_at === undefined ? valid() : validateTimestamp(value.completed_at, "completed_at"),
     value.log_ref === undefined ? valid() : validateOpaqueRef(value.log_ref, "log_ref"),
+    value.observability_ref === undefined ? valid() : validateOpaqueRef(value.observability_ref, "observability_ref"),
     value.debug_ref === undefined ? valid() : validateOpaqueRef(value.debug_ref, "debug_ref"),
     validateNoForbiddenRawPayloads(value, "status_lane_summary")
   ]);
@@ -1339,6 +1340,7 @@ export function validateLaneRecordV1(value: unknown): ValidationResult {
     validateStringArray(value.refs, "refs"),
     validateStringArray(value.event_refs, "event_refs"),
     validateStringArray(value.audit_refs, "audit_refs"),
+    value.observability_ref === undefined ? valid() : validateOpaqueRef(value.observability_ref, "observability_ref"),
     value.debug_ref === undefined ? valid() : validateOpaqueRef(value.debug_ref, "debug_ref"),
     value.invocation_ref_kind === undefined || isEnumValue(value.invocation_ref_kind, LANE_INVOCATION_REF_KINDS) ? valid() : invalid("invocation_ref_kind is invalid"),
     value.retry_count === undefined || (typeof value.retry_count === "number" && Number.isInteger(value.retry_count) && value.retry_count >= 0 && value.retry_count <= 2) ? valid() : invalid("retry_count is invalid"),

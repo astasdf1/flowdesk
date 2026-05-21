@@ -590,17 +590,51 @@ export interface LaneSummaryV1 {
 }
 
 export interface FlowDeskStatusLaneSummaryV1 extends LaneSummaryV1 {
-  workflow_id: OpaqueId;
-  plan_revision_id: OpaqueId;
-  attempt_id?: OpaqueId;
+	workflow_id: OpaqueId;
+	plan_revision_id: OpaqueId;
+	attempt_id?: OpaqueId;
   created_at: IsoTimestamp;
   started_at?: IsoTimestamp;
   updated_at: IsoTimestamp;
   completed_at?: IsoTimestamp;
-  event_refs: OpaqueRef[];
-  audit_refs: OpaqueRef[];
-  log_ref?: OpaqueRef;
-  debug_ref?: OpaqueRef;
+	event_refs: OpaqueRef[];
+	audit_refs: OpaqueRef[];
+	observability_ref?: OpaqueRef;
+	log_ref?: OpaqueRef;
+	debug_ref?: OpaqueRef;
+}
+
+export const LANE_OBSERVABILITY_LEVELS = ["status_summary", "openable_refs", "native_child_trace", "event_stream"] as const;
+export type LaneObservabilityLevelV1 = (typeof LANE_OBSERVABILITY_LEVELS)[number];
+
+export const LANE_INSPECTION_STATES = ["inspectable", "degraded", "blocked"] as const;
+export type LaneInspectionStateV1 = (typeof LANE_INSPECTION_STATES)[number];
+
+export interface FlowDeskLaneObservabilityArtifactV1 {
+	schema_version: "flowdesk.lane_observability.v1";
+	observability_id: OpaqueId;
+	workflow_id: OpaqueId;
+	lane_id: OpaqueId;
+	status_summary_ref: OpaqueRef;
+	observability_level: LaneObservabilityLevelV1;
+	inspection_state: LaneInspectionStateV1;
+	lane_state: PersistedLaneStateV1;
+	requested_binding_ref?: OpaqueRef;
+	observed_binding_ref?: OpaqueRef;
+	parent_session_ref?: OpaqueRef;
+	child_session_ref?: OpaqueRef;
+	message_ref?: OpaqueRef;
+	output_ref?: OpaqueRef;
+	detail_ref?: OpaqueRef;
+	debug_ref?: OpaqueRef;
+	inspect_actions: SafeNextAction[];
+	redaction_status: "passed" | "partial" | "blocked";
+	created_at: IsoTimestamp;
+	updated_at: IsoTimestamp;
+	dispatch_authority_enabled: false;
+	provider_call_made: false;
+	runtime_execution: false;
+	hard_chat_authority_claimed: false;
 }
 
 export interface BlockerSummaryV1 {
@@ -766,10 +800,11 @@ export interface FlowDeskLaneRecordV1 {
   retry_count?: number;
   verdict_status?: LaneVerdictStatusV1;
   safe_next_action: SafeNextAction;
-  refs: OpaqueRef[];
-  event_refs: OpaqueRef[];
-  audit_refs: OpaqueRef[];
-  debug_ref?: OpaqueRef;
+	refs: OpaqueRef[];
+	event_refs: OpaqueRef[];
+	audit_refs: OpaqueRef[];
+	observability_ref?: OpaqueRef;
+	debug_ref?: OpaqueRef;
 }
 
 export interface FlowDeskAuditRecordV1 {
