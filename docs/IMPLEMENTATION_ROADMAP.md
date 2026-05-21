@@ -52,7 +52,7 @@ Release 2 enables managed real dispatch for low-risk workflows after conformance
 
 Release 2.5 is a planned gate for internal OpenCode subtask/lane orchestration and dedicated reviewer bindings. It must not change Release 1 non-dispatch behavior or Release 2 opt-in dispatch gating. The gate exists to prove that FlowDesk can launch bounded internal lanes through OpenCode `subtask: true` command bindings or injected SDK/client calls, with explicit `agent` and concrete provider-qualified `model` binding, without using nested `opencode run` as production orchestration.
 
-Release 2.5 must support fan-out to every registered highest-tier available reviewer/model lane for high-risk or critical review when all gates pass. The active FlowDesk registry and Policy Pack decide the highest-tier set; Claude Opus, GPT frontier, and Gemini Pro can be seeded when registered, but missing unregistered providers do not block review by themselves. If only one highest-tier model is registered and available, FlowDesk still runs multi-perspective review by assigning multiple reviewer agents or perspective bindings to that same concrete model. These lanes extend the canonical `reviewer` profile rather than replacing it. They return typed critical review outputs only, and they cannot approve dispatch, replace Guard, replace verification, or self-approve.
+Release 2.5 must support fan-out to every registered highest-tier available reviewer/model lane for high-risk or critical review when all gates pass. The active FlowDesk registry and Policy Pack decide the highest-tier set; Claude Opus, GPT frontier, and Gemini Pro are abstract family labels only and may seed discovery, but they are never valid lane bindings by themselves. Reviewer lane bindings must use exact currently available provider-qualified model ids from a redacted model-availability cache. That cache is refreshed at most once per local day for the same active profile, registry, Policy Pack, OpenCode version, and account/auth boundary, and is refreshed early only when any of those inputs change. Missing unregistered providers do not block review by themselves. If only one highest-tier model is registered and available, FlowDesk still runs multi-perspective review by assigning multiple reviewer agents or perspective bindings to that same concrete model. These lanes extend the canonical `reviewer` profile rather than replacing it. They return typed critical review outputs only, and they cannot approve dispatch, replace Guard, replace verification, or self-approve.
 
 ### Release 3: Operational Intelligence
 
@@ -286,7 +286,7 @@ Goal: prove planned internal reviewer lane orchestration without weakening Relea
 
 Tasks:
 
-1. Implement the model binding registry rules for dedicated reviewer bindings under the canonical `reviewer` profile for every registered highest-tier reviewer/model lane. Seed the current environment with whatever top bindings are actually registered, such as Claude Opus, GPT frontier, or Gemini Pro when present.
+1. Implement the model binding registry rules for dedicated reviewer bindings under the canonical `reviewer` profile for every registered highest-tier reviewer/model lane. Seed discovery from abstract families such as Claude Opus, GPT frontier, or Gemini Pro when useful, but bind only exact provider-qualified model ids observed in the current environment.
 2. Implement the arbitrary agent/model override request shape with explicit agent id, concrete provider-qualified model id, registry binding ref, Guard evidence refs, and no silent fallback.
 3. Implement internal lane launch only through OpenCode `subtask: true` command bindings or the injected SDK/client path after conformance proves the chosen surface. Do not use `opencode run` for production orchestration.
 4. Implement typed critical review output schemas for reviewer lanes, including findings, severity, evidence refs, uncertainty, required fixes, and verdict labels.
@@ -295,11 +295,12 @@ Tasks:
 7. Implement explicit `registered`, `available`, and `highest-tier` predicates in the binding registry and Policy Pack, including provider/model-family promotion criteria and lower-tier substitution rejection.
 8. Implement reviewer perspective bindings such as policy/security, architecture, and verification/implementation, and prove they can share one concrete highest-tier model when only one such model is registered.
 9. Implement reviewer fan-out caps for maximum concurrent lanes, cost budget, quota reserve, timeout, and retry budget. If the caps cannot safely include every registered highest-tier binding and required perspective, block the run or ask for an explicit policy-compatible configuration change.
-10. Implement a redacted reviewer binding inventory snapshot that records registered, available, included, excluded, and blocked bindings plus perspective assignments with evidence refs and safe next actions.
+10. Implement a redacted daily model-availability cache keyed by local date, active profile, registry, Policy Pack, OpenCode version, and account/auth boundary. Reuse it for same-day review planning, refresh it on date/input changes, and block multi-model review when no current cache can prove exact available model ids.
+11. Implement a redacted reviewer binding inventory snapshot that records registered, available, included, excluded, and blocked bindings plus perspective assignments with evidence refs and safe next actions.
 
 Exit criteria:
 
-1. A review plan can request all registered highest-tier available reviewer/model lanes as `reviewer` bindings with concrete provider-qualified model ids, and can assign multiple reviewer perspectives to the same model when only one highest-tier model is registered.
+1. A review plan can request all registered highest-tier available reviewer/model lanes as `reviewer` bindings with concrete provider-qualified model ids from the current daily model-availability cache, and can assign multiple reviewer perspectives to the same model when only one highest-tier model is registered.
 2. Missing auth, stale or unknown usage, missing quota/reset evidence, unavailable model id, provider health failure, runtime echo mismatch, telemetry loss, lower-tier substitution, or output schema failure blocks the affected lane and reports a safe next action.
 3. Review lanes return typed critical review outputs only. They do not approve dispatch, replace Guard, replace configured verification, or self-approve.
 4. No `opencode run` invocation is part of the production lane path.
