@@ -14,6 +14,7 @@ import {
 	sessionEvidenceDirectoryPath,
 	sessionEvidenceRecordPath,
 } from "./state-paths.js";
+import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import {
 	invalid,
 	type ValidationResult,
@@ -33,6 +34,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	external_auth_provider_policy:
 		"flowdesk.external_auth_provider_policy_result.v1",
 	production_approval: "flowdesk.production_approval_decision.v1",
+	production_approval_source: "flowdesk.production_approval_source.v1",
 	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
 };
 
@@ -142,6 +144,8 @@ function validateEvidenceShape(
 ): ValidationResult {
 	const schemaCheck = validateSchemaVersionForClass(record, evidenceClass);
 	if (!schemaCheck.ok) return schemaCheck;
+	if (evidenceClass === "production_approval_source")
+		return validateFlowDeskProductionApprovalSourceV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))

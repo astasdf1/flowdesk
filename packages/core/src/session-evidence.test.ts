@@ -77,6 +77,42 @@ function telemetryRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function productionApprovalSourceRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.production_approval_source.v1",
+    approval_id: "approval-1",
+    workflow_id: workflowId,
+    attempt_id: "attempt-1",
+    action_type: "managed_dispatch_beta",
+    issuer_boundary: "external_user_confirmation",
+    approval_method: "typed_phrase",
+    actor_ref: "actor-user-1",
+    profile_ref: "principal-scope-claude",
+    provider_qualified_model_id: "claude/claude-opus-4-5",
+    provider_binding_hash: "hash-provider-binding-1",
+    evidence_bundle_hash: "hash-evidence-bundle-1",
+    guard_decision_ref: "guard-decision-1",
+    issuance_audit_ref: "audit-issuance-1",
+    nonce_ref: "nonce-1",
+    issued_at: "2026-05-19T00:00:00.000Z",
+    expires_at: "2026-05-19T05:00:00.000Z",
+    revoked: false,
+    consume_strategy: "atomic_compare_and_swap_required",
+    dispatch_authority_enabled: false,
+    ...overrides
+  };
+}
+
+function preDispatchAuditRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+    workflow_id: workflowId,
+    pre_dispatch_audit_ref: "audit-predispatch-1",
+    observed_at: "2026-05-19T00:00:00.000Z",
+    ...overrides
+  };
+}
+
 test("session evidence path builders produce per-class relative paths", () => {
   for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
     const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
@@ -100,6 +136,17 @@ test("session evidence write intent succeeds for valid usage authority records",
   assert.equal(intent.runtimeExecution, false);
   assert.ok(intent.path.startsWith(`.flowdesk/sessions/${workflowId}/evidence/usage-authority/`));
   assert.ok(intent.tempPath.startsWith(`${intent.path}.tmp-`));
+});
+
+test("session evidence write intent succeeds for production approval source records", () => {
+  const result = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "approval-source-1", record: productionApprovalSourceRecord() });
+  assert.equal(result.ok, true, result.errors.join("; "));
+  const intent = result.writeIntent;
+  assert.ok(intent);
+  assert.equal(intent.evidenceClass, "production_approval_source");
+  assert.equal(intent.schemaId, "flowdesk.production_approval_source.v1");
+  assert.equal(intent.providerCall, false);
+  assert.ok(intent.path.startsWith(`.flowdesk/sessions/${workflowId}/evidence/production-approval-source/`));
 });
 
 test("session evidence write intent rejects schema version mismatch and authority leaks", () => {
@@ -129,7 +176,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), preDispatchAuditRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -139,14 +186,29 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 3);
+    assert.equal(applied.writtenPaths.length, 5);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 3);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation"]));
+    assert.equal(reloaded.entries.length, 5);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "pre_dispatch_audit"]));
+  });
+});
+
+test("session evidence reload validates durable production approval sources", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "production_approval_source", "approval-good"), JSON.stringify(productionApprovalSourceRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "production_approval_source", "approval-forged"), JSON.stringify(productionApprovalSourceRecord({ dispatch_authority_enabled: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "production_approval_source", "approval-profile"), JSON.stringify(productionApprovalSourceRecord({ profile_ref: "profile-other" })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir, expectedProfileRef: "principal-scope-claude" });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "production_approval_source");
+    assert.equal(result.blocked.length, 2);
+    const reasons = result.blocked.map((blocked) => blocked.reason).join("|");
+    assert.match(reasons, /cannot enable dispatch authority/);
+    assert.match(reasons, /profile_ref mismatch/);
   });
 });
 

@@ -65,6 +65,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
   "sanitized_auth_capture",
   "external_auth_provider_policy",
   "production_approval",
+  "production_approval_source",
   "pre_dispatch_audit"
 ] as const;
 export type FlowDeskSessionEvidenceClass = (typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -77,6 +78,7 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
   sanitized_auth_capture: "sanitized-auth-capture",
   external_auth_provider_policy: "external-auth-provider-policy",
   production_approval: "production-approval",
+  production_approval_source: "production-approval-source",
   pre_dispatch_audit: "pre-dispatch-audit"
 };
 
