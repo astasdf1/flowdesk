@@ -12,6 +12,7 @@ import {
 	type FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
 	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskProviderHealthSnapshotV1,
+	type FlowDeskSessionEvidenceReloadResultV1,
 	type FlowDeskUsageSnapshotV1,
 	type GuardApprovedDispatchV1,
 	type ManagedDispatchBetaBoundaryInputV1,
@@ -346,6 +347,39 @@ function dispatchManifest(
 	};
 }
 
+function reloadedEvidence(
+	overrides: Partial<FlowDeskSessionEvidenceReloadResultV1> = {},
+): FlowDeskSessionEvidenceReloadResultV1 {
+	return {
+		ok: true,
+		errors: [],
+		entries: [
+			{
+				evidenceClass: "production_approval_source",
+				evidenceId: "approval-source-123",
+				record: consumedApproval() as unknown as Record<string, unknown>,
+				path: ".flowdesk/sessions/workflow-123/evidence/production-approval-source/approval-source-123.json",
+			},
+			{
+				evidenceClass: "pre_dispatch_audit",
+				evidenceId: "audit-123",
+				record: {
+					schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+					workflow_id: "workflow-123",
+					pre_dispatch_audit_ref: "audit-123",
+				},
+				path: ".flowdesk/sessions/workflow-123/evidence/pre-dispatch-audit/audit-123.json",
+			},
+		],
+		blocked: [],
+		realOpenCodeDispatch: false,
+		actualLaneLaunch: false,
+		providerCall: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
 function fakeClient() {
 	const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
 	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
@@ -481,7 +515,7 @@ test("managed dispatch beta adapter calls promptAsync once with approved model a
 		boundaryInput: managedDispatchInput(),
 		request: dispatchRequest(),
 		dispatchManifest: dispatchManifest(),
-		consumedApproval: consumedApproval(),
+		reloadedEvidence: reloadedEvidence(),
 	});
 
 	assert.equal(result.status, "dispatch_accepted");
@@ -524,7 +558,7 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
 			promptSummary: "Summarized approved prompt.",
 		}),
 		dispatchManifest: dispatchManifest(),
-		consumedApproval: consumedApproval(),
+		reloadedEvidence: reloadedEvidence(),
 	});
 
 	assert.equal(result.status, "dispatch_completed");
@@ -544,7 +578,7 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
 	);
 });
 
-test("managed dispatch beta adapter requires manifest and consumed approval before fake client calls", async () => {
+test("managed dispatch beta adapter requires manifest and durable evidence before fake client calls", async () => {
 	const { client, promptCalls, promptAsyncCalls } = fakeClient();
 	const missing = await dispatchManagedDispatchBetaPromptV1({
 		client,
@@ -552,7 +586,7 @@ test("managed dispatch beta adapter requires manifest and consumed approval befo
 		request: dispatchRequest(),
 	});
 	assert.equal(missing.status, "blocked_before_dispatch");
-	assert.match(missing.redactedBlockReason, /manifest and consumed approval/);
+	assert.match(missing.redactedBlockReason, /manifest and durable evidence reload/);
 	assert.equal(promptCalls.length, 0);
 	assert.equal(promptAsyncCalls.length, 0);
 
@@ -561,7 +595,7 @@ test("managed dispatch beta adapter requires manifest and consumed approval befo
 		boundaryInput: managedDispatchInput(),
 		request: dispatchRequest(),
 		dispatchManifest: dispatchManifest({ pre_dispatch_audit_committed: false }),
-		consumedApproval: consumedApproval(),
+		reloadedEvidence: reloadedEvidence(),
 	});
 	assert.equal(badManifest.status, "blocked_before_dispatch");
 	assert.match(badManifest.redactedBlockReason, /pre-call gate blocked/);
@@ -576,7 +610,26 @@ test("managed dispatch beta adapter requires promotion gate before fake client c
 		boundaryInput: managedDispatchInput(),
 		request: dispatchRequest(),
 		dispatchManifest: dispatchManifest(),
-		consumedApproval: consumedApproval({ action_type: "reviewer_fanout" }),
+		reloadedEvidence: reloadedEvidence({
+			entries: [
+				{
+					evidenceClass: "production_approval_source",
+					evidenceId: "approval-source-123",
+					record: consumedApproval({ action_type: "reviewer_fanout" }) as unknown as Record<string, unknown>,
+					path: ".flowdesk/sessions/workflow-123/evidence/production-approval-source/approval-source-123.json",
+				},
+				{
+					evidenceClass: "pre_dispatch_audit",
+					evidenceId: "audit-123",
+					record: {
+						schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+						workflow_id: "workflow-123",
+						pre_dispatch_audit_ref: "audit-123",
+					},
+					path: ".flowdesk/sessions/workflow-123/evidence/pre-dispatch-audit/audit-123.json",
+				},
+			],
+		}),
 	});
 	assert.equal(wrongAction.status, "blocked_before_dispatch");
 	assert.match(
@@ -592,7 +645,7 @@ test("managed dispatch beta adapter requires promotion gate before fake client c
 		boundaryInput: managedDispatchInput({ preDispatchAuditRef: "audit-other" }),
 		request: dispatchRequest(),
 		dispatchManifest: dispatchManifest(),
-		consumedApproval: consumedApproval(),
+		reloadedEvidence: reloadedEvidence(),
 	});
 	assert.equal(auditMismatch.status, "blocked_before_dispatch");
 	assert.match(
@@ -702,7 +755,7 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
 			boundaryInput: managedDispatchInput(),
 			request: dispatchRequest(),
 			dispatchManifest: dispatchManifest(),
-			consumedApproval: consumedApproval(),
+			reloadedEvidence: reloadedEvidence(),
 		},
 		undefined as never,
 	);

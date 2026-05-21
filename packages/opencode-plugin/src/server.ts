@@ -4,10 +4,10 @@ import type {
   FlowDeskDispatchAttemptManifestV1,
   FlowDeskExternalAuthProviderPolicyResultV1,
   FlowDeskProductionApprovalDecisionV1,
-  FlowDeskProductionApprovalSourceV1,
   FlowDeskRelease1MinimumPortableCommandName,
   FlowDeskRelease1MinimumToolName,
   FlowDeskSanitizedAuthCaptureResultV1,
+  FlowDeskSessionEvidenceReloadResultV1,
   FlowDeskToolRequestEnvelopeV1,
   ManagedDispatchBetaBoundaryInputV1,
   SafeNextAction
@@ -406,7 +406,7 @@ export function createFlowDeskManagedDispatchBetaOptInTools(client: FlowDeskMana
           boundaryInput: record.boundaryInput as unknown as ManagedDispatchBetaBoundaryInputV1,
           request: record.request as unknown as FlowDeskManagedDispatchBetaDispatchRequestV1,
           ...(isRecord(record.dispatchManifest) ? { dispatchManifest: record.dispatchManifest as unknown as FlowDeskDispatchAttemptManifestV1 } : {}),
-          ...(isRecord(record.consumedApproval) ? { consumedApproval: record.consumedApproval as unknown as FlowDeskProductionApprovalSourceV1 } : {})
+          ...(isRecord(record.reloadedEvidence) ? { reloadedEvidence: record.reloadedEvidence as unknown as FlowDeskSessionEvidenceReloadResultV1 } : {})
         });
         return JSON.stringify(redactedManagedDispatchBetaToolResult(result));
       }

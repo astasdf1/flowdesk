@@ -1,5 +1,5 @@
-import type { FlowDeskDispatchAttemptManifestV1, FlowDeskProductionApprovalSourceV1, GuardBoundaryDecisionV1, ManagedDispatchBetaBoundaryInputV1 } from "@flowdesk/core";
-import { evaluateFlowDeskDispatchAttemptPrecallV1, evaluateManagedDispatchBetaGuardBoundaryV1, promoteFlowDeskManagedDispatchBetaAuthorityV1 } from "@flowdesk/core";
+import type { FlowDeskDispatchAttemptManifestV1, FlowDeskProductionApprovalSourceV1, FlowDeskSessionEvidenceReloadResultV1, GuardBoundaryDecisionV1, ManagedDispatchBetaBoundaryInputV1 } from "@flowdesk/core";
+import { evaluateFlowDeskDispatchAttemptDurablePrecallV1, evaluateManagedDispatchBetaGuardBoundaryV1, promoteFlowDeskManagedDispatchBetaAuthorityV1 } from "@flowdesk/core";
 
 export const flowdeskManagedDispatchBetaAdapterProfile = "managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
 
@@ -301,7 +301,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   boundaryInput: ManagedDispatchBetaBoundaryInputV1;
   request: FlowDeskManagedDispatchBetaDispatchRequestV1;
   dispatchManifest?: FlowDeskDispatchAttemptManifestV1;
-  consumedApproval?: FlowDeskProductionApprovalSourceV1;
+  reloadedEvidence?: FlowDeskSessionEvidenceReloadResultV1;
 }): Promise<FlowDeskManagedDispatchBetaAdapterResultV1> {
   const guardDecision = evaluateManagedDispatchBetaGuardBoundaryV1(input.boundaryInput);
   if (guardDecision.status !== "eligible") return blocked(input.boundaryInput, guardDecision);
@@ -321,24 +321,34 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
     return blocked(input.boundaryInput, guardDecision, "Dispatch request is missing session, agent, or bounded prompt text.");
   }
 
-  if (input.dispatchManifest === undefined || input.consumedApproval === undefined) {
-    return blocked(input.boundaryInput, guardDecision, "Dispatch attempt manifest and consumed approval are required before SDK call.");
+  if (input.dispatchManifest === undefined || input.reloadedEvidence === undefined) {
+    return blocked(input.boundaryInput, guardDecision, "Dispatch attempt manifest and durable evidence reload are required before SDK call.");
   }
-  const precall = evaluateFlowDeskDispatchAttemptPrecallV1({
+  const precall = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
     manifest: input.dispatchManifest,
-    consumedApproval: input.consumedApproval
+    reloadedEvidence: input.reloadedEvidence
   });
   if (!precall.sdk_call_permitted) {
     return blocked(input.boundaryInput, guardDecision, `Dispatch pre-call gate blocked: ${precall.blocked_labels.join(",") || precall.errors.join(",") || "unknown"}.`);
   }
+  const consumedApproval = input.reloadedEvidence.entries.find((entry) => entry.evidenceClass === "production_approval_source" && entry.record.approval_id === input.dispatchManifest?.approval_ref)?.record as FlowDeskProductionApprovalSourceV1 | undefined;
+  if (consumedApproval === undefined) {
+    return blocked(input.boundaryInput, guardDecision, "Durable dispatch pre-call gate did not expose a reloaded consumed approval source.");
+  }
+  const {
+    durable_provenance_required: _durableProvenanceRequired,
+    reloaded_approval_source_ref: _reloadedApprovalSourceRef,
+    reloaded_pre_dispatch_audit_ref: _reloadedPreDispatchAuditRef,
+    ...promotionPrecall
+  } = precall;
 
   if (input.boundaryInput.preDispatchAuditRef === undefined || input.boundaryInput.runtimeEchoEvidence?.conformance_ref === undefined) {
     return blocked(input.boundaryInput, guardDecision, "Managed-dispatch promotion requires matching audit and conformance refs before SDK call.");
   }
   const promotion = promoteFlowDeskManagedDispatchBetaAuthorityV1({
     guardDecision,
-    precallEvaluation: precall,
-    consumedApproval: input.consumedApproval,
+    precallEvaluation: promotionPrecall,
+    consumedApproval,
     auditRef: input.boundaryInput.preDispatchAuditRef,
     conformanceRef: input.boundaryInput.runtimeEchoEvidence.conformance_ref
   });
