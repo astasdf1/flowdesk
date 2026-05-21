@@ -49,6 +49,6 @@
   },
   "dependencies": {
     "@flowdesk/core": "^0.1.0",
-    "@opencode-ai/plugin": "1.3.12"
+    "@opencode-ai/plugin": "1.15.6"
   }
 }
