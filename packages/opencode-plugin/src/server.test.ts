@@ -81,8 +81,12 @@ interface NaturalLanguageRoutingTestResult {
 }
 
 interface ChatMessageHooks {
-  tool?: Record<string, { execute(request: unknown, context: unknown): Promise<string>; description: string; args: Record<string, unknown> }>;
+  tool?: Record<string, { execute(request: unknown, context: unknown): Promise<string | { output: string }>; description: string; args: Record<string, unknown> }>;
   "chat.message"?: (input: unknown, output: { parts?: unknown[] }) => Promise<void>;
+}
+
+function toolOutput(value: string | { output: string }): string {
+  return typeof value === "string" ? value : value.output;
 }
 
 test("server plugin defaults to safe local command-backed chat mode", async () => {
@@ -100,7 +104,7 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
   assert.equal(doctor.description.includes("without enabling real dispatch"), true);
   assert.deepEqual(doctor.args, {});
 
-  const result = JSON.parse(await doctor.execute({}, undefined as never)) as Record<string, unknown>;
+  const result = JSON.parse(toolOutput(await doctor.execute({}, undefined as never))) as Record<string, unknown>;
   assert.equal(result.pluginId, "flowdesk");
   assert.equal(result.loaded, true);
   assert.equal(result.probeRegistrationProfile, "disabled");
@@ -169,7 +173,7 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.ok(statusTool);
   assert.ok(runTool);
 
-  const planResult = JSON.parse(await planTool.execute({ ...planFixture.categories["valid.minimal"].sample, request_id: "request-local", workflow_id: "workflow-local" }, undefined as never)) as LocalAdapterTestResult;
+  const planResult = JSON.parse(toolOutput(await planTool.execute({ ...planFixture.categories["valid.minimal"].sample, request_id: "request-local", workflow_id: "workflow-local" }, undefined as never))) as LocalAdapterTestResult;
   assert.equal(planResult.adapterProfile, "local_non_dispatch_command_adapter");
   assert.equal(planResult.handler?.ok, true);
   assert.equal(planResult.handler?.handlerMode, "command_backed_core_evaluator");
@@ -181,7 +185,7 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.equal(planResult.runtimeExecution, false);
   assert.equal(planResult.actualLaneLaunch, false);
 
-  const runResult = JSON.parse(await runTool.execute({ ...runFixture.categories["valid.minimal"].sample, request_id: "request-local-run", workflow_id: "workflow-local", plan_revision_id: planResult.handler?.response?.plan_revision_id, run_mode: "fake-runtime", step_id: "step-local" }, undefined as never)) as LocalAdapterTestResult;
+  const runResult = JSON.parse(toolOutput(await runTool.execute({ ...runFixture.categories["valid.minimal"].sample, request_id: "request-local-run", workflow_id: "workflow-local", plan_revision_id: planResult.handler?.response?.plan_revision_id, run_mode: "fake-runtime", step_id: "step-local" }, undefined as never))) as LocalAdapterTestResult;
   assert.equal(runResult.handler?.ok, true);
   assert.equal(runResult.handler?.response?.status, "fake_runtime_complete");
   assert.equal(runResult.localState?.stateWriteApplied, true);
@@ -190,7 +194,7 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.equal(runResult.runtimeExecution, false);
   assert.equal(runResult.actualLaneLaunch, false);
 
-  const statusResult = JSON.parse(await statusTool.execute({ ...statusFixture.categories["valid.minimal"].sample, request_id: "request-local-status", workflow_id: "workflow-local" }, undefined as never)) as LocalAdapterTestResult;
+  const statusResult = JSON.parse(toolOutput(await statusTool.execute({ ...statusFixture.categories["valid.minimal"].sample, request_id: "request-local-status", workflow_id: "workflow-local" }, undefined as never))) as LocalAdapterTestResult;
   assert.equal(statusResult.handler?.ok, true);
   assert.equal(statusResult.handler?.response?.workflow_id, "workflow-local");
   assert.equal(statusResult.handler?.response?.workflow_state, "complete");
@@ -199,7 +203,7 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
   assert.equal(statusResult.runtimeExecution, false);
   assert.equal(statusResult.actualLaneLaunch, false);
 
-  const invalidPlanResult = JSON.parse(await planTool.execute(planFixture.categories["invalid.unknown-property"].sample, undefined as never)) as LocalAdapterTestResult;
+  const invalidPlanResult = JSON.parse(toolOutput(await planTool.execute(planFixture.categories["invalid.unknown-property"].sample, undefined as never))) as LocalAdapterTestResult;
   assert.equal(invalidPlanResult.handler?.ok, false);
   assert.equal(invalidPlanResult.handler?.handlerMode, "request_schema_invalid");
   assert.equal(invalidPlanResult.localState?.stateWriteApplied, false);
@@ -229,7 +233,7 @@ test("server plugin allows explicit opt-out of local tools and natural-language 
 
   const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
   assert.ok(doctor);
-  const result = JSON.parse(await doctor.execute({}, undefined as never)) as Record<string, unknown>;
+  const result = JSON.parse(toolOutput(await doctor.execute({}, undefined as never))) as Record<string, unknown>;
   assert.equal(result.naturalLanguageRoutingProfile, "chat_steering_command_backed_non_dispatch");
   assert.equal(result.productionOpenCodeRegistration, true);
   assert.equal(result.providerCall, false);
@@ -242,7 +246,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
   assert.ok(intakeTool);
 
-  const result = JSON.parse(await intakeTool.execute({
+  const result = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-status",
     input_mode: "chat_routed",
@@ -250,7 +254,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-status",
     intake_summary: "현재 상태와 진행상황 알려줘",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
 
   assert.equal(result.ok, true);
   assert.equal(result.evaluation?.response?.route_decision, "use_command_fallback");
@@ -263,7 +267,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(result.fallbackAuthority, false);
   assert.equal(result.hardCancelOrNoReplyAuthority, false);
 
-  const doctor = JSON.parse(await intakeTool.execute({
+  const doctor = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-doctor",
     input_mode: "chat_routed",
@@ -271,7 +275,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-doctor",
     intake_summary: "/flowdesk-doctor",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.equal(doctor.evaluation?.response?.route_decision, "use_command_fallback");
   assert.equal(doctor.routedToolName, "flowdesk_doctor");
   assert.equal(doctor.routedToolResult?.handler?.ok, true);
@@ -280,7 +284,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(doctor.runtimeExecution, false);
   assert.equal(doctor.actualLaneLaunch, false);
 
-  const retry = JSON.parse(await intakeTool.execute({
+  const retry = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-retry",
     input_mode: "chat_routed",
@@ -289,14 +293,14 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-retry",
     intake_summary: "retry the last failed attempt",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.deepEqual(retry.evaluation?.response?.safe_next_actions, ["/flowdesk-status", "/flowdesk-retry"]);
   assert.equal(retry.routedToolName, "flowdesk_retry");
   assert.equal(retry.routedToolResult?.handler?.ok, true);
   assert.equal(retry.providerCall, false);
   assert.equal(retry.runtimeExecution, false);
 
-  const abort = JSON.parse(await intakeTool.execute({
+  const abort = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-abort",
     input_mode: "chat_routed",
@@ -305,7 +309,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-abort",
     intake_summary: "cancel workflow safely",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.deepEqual(abort.evaluation?.response?.safe_next_actions, ["/flowdesk-status", "/flowdesk-abort"]);
   assert.equal(abort.routedToolName, "flowdesk_abort");
   assert.equal(abort.routedToolResult?.handler?.ok, true);
@@ -313,7 +317,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
   assert.equal(abort.providerCall, false);
   assert.equal(abort.actualLaneLaunch, false);
 
-  const resume = JSON.parse(await intakeTool.execute({
+  const resume = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-resume",
     input_mode: "chat_routed",
@@ -322,14 +326,14 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-resume",
     intake_summary: "resume from checkpoint",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.deepEqual(resume.evaluation?.response?.safe_next_actions, ["/flowdesk-status", "/flowdesk-resume"]);
   assert.equal(resume.routedToolName, "flowdesk_resume");
   assert.equal(resume.routedToolResult?.handler?.ok, true);
   assert.equal(resume.providerCall, false);
   assert.equal(resume.actualLaneLaunch, false);
 
-  const usage = JSON.parse(await intakeTool.execute({
+  const usage = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-usage",
     input_mode: "chat_routed",
@@ -337,13 +341,13 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-usage",
     intake_summary: "show usage quota",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.deepEqual(usage.evaluation?.response?.safe_next_actions, ["/flowdesk-usage", "/flowdesk-doctor", "/flowdesk-status"]);
   assert.equal(usage.routedToolName, "flowdesk_usage");
   assert.equal(usage.routedToolResult?.handler?.ok, true);
   assert.equal(usage.providerCall, false);
 
-  const exportDebug = JSON.parse(await intakeTool.execute({
+  const exportDebug = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-export-debug",
     input_mode: "chat_routed",
@@ -351,7 +355,7 @@ test("chat intake tool evaluates routing and executes local command-backed resul
     redacted_intake_ref: "intake-nl-export-debug",
     intake_summary: "export debug bundle",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.deepEqual(exportDebug.evaluation?.response?.safe_next_actions, ["/flowdesk-export-debug", "/flowdesk-status"]);
   assert.equal(exportDebug.routedToolName, "flowdesk_export_debug");
   assert.equal(exportDebug.routedToolResult?.handler?.ok, true);
@@ -366,7 +370,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
   const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
   assert.ok(intakeTool);
 
-  const result = JSON.parse(await intakeTool.execute({
+  const result = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-run-confirm",
     input_mode: "chat_routed",
@@ -375,7 +379,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
     redacted_intake_ref: "intake-nl-run-confirm",
     intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
 
   assert.equal(result.ok, true);
   assert.equal(result.evaluation?.response?.route_decision, "ask_clarification");
@@ -393,7 +397,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(result.runtimeExecution, false);
   assert.equal(result.actualLaneLaunch, false);
 
-  const confirmed = JSON.parse(await intakeTool.execute({
+  const confirmed = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-run-confirmed",
     input_mode: "chat_routed",
@@ -403,7 +407,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
     user_approval_ref: pendingApprovalRef,
     intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.equal(confirmed.evaluation?.response?.route_decision, "use_command_fallback");
   assert.deepEqual(confirmed.evaluation?.response?.safe_next_actions, ["/flowdesk-run", "/flowdesk-status"]);
   assert.equal(confirmed.routedToolName, "flowdesk_run");
@@ -413,7 +417,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(confirmed.runtimeExecution, false);
   assert.equal(confirmed.actualLaneLaunch, false);
 
-  const reused = JSON.parse(await intakeTool.execute({
+  const reused = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-run-reused-confirmation",
     input_mode: "chat_routed",
@@ -423,7 +427,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
     user_approval_ref: pendingApprovalRef,
     intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.equal(reused.routedToolName, "flowdesk_run");
   assert.equal(reused.routedToolResult?.handler?.ok, false);
   assert.equal(reused.routedToolResult?.handler?.handlerMode, "pending_confirmation_invalid");
@@ -432,7 +436,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
   assert.equal(reused.runtimeExecution, false);
   assert.equal(reused.actualLaneLaunch, false);
 
-  const weakApproval = JSON.parse(await intakeTool.execute({
+  const weakApproval = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-run-weak-approval",
     input_mode: "chat_routed",
@@ -442,14 +446,14 @@ test("chat intake holds execution-like requests for confirmation before run", as
     user_approval_ref: "approval-nl-run-weak-approval",
     intake_summary: "maybe fake-runtime run this later",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.equal(weakApproval.evaluation?.response?.route_decision, "ask_clarification");
   assert.equal(weakApproval.routedToolName, "flowdesk_plan");
   assert.equal(weakApproval.routedToolResult?.localState?.workflowState, "plan_pending_approval");
   assert.equal(weakApproval.runtimeExecution, false);
   assert.equal(weakApproval.actualLaneLaunch, false);
 
-  const missingSessionScope = JSON.parse(await intakeTool.execute({
+  const missingSessionScope = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-run-missing-session-scope",
     input_mode: "chat_routed",
@@ -458,7 +462,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
     user_approval_ref: pendingApprovalRef,
     intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.equal(missingSessionScope.routedToolResult?.handler?.ok, false);
   assert.equal(missingSessionScope.routedToolResult?.handler?.handlerMode, "pending_confirmation_invalid");
   assert.equal(missingSessionScope.runtimeExecution, false);
@@ -682,7 +686,7 @@ test("server option wires durable state root into local routing session", async 
     }) as ChatMessageHooks;
     const intakeTool = hooks.tool?.[flowdeskChatIntakeToolName];
     assert.ok(intakeTool);
-    const plan = JSON.parse(await intakeTool.execute({
+    const plan = JSON.parse(toolOutput(await intakeTool.execute({
       schema_version: "flowdesk.chat_intake.request.v1",
       request_id: "request-server-durable-plan",
       input_mode: "chat_routed",
@@ -691,7 +695,7 @@ test("server option wires durable state root into local routing session", async 
       redacted_intake_ref: "intake-server-durable",
       intake_summary: "구현 계획을 세워줘",
       source_surface: "chat.message"
-    }, undefined as never)) as NaturalLanguageRoutingTestResult;
+    }, undefined as never))) as NaturalLanguageRoutingTestResult;
     assert.equal(plan.routedToolResult?.localState?.durableStateMode, "durable_flowdesk_root");
     assert.equal(plan.routedToolResult?.localState?.durableStateWriteApplied, true);
     assert.equal(existsSync(join(root, ".flowdesk/workflows/workflow-server-durable/workflow.json")), true);
@@ -815,7 +819,7 @@ test("server option wires production enablement evidence into doctor diagnostics
     assert.ok(doctorTool);
     const doctorFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_doctor" && entry.schemaKind === "tool_request");
     assert.ok(doctorFixture);
-    const doctor = JSON.parse(await doctorTool.execute({ ...doctorFixture.categories["valid.minimal"].sample, request_id: "request-production-doctor", check_scope: "all", profile: "test" }, undefined as never)) as LocalAdapterTestResult;
+    const doctor = JSON.parse(toolOutput(await doctorTool.execute({ ...doctorFixture.categories["valid.minimal"].sample, request_id: "request-production-doctor", check_scope: "all", profile: "test" }, undefined as never))) as LocalAdapterTestResult;
     assert.equal(doctor.handler?.ok, true);
     const compatibility = doctor.handler?.response?.doctor_results?.find((section) => section.section === "opencode_plugin_compatibility");
     assert.ok(compatibility);
@@ -910,7 +914,7 @@ test("server option fails closed for invalid configured verification result diag
     assert.ok(doctorTool);
     const doctorFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_doctor" && entry.schemaKind === "tool_request");
     assert.ok(doctorFixture);
-    const doctor = JSON.parse(await doctorTool.execute({ ...doctorFixture.categories["valid.minimal"].sample, request_id: "request-invalid-verification-doctor", check_scope: "all", profile: "test" }, undefined as never)) as LocalAdapterTestResult;
+    const doctor = JSON.parse(toolOutput(await doctorTool.execute({ ...doctorFixture.categories["valid.minimal"].sample, request_id: "request-invalid-verification-doctor", check_scope: "all", profile: "test" }, undefined as never))) as LocalAdapterTestResult;
     assert.equal(doctor.handler?.ok, true);
     const compatibility = doctor.handler?.response?.doctor_results?.find((section) => section.section === "opencode_plugin_compatibility");
     assert.ok(compatibility);
@@ -944,7 +948,7 @@ test("natural-language routing reuses local adapter session with adapter tools",
   assert.ok(intakeTool);
   assert.ok(statusTool);
 
-  const planResult = JSON.parse(await intakeTool.execute({
+  const planResult = JSON.parse(toolOutput(await intakeTool.execute({
     schema_version: "flowdesk.chat_intake.request.v1",
     request_id: "request-nl-plan",
     input_mode: "chat_routed",
@@ -953,17 +957,17 @@ test("natural-language routing reuses local adapter session with adapter tools",
     redacted_intake_ref: "intake-nl-plan",
     intake_summary: "구현 계획을 세워줘",
     source_surface: "chat.message"
-  }, undefined as never)) as NaturalLanguageRoutingTestResult;
+  }, undefined as never))) as NaturalLanguageRoutingTestResult;
   assert.equal(planResult.routedToolName, "flowdesk_plan");
   assert.equal(planResult.routedToolResult?.localState?.workflowId, "workflow-nl-shared");
 
-  const statusResult = JSON.parse(await statusTool.execute({
+  const statusResult = JSON.parse(toolOutput(await statusTool.execute({
     schema_version: "flowdesk.status.request.v1",
     request_id: "request-nl-shared-status",
     input_mode: "chat_routed",
     workflow_id: "workflow-nl-shared",
     detail_level: "summary"
-  }, undefined as never)) as LocalAdapterTestResult;
+  }, undefined as never))) as LocalAdapterTestResult;
   assert.equal(statusResult.handler?.ok, true);
   assert.equal(statusResult.handler?.response?.workflow_id, "workflow-nl-shared");
   assert.equal(statusResult.localState?.workflowState, "ready_to_run");
@@ -1104,7 +1108,7 @@ test("server plugin can expose sandbox-only FDS-1 production-shape probe tools",
 
     const requestFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === manifestEntry.toolName && entry.schemaKind === "tool_request");
     assert.ok(requestFixture, manifestEntry.toolName);
-    const result = JSON.parse(await registeredTool.execute(requestFixture.categories["valid.minimal"].sample, undefined as never)) as Record<string, unknown>;
+    const result = JSON.parse(toolOutput(await registeredTool.execute(requestFixture.categories["valid.minimal"].sample, undefined as never))) as Record<string, unknown>;
     assert.equal(result.toolName, manifestEntry.toolName);
     assert.equal(result.accepted, false);
     assert.equal(result.requestSchemaValid, true);
@@ -1116,7 +1120,7 @@ test("server plugin can expose sandbox-only FDS-1 production-shape probe tools",
     assert.equal(result.dispatchApprovalEligible, false);
     assert.equal(result.providerCall, false);
     assert.equal(result.runtimeExecution, false);
-    const invalidResult = JSON.parse(await registeredTool.execute(requestFixture.categories["invalid.unknown-property"].sample, undefined as never)) as Record<string, unknown>;
+    const invalidResult = JSON.parse(toolOutput(await registeredTool.execute(requestFixture.categories["invalid.unknown-property"].sample, undefined as never))) as Record<string, unknown>;
     assert.equal(invalidResult.toolName, manifestEntry.toolName);
     assert.equal(invalidResult.accepted, false);
     assert.equal(invalidResult.requestSchemaValid, false);

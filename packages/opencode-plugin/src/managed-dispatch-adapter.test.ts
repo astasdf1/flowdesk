@@ -27,6 +27,10 @@ import flowdeskOpenCodeServerPlugin, {
   flowdeskPreSpikeDoctorToolName,
 } from "./server.js";
 
+function toolOutput(value: string | { output: string }): string {
+  return typeof value === "string" ? value : value.output;
+}
+
 const now = "2026-05-17T00:00:00.000Z";
 
 function dispatchableUsage(): FlowDeskUsageSnapshotV1 {
@@ -512,7 +516,7 @@ test("default server and plugin scaffold remain Release 1 non-dispatch", async (
   const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
   assert.ok(doctor);
   const result = JSON.parse(
-    await doctor.execute({}, undefined as never),
+    toolOutput(await doctor.execute({}, undefined as never)),
   ) as Record<string, unknown>;
   assert.equal(
     result.productionToolRegistration,
@@ -550,7 +554,7 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
     { boundaryInput: managedDispatchInput(), request: dispatchRequest() },
     undefined as never,
   );
-  const result = JSON.parse(raw) as Record<string, unknown>;
+  const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
   assert.equal(result.status, "dispatch_accepted");
   assert.equal(result.dispatchAttempted, true);
   assert.equal(result.responseObserved, false);
