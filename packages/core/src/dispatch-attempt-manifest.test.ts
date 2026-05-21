@@ -101,8 +101,32 @@ test("dispatch attempt manifest rejects authority smuggling and uncommitted sdk-
 	assert.equal(result.ok, false);
 	const errors = result.errors.join("|");
 	assert.match(errors, /unknown properties: approve_dispatch/);
-	assert.match(errors, /committed audit/);
+	assert.match(errors, /consumed approval and committed audit/);
 	assert.match(errors, /cannot enable runtime authority/);
+});
+
+test("dispatch attempt manifest enforces state transition invariants", () => {
+	const planned = validateFlowDeskDispatchAttemptManifestV1(manifest({
+		state: "planned",
+		consumed_approval_ref: "approval-1",
+		pre_dispatch_audit_committed: true,
+	}));
+	assert.equal(planned.ok, false);
+	assert.match(planned.errors.join("; "), /planned manifests/);
+
+	const auditCommitted = validateFlowDeskDispatchAttemptManifestV1(manifest({
+		state: "audit_committed",
+		consumed_approval_ref: undefined,
+		pre_dispatch_audit_committed: false,
+	}));
+	assert.equal(auditCommitted.ok, false);
+	assert.match(auditCommitted.errors.join("; "), /audit_committed/);
+
+	const timeDrift = validateFlowDeskDispatchAttemptManifestV1(manifest({
+		updated_at: "2026-05-21T00:03:00.000Z",
+	}));
+	assert.equal(timeDrift.ok, false);
+	assert.match(timeDrift.errors.join("; "), /updated_at/);
 });
 
 test("dispatch attempt pre-call evaluation permits only committed audit plus consumed scoped approval", () => {

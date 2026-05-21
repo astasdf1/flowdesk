@@ -179,13 +179,29 @@ export function validateFlowDeskDispatchAttemptManifestV1(
 	errors.push(...validateTimestamp(record.created_at, "created_at").errors);
 	errors.push(...validateTimestamp(record.updated_at, "updated_at").errors);
 	if (
-		record.state === "sdk_call_permitted" &&
+		(record.state === "approval_consumed" || record.state === "sdk_call_permitted") &&
 		(record.consumed_approval_ref === undefined ||
 			record.pre_dispatch_audit_committed !== true)
 	)
 		errors.push(
-			"sdk_call_permitted manifests require consumed approval and committed audit",
+			"approval-consumed manifests require consumed approval and committed audit",
 		);
+	if (
+		record.state === "planned" &&
+		(record.consumed_approval_ref !== undefined ||
+			record.pre_dispatch_audit_committed === true)
+	)
+		errors.push("planned manifests cannot carry consumed approval or committed audit");
+	if (record.state === "audit_committed" && record.pre_dispatch_audit_committed !== true)
+		errors.push("audit_committed manifests require committed audit");
+	if (
+		typeof record.created_at === "string" &&
+		typeof record.updated_at === "string" &&
+		Number.isFinite(Date.parse(record.created_at)) &&
+		Number.isFinite(Date.parse(record.updated_at)) &&
+		Date.parse(record.updated_at) < Date.parse(record.created_at)
+	)
+		errors.push("dispatch manifest updated_at cannot be before created_at");
 	if (
 		record.dispatch_authority_enabled !== false ||
 		record.realOpenCodeDispatch !== false ||
