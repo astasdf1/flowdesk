@@ -338,6 +338,12 @@ function makePlanContext(request: Record<string, unknown>, parts: ReturnType<typ
   };
 }
 
+function laneObservabilityRefFor(request: Record<string, unknown>, laneClass: FlowDeskLaneRecordV1["lane_class"]): string {
+  return laneClass === "planning_draft"
+    ? id("lane-observability", request)
+    : id("lane-observability-run", request);
+}
+
 function makeRunContext(request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): NonNullable<FlowDeskCommandBackedHandlerContextV1["run"]> {
   const workflowId = workflowIdFrom(request);
   const runMode = request.run_mode;
@@ -379,6 +385,7 @@ function makeRunContext(request: Record<string, unknown>, parts: ReturnType<type
       laneId: id("lane-run", request),
       laneTaskRef: id("task-run", request),
       laneSummaryRef: id("lane-summary-run", request),
+      laneObservabilityRef: laneObservabilityRefFor(request, "verification"),
       laneEventRef: id("event-run", request),
       laneDebugRef: "debug-local"
     }
@@ -388,6 +395,7 @@ function makeRunContext(request: Record<string, unknown>, parts: ReturnType<type
 function laneRecordFor(request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, laneClass: FlowDeskLaneRecordV1["lane_class"]): FlowDeskLaneRecordV1 {
   const workflowId = workflowIdFrom(request);
   const planRevisionId = typeof request.plan_revision_id === "string" ? request.plan_revision_id : id("plan", request);
+  const observabilityRef = laneObservabilityRefFor(request, laneClass);
   return {
     schema_version: "flowdesk.lane_record.v1",
     lane_id: laneClass === "planning_draft" ? id("lane-plan", request) : id("lane-run", request),
@@ -402,9 +410,10 @@ function laneRecordFor(request: Record<string, unknown>, parts: ReturnType<typeo
     updated_at: parts.nowIso,
     completed_at: parts.nowIso,
     safe_next_action: "/flowdesk-status",
-    refs: [laneClass === "planning_draft" ? id("lane-summary", request) : id("lane-summary-run", request)],
+    refs: [laneClass === "planning_draft" ? id("lane-summary", request) : id("lane-summary-run", request), observabilityRef],
     event_refs: [laneClass === "planning_draft" ? id("event-plan", request) : id("event-run", request)],
     audit_refs: ["audit-local"],
+    observability_ref: observabilityRef,
     ...(laneClass === "verification" ? { debug_ref: "debug-local" } : {})
   };
 }
