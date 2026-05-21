@@ -113,6 +113,8 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	external_auth_provider_policy_result?: FlowDeskExternalAuthProviderPolicyResultV1["result"];
 	external_auth_policy_ref?: string;
 	provider_policy_ref?: string;
+	approval_decision?: FlowDeskProductionApprovalDecisionV1["decision"];
+	approval_ref?: string;
 }
 
 const REQUIRED_SESSION_EVIDENCE_CLASSES: FlowDeskSessionEvidenceClass[] = [
@@ -410,6 +412,7 @@ export function evaluateFlowDeskProductionEnablementV1(
 	);
 
 	const approval = input.approvalDecision;
+	let validApprovalDecision: FlowDeskProductionApprovalDecisionV1 | undefined;
 	if (approval === undefined) {
 		if (blockerLabels.length === 0) blockerLabels.push("approval_missing");
 	} else {
@@ -419,13 +422,16 @@ export function evaluateFlowDeskProductionEnablementV1(
 		);
 		errors.push(...approvalResult.errors);
 		if (!approvalResult.ok) blockerLabels.push("approval_mismatched");
-		if (approval.decision !== "approve") blockerLabels.push("approval_denied");
-		if (approval.missing_evidence_labels.length > 0)
-			blockerLabels.push(...approval.missing_evidence_labels);
-		const missingRefs = missingRequiredApprovalRefs(approval, evidenceRefs);
-		if (missingRefs.length > 0)
-			blockerLabels.push("approval_required_refs_missing");
-		uncertaintyLabels.push(...approval.uncertainty_labels);
+		else {
+			validApprovalDecision = approval;
+			if (approval.decision !== "approve") blockerLabels.push("approval_denied");
+			if (approval.missing_evidence_labels.length > 0)
+				blockerLabels.push(...approval.missing_evidence_labels);
+			const missingRefs = missingRequiredApprovalRefs(approval, evidenceRefs);
+			if (missingRefs.length > 0)
+				blockerLabels.push("approval_required_refs_missing");
+			uncertaintyLabels.push(...approval.uncertainty_labels);
+		}
 	}
 
 	const uniqueBlockers = unique(blockerLabels);
@@ -475,6 +481,12 @@ export function evaluateFlowDeskProductionEnablementV1(
 						validExternalAuthProviderPolicyResult.external_auth_policy_ref,
 					provider_policy_ref:
 						validExternalAuthProviderPolicyResult.provider_policy_ref,
+				}),
+		...(validApprovalDecision === undefined
+			? {}
+			: {
+					approval_decision: validApprovalDecision.decision,
+					approval_ref: validApprovalDecision.approval_id,
 				}),
 		safe_next_actions:
 			state === "dispatch_capable"

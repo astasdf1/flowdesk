@@ -129,6 +129,77 @@ test("production enablement becomes dispatch-capable only after explicit approva
   assert.deepEqual(result.blocker_labels, []);
   assert.equal(result.managed_dispatch_ready, true);
   assert.equal(result.dispatch_authority_enabled, false, "diagnostic readiness is not dispatch authorization");
+  assert.equal(result.approval_decision, "approve");
+  assert.equal(result.approval_ref, "approval-1");
+});
+
+test("production enablement reports valid approval diagnostics without dispatch authority", () => {
+  const denied = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-denied-1",
+    workflowId,
+    decision: "deny",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+  });
+  const deniedResult = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: denied
+  });
+  assert.equal(deniedResult.state, "blocked");
+  assert.ok(deniedResult.blocker_labels.includes("approval_denied"));
+  assert.equal(deniedResult.managed_dispatch_ready, false);
+  assert.equal(deniedResult.dispatch_authority_enabled, false);
+  assert.equal(deniedResult.approval_decision, "deny");
+  assert.equal(deniedResult.approval_ref, "approval-denied-1");
+
+  const drift = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-drift-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["missing-required-ref"]
+  });
+  const driftResult = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: drift
+  });
+  assert.equal(driftResult.state, "blocked");
+  assert.ok(driftResult.blocker_labels.includes("approval_required_refs_missing"));
+  assert.equal(driftResult.managed_dispatch_ready, false);
+  assert.equal(driftResult.approval_decision, "approve");
+  assert.equal(driftResult.approval_ref, "approval-drift-1");
+});
+
+test("production enablement does not echo invalid approval artifacts", () => {
+  const invalidApproval = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: {
+      schema_version: "flowdesk.production_approval_decision.v1",
+      approval_id: "approval-forged-1",
+      workflow_id: "workflow-other",
+      decision: "approve",
+      created_at: "2026-05-20T00:00:00.000Z",
+      required_evidence_refs: "leaky-approval-ref",
+      missing_evidence_labels: [],
+      uncertainty_labels: [],
+      safe_next_actions: ["/flowdesk-status"],
+      dispatch_authority_enabled: true
+    } as never
+  });
+  assert.equal(invalidApproval.state, "blocked");
+  assert.ok(invalidApproval.blocker_labels.includes("approval_mismatched"));
+  assert.equal(invalidApproval.approval_decision, undefined);
+  assert.equal(invalidApproval.approval_ref, undefined);
+  assert.ok(!invalidApproval.evidence_refs.includes("leaky-approval-ref"));
 });
 
 test("production enablement records incomplete conformance as non-blocking uncertainty when opted in", () => {
