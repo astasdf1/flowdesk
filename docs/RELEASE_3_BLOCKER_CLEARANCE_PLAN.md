@@ -51,7 +51,7 @@ Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-re
 
 ## 2026-05-22 Durable Approval Provenance Hardening
 
-Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has a dedicated `production_approval_source` class whose reload path validates the full approval-source contract, dispatch pre-call readiness has a pure durable evaluator that requires both a reloaded consumed approval source and a reloaded pre-dispatch audit entry, and the explicit opt-in managed-dispatch adapter now requires that durable evaluator before promotion and injected SDK calls. This closes the in-memory consumed-approval provenance gap while preserving default Release 1 non-dispatch behavior.
+Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has dedicated `production_approval_source` and `dispatch_idempotency` classes, dispatch pre-call readiness has a pure durable evaluator that requires a reloaded idempotency snapshot, reloaded consumed approval source, and reloaded pre-dispatch audit entry, and the explicit opt-in managed-dispatch adapter now requires that durable evaluator before promotion and injected SDK calls. This closes the in-memory consumed-approval provenance gap and local replay-detection gap while preserving default Release 1 non-dispatch behavior.
 
 ## Next Safe Actions
 
@@ -114,6 +114,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 
 - Expand evidence classes beyond usage/runtime echo/telemetry where needed for configured verification, sanitized auth, external auth/provider policy, approval, and pre-dispatch audit refs.
 - Production approval source evidence must be durably written/reloaded through its own evidence class and validated with the full approval-source contract before dispatch pre-call readiness can depend on it.
+- Dispatch idempotency snapshots must be durably written/reloaded and checked for reused attempt ids or idempotency keys before dispatch pre-call readiness can proceed.
 - Test malformed, truncated, stale, drifted, cross-workflow, cross-profile, schema-version mismatch, symlink/root escape, partial write, and redaction-failure cases.
 - Doctor output must expose redacted fail-closed state without raw payloads or secret-bearing paths.
 
