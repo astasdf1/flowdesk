@@ -678,6 +678,37 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 	assert.ok(
 		compatibility.refs.includes("production_provider_policy_ref=provider-policy-123"),
 	);
+
+	const deniedApproval = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				productionEnablement: productionEnablement({
+					state: "blocked",
+					blocker_labels: ["approval_denied"],
+					approval_decision: "deny",
+					approval_ref: "approval-denied-123",
+				}),
+			},
+		},
+	);
+	const deniedResponse = deniedApproval.response as FlowDeskDoctorResponseV1;
+	const deniedCompatibility = deniedResponse.doctor_results.find(
+		(section) => section.section === "opencode_plugin_compatibility",
+	);
+	assert.ok(deniedCompatibility);
+	assert.ok(
+		deniedCompatibility.refs.includes("production_approval_decision=deny"),
+	);
+	assert.ok(
+		deniedCompatibility.refs.includes("production_approval_ref=approval-denied-123"),
+	);
+	assert.ok(
+		deniedCompatibility.refs.includes("production_blocker=approval_denied"),
+	);
+	assertNoRuntimeAuthority(deniedApproval);
+
 	assert.ok(
 		compatibility.refs.includes(
 			"production_uncertainty=opencode_subtask_lifecycle_unproven",

@@ -177,6 +177,8 @@ function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1
     ...(evaluation.external_auth_provider_policy_result === undefined ? [] : [`production_external_auth_provider_policy_result=${evaluation.external_auth_provider_policy_result}`]),
     ...(evaluation.external_auth_policy_ref === undefined ? [] : [`production_external_auth_policy_ref=${evaluation.external_auth_policy_ref}`]),
     ...(evaluation.provider_policy_ref === undefined ? [] : [`production_provider_policy_ref=${evaluation.provider_policy_ref}`]),
+    ...(evaluation.approval_decision === undefined ? [] : [`production_approval_decision=${evaluation.approval_decision}`]),
+    ...(evaluation.approval_ref === undefined ? [] : [`production_approval_ref=${evaluation.approval_ref}`]),
     ...evaluation.blocker_labels.map((label) => `production_blocker=${label}`),
     ...evaluation.uncertainty_labels.map((label) => `production_uncertainty=${label}`)
   ];
