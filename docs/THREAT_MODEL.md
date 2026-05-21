@@ -463,8 +463,9 @@ Mitigations:
 9. Audit records distinguish `cancel_requested`, `cancel_observed`, `cancel_failed`, and `hard_cancel_proven`.
 10. Delegated outputs are advisory until verified and cannot widen scope, approve dispatch, suppress verification, or replace Guard.
 11. If OpenCode cannot prove clickable or openable lane refs, FlowDesk falls back to `/flowdesk-status` and `/flowdesk-export-debug` redacted summaries.
+12. Todo continuation supervision, when implemented, is limited to FlowDesk-owned durable task records and checkpoints. It must not resume from raw transcripts, raw OpenCode/OMO todo state, debug bundles, or event-only checkpoints, and it must not run hidden continuation directives unless the pinned OpenCode surface proves safe turn control.
 
-Stop condition: a delegated lane can approve privileged work, widen scope, suppress verification, hide failed invocation, treat an aborted or incomplete lane as passing review, persist raw logs, or claim hard cancellation without conformance evidence.
+Stop condition: a delegated lane or todo continuation supervisor can approve privileged work, widen scope, suppress verification, hide failed invocation, treat an aborted or incomplete lane as passing review, persist raw logs, auto-continue from non-authoritative state, or claim hard cancellation without conformance evidence.
 
 ### T23: Agent Profile Drift, Persona-Only Specialists, and Forced Document Paths
 

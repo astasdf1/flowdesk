@@ -56,7 +56,7 @@ Release 2.5 must support fan-out to every registered highest-tier available revi
 
 ### Release 3: Operational Intelligence
 
-Release 3 adds advisory evaluation, workflow proposal optimization, multi-model proposal fan-out behind surplus usage gates, dedicated top-tier multi-perspective review lane use where Release 2.5 gates pass, GitHub-backed score ledger support, richer operational recovery, and source-grounded reference-pack workflows without weakening Guard or turning specialist output into professional signoff.
+Release 3 adds advisory evaluation, workflow proposal optimization, multi-model proposal fan-out behind surplus usage gates, dedicated top-tier multi-perspective review lane use where Release 2.5 gates pass, GitHub-backed score ledger support, richer operational recovery, FlowDesk-owned todo continuation supervision where the managed-chat/recovery gates prove safe continuation, and source-grounded reference-pack workflows without weakening Guard or turning specialist output into professional signoff.
 
 ### Release 4: Opt-In Federated Intelligence
 
@@ -269,6 +269,9 @@ Tasks:
 6. Implement typed confirmation with nonce/scope binding.
 7. Implement pending-intent confirmation state with TTL, source summary/ref binding, one-shot consumption, cancellation/clear behavior, and non-dispatch adapter mode.
 8. Implement natural-language retry/resume/abort/status affordances.
+9. Design and implement a FlowDesk-owned todo continuation supervisor for workflow task records. It may detect incomplete FlowDesk task records after a turn and propose or perform continuation only through durable workflow/checkpoint state, explicit completion contracts, and the existing `/flowdesk-status`, `/flowdesk-resume`, `/flowdesk-retry`, and `/flowdesk-abort` recovery surfaces.
+10. Gate automatic continuation behind conformance that proves a safe post-turn or pre-turn control surface. Until that proof exists, the supervisor may only show transparent visible guidance or command-backed safe next actions; it must not inject hidden system directives, rely on raw OpenCode/OMO todo state, or claim hard no-reply/cancel authority.
+11. Require continuation attempts to preserve lane reference-kind separation, bounded retry budgets, idempotent attempt ids, redacted audit refs, user/Guard approval where scope or privilege changes, and fail-closed handling for no-output lanes, missing verdicts, aborted tool calls, stale checkpoints, or telemetry ambiguity.
 
 Exit criteria:
 
@@ -279,6 +282,7 @@ Exit criteria:
 5. FlowDesk suggestions are transparent and dismissible; repeated suggestions are rate-limited or preference-aware so ordinary OpenCode chat is not polluted.
 6. Execution-like chat such as “run”, “execute”, “진행”, or “실행” cannot directly mutate workflow state to complete without explicit confirmation.
 7. User-facing copy avoids internal implementation terms such as `pre-spike`, `adapter`, `non-dispatch`, `fake-runtime`, and `manage` unless a diagnostic/debug surface explicitly needs them.
+8. Todo continuation can resume only FlowDesk-owned durable task records with valid checkpoints and required approvals; incomplete, no-output, aborted, or missing-verdict lanes are recorded as blocked/incomplete and cannot count as success, approval, QA, security review, or implementation completion.
 
 ## Phase 6A: Top-Tier Multi-Perspective Review Lane Gate
 
