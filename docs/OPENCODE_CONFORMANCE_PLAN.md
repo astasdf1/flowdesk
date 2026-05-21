@@ -10,6 +10,8 @@ OpenCode 1.14.40 local isolated PoC completed on 2026-05-15, with an FDS-1 runti
 
 Top-tier multi-perspective internal reviewer lanes are a planned Release 2.5 or Release 3 entry capability, not completed behavior. Current evidence does not prove production internal subtask review, registered highest-tier reviewer fan-out, same-model multi-agent perspective review, arbitrary agent/model override lanes, or release approval for those paths.
 
+Source-surface inspection on 2026-05-21 found that the OpenCode SDK typings expose `session.create(parentID)`, `session.children`, agent/model session metadata, prompt/promptAsync `SubtaskPartInput`, SDK `noReply`, and SDK `session.abort`. It also found that `session.command` does not accept subtask parts in the inspected typings, no literal `subtask: true` runtime boolean was found, plugin chat hooks do not expose first-class hard no-reply/cancel return authority, and external auth plugin APIs must be sanitized because account/auth objects carry tokens. This is source-level API evidence only; runtime lane lifecycle, trusted echo, external auth policy binding, and hard chat suppression remain unproven.
+
 ## Outputs
 
 Conformance produces a current compatibility artifact used by `/flowdesk-doctor`:

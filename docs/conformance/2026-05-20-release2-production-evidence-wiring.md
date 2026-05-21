@@ -56,4 +56,4 @@ Interpretation: the token is valid for login/whoami but is not a granular publis
 
 - npm registry publication remains blocked until an OTP is supplied with publish or a correct granular publish token with bypass-2FA/automation rights is configured.
 - Fresh registry-installed sandbox smoke cannot run until the packages are published.
-- OpenCode `subtask: true` lifecycle metadata, parent/subtask ids, authoritative runtime echo fields, and telemetry pass-through remain unproven; they must remain uncertainty labels rather than dispatch-ready proof.
+- OpenCode prompt/promptAsync subtask and session child metadata surfaces were later confirmed at the SDK typing level, but `session.command` subtask parts, actual runtime lifecycle metadata, parent/subtask ids, authoritative runtime echo fields, and telemetry pass-through remain unproven; they must remain uncertainty labels rather than dispatch-ready proof.
