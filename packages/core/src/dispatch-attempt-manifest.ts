@@ -1,5 +1,6 @@
 import type { FlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
+import type { FlowDeskSessionEvidenceReloadResultV1 } from "./session-evidence.js";
 import {
 	invalid,
 	type ValidationResult,
@@ -60,6 +61,13 @@ export interface FlowDeskDispatchAttemptPrecallEvaluationV1
 	actualLaneLaunch: false;
 	providerCall: false;
 	runtimeExecution: false;
+}
+
+export interface FlowDeskDispatchAttemptDurablePrecallEvaluationV1
+	extends FlowDeskDispatchAttemptPrecallEvaluationV1 {
+	durable_provenance_required: true;
+	reloaded_approval_source_ref?: string;
+	reloaded_pre_dispatch_audit_ref?: string;
 }
 
 const disabledDispatchAuthority = {
@@ -289,5 +297,85 @@ export function evaluateFlowDeskDispatchAttemptPrecallV1(input: {
 		sdk_call_permitted: permitted,
 		blocked_labels: uniqueBlockedLabels,
 		...disabledDispatchAuthority,
+	};
+}
+
+function getRecordString(
+	record: Record<string, unknown>,
+	key: string,
+): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+export function evaluateFlowDeskDispatchAttemptDurablePrecallV1(input: {
+	manifest: FlowDeskDispatchAttemptManifestV1;
+	reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+}): FlowDeskDispatchAttemptDurablePrecallEvaluationV1 {
+	const durableErrors: string[] = [];
+	const durableBlockedLabels: string[] = [];
+	if (!input.reloadedEvidence.ok) {
+		durableErrors.push(...input.reloadedEvidence.errors);
+		durableBlockedLabels.push("session_evidence_reload_invalid");
+	}
+	if (input.reloadedEvidence.blocked.length > 0)
+		durableBlockedLabels.push("session_evidence_contains_blocked_entries");
+
+	const approvalEntry = input.reloadedEvidence.entries.find(
+		(entry) =>
+			entry.evidenceClass === "production_approval_source" &&
+			getRecordString(entry.record, "approval_id") === input.manifest.approval_ref,
+	);
+	const approvalValidation = approvalEntry
+		? validateFlowDeskProductionApprovalSourceV1(
+				approvalEntry.record,
+				input.manifest.workflow_id,
+			)
+		: undefined;
+	if (approvalEntry === undefined) {
+		durableBlockedLabels.push("reloaded_approval_source_missing");
+	} else if (!approvalValidation?.ok) {
+		durableErrors.push(...(approvalValidation?.errors ?? []));
+		durableBlockedLabels.push("reloaded_approval_source_invalid");
+	}
+
+	const consumedApproval = approvalValidation?.ok
+		? (approvalEntry?.record as unknown as FlowDeskProductionApprovalSourceV1)
+		: undefined;
+	const auditEntry = input.reloadedEvidence.entries.find(
+		(entry) =>
+			entry.evidenceClass === "pre_dispatch_audit" &&
+			(entry.evidenceId === input.manifest.pre_dispatch_audit_ref ||
+				getRecordString(entry.record, "pre_dispatch_audit_ref") ===
+					input.manifest.pre_dispatch_audit_ref ||
+				getRecordString(entry.record, "audit_ref") ===
+					input.manifest.pre_dispatch_audit_ref),
+	);
+	if (auditEntry === undefined)
+		durableBlockedLabels.push("reloaded_pre_dispatch_audit_missing");
+
+	const base = evaluateFlowDeskDispatchAttemptPrecallV1({
+		manifest: input.manifest,
+		consumedApproval,
+	});
+	const errors = [...base.errors, ...durableErrors];
+	const blockedLabels = [
+		...new Set([...base.blocked_labels, ...durableBlockedLabels]),
+	];
+	const permitted = errors.length === 0 && blockedLabels.length === 0;
+	return {
+		...base,
+		ok: errors.length === 0,
+		errors,
+		state: permitted ? "sdk_call_permitted" : "blocked_before_sdk_call",
+		sdk_call_permitted: permitted,
+		blocked_labels: blockedLabels,
+		durable_provenance_required: true,
+		...(approvalEntry === undefined
+			? {}
+			: { reloaded_approval_source_ref: approvalEntry.evidenceId }),
+		...(auditEntry === undefined
+			? {}
+			: { reloaded_pre_dispatch_audit_ref: auditEntry.evidenceId }),
 	};
 }

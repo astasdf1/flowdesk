@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	consumeFlowDeskProductionApprovalSourceV1,
+	evaluateFlowDeskDispatchAttemptDurablePrecallV1,
 	evaluateFlowDeskDispatchAttemptPrecallV1,
 	validateFlowDeskDispatchAttemptManifestV1,
 	type FlowDeskDispatchAttemptManifestV1,
 	type FlowDeskProductionApprovalSourceV1,
+	type FlowDeskSessionEvidenceReloadResultV1,
 } from "./index.js";
 
 function approval(): FlowDeskProductionApprovalSourceV1 {
@@ -83,6 +85,39 @@ function manifest(
 	};
 }
 
+function reloadedEvidence(
+	overrides: Partial<FlowDeskSessionEvidenceReloadResultV1> = {},
+): FlowDeskSessionEvidenceReloadResultV1 {
+	return {
+		ok: true,
+		errors: [],
+		entries: [
+			{
+				evidenceClass: "production_approval_source",
+				evidenceId: "approval-source-1",
+				record: consumedApproval() as unknown as Record<string, unknown>,
+				path: ".flowdesk/sessions/workflow-1/evidence/production-approval-source/approval-source-1.json",
+			},
+			{
+				evidenceClass: "pre_dispatch_audit",
+				evidenceId: "audit-predispatch-1",
+				record: {
+					schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+					workflow_id: "workflow-1",
+					pre_dispatch_audit_ref: "audit-predispatch-1",
+				},
+				path: ".flowdesk/sessions/workflow-1/evidence/pre-dispatch-audit/audit-predispatch-1.json",
+			},
+		],
+		blocked: [],
+		realOpenCodeDispatch: false,
+		actualLaneLaunch: false,
+		providerCall: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
 test("dispatch attempt manifest validates a committed pre-call work unit", () => {
 	const result = validateFlowDeskDispatchAttemptManifestV1(manifest(), "workflow-1");
 	assert.equal(result.ok, true, result.errors.join("; "));
@@ -152,4 +187,43 @@ test("dispatch attempt pre-call evaluation blocks missing audit and approval dri
 	assert.equal(result.state, "blocked_before_sdk_call");
 	assert.ok(result.blocked_labels.includes("pre_dispatch_audit_not_committed"));
 	assert.ok(result.blocked_labels.includes("approval_provider_binding_mismatch"));
+});
+
+test("dispatch attempt durable pre-call requires reloaded approval source and audit", () => {
+	const result = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: manifest(),
+		reloadedEvidence: reloadedEvidence(),
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.sdk_call_permitted, true);
+	assert.equal(result.durable_provenance_required, true);
+	assert.equal(result.reloaded_approval_source_ref, "approval-source-1");
+	assert.equal(result.reloaded_pre_dispatch_audit_ref, "audit-predispatch-1");
+	assert.equal(result.providerCall, false);
+});
+
+test("dispatch attempt durable pre-call blocks missing or blocked provenance", () => {
+	const missing = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: manifest(),
+		reloadedEvidence: reloadedEvidence({ entries: [] }),
+	});
+	assert.equal(missing.sdk_call_permitted, false);
+	assert.ok(missing.blocked_labels.includes("reloaded_approval_source_missing"));
+	assert.ok(missing.blocked_labels.includes("reloaded_pre_dispatch_audit_missing"));
+
+	const blocked = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: manifest(),
+		reloadedEvidence: reloadedEvidence({
+			blocked: [
+				{
+					evidenceClass: "production_approval_source",
+					evidenceId: "approval-forged",
+					reason: "approval source cannot enable dispatch authority",
+					path: ".flowdesk/sessions/workflow-1/evidence/production-approval-source/approval-forged.json",
+				},
+			],
+		}),
+	});
+	assert.equal(blocked.sdk_call_permitted, false);
+	assert.ok(blocked.blocked_labels.includes("session_evidence_contains_blocked_entries"));
 });
