@@ -5,6 +5,8 @@ import {
 	evaluateFlowDeskDispatchAttemptDurablePrecallV1,
 	evaluateFlowDeskDispatchAttemptPrecallV1,
 	evaluateFlowDeskDispatchIdempotencyReplayV1,
+	prepareFlowDeskDispatchIdempotencyReservationV1,
+	prepareFlowDeskDispatchIdempotencyStateUpdateV1,
 	validateFlowDeskDispatchAttemptManifestV1,
 	type FlowDeskDispatchAttemptManifestV1,
 	type FlowDeskProductionApprovalSourceV1,
@@ -318,6 +320,75 @@ test("dispatch attempt idempotency replay fails closed without throwing on malfo
 	assert.equal(replay.ok, false);
 	assert.equal(replay.replay_safe, false);
 	assert.ok(replay.blocked_labels.includes("idempotency_snapshot_invalid"));
+});
+
+test("dispatch idempotency reservation prepares a durable reserved entry", () => {
+	const reservation = prepareFlowDeskDispatchIdempotencyReservationV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshotRef: "idempotency-snapshot-1",
+		reservedAt: "2026-05-21T00:04:30.000Z",
+	});
+	assert.equal(reservation.ok, true, reservation.errors.join("; "));
+	assert.equal(reservation.reservation_prepared, true);
+	assert.equal(reservation.providerCall, false);
+	assert.ok(reservation.snapshot);
+	assert.deepEqual(reservation.snapshot.entries, [
+		{
+			attempt_id: "attempt-1",
+			idempotency_key: "idempotency-1",
+			state: "reserved",
+			recorded_at: "2026-05-21T00:04:30.000Z",
+		},
+	]);
+
+	const replayed = prepareFlowDeskDispatchIdempotencyReservationV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshotRef: "idempotency-snapshot-2",
+		reservedAt: "2026-05-21T00:04:31.000Z",
+		existingSnapshot: reservation.snapshot,
+	});
+	assert.equal(replayed.reservation_prepared, false);
+	assert.ok(replayed.blocked_labels.includes("reservation_attempt_already_recorded"));
+	assert.ok(replayed.blocked_labels.includes("reservation_idempotency_key_reused"));
+});
+
+test("dispatch idempotency state update prepares failed and quarantined snapshots", () => {
+	const reservation = prepareFlowDeskDispatchIdempotencyReservationV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshotRef: "idempotency-snapshot-1",
+		reservedAt: "2026-05-21T00:04:30.000Z",
+	});
+	assert.ok(reservation.snapshot);
+	const failed = prepareFlowDeskDispatchIdempotencyStateUpdateV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshotRef: "idempotency-snapshot-2",
+		recordedAt: "2026-05-21T00:05:30.000Z",
+		nextState: "dispatch_failed",
+		existingSnapshot: reservation.snapshot,
+	});
+	assert.equal(failed.state_update_prepared, true, failed.errors.join("; "));
+	assert.equal(failed.snapshot?.entries[0].state, "dispatch_failed");
+	assert.equal(failed.providerCall, false);
+
+	const missing = prepareFlowDeskDispatchIdempotencyStateUpdateV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-missing",
+		idempotencyKey: "idempotency-missing",
+		snapshotRef: "idempotency-snapshot-3",
+		recordedAt: "2026-05-21T00:06:30.000Z",
+		nextState: "quarantined",
+		existingSnapshot: reservation.snapshot,
+	});
+	assert.equal(missing.state_update_prepared, false);
+	assert.ok(missing.blocked_labels.includes("idempotency_entry_missing"));
 });
 
 test("dispatch attempt durable pre-call blocks idempotency replay", () => {

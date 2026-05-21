@@ -7,6 +7,7 @@ import {
   applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
   prepareFlowDeskSessionEvidenceWriteIntentV1,
+  prepareFlowDeskDispatchIdempotencyReservationV1,
   reloadFlowDeskSessionEvidenceV1,
   sessionEvidenceDirectoryPath,
   sessionEvidenceRecordPath,
@@ -222,6 +223,30 @@ test("session evidence reload validates dispatch idempotency snapshots", () => {
     assert.equal(result.entries[0].evidenceClass, "dispatch_idempotency");
     assert.equal(result.blocked.length, 1);
     assert.match(result.blocked[0].reason, /cannot enable runtime authority/);
+  });
+});
+
+test("session evidence materializes prepared dispatch idempotency reservations", () => {
+  withEvidenceTree((rootDir) => {
+    const reservation = prepareFlowDeskDispatchIdempotencyReservationV1({
+      workflowId,
+      attemptId: "attempt-1",
+      idempotencyKey: "idempotency-1",
+      snapshotRef: "idempotency-snapshot-1",
+      reservedAt: "2026-05-19T00:01:00.000Z"
+    });
+    assert.equal(reservation.reservation_prepared, true, reservation.errors.join("; "));
+    assert.ok(reservation.snapshot);
+    const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "idempotency-snapshot-1", record: reservation.snapshot });
+    assert.equal(prepared.ok, true, prepared.errors.join("; "));
+    assert.ok(prepared.writeIntent);
+    const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+    assert.equal(applied.ok, true, applied.errors.join("; "));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+    assert.equal(reloaded.entries.length, 1);
+    assert.equal(reloaded.entries[0].evidenceClass, "dispatch_idempotency");
+    assert.equal((reloaded.entries[0].record.entries as Array<{ state: string }>)[0].state, "reserved");
   });
 });
 
