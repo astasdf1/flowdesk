@@ -10,8 +10,8 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 
 | Order | Blocker | Release/Phase | Current Evidence | Required Safe Proof | Target | Verification | Confirmation |
 |---:|---|---|---|---|---|---|---|
-| 1 | OpenCode 1.15 Release 1 compatibility | R1 / Phase 3-4 | Type/source compatibility and isolated smoke now exist for `@opencode-ai/plugin@1.15.6`. | Fresh public-registry and active-profile smoke after `0.1.1` publish. | `docs/conformance`, npm package metadata. | `npm test`, isolated install smoke, active profile module-load smoke. | Required before npm publish or active profile mutation. |
-| 2 | Package distribution drift | R1 / Phase 3 | Workspace plugin is `0.1.1` candidate; published `0.1.0` remains older. | npm publication of `@flowdesk/opencode-plugin@0.1.1`, registry freshness check, install smoke. | `packages/opencode-plugin/package.json`, npm registry evidence. | `npm pack --dry-run`, isolated install, fresh registry install. | Required for `npm publish`. |
+| 1 | OpenCode 1.15 Release 1 compatibility | R1 / Phase 3-4 | Cleared 2026-05-21. Type/source compatibility, isolated workspace smoke, fresh public-registry install smoke, and active OpenCode profile module-load smoke all pass for `@flowdesk/opencode-plugin@0.1.1` with nested `@opencode-ai/plugin@1.15.6` and `@opencode-ai/sdk@1.15.6`. | None (closed). | `docs/conformance/2026-05-21-release1-0.1.1-publish-completion.md`. | `npm test`, isolated registry install smoke, active profile module-load smoke. | None (closed). |
+| 2 | Package distribution drift | R1 / Phase 3 | Cleared 2026-05-21. `@flowdesk/opencode-plugin@0.1.1` is published to the public npm registry with `latest` tag, exact `@opencode-ai/plugin@1.15.6` dependency, fresh registry install smoke pass, and active profile migration smoke pass. | None (closed). | npm registry, `docs/conformance/2026-05-21-release1-0.1.1-publish-completion.md`. | `npm view @flowdesk/opencode-plugin version`, fresh registry install, active profile `npm ls`. | None (closed). |
 | 3 | FDS-1 schema conversion under updated package line | R1 / Phase 4 | Runtime-closed fixture/probe smoke passes locally under `@opencode-ai/plugin@1.15.6`. | If OpenCode provider-facing conversion behavior is exercised, unknown-property rejection must still fail closed. | FDS-1 conformance docs and probe tooling. | FDS-1 fixture/probe smoke; no provider call. | Not required for local probe; required for external OpenCode conformance mutation. |
 | 4 | Chat hook hard-control uncertainty | R1/R2 / Phase 6 | `chat.message` steering appends visible text and emits no `noReply`, `cancel`, or `stop`. | E2E proof of no duplicate assistant reply, hard suppression, pending tool abort, cleanup, and audit transitions before any hard-control claim. | Hook harness, chat conformance docs, threat model. | Chat hook mutation/throw/no-reply/cancel probe. | Required before enabling hard no-reply/cancel. |
 | 5 | Durable production evidence persistence | R2 / Phase 5 | Evidence contracts and session evidence write/reload exist. | Redacted durable refs reload and fail closed for usage, runtime echo, telemetry, verification, auth policy, approval, and pre-dispatch audit. | `session-evidence`, production enablement, doctor diagnostics. | `npm test -- --test-name-pattern "session evidence|production enablement|doctor"`. | Not required for local tests. |
@@ -25,12 +25,13 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 ## Current Cleared Items
 
 1. OpenCode 1.15 source/type compatibility: `@opencode-ai/plugin@1.15.6` and `@opencode-ai/sdk@1.15.6` compile with the plugin.
-2. OpenCode 1.15 isolated Release 1 smoke: packaged `0.1.0` exposes 11 tools, `chat.message`, direct diagnostic/status/usage paths, chat-intake routing, and FDS-1 runtime-closed probes without runtime authority.
-3. `0.1.1` publish candidate: local version bump, lockfile update, dry-run pack, tarball install, and direct module load all pass. npm publish is still waiting for explicit confirmation.
+2. OpenCode 1.15 isolated Release 1 smoke: packaged `0.1.0` exposed 11 tools, `chat.message`, direct diagnostic/status/usage paths, chat-intake routing, and FDS-1 runtime-closed probes without runtime authority.
+3. `@flowdesk/opencode-plugin@0.1.1` was published to the public npm registry with exact `@opencode-ai/plugin@1.15.6` dependency.
+4. Fresh public-registry install smoke for `0.1.1` passed in a throwaway profile: 11 tools, `chat.message`, direct doctor/status/usage, and Korean chat-intake routing succeeded with all real-dispatch/lane-launch/fallback/hard cancel authority flags false.
+5. Active OpenCode profile migration from `0.1.0` to `0.1.1` completed at `~/.config/opencode`. The nested `@opencode-ai/plugin@1.15.6` and `@opencode-ai/sdk@1.15.6` resolve under FlowDesk while a separate top-level `@opencode-ai/plugin@1.3.12` remains for other plugins. Module-load smoke from the active profile passed.
 
 ## Next Safe Actions
 
-1. Run full repository verification after this documentation/update batch.
-2. Commit and push the `0.1.1` prep and conformance records.
-3. Ask for confirmation before `npm publish --workspace @flowdesk/opencode-plugin --access public`.
-4. After publish, run public-registry install smoke and active-profile migration smoke.
+1. Probe `chat.message` mutation/throw/no-reply/cancel behavior under OpenCode 1.15 to either prove or keep blocked the hard chat-control authority (blocker #4).
+2. Plan and prototype the durable production-evidence reload checks (blocker #5) and the production-approval issuance contract (blocker #6) so the Release 2 managed-dispatch single-step gate (blocker #7) can be assembled in one run with explicit user confirmation.
+3. Keep blockers #8 through #11 behind their respective conformance gates and explicit user confirmation; do not enable actual lane launch, top-tier reviewer fan-out, managed fallback, or operational-intelligence external writes without those proofs.
