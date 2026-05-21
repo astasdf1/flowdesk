@@ -32,11 +32,11 @@ The explicit opt-in `dispatchManagedDispatchBetaPromptV1` adapter now requires t
 
 Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 
-1. `npm test --workspace @flowdesk/core -- --test-name-pattern "dispatch attempt|session evidence|idempotency"` passed: 262/262 tests in the matched core run.
+1. `npm test --workspace @flowdesk/core -- --test-name-pattern "dispatch attempt|session evidence|idempotency"` passed: 263/263 tests in the matched core run.
 2. LSP diagnostics were clean for changed TypeScript files.
 3. `npm test --workspace @flowdesk/opencode-plugin -- --test-name-pattern "managed dispatch beta adapter|managed dispatch beta server"` passed: 69/69 tests in the matched plugin run after adapter wiring.
 4. `npm run typecheck` passed.
-5. `npm test` passed: 328/328 tests before adapter wiring; full validation was rerun after adapter wiring in the same work session before commit.
+5. `npm test` passed: 332/332 tests after the idempotency edge-case hardening and adapter wiring.
 6. `GIT_MASTER=1 git diff --check` passed.
 
 ## Authority State
