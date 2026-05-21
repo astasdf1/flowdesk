@@ -41,7 +41,11 @@ The opt-in managed-dispatch adapter now requires a dispatch attempt manifest and
 Commands run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 
 1. `npm run typecheck` passed.
-2. `npm test` passed: 304/304 tests.
+2. `npm test` passed: 307/307 tests after review hardening.
+
+## Review Hardening
+
+Post-implementation review found three local contract strictness gaps before live gates: lane lifecycle refs needed kind-prefix validation, exact-model availability cache needed unknown-property/provider-family drift rejection, and operational intelligence/reference-pack validators needed unknown-property rejection for authority smuggling. Those gaps were fixed locally and covered by targeted regression tests. The review itself had delegated-lane instability: QA, code-quality, security, and context-mining lanes completed without final deliverables and were not counted as approval; the goal/constraint lane produced the actionable findings above.
 
 ## Authority State
 
