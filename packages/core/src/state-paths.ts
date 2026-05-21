@@ -57,13 +57,27 @@ export function redactedDebugManifestPath(sessionId: string): string {
   return `${redactedDebugDirectoryPath(sessionId)}/manifest.json`;
 }
 
-export const FLOWDESK_SESSION_EVIDENCE_CLASSES = ["usage_authority", "runtime_echo", "telemetry_correlation"] as const;
+export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
+  "usage_authority",
+  "runtime_echo",
+  "telemetry_correlation",
+  "configured_verification",
+  "sanitized_auth_capture",
+  "external_auth_provider_policy",
+  "production_approval",
+  "pre_dispatch_audit"
+] as const;
 export type FlowDeskSessionEvidenceClass = (typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
 
 const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
   usage_authority: "usage-authority",
   runtime_echo: "runtime-echo",
-  telemetry_correlation: "telemetry-correlation"
+  telemetry_correlation: "telemetry-correlation",
+  configured_verification: "configured-verification",
+  sanitized_auth_capture: "sanitized-auth-capture",
+  external_auth_provider_policy: "external-auth-provider-policy",
+  production_approval: "production-approval",
+  pre_dispatch_audit: "pre-dispatch-audit"
 };
 
 export function sessionEvidenceDirectoryPath(sessionId: string, evidenceClass: FlowDeskSessionEvidenceClass): string {

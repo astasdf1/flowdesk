@@ -28,6 +28,12 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	runtime_echo: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1",
 	telemetry_correlation:
 		"flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
+	configured_verification: "flowdesk.configured_verification_result.v1",
+	sanitized_auth_capture: "flowdesk.sanitized_auth_capture_result.v1",
+	external_auth_provider_policy:
+		"flowdesk.external_auth_provider_policy_result.v1",
+	production_approval: "flowdesk.production_approval_decision.v1",
+	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -83,6 +89,23 @@ export interface FlowDeskSessionEvidenceReloadResultV1
 	runtimeExecution: false;
 }
 
+export interface FlowDeskSessionEvidenceInventoryV1 {
+	schema_version: "flowdesk.session_evidence_inventory.v1";
+	workflow_id: string;
+	total_entries: number;
+	total_blocked: number;
+	classes: Array<{
+		evidenceClass: FlowDeskSessionEvidenceClass;
+		valid: number;
+		blocked: number;
+		lastBlockedReason?: string;
+	}>;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskSessionEvidenceApplyResultV1 extends ValidationResult {
 	rootDir?: string;
 	writtenPaths: string[];
@@ -124,6 +147,36 @@ function validateEvidenceShape(
 		if (!(key in record))
 			return invalid(`evidence is missing required field: ${key}`);
 	return validateNoForbiddenRawPayloads(record, "session_evidence_record");
+}
+
+function validateOptionalTimestampFreshness(
+	record: Record<string, unknown>,
+	rejectStaleAt: string | undefined,
+): ValidationResult {
+	if (rejectStaleAt === undefined || !("expires_at" in record)) return valid();
+	const checkedAt = Date.parse(rejectStaleAt);
+	if (!Number.isFinite(checkedAt))
+		return invalid("rejectStaleAt must be a parseable timestamp");
+	if (typeof record.expires_at !== "string")
+		return invalid("evidence expires_at must be a timestamp string");
+	const expiresAt = Date.parse(record.expires_at);
+	if (!Number.isFinite(expiresAt))
+		return invalid("evidence expires_at must be parseable");
+	return expiresAt > checkedAt ? valid() : invalid("evidence is stale");
+}
+
+function validateOptionalProfileAlignment(
+	record: Record<string, unknown>,
+	expectedProfileRef: string | undefined,
+): ValidationResult {
+	if (expectedProfileRef === undefined) return valid();
+	const expected = validateOpaqueRef(expectedProfileRef, "expected_profile_ref");
+	if (!expected.ok) return expected;
+	const profileRef = record.profile_ref ?? record.auth_profile_ref;
+	if (profileRef === undefined) return valid();
+	return profileRef === expectedProfileRef
+		? valid()
+		: invalid("evidence profile_ref mismatch");
 }
 
 function ensureWorkflowAlignment(
@@ -299,6 +352,10 @@ export function applyFlowDeskSessionEvidenceWriteIntentsV1(
 					writtenPaths,
 					...disabledEvidenceAuthority,
 				};
+		}
+		for (const intent of intents) {
+			const target = safeJoin(root, intent.path);
+			const temp = safeJoin(root, intent.tempPath);
 			mkdirSync(dirname(target), { recursive: true });
 			writeFileSync(temp, JSON.stringify(intent.record), "utf8");
 			renameSync(temp, target);
@@ -327,6 +384,8 @@ export function applyFlowDeskSessionEvidenceWriteIntentsV1(
 export interface FlowDeskSessionEvidenceReadOptionsV1 {
 	workflowId: string;
 	rootDir: string;
+	rejectStaleAt?: string;
+	expectedProfileRef?: string;
 }
 
 export function reloadFlowDeskSessionEvidenceV1(
@@ -471,6 +530,32 @@ export function reloadFlowDeskSessionEvidenceV1(
 				});
 				continue;
 			}
+			const profileAlignment = validateOptionalProfileAlignment(
+				parsed,
+				options.expectedProfileRef,
+			);
+			if (!profileAlignment.ok) {
+				blocked.push({
+					evidenceClass,
+					evidenceId,
+					reason: profileAlignment.errors.join("; "),
+					path: expectedRelative,
+				});
+				continue;
+			}
+			const freshness = validateOptionalTimestampFreshness(
+				parsed,
+				options.rejectStaleAt,
+			);
+			if (!freshness.ok) {
+				blocked.push({
+					evidenceClass,
+					evidenceId,
+					reason: freshness.errors.join("; "),
+					path: expectedRelative,
+				});
+				continue;
+			}
 			entries.push({
 				evidenceClass,
 				evidenceId,
@@ -487,4 +572,32 @@ export function reloadFlowDeskSessionEvidenceV1(
 		...disabledEvidenceAuthority,
 	};
 	return reloadResult;
+}
+
+export function summarizeFlowDeskSessionEvidenceInventoryV1(
+	workflowId: string,
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): FlowDeskSessionEvidenceInventoryV1 {
+	return {
+		schema_version: "flowdesk.session_evidence_inventory.v1",
+		workflow_id: workflowId,
+		total_entries: reload.entries.length,
+		total_blocked: reload.blocked.length,
+		classes: FLOWDESK_SESSION_EVIDENCE_CLASSES.map((evidenceClass) => {
+			const blocked = reload.blocked.filter(
+				(entry) => entry.evidenceClass === evidenceClass,
+			);
+			return {
+				evidenceClass,
+				valid: reload.entries.filter(
+					(entry) => entry.evidenceClass === evidenceClass,
+				).length,
+				blocked: blocked.length,
+				...(blocked.length === 0
+					? {}
+					: { lastBlockedReason: blocked[blocked.length - 1].reason }),
+			};
+		}),
+		...disabledEvidenceAuthority,
+	};
 }

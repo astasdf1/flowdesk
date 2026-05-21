@@ -9,7 +9,8 @@ import {
   prepareFlowDeskSessionEvidenceWriteIntentV1,
   reloadFlowDeskSessionEvidenceV1,
   sessionEvidenceDirectoryPath,
-  sessionEvidenceRecordPath
+  sessionEvidenceRecordPath,
+  summarizeFlowDeskSessionEvidenceInventoryV1
 } from "./index.js";
 
 const workflowId = "workflow-evidence-1";
@@ -145,11 +146,11 @@ test("session evidence apply writes intents durably and reloads them", () => {
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
     assert.equal(reloaded.entries.length, 3);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(FLOWDESK_SESSION_EVIDENCE_CLASSES));
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation"]));
   });
 });
 
-test("session evidence apply rejects forged intents before writing later entries", () => {
+test("session evidence apply prevalidates forged intents before writing any entries", () => {
   withEvidenceTree((rootDir) => {
     const first = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-1", record: usageAuthorityRecord() });
     const forged = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "evidence-2", record: runtimeEchoRecord() });
@@ -160,12 +161,11 @@ test("session evidence apply rejects forged intents before writing later entries
       { ...forged.writeIntent, path: sessionEvidenceRecordPath(workflowId, "runtime_echo", "evidence-other") }
     ]);
     assert.equal(applied.ok, false);
-    assert.equal(applied.writtenPaths.length, 1);
+    assert.equal(applied.writtenPaths.length, 0);
     assert.match(applied.errors.join("; "), /path does not match/);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
-    assert.equal(reloaded.entries.length, 1);
-    assert.equal(reloaded.entries[0].evidenceClass, "usage_authority");
+    assert.equal(reloaded.entries.length, 0);
   });
 });
 
@@ -260,5 +260,37 @@ test("session evidence reload fails closed when evidence root is a symlink to ou
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+});
+
+test("session evidence reload can reject stale and cross-profile evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "usage_authority", "evidence-stale"), JSON.stringify(usageAuthorityRecord({ expires_at: "2026-05-19T00:01:00.000Z" })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "runtime_echo", "evidence-profile"), JSON.stringify(runtimeEchoRecord({ auth_profile_ref: "profile-other", expires_at: "2026-05-22T00:01:00.000Z" })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir, rejectStaleAt: "2026-05-20T00:00:00.000Z", expectedProfileRef: "principal-scope-claude" });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 2);
+    const reasons = result.blocked.map((blocked) => blocked.reason).join("|");
+    assert.match(reasons, /stale/);
+    assert.match(reasons, /profile_ref mismatch/);
+  });
+});
+
+test("session evidence reload blocks redaction failures and reports inventory", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "telemetry_correlation", "evidence-redacted"), JSON.stringify(telemetryRecord({ source_refs: ["Bearer secret-token"] })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /forbidden raw payload|token|credential-shaped/i);
+
+    const inventory = summarizeFlowDeskSessionEvidenceInventoryV1(workflowId, result);
+    assert.equal(inventory.schema_version, "flowdesk.session_evidence_inventory.v1");
+    assert.equal(inventory.total_entries, 0);
+    assert.equal(inventory.total_blocked, 1);
+    assert.equal(inventory.providerCall, false);
+    const telemetry = inventory.classes.find((entry) => entry.evidenceClass === "telemetry_correlation");
+    assert.equal(telemetry?.blocked, 1);
+    assert.match(telemetry?.lastBlockedReason ?? "", /forbidden raw payload|token|credential-shaped/i);
   });
 });
