@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
+  consumeFlowDeskProductionApprovalSourceV1,
+  type FlowDeskDispatchAttemptManifestV1,
   type FlowDeskConformanceRuntimeMetadataV1,
   type FlowDeskManagedDispatchBetaBindingEvidenceV1,
   type FlowDeskManagedDispatchBetaPolicyV1,
   type FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
   type FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
   type FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
+  type FlowDeskProductionApprovalSourceV1,
   type FlowDeskProviderHealthSnapshotV1,
   type FlowDeskUsageSnapshotV1,
   type GuardApprovedDispatchV1,
@@ -262,6 +265,79 @@ function dispatchRequest(
   };
 }
 
+function approvalSource(): FlowDeskProductionApprovalSourceV1 {
+  return {
+    schema_version: "flowdesk.production_approval_source.v1",
+    approval_id: "approval-123",
+    workflow_id: "workflow-123",
+    attempt_id: "attempt-123",
+    action_type: "managed_dispatch_beta",
+    issuer_boundary: "external_user_confirmation",
+    approval_method: "typed_phrase",
+    actor_ref: "actor-user-123",
+    profile_ref: "profile-prod-123",
+    provider_qualified_model_id: "claude/sonnet-4",
+    provider_binding_hash: "hash-provider-binding-123",
+    evidence_bundle_hash: "hash-evidence-bundle-123",
+    guard_decision_ref: "guard-decision-123",
+    issuance_audit_ref: "audit-issuance-123",
+    nonce_ref: "nonce-123",
+    issued_at: now,
+    expires_at: "2026-05-17T00:10:00.000Z",
+    revoked: false,
+    consume_strategy: "atomic_compare_and_swap_required",
+    dispatch_authority_enabled: false,
+  };
+}
+
+function consumedApproval(): FlowDeskProductionApprovalSourceV1 {
+  const result = consumeFlowDeskProductionApprovalSourceV1({
+    approval: approvalSource(),
+    workflowId: "workflow-123",
+    attemptId: "attempt-123",
+    actionType: "managed_dispatch_beta",
+    actorRef: "actor-user-123",
+    profileRef: "profile-prod-123",
+    providerQualifiedModelId: "claude/sonnet-4",
+    providerBindingHash: "hash-provider-binding-123",
+    evidenceBundleHash: "hash-evidence-bundle-123",
+    guardDecisionRef: "guard-decision-123",
+    consumptionAuditRef: "audit-consumption-123",
+    consumedAt: "2026-05-17T00:05:00.000Z",
+  });
+  assert.ok(result.consumed_approval);
+  return result.consumed_approval;
+}
+
+function dispatchManifest(overrides: Partial<FlowDeskDispatchAttemptManifestV1> = {}): FlowDeskDispatchAttemptManifestV1 {
+  return {
+    schema_version: "flowdesk.dispatch_attempt_manifest.v1",
+    workflow_id: "workflow-123",
+    attempt_id: "attempt-123",
+    state: "approval_consumed",
+    actor_ref: "actor-user-123",
+    profile_ref: "profile-prod-123",
+    provider_qualified_model_id: "claude/sonnet-4",
+    provider_binding_hash: "hash-provider-binding-123",
+    evidence_bundle_hash: "hash-evidence-bundle-123",
+    evidence_refs: ["usage-authority-123", "runtime-echo-123", "telemetry-123"],
+    approval_ref: "approval-123",
+    consumed_approval_ref: "approval-123",
+    guard_decision_ref: "guard-decision-123",
+    pre_dispatch_audit_ref: "audit-123",
+    pre_dispatch_audit_committed: true,
+    idempotency_key: "idempotency-123",
+    created_at: now,
+    updated_at: "2026-05-17T00:05:00.000Z",
+    dispatch_authority_enabled: false,
+    realOpenCodeDispatch: false,
+    actualLaneLaunch: false,
+    providerCall: false,
+    runtimeExecution: false,
+    ...overrides,
+  };
+}
+
 function fakeClient() {
   const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
   const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
@@ -396,6 +472,8 @@ test("managed dispatch beta adapter calls promptAsync once with approved model a
     client,
     boundaryInput: managedDispatchInput(),
     request: dispatchRequest(),
+    dispatchManifest: dispatchManifest(),
+    consumedApproval: consumedApproval(),
   });
 
   assert.equal(result.status, "dispatch_accepted");
@@ -437,6 +515,8 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
       promptText: undefined,
       promptSummary: "Summarized approved prompt.",
     }),
+    dispatchManifest: dispatchManifest(),
+    consumedApproval: consumedApproval(),
   });
 
   assert.equal(result.status, "dispatch_completed");
@@ -454,6 +534,31 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
     /noReply|cancel|fallback|tools/.test(JSON.stringify(promptCalls[0])),
     false,
   );
+});
+
+test("managed dispatch beta adapter requires manifest and consumed approval before fake client calls", async () => {
+  const { client, promptCalls, promptAsyncCalls } = fakeClient();
+  const missing = await dispatchManagedDispatchBetaPromptV1({
+    client,
+    boundaryInput: managedDispatchInput(),
+    request: dispatchRequest(),
+  });
+  assert.equal(missing.status, "blocked_before_dispatch");
+  assert.match(missing.redactedBlockReason, /manifest and consumed approval/);
+  assert.equal(promptCalls.length, 0);
+  assert.equal(promptAsyncCalls.length, 0);
+
+  const badManifest = await dispatchManagedDispatchBetaPromptV1({
+    client,
+    boundaryInput: managedDispatchInput(),
+    request: dispatchRequest(),
+    dispatchManifest: dispatchManifest({ pre_dispatch_audit_committed: false }),
+    consumedApproval: consumedApproval(),
+  });
+  assert.equal(badManifest.status, "blocked_before_dispatch");
+  assert.match(badManifest.redactedBlockReason, /pre-call gate blocked/);
+  assert.equal(promptCalls.length, 0);
+  assert.equal(promptAsyncCalls.length, 0);
 });
 
 test("managed dispatch beta adapter blocks request model mismatch before fake client calls", async () => {
@@ -551,7 +656,12 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
   assert.ok(betaTool);
 
   const raw = await betaTool.execute(
-    { boundaryInput: managedDispatchInput(), request: dispatchRequest() },
+    {
+      boundaryInput: managedDispatchInput(),
+      request: dispatchRequest(),
+      dispatchManifest: dispatchManifest(),
+      consumedApproval: consumedApproval(),
+    },
     undefined as never,
   );
   const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;

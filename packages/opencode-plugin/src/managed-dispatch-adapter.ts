@@ -1,5 +1,5 @@
-import type { GuardBoundaryDecisionV1, ManagedDispatchBetaBoundaryInputV1 } from "@flowdesk/core";
-import { evaluateManagedDispatchBetaGuardBoundaryV1 } from "@flowdesk/core";
+import type { FlowDeskDispatchAttemptManifestV1, FlowDeskProductionApprovalSourceV1, GuardBoundaryDecisionV1, ManagedDispatchBetaBoundaryInputV1 } from "@flowdesk/core";
+import { evaluateFlowDeskDispatchAttemptPrecallV1, evaluateManagedDispatchBetaGuardBoundaryV1 } from "@flowdesk/core";
 
 export const flowdeskManagedDispatchBetaAdapterProfile = "managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
 
@@ -300,6 +300,8 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
   boundaryInput: ManagedDispatchBetaBoundaryInputV1;
   request: FlowDeskManagedDispatchBetaDispatchRequestV1;
+  dispatchManifest?: FlowDeskDispatchAttemptManifestV1;
+  consumedApproval?: FlowDeskProductionApprovalSourceV1;
 }): Promise<FlowDeskManagedDispatchBetaAdapterResultV1> {
   const guardDecision = evaluateManagedDispatchBetaGuardBoundaryV1(input.boundaryInput);
   if (guardDecision.status !== "eligible") return blocked(input.boundaryInput, guardDecision);
@@ -317,6 +319,17 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   const text = promptTextFrom(input.request);
   if (input.request.sessionId.trim().length === 0 || input.request.agent.trim().length === 0 || text === undefined) {
     return blocked(input.boundaryInput, guardDecision, "Dispatch request is missing session, agent, or bounded prompt text.");
+  }
+
+  if (input.dispatchManifest === undefined || input.consumedApproval === undefined) {
+    return blocked(input.boundaryInput, guardDecision, "Dispatch attempt manifest and consumed approval are required before SDK call.");
+  }
+  const precall = evaluateFlowDeskDispatchAttemptPrecallV1({
+    manifest: input.dispatchManifest,
+    consumedApproval: input.consumedApproval
+  });
+  if (!precall.sdk_call_permitted) {
+    return blocked(input.boundaryInput, guardDecision, `Dispatch pre-call gate blocked: ${precall.blocked_labels.join(",") || precall.errors.join(",") || "unknown"}.`);
   }
 
   const dispatchMethod = input.request.dispatchMethod ?? "promptAsync";
