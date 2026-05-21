@@ -32,6 +32,97 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 
 ## Next Safe Actions
 
-1. Probe `chat.message` mutation/throw/no-reply/cancel behavior under OpenCode 1.15 to either prove or keep blocked the hard chat-control authority (blocker #4).
-2. Plan and prototype the durable production-evidence reload checks (blocker #5) and the production-approval issuance contract (blocker #6) so the Release 2 managed-dispatch single-step gate (blocker #7) can be assembled in one run with explicit user confirmation.
-3. Keep blockers #8 through #11 behind their respective conformance gates and explicit user confirmation; do not enable actual lane launch, top-tier reviewer fan-out, managed fallback, or operational-intelligence external writes without those proofs.
+1. Convert the blocker inventory into enforceable contracts before any runtime authority is promoted. The critical review consensus requires explicit fail-closed probe outcomes, committed durable writes, atomic approval consumption, deterministic cache invalidation, and bounded fallback depth.
+2. Probe `chat.message` mutation/throw/no-reply/cancel behavior under OpenCode 1.15 to either prove or keep blocked the hard chat-control authority (blocker #4). Timeout, malformed output, null output, and unsupported return fields must all map to explicit denied/blocked results, never implicit allow.
+3. Implement and test durable production-evidence reload checks (blocker #5) before approval source authority (blocker #6). Approval cannot bind to evidence until evidence reload, staleness, drift, redaction, migration/version mismatch, symlink/root escape, and partial-write behavior fail closed.
+4. Implement the production-approval issuance/consumption contract (blocker #6) before assembling the Release 2 managed-dispatch single-step gate (blocker #7). Approval consumption must be scoped, one-shot, durable, auditable, and atomic before it can be referenced by a dispatch attempt.
+5. Keep blockers #8 through #11 behind their respective conformance gates and explicit user confirmation; do not enable actual lane launch, top-tier reviewer fan-out, managed fallback, or operational-intelligence external writes without those proofs.
+
+## 2026-05-21 Multi-Model Critical Review Synthesis
+
+The blocker-resolution proposal was reviewed through three explicit lanes: Claude Opus, GPT frontier, and Gemini Pro. The initial Claude and Gemini sessions completed without deliverables and were not counted; fresh replacement lanes produced usable reviews. All valid reviewer lanes agreed that the prior plan was directionally safe but not implementation-ready until abstract blocker labels are converted into typed contracts, negative tests, and strict ordering.
+
+Reviewer-specific findings:
+
+1. Claude Opus: marked the plan conditional not-ready. Highest risks were approval replay/scope leakage, audit-before-dispatch durability, ambiguous full re-gate semantics, cache invalidation, no-output thresholds, and orphan lane cleanup. Required additions include nonce-backed atomic approval consumption, committed manifest persistence, idempotency/compensation fields, reviewer assignment-time verification, coordinator-issued fallback attempt ids, max fallback depth, and explicit advisory labeling for operational intelligence.
+2. GPT frontier: marked the plan inconclusive/not implementation-ready. Highest risks were underspecified approval source authority, vague dispatch ordering, incomplete durable evidence scope, underdefined lane lifecycle states, false authority from exact-model cache, insufficient fallback separation, and operational intelligence crossing advisory boundaries. Required additions include formal contracts for approval issuance, dispatch attempts, pre-dispatch audit, lane lifecycle, availability cache, fallback decisions, and operational ledgers/reference packs.
+3. Gemini Pro: marked the plan conceptually sound but critically underdeveloped. Highest risks were undefined fail-closed probe contracts, implicit trust in cache state, non-atomic audit/dispatch, missing approval invalidity guarantees, and ambiguous fallback re-gating. Required additions include timeout/error/malformed-output semantics for every probe, a stateful approval lifecycle, transaction-style audit-before-dispatch guarantees, deterministic reviewer planning, and traceable lane/fallback states.
+
+Consensus corrections:
+
+1. Every probe/check/gate must return an explicit `pass`, `blocked`, `denied`, `invalid`, or `inconclusive` state. Timeout, null, malformed output, missing output, missing verdict, and thrown errors are fail-closed.
+2. Durable evidence and audit writes must be committed and reloadable before dependent authority can be consumed. Buffered/asynchronous write intent is not enough for dispatch or approval.
+3. Production approval is a security primitive, not a diagnostic label. It must define issuer boundary, actor/profile/workflow/action scope, nonce/idempotency, expiry, revocation, one-shot atomic consumption, and pre-consumption audit linkage.
+4. A dispatch attempt manifest must be the atomic work unit. It must bind workflow id, attempt id, actor/profile refs, target provider/model binding, evidence refs, approval ref, Guard decision ref, pre-dispatch audit ref, idempotency key, current state, and disabled authority flags until the final gate permits a call.
+5. Lane lifecycle records must classify `complete`, `incomplete`, `no_output`, `missing_verdict`, `aborted`, `timeout`, `late_output`, `orphaned`, and `invocation_failed`. No-output and missing-verdict lanes are never approvals.
+6. Exact-model availability cache is planning input only. It must be bound to active profile, OpenCode version, FlowDesk package version, registry hash, Policy Pack hash, provider identity, auth/account boundary, and local date. Availability never implies quota, usage freshness, provider health, review approval, or dispatchability.
+7. Fallback/reselection must create a new attempt id, re-run every gate from scratch, capture fresh evidence, obtain fresh Guard/approval, enforce a maximum depth, and terminate in a visible blocked state. Fallback-derived evidence cannot authorize fallback.
+8. Operational intelligence must remain advisory. Scores, reference packs, proposal fan-out, and ledgers must not be accepted as approval, Guard decision, professional signoff, dispatch authority, or external-write authority.
+
+## Corrected Execution Order
+
+The dependency-safe order is:
+
+1. Blocker #5 durable evidence foundation: extend reload/fail-closed coverage, redaction checks, stale/drift/version tests, and doctor-visible states.
+2. Blocker #3 FDS-1 runtime/provider-facing schema probe and blocker #4 chat hook authority probe: build explicit fail-closed probe result contracts. #4 remains independent from non-chat Release 2 work; if hard control is unproven, steering-only remains the permanent safe state until a first-class boundary appears.
+3. Blocker #6 production approval source: implement scoped issuance, pre-consumption audit linkage, expiry, revocation, and atomic one-shot consumption.
+4. Blocker #7 single-step dispatch manifest: implement manifest/audit ordering and injected SDK spy tests proving zero calls before committed audit and valid consumed approval. Live dispatch remains confirmation-gated.
+5. Blocker #8 lane lifecycle: implement typed lifecycle records, timeout/no-output/missing-verdict/late-output/orphan classifications, reference-kind separation, and bounded retry metadata.
+6. Blocker #9 exact-model availability cache and reviewer plan: implement same-day cache, assignment-time verification, deterministic reviewer planning, and no silent lower-tier/alias substitution.
+7. Blocker #10 fallback/reselection: implement full fresh re-gate, coordinator-issued new attempt id, max fallback depth, and terminal blocked states.
+8. Blocker #11 operational intelligence: implement local advisory schemas/tests first; require separate opt-in and confirmation before fan-out, GitHub writes, connectors, or external storage.
+
+## Contract Requirements Before Each Gate Can Close
+
+### Blocker #3: FDS-1 Schema Conversion
+
+- Add a probe result contract that distinguishes `probe_pass`, `probe_blocked`, and `probe_invalid`.
+- Unknown properties, malformed events, missing tool schemas, provider-facing conversion failure, and runtime validator mismatch must block.
+- Local runtime-closed validation is not provider-facing proof; docs must label the evidence source precisely.
+
+### Blocker #4: Chat Hook Hard-Control
+
+- Add explicit outcomes for mutation-only, throw, unsupported `noReply`, unsupported cancel/stop, timeout, null return, malformed return, and duplicate assistant reply.
+- Missing first-class hard-control proof must result in `hardCancelOrNoReplyAuthority=false` and steering-only behavior.
+
+### Blocker #5: Durable Production Evidence
+
+- Expand evidence classes beyond usage/runtime echo/telemetry where needed for configured verification, sanitized auth, external auth/provider policy, approval, and pre-dispatch audit refs.
+- Test malformed, truncated, stale, drifted, cross-workflow, cross-profile, schema-version mismatch, symlink/root escape, partial write, and redaction-failure cases.
+- Doctor output must expose redacted fail-closed state without raw payloads or secret-bearing paths.
+
+### Blocker #6: Production Approval Source Authority
+
+- Define issuer boundary and forbid FlowDesk self-authorization for production dispatch.
+- Bind approval to actor ref, profile ref, workflow id, attempt id, action type, provider/model binding hash, evidence bundle hash, Guard decision ref, issuance audit ref, expiry, and nonce/idempotency key.
+- Consumption must be atomic and one-shot. Consumed, expired, revoked, denied, drifted, forged, or scope-mismatched approvals block.
+
+### Blocker #7: Single-Step Managed Dispatch Beta
+
+- Dispatch order is: validate evidence reloads -> validate approval source -> Guard decision -> write manifest -> write and reload pre-dispatch audit -> consume approval -> only then injected SDK call.
+- Injected SDK spy tests must prove zero SDK/provider calls for every pre-call failure.
+- SDK failure after manifest/audit write must update the manifest to failed/quarantined without reusing approval or attempt id.
+
+### Blocker #8: Actual Delegated Lane Launch
+
+- Record parent/child/session/message refs with strict kind separation.
+- Classify timeout, no-output, missing-verdict, aborted, late-output, orphaned, invocation-failed, and complete states.
+- Define orphan max age, late-output handling, retry/idempotency behavior, and cleanup/audit refs before runtime lane proof can count.
+
+### Blocker #9: Top-Tier Multi-Perspective Reviewer Lanes
+
+- Cache keys must include active profile, OpenCode version, FlowDesk package version, registry hash, Policy Pack hash, provider identity, auth/account boundary, and local date.
+- Assignment must re-check cache freshness and registered/highest-tier predicates at fan-out time.
+- Cache availability cannot satisfy usage/quota/provider-health/approval/Guard gates.
+
+### Blocker #10: Managed Fallback/Reselection
+
+- Full re-gate means all gates from blocker #7 plus runtime compatibility, policy eligibility, fresh usage/health, fresh evidence, fresh approval, fresh Guard decision, and fresh pre-dispatch audit.
+- Each fallback must have a coordinator-issued new attempt id, parent attempt ref, reason label, max-depth counter, and terminal blocked state.
+- Silent chained fallback and same-attempt fallback are forbidden.
+
+### Blocker #11: Operational Intelligence
+
+- Hard filters run before scoring. Scoring is advisory-only and cannot be consumed as gate input.
+- External ledger writes, GitHub writes, connectors, and proposal fan-out require explicit opt-in and confirmation.
+- Reference packs must be source-grounded, redacted, and barred from acting as legal/medical/patent/professional signoff.
