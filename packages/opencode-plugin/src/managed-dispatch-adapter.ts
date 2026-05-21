@@ -100,6 +100,23 @@ export interface FlowDeskManagedDispatchBetaOpenCodeClientV1 {
   };
 }
 
+export interface FlowDeskManagedDispatchBetaReservationStoreResultV1 {
+  ok: boolean;
+  reservationEvidenceReloaded: boolean;
+  redactedFailureReason?: string;
+}
+
+export interface FlowDeskManagedDispatchBetaReservationStoreV1 {
+  reserve(input: {
+    manifest: FlowDeskDispatchAttemptManifestV1;
+    reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+  }): Promise<FlowDeskManagedDispatchBetaReservationStoreResultV1> | FlowDeskManagedDispatchBetaReservationStoreResultV1;
+  recordDispatchFailure(input: {
+    manifest: FlowDeskDispatchAttemptManifestV1;
+    reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+  }): Promise<FlowDeskManagedDispatchBetaReservationStoreResultV1> | FlowDeskManagedDispatchBetaReservationStoreResultV1;
+}
+
 export interface FlowDeskInjectedSdkLaneObservationRequestV1 {
   parentSessionId: string;
   laneId: string;
@@ -302,6 +319,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   request: FlowDeskManagedDispatchBetaDispatchRequestV1;
   dispatchManifest?: FlowDeskDispatchAttemptManifestV1;
   reloadedEvidence?: FlowDeskSessionEvidenceReloadResultV1;
+  reservationStore?: FlowDeskManagedDispatchBetaReservationStoreV1;
 }): Promise<FlowDeskManagedDispatchBetaAdapterResultV1> {
   const guardDecision = evaluateManagedDispatchBetaGuardBoundaryV1(input.boundaryInput);
   if (guardDecision.status !== "eligible") return blocked(input.boundaryInput, guardDecision);
@@ -361,11 +379,26 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   const dispatch = input.client.session[dispatchMethod];
   if (dispatch === undefined) return blocked(input.boundaryInput, guardDecision, "Injected OpenCode client is missing the requested session prompt method.");
 
+  if (input.reservationStore === undefined) {
+    return blocked(input.boundaryInput, guardDecision, "Dispatch idempotency reservation materialization is required before SDK call.");
+  }
+  const reservation = await input.reservationStore.reserve({
+    manifest: input.dispatchManifest,
+    reloadedEvidence: input.reloadedEvidence
+  });
+  if (!reservation.ok || reservation.reservationEvidenceReloaded !== true) {
+    return blocked(input.boundaryInput, guardDecision, `Dispatch idempotency reservation materialization blocked: ${reservation.redactedFailureReason ?? "reload not proven"}.`);
+  }
+
   const options = dispatchOptions(input.request, model, text);
   let response: unknown;
   try {
     response = await dispatch.call(input.client.session, options);
   } catch {
+    const failureRecord = await input.reservationStore.recordDispatchFailure({
+      manifest: input.dispatchManifest,
+      reloadedEvidence: input.reloadedEvidence
+    });
     return {
       adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
       status: "dispatch_failed",
@@ -376,7 +409,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
       agent: input.request.agent,
       model,
       ...(input.request.directory === undefined ? {} : { directory: input.request.directory }),
-      redactedErrorCategory: "provider_api",
+      redactedErrorCategory: failureRecord.ok && failureRecord.reservationEvidenceReloaded ? "provider_api" : "runtime",
       authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
       verification: verificationFor(input.boundaryInput)
     };

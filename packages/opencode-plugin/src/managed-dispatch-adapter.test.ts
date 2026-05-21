@@ -22,6 +22,7 @@ import {
 	dispatchManagedDispatchBetaPromptV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
+	type FlowDeskManagedDispatchBetaReservationStoreV1,
 	observeInjectedSdkLaneV1,
 } from "./managed-dispatch-adapter.js";
 import flowdeskOpenCodeServerPlugin, {
@@ -415,6 +416,46 @@ function fakeClient() {
 	return { client, promptCalls, promptAsyncCalls };
 }
 
+function failingPromptAsyncClient() {
+	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
+	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
+		session: {
+			promptAsync(options) {
+				promptAsyncCalls.push(options);
+				return Promise.reject(new Error("provider unavailable"));
+			},
+		},
+	};
+	return { client, promptAsyncCalls };
+}
+
+function fakeReservationStore(overrides: {
+	reserveOk?: boolean;
+	failureRecordOk?: boolean;
+} = {}) {
+	const reserveCalls: Array<Parameters<FlowDeskManagedDispatchBetaReservationStoreV1["reserve"]>[0]> = [];
+	const failureCalls: Array<Parameters<FlowDeskManagedDispatchBetaReservationStoreV1["recordDispatchFailure"]>[0]> = [];
+	const store: FlowDeskManagedDispatchBetaReservationStoreV1 = {
+		reserve(input) {
+			reserveCalls.push(input);
+			return {
+				ok: overrides.reserveOk ?? true,
+				reservationEvidenceReloaded: overrides.reserveOk ?? true,
+				...(overrides.reserveOk === false ? { redactedFailureReason: "reservation reload failed" } : {}),
+			};
+		},
+		recordDispatchFailure(input) {
+			failureCalls.push(input);
+			return {
+				ok: overrides.failureRecordOk ?? true,
+				reservationEvidenceReloaded: overrides.failureRecordOk ?? true,
+				...(overrides.failureRecordOk === false ? { redactedFailureReason: "failure update failed" } : {}),
+			};
+		},
+	};
+	return { store, reserveCalls, failureCalls };
+}
+
 function observingClient(
 	childrenResponse: unknown,
 	messagesResponse: unknown = [],
@@ -527,12 +568,14 @@ test("injected sdk lane observation degrades when child data or APIs are missing
 
 test("managed dispatch beta adapter calls promptAsync once with approved model agent session and text", async () => {
 	const { client, promptCalls, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
 	const result = await dispatchManagedDispatchBetaPromptV1({
 		client,
 		boundaryInput: managedDispatchInput(),
 		request: dispatchRequest(),
 		dispatchManifest: dispatchManifest(),
 		reloadedEvidence: reloadedEvidence(),
+		reservationStore: reservation.store,
 	});
 
 	assert.equal(result.status, "dispatch_accepted");
@@ -547,6 +590,8 @@ test("managed dispatch beta adapter calls promptAsync once with approved model a
 	assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
 	assert.equal(promptCalls.length, 0);
 	assert.equal(promptAsyncCalls.length, 1);
+	assert.equal(reservation.reserveCalls.length, 1);
+	assert.equal(reservation.failureCalls.length, 0);
 	assert.deepEqual(promptAsyncCalls[0], {
 		path: { id: "session-123" },
 		query: { directory: "/tmp/flowdesk-project" },
@@ -566,6 +611,7 @@ test("managed dispatch beta adapter calls promptAsync once with approved model a
 
 test("managed dispatch beta adapter can call prompt once for completed dispatch without noReply or tools", async () => {
 	const { client, promptCalls, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
 	const result = await dispatchManagedDispatchBetaPromptV1({
 		client,
 		boundaryInput: managedDispatchInput(),
@@ -576,11 +622,14 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
 		}),
 		dispatchManifest: dispatchManifest(),
 		reloadedEvidence: reloadedEvidence(),
+		reservationStore: reservation.store,
 	});
 
 	assert.equal(result.status, "dispatch_completed");
 	assert.equal(promptCalls.length, 1);
 	assert.equal(promptAsyncCalls.length, 0);
+	assert.equal(reservation.reserveCalls.length, 1);
+	assert.equal(reservation.failureCalls.length, 0);
 	assert.equal(
 		promptCalls[0].body.parts[0]?.text,
 		"Summarized approved prompt.",
@@ -618,6 +667,57 @@ test("managed dispatch beta adapter requires manifest and durable evidence befor
 	assert.match(badManifest.redactedBlockReason, /pre-call gate blocked/);
 	assert.equal(promptCalls.length, 0);
 	assert.equal(promptAsyncCalls.length, 0);
+});
+
+test("managed dispatch beta adapter requires reservation materialization before fake client calls", async () => {
+	const missingStoreClient = fakeClient();
+	const missingStore = await dispatchManagedDispatchBetaPromptV1({
+		client: missingStoreClient.client,
+		boundaryInput: managedDispatchInput(),
+		request: dispatchRequest(),
+		dispatchManifest: dispatchManifest(),
+		reloadedEvidence: reloadedEvidence(),
+	});
+	assert.equal(missingStore.status, "blocked_before_dispatch");
+	assert.match(missingStore.redactedBlockReason, /reservation materialization is required/);
+	assert.equal(missingStoreClient.promptCalls.length, 0);
+	assert.equal(missingStoreClient.promptAsyncCalls.length, 0);
+
+	const failedReservationClient = fakeClient();
+	const reservation = fakeReservationStore({ reserveOk: false });
+	const failedReservation = await dispatchManagedDispatchBetaPromptV1({
+		client: failedReservationClient.client,
+		boundaryInput: managedDispatchInput(),
+		request: dispatchRequest(),
+		dispatchManifest: dispatchManifest(),
+		reloadedEvidence: reloadedEvidence(),
+		reservationStore: reservation.store,
+	});
+	assert.equal(failedReservation.status, "blocked_before_dispatch");
+	assert.match(failedReservation.redactedBlockReason, /reservation materialization blocked/);
+	assert.equal(reservation.reserveCalls.length, 1);
+	assert.equal(reservation.failureCalls.length, 0);
+	assert.equal(failedReservationClient.promptCalls.length, 0);
+	assert.equal(failedReservationClient.promptAsyncCalls.length, 0);
+});
+
+test("managed dispatch beta adapter records reservation failure state after SDK failure", async () => {
+	const { client, promptAsyncCalls } = failingPromptAsyncClient();
+	const reservation = fakeReservationStore();
+	const result = await dispatchManagedDispatchBetaPromptV1({
+		client,
+		boundaryInput: managedDispatchInput(),
+		request: dispatchRequest(),
+		dispatchManifest: dispatchManifest(),
+		reloadedEvidence: reloadedEvidence(),
+		reservationStore: reservation.store,
+	});
+	assert.equal(result.status, "dispatch_failed");
+	assert.equal(result.dispatchAttempted, true);
+	assert.equal(promptAsyncCalls.length, 1);
+	assert.equal(reservation.reserveCalls.length, 1);
+	assert.equal(reservation.failureCalls.length, 1);
+	assert.equal(reservation.failureCalls[0].manifest.attempt_id, "attempt-123");
 });
 
 test("managed dispatch beta adapter requires promotion gate before fake client calls", async () => {
@@ -766,6 +866,7 @@ test("default server and plugin scaffold remain Release 1 non-dispatch", async (
 
 test("managed dispatch beta server tool is explicit opt-in and redacts SDK response", async () => {
 	const { client, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
 	const defaultHooks = await flowdeskOpenCodeServerPlugin.server({
 		client,
 	} as never);
@@ -777,7 +878,10 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
 	);
 
 	const hooks = await flowdeskOpenCodeServerPlugin.server({ client } as never, {
-		[flowdeskManagedDispatchBetaAdapterOption]: true,
+		[flowdeskManagedDispatchBetaAdapterOption]: {
+			enabled: true,
+			reservationStore: reservation.store,
+		},
 		localNonDispatchAdapter: false,
 		naturalLanguageRouting: false,
 	});
@@ -799,4 +903,5 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
 	assert.equal(result.responseObserved, false);
 	assert.equal("response" in result, false);
 	assert.equal(promptAsyncCalls.length, 1);
+	assert.equal(reservation.reserveCalls.length, 1);
 });

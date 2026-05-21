@@ -30,7 +30,8 @@ import {
   dispatchManagedDispatchBetaPromptV1,
   type FlowDeskManagedDispatchBetaAdapterResultV1,
   type FlowDeskManagedDispatchBetaDispatchRequestV1,
-  type FlowDeskManagedDispatchBetaOpenCodeClientV1
+  type FlowDeskManagedDispatchBetaOpenCodeClientV1,
+  type FlowDeskManagedDispatchBetaReservationStoreV1
 } from "./managed-dispatch-adapter.js";
 import {
   FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
@@ -78,6 +79,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isManagedDispatchBetaClient(value: unknown): value is FlowDeskManagedDispatchBetaOpenCodeClientV1 {
   if (!isRecord(value) || !isRecord(value.session)) return false;
   return typeof value.session.prompt === "function" || typeof value.session.promptAsync === "function";
+}
+
+function isManagedDispatchBetaReservationStore(value: unknown): value is FlowDeskManagedDispatchBetaReservationStoreV1 {
+  return isRecord(value) && typeof value.reserve === "function" && typeof value.recordDispatchFailure === "function";
 }
 
 function boundedText(value: string, fallback: string): string {
@@ -381,7 +386,7 @@ function redactedManagedDispatchBetaToolResult(result: FlowDeskManagedDispatchBe
   };
 }
 
-export function createFlowDeskManagedDispatchBetaOptInTools(client: FlowDeskManagedDispatchBetaOpenCodeClientV1): Record<string, FlowDeskOpenCodeTool> {
+export function createFlowDeskManagedDispatchBetaOptInTools(client: FlowDeskManagedDispatchBetaOpenCodeClientV1, reservationStore?: FlowDeskManagedDispatchBetaReservationStoreV1): Record<string, FlowDeskOpenCodeTool> {
   return {
     [flowdeskManagedDispatchBetaToolName]: tool({
       description: "FlowDesk Release 2 managed-dispatch beta opt-in tool; requires full Guard evidence and calls only the injected OpenCode SDK client without fallback.",
@@ -406,7 +411,8 @@ export function createFlowDeskManagedDispatchBetaOptInTools(client: FlowDeskMana
           boundaryInput: record.boundaryInput as unknown as ManagedDispatchBetaBoundaryInputV1,
           request: record.request as unknown as FlowDeskManagedDispatchBetaDispatchRequestV1,
           ...(isRecord(record.dispatchManifest) ? { dispatchManifest: record.dispatchManifest as unknown as FlowDeskDispatchAttemptManifestV1 } : {}),
-          ...(isRecord(record.reloadedEvidence) ? { reloadedEvidence: record.reloadedEvidence as unknown as FlowDeskSessionEvidenceReloadResultV1 } : {})
+          ...(isRecord(record.reloadedEvidence) ? { reloadedEvidence: record.reloadedEvidence as unknown as FlowDeskSessionEvidenceReloadResultV1 } : {}),
+          ...(reservationStore === undefined ? {} : { reservationStore })
         });
         return JSON.stringify(redactedManagedDispatchBetaToolResult(result));
       }
@@ -488,9 +494,16 @@ function managedDispatchBetaClientFrom(input: unknown, options?: PluginOptions):
   return isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
 }
 
+function managedDispatchBetaReservationStoreFrom(input: unknown, options?: PluginOptions): FlowDeskManagedDispatchBetaReservationStoreV1 | undefined {
+  const option = options?.[flowdeskManagedDispatchBetaAdapterOption];
+  if (isRecord(option) && isManagedDispatchBetaReservationStore(option.reservationStore)) return option.reservationStore;
+  return isRecord(input) && isManagedDispatchBetaReservationStore(input.reservationStore) ? input.reservationStore : undefined;
+}
+
 const flowdeskServerPlugin: Plugin = async (input, options) => {
   const localSession = isLocalNonDispatchAdapterEnabled(options) || isNaturalLanguageRoutingEnabled(options) ? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, { durableStateRootDir: durableStateRootFromOptions(options), productionEnablement: productionEnablementFromOptions(options) }) : undefined;
   const managedDispatchBetaClient = isManagedDispatchBetaAdapterEnabled(options) ? managedDispatchBetaClientFrom(input, options) : undefined;
+  const managedDispatchBetaReservationStore = isManagedDispatchBetaAdapterEnabled(options) ? managedDispatchBetaReservationStoreFrom(input, options) : undefined;
   const tools: Record<string, FlowDeskOpenCodeTool> = {
     [flowdeskPreSpikeDoctorToolName]: tool({
       description: "Report FlowDesk plugin load status without enabling real dispatch, provider calls, or runtime execution.",
@@ -521,7 +534,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
   if (isFds1SchemaConversionProbeEnabled(options)) Object.assign(tools, createFlowDeskFds1SchemaConversionProbeTools());
   if (isLocalNonDispatchAdapterEnabled(options)) Object.assign(tools, createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession));
   if (isNaturalLanguageRoutingEnabled(options)) Object.assign(tools, createFlowDeskNaturalLanguageRoutingTools(new Date(), localSession));
-  if (managedDispatchBetaClient !== undefined) Object.assign(tools, createFlowDeskManagedDispatchBetaOptInTools(managedDispatchBetaClient));
+  if (managedDispatchBetaClient !== undefined) Object.assign(tools, createFlowDeskManagedDispatchBetaOptInTools(managedDispatchBetaClient, managedDispatchBetaReservationStore));
   if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
   return { tool: tools, "chat.message": createFlowDeskNaturalLanguageChatMessageHook(() => new Date(), localSession) };
 };
