@@ -1,5 +1,6 @@
 import type {
   FlowDeskChatIntakeRequestV1,
+  FlowDeskConfiguredVerificationResultV1,
   FlowDeskRelease1MinimumPortableCommandName,
   FlowDeskRelease1MinimumToolName,
   FlowDeskToolRequestEnvelopeV1,
@@ -457,6 +458,7 @@ function productionEnablementFromOptions(options?: PluginOptions): FlowDeskLocal
     enabled: true,
     ...(typeof value.preDispatchAuditRef === "string" ? { preDispatchAuditRef: value.preDispatchAuditRef } : {}),
     ...(typeof value.configuredVerificationRef === "string" ? { configuredVerificationRef: value.configuredVerificationRef } : {}),
+    ...(isRecord(value.configuredVerificationResult) ? { configuredVerificationResult: value.configuredVerificationResult as unknown as FlowDeskConfiguredVerificationResultV1 } : {}),
     ...(typeof value.externalAuthPolicyRef === "string" ? { externalAuthPolicyRef: value.externalAuthPolicyRef } : {}),
     ...(typeof value.providerPolicyRef === "string" ? { providerPolicyRef: value.providerPolicyRef } : {}),
     ...(Array.isArray(value.laneConformanceRefs) && value.laneConformanceRefs.every((ref) => typeof ref === "string") ? { laneConformanceRefs: value.laneConformanceRefs } : {}),

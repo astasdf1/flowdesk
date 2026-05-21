@@ -726,6 +726,22 @@ test("server option wires production enablement evidence into doctor diagnostics
         enabled: true,
         preDispatchAuditRef: "audit-pre-dispatch-server",
         configuredVerificationRef: "configured-verification-server",
+        configuredVerificationResult: {
+          schema_version: "flowdesk.configured_verification_result.v1",
+          verification_ref: "configured-verification-server",
+          workflow_id: workflowId,
+          result: "passed",
+          produced_at: "2026-05-20T00:00:00.000Z",
+          source_ref: "configured-verification-source-server",
+          check_labels: ["typecheck", "unit-tests"],
+          evidence_refs: ["configured-verification-evidence-server"],
+          raw_output_redacted: true,
+          provider_call_made: false,
+          runtime_execution_made: false,
+          actual_lane_launch_made: false,
+          dispatch_authority_enabled: false,
+          safe_next_actions: ["/flowdesk-status"]
+        },
         externalAuthPolicyRef: "external-auth-policy-server",
         providerPolicyRef: "provider-policy-server",
         allowIncompleteConformance: true
@@ -742,6 +758,59 @@ test("server option wires production enablement evidence into doctor diagnostics
     assert.ok(compatibility.refs?.includes("production_enablement_state=configured"));
     assert.ok(compatibility.refs?.includes("production_blocker=approval_missing"));
     assert.ok(compatibility.refs?.includes("production_uncertainty=opencode_subtask_lifecycle_unproven"));
+    assert.equal(doctor.providerCall, false);
+    assert.equal(doctor.runtimeExecution, false);
+    assert.equal(doctor.actualLaneLaunch, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("server option fails closed for invalid configured verification result diagnostics", async () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-server-invalid-verification-"));
+  try {
+    const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+      [flowdeskLocalNonDispatchAdapterOption]: true,
+      [flowdeskNaturalLanguageRoutingOption]: false,
+      [flowdeskDurableStateRootOption]: root,
+      [flowdeskProductionEnablementOption]: {
+        enabled: true,
+        preDispatchAuditRef: "audit-pre-dispatch-server",
+        configuredVerificationRef: "configured-verification-server",
+        configuredVerificationResult: {
+          schema_version: "flowdesk.configured_verification_result.v1",
+          verification_ref: "configured-verification-other",
+          workflow_id: "workflow-local",
+          result: "passed",
+          produced_at: "2026-05-20T00:00:00.000Z",
+          source_ref: "configured-verification-source-server",
+          check_labels: ["typecheck"],
+          evidence_refs: "leaky-evidence-ref",
+          raw_output_redacted: true,
+          provider_call_made: true,
+          runtime_execution_made: true,
+          actual_lane_launch_made: true,
+          dispatch_authority_enabled: true,
+          safe_next_actions: ["/flowdesk-status"]
+        },
+        externalAuthPolicyRef: "external-auth-policy-server",
+        providerPolicyRef: "provider-policy-server",
+        allowIncompleteConformance: true
+      }
+    }) as ChatMessageHooks;
+    const doctorTool = hooks.tool?.flowdesk_doctor;
+    assert.ok(doctorTool);
+    const doctorFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find((entry) => entry.toolName === "flowdesk_doctor" && entry.schemaKind === "tool_request");
+    assert.ok(doctorFixture);
+    const doctor = JSON.parse(await doctorTool.execute({ ...doctorFixture.categories["valid.minimal"].sample, request_id: "request-invalid-verification-doctor", check_scope: "all", profile: "test" }, undefined as never)) as LocalAdapterTestResult;
+    assert.equal(doctor.handler?.ok, true);
+    const compatibility = doctor.handler?.response?.doctor_results?.find((section) => section.section === "opencode_plugin_compatibility");
+    assert.ok(compatibility);
+    assert.ok(compatibility.refs?.includes("production_enablement_state=blocked"));
+    assert.ok(compatibility.refs?.includes("production_blocker=configured_verification_invalid"));
+    assert.ok(compatibility.refs?.includes("production_blocker=configured_verification_result_missing"));
+    assert.ok(!compatibility.refs?.some((ref) => ref.startsWith("production_configured_verification_ref=")));
+    assert.ok(!compatibility.refs?.some((ref) => ref.includes("leaky-evidence-ref")));
     assert.equal(doctor.providerCall, false);
     assert.equal(doctor.runtimeExecution, false);
     assert.equal(doctor.actualLaneLaunch, false);
