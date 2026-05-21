@@ -51,7 +51,7 @@ Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-re
 
 ## 2026-05-22 Durable Approval Provenance Hardening
 
-Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has a dedicated `production_approval_source` class whose reload path validates the full approval-source contract, and dispatch pre-call readiness has a pure durable evaluator that requires both a reloaded consumed approval source and a reloaded pre-dispatch audit entry. This closes an in-memory provenance gap without enabling provider calls, runtime dispatch, or default Release 1 dispatch.
+Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has a dedicated `production_approval_source` class whose reload path validates the full approval-source contract, dispatch pre-call readiness has a pure durable evaluator that requires both a reloaded consumed approval source and a reloaded pre-dispatch audit entry, and the explicit opt-in managed-dispatch adapter now requires that durable evaluator before promotion and injected SDK calls. This closes the in-memory consumed-approval provenance gap while preserving default Release 1 non-dispatch behavior.
 
 ## Next Safe Actions
 
@@ -126,7 +126,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 ### Blocker #7: Single-Step Managed Dispatch Beta
 
 - Dispatch order is: validate evidence reloads -> validate approval source -> Guard decision -> write manifest -> write and reload pre-dispatch audit -> consume approval -> only then injected SDK call.
-- Local readiness evaluators must distinguish object-level pre-call validation from durable-provenance pre-call validation; provider/runtime dispatch may only depend on the durable path once wired.
+- Local readiness evaluators must distinguish object-level pre-call validation from durable-provenance pre-call validation; the explicit opt-in managed-dispatch adapter must use the durable path before promotion or injected SDK calls.
 - Injected SDK spy tests must prove zero SDK/provider calls for every pre-call failure.
 - SDK failure after manifest/audit write must update the manifest to failed/quarantined without reusing approval or attempt id.
 
