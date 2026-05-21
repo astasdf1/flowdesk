@@ -26,9 +26,10 @@ export function canUseRealDispatchInRelease1(): false {
 
 export * from "./agent-profiles.js";
 export * from "./audit.js";
+export * from "./authority-promotion.js";
 export * from "./bootstrap-foundation.js";
-export * from "./chat-routing.js";
 export * from "./chat-hook-authority-probe.js";
+export * from "./chat-routing.js";
 export * from "./command-manifest.js";
 export * from "./config-policy.js";
 export * from "./dispatch-attempt-manifest.js";
@@ -39,13 +40,13 @@ export * from "./fds1-schema-probe-result.js";
 export * from "./guard-boundary.js";
 export * from "./guarded-dry-run.js";
 export * from "./hook-harness.js";
-export * from "./lane-observability.js";
 export * from "./lane-lifecycle-record.js";
+export * from "./lane-observability.js";
 export * from "./model-availability-cache.js";
 export * from "./operational-intelligence.js";
 export * from "./plan.js";
-export * from "./production-enablement.js";
 export * from "./production-approval-source.js";
+export * from "./production-enablement.js";
 export * from "./production-verification.js";
 export * from "./provider-failures.js";
 export * from "./provider-usage-collector.js";
