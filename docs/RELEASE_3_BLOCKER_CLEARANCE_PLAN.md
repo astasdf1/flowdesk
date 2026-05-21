@@ -29,6 +29,7 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 3. `@flowdesk/opencode-plugin@0.1.1` was published to the public npm registry with exact `@opencode-ai/plugin@1.15.6` dependency.
 4. Fresh public-registry install smoke for `0.1.1` passed in a throwaway profile: 11 tools, `chat.message`, direct doctor/status/usage, and Korean chat-intake routing succeeded with all real-dispatch/lane-launch/fallback/hard cancel authority flags false.
 5. Active OpenCode profile migration from `0.1.0` to `0.1.1` completed at `~/.config/opencode`. The nested `@opencode-ai/plugin@1.15.6` and `@opencode-ai/sdk@1.15.6` resolve under FlowDesk while a separate top-level `@opencode-ai/plugin@1.3.12` remains for other plugins. Module-load smoke from the active profile passed.
+6. Release 3 authority-promotion core contracts now exist for managed-dispatch beta promotion, typed reviewer verdict acceptance, fallback reselection/regate promotion, and controlled external-write promotion. These contracts compose the already-hardened evidence, approval, manifest, reviewer verdict, fallback, and redaction validators while preserving Release 1 non-dispatch defaults.
 
 ## 2026-05-21 Live Runtime Batch
 
@@ -40,13 +41,17 @@ The parent-prompted fan-out attempt produced duplicate GPT children and an unmat
 
 Post-live hardening is recorded in `docs/conformance/2026-05-21-release3-authority-hardening.md`. The pass tightened duplicate durable-evidence target rejection, approval issuer/method compatibility, approval consumption timing, dispatch manifest state transitions, complete/failed lane lifecycle invariants, invalid-cache reviewer binding suppression, fallback fresh-evidence requirements, and advisory-only operational-intelligence consistency. These changes reduce authority-smuggling and overclaim risk without enabling new runtime authority.
 
+## 2026-05-21 Authority Promotion Batch
+
+Promotion contract evidence is recorded in `docs/conformance/2026-05-21-release3-authority-promotion.md`. The pass adds explicit pure promotion evaluators instead of flipping existing Release 1 booleans. Managed dispatch can be promoted only from an eligible Guard boundary, SDK pre-call permission, consumed `managed_dispatch_beta` approval, and matching audit/conformance refs. Reviewer verdicts can be accepted only when all canonical perspectives return typed `pass` verdicts with low uncertainty and a consumed `reviewer_fanout` approval. Fallback/reselection can advance only to a new-attempt full re-gate with consumed `fallback_reselection` approval. External writes can be authorized only for controlled redacted targets with dry-run, pre-write audit, redaction policy, content hash, and consumed `external_write` approval. Hard chat authority remains blocked.
+
 ## Next Safe Actions
 
-1. Convert the blocker inventory into enforceable contracts before any runtime authority is promoted. The critical review consensus requires explicit fail-closed probe outcomes, committed durable writes, atomic approval consumption, deterministic cache invalidation, and bounded fallback depth.
+1. Wire the new authority-promotion contracts into the opt-in plugin path only after preserving the existing adapter ordering: durable evidence reload, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, then SDK call.
 2. Probe `chat.message` mutation/throw/no-reply/cancel behavior under OpenCode 1.15 to either prove or keep blocked the hard chat-control authority (blocker #4). Timeout, malformed output, null output, and unsupported return fields must all map to explicit denied/blocked results, never implicit allow.
-3. Implement and test durable production-evidence reload checks (blocker #5) before approval source authority (blocker #6). Approval cannot bind to evidence until evidence reload, staleness, drift, redaction, migration/version mismatch, symlink/root escape, and partial-write behavior fail closed.
-4. Implement the production-approval issuance/consumption contract (blocker #6) before assembling the Release 2 managed-dispatch single-step gate (blocker #7). Approval consumption must be scoped, one-shot, durable, auditable, and atomic before it can be referenced by a dispatch attempt.
-5. Keep blockers #8 through #11 behind their respective conformance gates and explicit user confirmation; do not enable actual lane launch, top-tier reviewer fan-out, managed fallback, or operational-intelligence external writes without those proofs.
+3. Add runtime emission paths for typed reviewer verdicts only after coordinator-controlled lane launch remains deterministic and no-output/missing-verdict lanes are classified as non-approvals.
+4. Keep fallback/reselection as reselection plus full re-gate, not automatic provider switching. A promoted fallback decision must still pass the managed-dispatch gate before any provider call.
+5. Keep external writes limited to controlled redacted targets with explicit user confirmation. GitHub, connector, storage, database, URL, and raw-path targets remain blocked unless a later dedicated write connector gate is designed and proven.
 
 ## 2026-05-21 Multi-Model Critical Review Synthesis
 
@@ -84,7 +89,7 @@ The dependency-safe order is:
 
 ## Contract Requirements Before Each Gate Can Close
 
-Contract status as of 2026-05-21: blockers #3 through #11 have local non-authorizing contract/test foundations, a bounded live runtime batch has proven selected OpenCode/provider/lane surfaces under explicit user approval, and a follow-up authority-hardening batch tightened local negative tests around evidence, approval, dispatch, lanes, cache planning, fallback, and advisory artifacts. The live batch closes only the observed provider smoke, opt-in managed-dispatch adapter call, actual child session launch, coordinator-controlled reviewer fan-out, active-profile tool discovery, FDS-1 runtime validation, and non-authorizing fallback/operational-intelligence artifacts. Hard chat authority, automatic fallback execution, external writes, and typed reviewer verdict approval remain blocked.
+Contract status as of 2026-05-21: blockers #3 through #11 have local contract/test foundations, a bounded live runtime batch has proven selected OpenCode/provider/lane surfaces under explicit user approval, a follow-up authority-hardening batch tightened local negative tests around evidence, approval, dispatch, lanes, cache planning, fallback, and advisory artifacts, and an authority-promotion batch now defines explicit fail-closed promotion evaluators for managed dispatch, typed reviewer verdict acceptance, fallback reselection/regate, and controlled external writes. The live batch closes only the observed provider smoke, opt-in managed-dispatch adapter call, actual child session launch, coordinator-controlled reviewer fan-out, active-profile tool discovery, FDS-1 runtime validation, and non-authorizing fallback/operational-intelligence artifacts. Hard chat authority and automatic fallback execution remain blocked; external writes are promoted only as controlled redacted write requests, not GitHub/connector/storage writes.
 
 ### Blocker #3: FDS-1 Schema Conversion
 
