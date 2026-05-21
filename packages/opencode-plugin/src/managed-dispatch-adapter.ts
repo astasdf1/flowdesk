@@ -1,5 +1,5 @@
 import type { FlowDeskDispatchAttemptManifestV1, FlowDeskProductionApprovalSourceV1, GuardBoundaryDecisionV1, ManagedDispatchBetaBoundaryInputV1 } from "@flowdesk/core";
-import { evaluateFlowDeskDispatchAttemptPrecallV1, evaluateManagedDispatchBetaGuardBoundaryV1 } from "@flowdesk/core";
+import { evaluateFlowDeskDispatchAttemptPrecallV1, evaluateManagedDispatchBetaGuardBoundaryV1, promoteFlowDeskManagedDispatchBetaAuthorityV1 } from "@flowdesk/core";
 
 export const flowdeskManagedDispatchBetaAdapterProfile = "managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
 
@@ -330,6 +330,20 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
   });
   if (!precall.sdk_call_permitted) {
     return blocked(input.boundaryInput, guardDecision, `Dispatch pre-call gate blocked: ${precall.blocked_labels.join(",") || precall.errors.join(",") || "unknown"}.`);
+  }
+
+  if (input.boundaryInput.preDispatchAuditRef === undefined || input.boundaryInput.runtimeEchoEvidence?.conformance_ref === undefined) {
+    return blocked(input.boundaryInput, guardDecision, "Managed-dispatch promotion requires matching audit and conformance refs before SDK call.");
+  }
+  const promotion = promoteFlowDeskManagedDispatchBetaAuthorityV1({
+    guardDecision,
+    precallEvaluation: precall,
+    consumedApproval: input.consumedApproval,
+    auditRef: input.boundaryInput.preDispatchAuditRef,
+    conformanceRef: input.boundaryInput.runtimeEchoEvidence.conformance_ref
+  });
+  if (!promotion.ok || promotion.managed_dispatch_beta_authority_enabled !== true) {
+    return blocked(input.boundaryInput, guardDecision, `Managed-dispatch promotion blocked: ${promotion.errors.join(",") || "unknown"}.`);
   }
 
   const dispatchMethod = input.request.dispatchMethod ?? "promptAsync";
