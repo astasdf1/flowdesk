@@ -56,6 +56,54 @@ test("production approval source rejects forged authority, aliases, and unknown 
 	assert.match(errors, /cannot enable dispatch authority/);
 });
 
+test("production approval source enforces issuer method and consumption timing", () => {
+	const incompatibleTypedPhrase = validateFlowDeskProductionApprovalSourceV1(
+		approval({ issuer_boundary: "external_signed_intent" }),
+	);
+	assert.equal(incompatibleTypedPhrase.ok, false);
+	assert.match(incompatibleTypedPhrase.errors.join("; "), /typed_phrase/);
+
+	const incompatibleSignedIntent = validateFlowDeskProductionApprovalSourceV1(
+		approval({ approval_method: "signed_intent" }),
+	);
+	assert.equal(incompatibleSignedIntent.ok, false);
+	assert.match(incompatibleSignedIntent.errors.join("; "), /signed_intent/);
+
+	const earlyConsume = consumeFlowDeskProductionApprovalSourceV1({
+		approval: approval(),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		actionType: "managed_dispatch_beta",
+		actorRef: "actor-user-1",
+		profileRef: "profile-prod-1",
+		providerQualifiedModelId: "claude/claude-opus-4-5",
+		providerBindingHash: "hash-provider-binding-1",
+		evidenceBundleHash: "hash-evidence-bundle-1",
+		guardDecisionRef: "guard-decision-1",
+		consumptionAuditRef: "audit-consumption-1",
+		consumedAt: "2026-05-20T23:59:00.000Z",
+	});
+	assert.equal(earlyConsume.ok, false);
+	assert.match(earlyConsume.errors.join("; "), /after issued_at/);
+
+	const reusedAudit = consumeFlowDeskProductionApprovalSourceV1({
+		approval: approval(),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		actionType: "managed_dispatch_beta",
+		actorRef: "actor-user-1",
+		profileRef: "profile-prod-1",
+		providerQualifiedModelId: "claude/claude-opus-4-5",
+		providerBindingHash: "hash-provider-binding-1",
+		evidenceBundleHash: "hash-evidence-bundle-1",
+		guardDecisionRef: "guard-decision-1",
+		consumptionAuditRef: "audit-issuance-1",
+		consumedAt: "2026-05-21T00:05:00.000Z",
+	});
+	assert.equal(reusedAudit.ok, false);
+	assert.match(reusedAudit.errors.join("; "), /differ from issuance audit/);
+});
+
 test("production approval source consumes exactly once with full scope binding", () => {
 	const source = approval();
 	const consumed = consumeFlowDeskProductionApprovalSourceV1({
@@ -147,4 +195,16 @@ test("production approval source blocks drift, revocation, and expiry", () => {
 	});
 	assert.equal(expired.ok, false);
 	assert.match(expired.errors.join("; "), /expired/);
+});
+
+test("production approval source rejects consumed-state drift", () => {
+	const result = validateFlowDeskProductionApprovalSourceV1(
+		approval({
+			consumed_at: "2026-05-21T00:05:00.000Z",
+			consumed_by_attempt_id: "attempt-other",
+			consumption_audit_ref: "audit-consumption-1",
+		}),
+	);
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /consumed_by_attempt_id/);
 });

@@ -170,6 +170,16 @@ export function validateFlowDeskProductionApprovalSourceV1(
 		errors.push("approval source issuer_boundary is invalid");
 	if (!isEnum(record.approval_method, FLOWDESK_PRODUCTION_APPROVAL_METHODS))
 		errors.push("approval source approval_method is invalid");
+	if (
+		record.approval_method === "typed_phrase" &&
+		record.issuer_boundary !== "external_user_confirmation"
+	)
+		errors.push("typed_phrase approvals require external_user_confirmation issuer boundary");
+	if (
+		record.approval_method === "signed_intent" &&
+		record.issuer_boundary !== "external_signed_intent"
+	)
+		errors.push("signed_intent approvals require external_signed_intent issuer boundary");
 	errors.push(...validateOpaqueRef(record.actor_ref, "actor_ref").errors);
 	errors.push(...validateOpaqueRef(record.profile_ref, "profile_ref").errors);
 	errors.push(
@@ -218,6 +228,25 @@ export function validateFlowDeskProductionApprovalSourceV1(
 			...validateOpaqueRef(record.consumption_audit_ref, "consumption_audit_ref")
 				.errors,
 		);
+	if (
+		record.consumed_by_attempt_id !== undefined &&
+		record.attempt_id !== undefined &&
+		record.consumed_by_attempt_id !== record.attempt_id
+	)
+		errors.push("approval source consumed_by_attempt_id must match attempt_id");
+	if (
+		record.consumption_audit_ref !== undefined &&
+		record.consumption_audit_ref === record.issuance_audit_ref
+	)
+		errors.push("approval source consumption audit must differ from issuance audit");
+	if (
+		typeof record.issued_at === "string" &&
+		typeof record.consumed_at === "string" &&
+		Number.isFinite(Date.parse(record.issued_at)) &&
+		Number.isFinite(Date.parse(record.consumed_at)) &&
+		Date.parse(record.consumed_at) <= Date.parse(record.issued_at)
+	)
+		errors.push("approval source consumed_at must be after issued_at");
 	const hasAnyConsumption =
 		record.consumed_at !== undefined ||
 		record.consumed_by_attempt_id !== undefined ||
@@ -293,6 +322,14 @@ export function consumeFlowDeskProductionApprovalSourceV1(
 		errors.push("approval source evidence bundle hash mismatch");
 	if (input.approval.guard_decision_ref !== input.guardDecisionRef)
 		errors.push("approval source guard decision mismatch");
+	if (
+		Number.isFinite(Date.parse(input.consumedAt)) &&
+		Number.isFinite(Date.parse(input.approval.issued_at)) &&
+		Date.parse(input.consumedAt) <= Date.parse(input.approval.issued_at)
+	)
+		errors.push("approval source consumed_at must be after issued_at");
+	if (input.consumptionAuditRef === input.approval.issuance_audit_ref)
+		errors.push("approval source consumption audit must differ from issuance audit");
 	if (
 		Number.isFinite(Date.parse(input.consumedAt)) &&
 		Number.isFinite(Date.parse(input.approval.expires_at)) &&
