@@ -39,10 +39,29 @@ test("lane lifecycle accepts complete records with verdict refs", () => {
 
 test("lane lifecycle separates no-output and missing-verdict from approvals", () => {
 	const noOutput = validateFlowDeskLaneLifecycleRecordV1(record({ state: "no_output", verdict_ref: undefined }));
-	assert.equal(noOutput.ok, true, noOutput.errors.join("; "));
+	assert.equal(noOutput.ok, false);
+	assert.match(noOutput.errors.join("; "), /output_ref/);
+	const noOutputClean = validateFlowDeskLaneLifecycleRecordV1(record({ state: "no_output", verdict_ref: undefined, output_ref: undefined }));
+	assert.equal(noOutputClean.ok, true, noOutputClean.errors.join("; "));
+	const missingVerdict = validateFlowDeskLaneLifecycleRecordV1(record({ state: "missing_verdict", verdict_ref: undefined }));
+	assert.equal(missingVerdict.ok, true, missingVerdict.errors.join("; "));
 	const forged = validateFlowDeskLaneLifecycleRecordV1(record({ state: "missing_verdict", verdict_ref: "verdict-1" }));
 	assert.equal(forged.ok, false);
 	assert.match(forged.errors.join("; "), /cannot carry verdict_ref/);
+});
+
+test("lane lifecycle rejects incomplete complete lanes and failed-lane verdicts", () => {
+	const incompleteComplete = validateFlowDeskLaneLifecycleRecordV1(record({ child_session_ref: undefined }));
+	assert.equal(incompleteComplete.ok, false);
+	assert.match(incompleteComplete.errors.join("; "), /complete lane lifecycle records require child/);
+
+	const timedOutApproval = validateFlowDeskLaneLifecycleRecordV1(record({ state: "timeout", verdict_ref: "verdict-1" }));
+	assert.equal(timedOutApproval.ok, false);
+	assert.match(timedOutApproval.errors.join("; "), /failed lane lifecycle records cannot carry verdict_ref/);
+
+	const collapsedParentChild = validateFlowDeskLaneLifecycleRecordV1(record({ child_session_ref: "ses-parent-1" }));
+	assert.equal(collapsedParentChild.ok, false);
+	assert.match(collapsedParentChild.errors.join("; "), /parent and child/);
 });
 
 test("lane lifecycle rejects ref-kind collapse and authority smuggling", () => {

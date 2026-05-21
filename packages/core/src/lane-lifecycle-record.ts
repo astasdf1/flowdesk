@@ -147,10 +147,33 @@ export function validateFlowDeskLaneLifecycleRecordV1(
 	if (record.state === "complete" && record.verdict_ref === undefined)
 		errors.push("complete lane lifecycle records require verdict_ref");
 	if (
+		record.state === "complete" &&
+		(record.child_session_ref === undefined ||
+			record.message_ref === undefined ||
+			record.output_ref === undefined ||
+			record.runtime_echo_ref === undefined ||
+			record.telemetry_ref === undefined)
+	)
+		errors.push("complete lane lifecycle records require child, message, output, runtime echo, and telemetry refs");
+	if (
 		(record.state === "no_output" || record.state === "missing_verdict") &&
 		record.verdict_ref !== undefined
 	)
 		errors.push("no-output or missing-verdict lanes cannot carry verdict_ref");
+	if (record.state === "no_output" && record.output_ref !== undefined)
+		errors.push("no-output lane lifecycle records cannot carry output_ref");
+	if (
+		["aborted", "timeout", "orphaned", "invocation_failed"].includes(
+			record.state ?? "",
+		) &&
+		record.verdict_ref !== undefined
+	)
+		errors.push("failed lane lifecycle records cannot carry verdict_ref");
+	if (
+		record.child_session_ref !== undefined &&
+		record.parent_session_ref === record.child_session_ref
+	)
+		errors.push("lane lifecycle parent and child session refs must differ");
 	if (
 		record.background_task_ref !== undefined &&
 		record.continuation_session_ref !== undefined &&
