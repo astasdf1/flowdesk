@@ -8,13 +8,14 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
+import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import {
 	FLOWDESK_SESSION_EVIDENCE_CLASSES,
 	type FlowDeskSessionEvidenceClass,
 	sessionEvidenceDirectoryPath,
 	sessionEvidenceRecordPath,
 } from "./state-paths.js";
-import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import {
 	invalid,
 	type ValidationResult,
@@ -35,6 +36,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.external_auth_provider_policy_result.v1",
 	production_approval: "flowdesk.production_approval_decision.v1",
 	production_approval_source: "flowdesk.production_approval_source.v1",
+	dispatch_idempotency: "flowdesk.dispatch_idempotency_snapshot.v1",
 	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
 };
 
@@ -144,6 +146,8 @@ function validateEvidenceShape(
 ): ValidationResult {
 	const schemaCheck = validateSchemaVersionForClass(record, evidenceClass);
 	if (!schemaCheck.ok) return schemaCheck;
+	if (evidenceClass === "dispatch_idempotency")
+		return validateFlowDeskDispatchIdempotencySnapshotV1(record);
 	if (evidenceClass === "production_approval_source")
 		return validateFlowDeskProductionApprovalSourceV1(record);
 	const requiredCommon = ["schema_version"] as const;

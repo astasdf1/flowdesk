@@ -33,6 +33,7 @@ export * from "./chat-routing.js";
 export * from "./command-manifest.js";
 export * from "./config-policy.js";
 export * from "./dispatch-attempt-manifest.js";
+export * from "./dispatch-idempotency.js";
 export * from "./external-auth-policy.js";
 export * from "./fake-runtime.js";
 export * from "./fallback-decision.js";

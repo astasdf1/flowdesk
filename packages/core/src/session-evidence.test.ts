@@ -113,6 +113,22 @@ function preDispatchAuditRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function dispatchIdempotencyRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+    workflow_id: workflowId,
+    snapshot_ref: "idempotency-snapshot-1",
+    observed_at: "2026-05-19T00:00:00.000Z",
+    entries: [],
+    dispatch_authority_enabled: false,
+    realOpenCodeDispatch: false,
+    actualLaneLaunch: false,
+    providerCall: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
 test("session evidence path builders produce per-class relative paths", () => {
   for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
     const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
@@ -176,7 +192,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), preDispatchAuditRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -186,14 +202,26 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 5);
+    assert.equal(applied.writtenPaths.length, 6);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 5);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "pre_dispatch_audit"]));
+    assert.equal(reloaded.entries.length, 6);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit"]));
+  });
+});
+
+test("session evidence reload validates dispatch idempotency snapshots", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "dispatch_idempotency", "idempotency-good"), JSON.stringify(dispatchIdempotencyRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "dispatch_idempotency", "idempotency-forged"), JSON.stringify(dispatchIdempotencyRecord({ providerCall: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "dispatch_idempotency");
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /cannot enable runtime authority/);
   });
 });
 

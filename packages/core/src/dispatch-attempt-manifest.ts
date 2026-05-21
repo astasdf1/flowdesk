@@ -1,5 +1,12 @@
-import type { FlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
-import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
+import {
+	evaluateFlowDeskDispatchIdempotencyReplayV1,
+	validateFlowDeskDispatchIdempotencySnapshotV1,
+	type FlowDeskDispatchIdempotencySnapshotV1,
+} from "./dispatch-idempotency.js";
+import {
+	validateFlowDeskProductionApprovalSourceV1,
+	type FlowDeskProductionApprovalSourceV1,
+} from "./production-approval-source.js";
 import type { FlowDeskSessionEvidenceReloadResultV1 } from "./session-evidence.js";
 import {
 	invalid,
@@ -68,6 +75,7 @@ export interface FlowDeskDispatchAttemptDurablePrecallEvaluationV1
 	durable_provenance_required: true;
 	reloaded_approval_source_ref?: string;
 	reloaded_pre_dispatch_audit_ref?: string;
+	reloaded_idempotency_snapshot_ref?: string;
 }
 
 const disabledDispatchAuthority = {
@@ -353,6 +361,35 @@ export function evaluateFlowDeskDispatchAttemptDurablePrecallV1(input: {
 	);
 	if (auditEntry === undefined)
 		durableBlockedLabels.push("reloaded_pre_dispatch_audit_missing");
+	const idempotencyEntry = input.reloadedEvidence.entries.find(
+		(entry) => entry.evidenceClass === "dispatch_idempotency",
+	);
+	const idempotencySnapshot = idempotencyEntry?.record as
+		| FlowDeskDispatchIdempotencySnapshotV1
+		| undefined;
+	if (idempotencyEntry === undefined) {
+		durableBlockedLabels.push("reloaded_idempotency_snapshot_missing");
+	} else {
+		const snapshotValidation = validateFlowDeskDispatchIdempotencySnapshotV1(
+			idempotencyEntry.record,
+			input.manifest.workflow_id,
+		);
+		if (!snapshotValidation.ok) {
+			durableErrors.push(...snapshotValidation.errors);
+			durableBlockedLabels.push("reloaded_idempotency_snapshot_invalid");
+		}
+	}
+	const replay = evaluateFlowDeskDispatchIdempotencyReplayV1({
+		workflowId: input.manifest.workflow_id,
+		attemptId: input.manifest.attempt_id,
+		idempotencyKey: input.manifest.idempotency_key,
+		snapshot: idempotencySnapshot,
+	});
+	durableErrors.push(...replay.errors);
+	if (!replay.replay_safe)
+		durableBlockedLabels.push(
+			...replay.blocked_labels.map((label) => `idempotency_${label}`),
+		);
 
 	const base = evaluateFlowDeskDispatchAttemptPrecallV1({
 		manifest: input.manifest,
@@ -377,5 +414,8 @@ export function evaluateFlowDeskDispatchAttemptDurablePrecallV1(input: {
 		...(auditEntry === undefined
 			? {}
 			: { reloaded_pre_dispatch_audit_ref: auditEntry.evidenceId }),
+		...(idempotencyEntry === undefined
+			? {}
+			: { reloaded_idempotency_snapshot_ref: idempotencyEntry.evidenceId }),
 	};
 }

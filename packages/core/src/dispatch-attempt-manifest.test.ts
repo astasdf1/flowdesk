@@ -4,6 +4,7 @@ import {
 	consumeFlowDeskProductionApprovalSourceV1,
 	evaluateFlowDeskDispatchAttemptDurablePrecallV1,
 	evaluateFlowDeskDispatchAttemptPrecallV1,
+	evaluateFlowDeskDispatchIdempotencyReplayV1,
 	validateFlowDeskDispatchAttemptManifestV1,
 	type FlowDeskDispatchAttemptManifestV1,
 	type FlowDeskProductionApprovalSourceV1,
@@ -92,6 +93,23 @@ function reloadedEvidence(
 		ok: true,
 		errors: [],
 		entries: [
+			{
+				evidenceClass: "dispatch_idempotency",
+				evidenceId: "idempotency-snapshot-1",
+				record: {
+					schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+					workflow_id: "workflow-1",
+					snapshot_ref: "idempotency-snapshot-1",
+					observed_at: "2026-05-21T00:04:00.000Z",
+					entries: [],
+					dispatch_authority_enabled: false,
+					realOpenCodeDispatch: false,
+					actualLaneLaunch: false,
+					providerCall: false,
+					runtimeExecution: false,
+				},
+				path: ".flowdesk/sessions/workflow-1/evidence/dispatch-idempotency/idempotency-snapshot-1.json",
+			},
 			{
 				evidenceClass: "production_approval_source",
 				evidenceId: "approval-source-1",
@@ -199,6 +217,7 @@ test("dispatch attempt durable pre-call requires reloaded approval source and au
 	assert.equal(result.durable_provenance_required, true);
 	assert.equal(result.reloaded_approval_source_ref, "approval-source-1");
 	assert.equal(result.reloaded_pre_dispatch_audit_ref, "audit-predispatch-1");
+	assert.equal(result.reloaded_idempotency_snapshot_ref, "idempotency-snapshot-1");
 	assert.equal(result.providerCall, false);
 });
 
@@ -210,6 +229,7 @@ test("dispatch attempt durable pre-call blocks missing or blocked provenance", (
 	assert.equal(missing.sdk_call_permitted, false);
 	assert.ok(missing.blocked_labels.includes("reloaded_approval_source_missing"));
 	assert.ok(missing.blocked_labels.includes("reloaded_pre_dispatch_audit_missing"));
+	assert.ok(missing.blocked_labels.includes("reloaded_idempotency_snapshot_missing"));
 
 	const blocked = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
 		manifest: manifest(),
@@ -226,4 +246,105 @@ test("dispatch attempt durable pre-call blocks missing or blocked provenance", (
 	});
 	assert.equal(blocked.sdk_call_permitted, false);
 	assert.ok(blocked.blocked_labels.includes("session_evidence_contains_blocked_entries"));
+});
+
+test("dispatch attempt idempotency replay blocks reused attempt or key", () => {
+	const unique = evaluateFlowDeskDispatchIdempotencyReplayV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshot: {
+			schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+			workflow_id: "workflow-1",
+			snapshot_ref: "idempotency-snapshot-1",
+			observed_at: "2026-05-21T00:04:00.000Z",
+			entries: [],
+			dispatch_authority_enabled: false,
+			realOpenCodeDispatch: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+		},
+	});
+	assert.equal(unique.replay_safe, true);
+
+	const replay = evaluateFlowDeskDispatchIdempotencyReplayV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshot: {
+			schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+			workflow_id: "workflow-1",
+			snapshot_ref: "idempotency-snapshot-1",
+			observed_at: "2026-05-21T00:04:00.000Z",
+			entries: [
+				{
+					attempt_id: "attempt-1",
+					idempotency_key: "idempotency-1",
+					state: "sdk_call_permitted",
+					recorded_at: "2026-05-21T00:05:00.000Z",
+				},
+			],
+			dispatch_authority_enabled: false,
+			realOpenCodeDispatch: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+		},
+	});
+	assert.equal(replay.replay_safe, false);
+	assert.ok(replay.blocked_labels.includes("attempt_already_recorded"));
+	assert.ok(replay.blocked_labels.includes("idempotency_key_reused"));
+});
+
+test("dispatch attempt idempotency replay fails closed without throwing on malformed entries", () => {
+	const replay = evaluateFlowDeskDispatchIdempotencyReplayV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		idempotencyKey: "idempotency-1",
+		snapshot: {
+			schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+			workflow_id: "workflow-1",
+			snapshot_ref: "idempotency-snapshot-1",
+			observed_at: "2026-05-21T00:04:00.000Z",
+			entries: { forged: true },
+			dispatch_authority_enabled: false,
+			realOpenCodeDispatch: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+		} as never,
+	});
+	assert.equal(replay.ok, false);
+	assert.equal(replay.replay_safe, false);
+	assert.ok(replay.blocked_labels.includes("idempotency_snapshot_invalid"));
+});
+
+test("dispatch attempt durable pre-call blocks idempotency replay", () => {
+	const replayed = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: manifest(),
+		reloadedEvidence: reloadedEvidence({
+			entries: reloadedEvidence().entries.map((entry) =>
+				entry.evidenceClass === "dispatch_idempotency"
+					? {
+							...entry,
+							record: {
+								...(entry.record as Record<string, unknown>),
+								entries: [
+									{
+										attempt_id: "attempt-1",
+										idempotency_key: "idempotency-1",
+										state: "reserved",
+										recorded_at: "2026-05-21T00:04:30.000Z",
+									},
+								],
+							},
+						}
+					: entry,
+			),
+		}),
+	});
+	assert.equal(replayed.sdk_call_permitted, false);
+	assert.ok(replayed.blocked_labels.includes("idempotency_attempt_already_recorded"));
+	assert.ok(replayed.blocked_labels.includes("idempotency_idempotency_key_reused"));
 });
