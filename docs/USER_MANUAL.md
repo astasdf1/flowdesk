@@ -58,7 +58,13 @@ If you say “run”, “execute”, “진행”, or “실행” in chat, Flow
 
 ### First Successful Flow
 
-1. Install FlowDesk through the Release 1 bootstrap CLI from the local `@flowdesk/opencode-plugin` package bin or an approved equivalent package install. This repository keeps packages private until public release packaging is explicitly approved.
+1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:
+
+   ```text
+   npm install @flowdesk/core@0.1.0 @flowdesk/opencode-plugin@0.1.0
+   ```
+
+   Reviewed local builds are still allowed for development or compatibility testing, but they should record package provenance separately.
 2. Preview the install first. The preview writes nothing:
 
    ```text

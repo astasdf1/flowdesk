@@ -12,9 +12,15 @@ FlowDesk does not run real OpenCode dispatch in Release 1. It does not claim aut
 
 ## Happy Path
 
-Use the Release 1 bootstrap CLI from the local `@flowdesk/opencode-plugin` package bin or an approved equivalent package install. Packages are still private in this repository, so do not treat this as a public npm publishing instruction.
+Install the published Release 1 packages, then use the `flowdesk-install-release1` bootstrap CLI from `@flowdesk/opencode-plugin`:
 
-1. Build and test the workspace: `npm run build` and `npm test`.
+```text
+npm install @flowdesk/core@0.1.0 @flowdesk/opencode-plugin@0.1.0
+```
+
+If you are testing a reviewed local build, record the local package provenance separately and keep the same Release 1 safety boundary.
+
+1. Install the published packages shown above or a reviewed local build.
 2. Preview bootstrap installation without writing files:
 
    ```text
