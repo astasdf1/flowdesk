@@ -7,7 +7,10 @@ import {
 	validateNoForbiddenRawPayloads,
 	validateOpaqueId,
 	validateOpaqueRef,
+	validateProviderFamily,
 } from "./validators.js";
+
+const FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES = ["claude", "openai", "gemini", "opencode_go", "z_ai"] as const;
 
 export interface FlowDeskExactModelAvailabilityEntryV1 {
 	entry_id: string;
@@ -72,10 +75,31 @@ function validateHash(value: unknown, label: string): ValidationResult {
 		: invalid(`${label} must be hash-bound`);
 }
 
+function rejectUnknownProperties(record: Record<string, unknown>, allowed: readonly string[], label: string): ValidationResult {
+	const unknown = Object.keys(record).filter((key) => !allowed.includes(key));
+	return unknown.length === 0 ? valid() : invalid(`${label} unknown properties: ${unknown.join(",")}`);
+}
+
 export function validateFlowDeskExactModelAvailabilityCacheV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("exact model availability cache must be an object");
 	const record = value as Partial<FlowDeskExactModelAvailabilityCacheV1>;
 	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"cache_id",
+		"local_date",
+		"active_profile_ref",
+		"opencode_version_ref",
+		"flowdesk_package_version_ref",
+		"registry_hash",
+		"policy_pack_hash",
+		"auth_account_boundary_ref",
+		"entries",
+		"dispatch_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+	], "availability cache").errors);
 	errors.push(...validateOpaqueId(record.cache_id, "cache_id").errors);
 	if (record.schema_version !== "flowdesk.exact_model_availability_cache.v1")
 		errors.push("availability cache schema_version is invalid");
@@ -94,9 +118,32 @@ export function validateFlowDeskExactModelAvailabilityCacheV1(value: unknown): V
 		errors.push("availability cache entries must be non-empty");
 	else
 		for (const [index, entry] of record.entries.entries()) {
+			if (!isRecord(entry)) {
+				errors.push(`entries[${index}] must be an object`);
+				continue;
+			}
+			errors.push(...rejectUnknownProperties(entry, [
+				"entry_id",
+				"provider_family",
+				"provider_identity_ref",
+				"provider_qualified_model_id",
+				"model_family",
+				"registered",
+				"available",
+				"highest_tier_eligible",
+				"availability_ref",
+			], `entries[${index}]`).errors);
 			errors.push(...validateOpaqueId(entry.entry_id, `entries[${index}].entry_id`).errors);
+			errors.push(...validateProviderFamily(entry.provider_family).errors.map((error) => `entries[${index}].${error}`));
+			if (!(FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES as readonly string[]).includes(entry.provider_family))
+				errors.push(`entries[${index}].provider_family is not exact-model eligible`);
 			errors.push(...validateOpaqueRef(entry.provider_identity_ref, `entries[${index}].provider_identity_ref`).errors);
 			errors.push(...validateConcreteProviderQualifiedModelId(entry.provider_qualified_model_id).errors);
+			if (typeof entry.provider_qualified_model_id === "string" && typeof entry.provider_family === "string") {
+				const provider = entry.provider_qualified_model_id.split("/")[0];
+				if (provider !== entry.provider_family) errors.push(`entries[${index}].provider_family must match provider_qualified_model_id`);
+			}
+			errors.push(...validateOpaqueId(entry.model_family, `entries[${index}].model_family`).errors);
 			for (const key of ["registered", "available", "highest_tier_eligible"] as const)
 				if (typeof entry[key] !== "boolean") errors.push(`entries[${index}].${key} must be boolean`);
 			errors.push(...validateOpaqueRef(entry.availability_ref, `entries[${index}].availability_ref`).errors);

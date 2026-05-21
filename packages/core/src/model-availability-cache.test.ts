@@ -48,3 +48,19 @@ test("availability cache blocks stale date, aliases, and lower-tier substitution
 	const invalid = validateFlowDeskExactModelAvailabilityCacheV1(cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest", highest_tier_eligible: false }] }));
 	assert.equal(invalid.ok, false);
 });
+
+test("availability cache rejects unknown properties and provider drift", () => {
+	const unknown = validateFlowDeskExactModelAvailabilityCacheV1({ ...cache(), providerCallAuthority: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("|"), /unknown properties/);
+
+	const drift = validateFlowDeskExactModelAvailabilityCacheV1(cache({
+		entries: [{
+			...cache().entries[0],
+			provider_family: "openai",
+			provider_qualified_model_id: "claude/claude-opus-4-5",
+		}],
+	}));
+	assert.equal(drift.ok, false);
+	assert.match(drift.errors.join("|"), /must match provider_qualified_model_id/);
+});
