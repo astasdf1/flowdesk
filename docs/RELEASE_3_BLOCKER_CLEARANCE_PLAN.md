@@ -74,6 +74,8 @@ The dependency-safe order is:
 
 ## Contract Requirements Before Each Gate Can Close
 
+Local contract status as of 2026-05-21: blockers #3 through #11 now have local non-authorizing contract/test foundations. These foundations reduce implementation ambiguity but do not close the live runtime gates. Any proof that touches provider calls, real dispatch, actual lane launch, reviewer fan-out, fallback execution, hard chat authority, active profile mutation, or external writes still requires explicit confirmation and separate conformance evidence.
+
 ### Blocker #3: FDS-1 Schema Conversion
 
 - Add a probe result contract that distinguishes `probe_pass`, `probe_blocked`, and `probe_invalid`.
