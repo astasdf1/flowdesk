@@ -6,9 +6,9 @@ Scope: local workspace package smoke only. No npm publish, provider call, real O
 
 ## Verdict
 
-The Release 1 package shape is a **local packaging smoke pass** for the private workspace packages and bootstrap CLI surface.
+The Release 1 package shape was a **local packaging smoke pass** for the then-local workspace packages and bootstrap CLI surface.
 
-This evidence supports Release 1 local/development installation through the `flowdesk-install-release1` package bin and the non-dispatch command-backed registration boundary. It is not public npm release approval and does not promote real dispatch or any later-gated authority.
+This evidence supported Release 1 local/development installation through the `flowdesk-install-release1` package bin and the non-dispatch command-backed registration boundary. Public npm publication was later completed for version `0.1.0`; neither this historical smoke nor the later publication promotes real dispatch or any later-gated authority.
 
 ## Commands Run
 
@@ -41,7 +41,7 @@ This smoke evidence does not authorize public publishing or runtime dispatch. Re
 2. Bootstrap preview writes no files.
 3. Production registration is limited to Release 1 non-dispatch command-backed handlers.
 4. Provider calls, real OpenCode dispatch, runtime execution, actual lane launch, automatic fallback/reselection, and hard chat cancellation/no-reply authority remain disabled.
-5. Packages remain `private: true` until public publishing is explicitly approved.
+5. At the time of this smoke, public publishing still required explicit approval; later `0.1.0` publication superseded that packaging blocker.
 
 ## Next Workflow
 

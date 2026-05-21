@@ -4,7 +4,7 @@ Date: 2026-05-20
 
 ## Scope
 
-This note records the production-evidence persistence and doctor-surfacing work added after the isolated current-tarball smoke. It does not prove npm registry installation or OpenCode `subtask: true` lane lifecycle conformance.
+This note records the production-evidence persistence and doctor-surfacing work added after the isolated current-tarball smoke. At the time, it did not prove npm registry installation or OpenCode `subtask: true` lane lifecycle conformance. Registry publication was later completed for `@flowdesk/core@0.1.0` and `@flowdesk/opencode-plugin@0.1.0`; runtime lane lifecycle conformance remains unproven.
 
 ## Implemented Evidence Path
 
@@ -54,6 +54,6 @@ Interpretation: the token is valid for login/whoami but is not a granular publis
 
 ## Remaining Uncertainties
 
-- npm registry publication remains blocked until an OTP is supplied with publish or a correct granular publish token with bypass-2FA/automation rights is configured.
-- Fresh registry-installed sandbox smoke cannot run until the packages are published.
+- Historical npm publish blocker was resolved on 2026-05-21 by refreshed `@flowdesk` org/token authority and public publication of both `0.1.0` packages.
+- Fresh registry-installed sandbox smoke passed after publication for `@flowdesk/core@0.1.0` and `@flowdesk/opencode-plugin@0.1.0`.
 - OpenCode prompt/promptAsync subtask and session child metadata surfaces were later confirmed at the SDK typing level, but `session.command` subtask parts, actual runtime lifecycle metadata, parent/subtask ids, authoritative runtime echo fields, and telemetry pass-through remain unproven; they must remain uncertainty labels rather than dispatch-ready proof.
