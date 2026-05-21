@@ -38,6 +38,11 @@ function refs(value: unknown, label: string): ValidationResult {
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
+function rejectUnknownProperties(record: Record<string, unknown>, allowed: readonly string[], label: string): ValidationResult {
+	const unknown = Object.keys(record).filter((key) => !allowed.includes(key));
+	return unknown.length === 0 ? valid() : invalid(`${label} unknown properties: ${unknown.join(",")}`);
+}
+
 export function createFlowDeskOperationalIntelligenceScoreV1(input: {
 	scoreId: string;
 	workflowId: string;
@@ -67,6 +72,20 @@ export function validateFlowDeskOperationalIntelligenceScoreV1(value: unknown): 
 	if (!isRecord(value)) return invalid("operational intelligence score must be an object");
 	const record = value as Partial<FlowDeskOperationalIntelligenceScoreV1>;
 	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"score_id",
+		"workflow_id",
+		"candidate_ref",
+		"hard_filter_state",
+		"blocked_labels",
+		"advisory_score",
+		"score_reason_ref",
+		"advisory_only",
+		"dispatch_authority_enabled",
+		"approval_authority_enabled",
+		"external_write_authority_enabled",
+	], "operational intelligence score").errors);
 	errors.push(...validateOpaqueId(record.score_id, "score_id").errors);
 	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
 	errors.push(...validateOpaqueRef(record.candidate_ref, "candidate_ref").errors);
@@ -74,6 +93,8 @@ export function validateFlowDeskOperationalIntelligenceScoreV1(value: unknown): 
 	if (record.schema_version !== "flowdesk.operational_intelligence_score.v1") errors.push("score schema_version is invalid");
 	if (record.hard_filter_state !== "passed" && record.hard_filter_state !== "blocked") errors.push("hard_filter_state is invalid");
 	if (!Array.isArray(record.blocked_labels)) errors.push("blocked_labels must be an array");
+	else for (const [index, label] of record.blocked_labels.entries())
+		errors.push(...validateOpaqueRef(label, `blocked_labels[${index}]`).errors);
 	if (typeof record.advisory_score !== "number" || record.advisory_score < 0 || record.advisory_score > 100) errors.push("advisory_score must be 0..100");
 	if (record.hard_filter_state === "blocked" && record.advisory_score !== 0) errors.push("blocked hard filters must zero advisory_score");
 	if (record.advisory_only !== true || record.dispatch_authority_enabled !== false || record.approval_authority_enabled !== false || record.external_write_authority_enabled !== false) errors.push("operational intelligence must remain advisory-only");
@@ -85,6 +106,17 @@ export function validateFlowDeskReferencePackV1(value: unknown): ValidationResul
 	if (!isRecord(value)) return invalid("reference pack must be an object");
 	const record = value as Partial<FlowDeskReferencePackV1>;
 	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"pack_id",
+		"workflow_id",
+		"source_refs",
+		"source_hash_refs",
+		"specialist_signoff",
+		"professional_advice",
+		"advisory_only",
+		"external_write_authority_enabled",
+	], "reference pack").errors);
 	errors.push(...validateOpaqueId(record.pack_id, "pack_id").errors);
 	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
 	errors.push(...refs(record.source_refs, "source_refs").errors);

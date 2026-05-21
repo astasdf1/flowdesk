@@ -47,3 +47,32 @@ test("reference packs cannot act as professional signoff or external-write autho
 	assert.equal(validateFlowDeskReferencePackV1(pack).ok, true);
 	assert.equal(validateFlowDeskReferencePackV1({ ...pack, specialist_signoff: true }).ok, false);
 });
+
+test("operational intelligence contracts reject unknown authority fields", () => {
+	const score = createFlowDeskOperationalIntelligenceScoreV1({
+		scoreId: "score-3",
+		workflowId: "workflow-1",
+		candidateRef: "candidate-3",
+		hardFiltersPassed: true,
+		advisoryScore: 50,
+		scoreReasonRef: "reason-3",
+	});
+	const forgedScore = validateFlowDeskOperationalIntelligenceScoreV1({ ...score, providerCall: true });
+	assert.equal(forgedScore.ok, false);
+	assert.match(forgedScore.errors.join("|"), /unknown properties/);
+
+	const pack: FlowDeskReferencePackV1 = {
+		schema_version: "flowdesk.reference_pack.v1",
+		pack_id: "pack-2",
+		workflow_id: "workflow-1",
+		source_refs: ["source-1"],
+		source_hash_refs: ["hash-source-1"],
+		specialist_signoff: false,
+		professional_advice: false,
+		advisory_only: true,
+		external_write_authority_enabled: false,
+	};
+	const forgedPack = validateFlowDeskReferencePackV1({ ...pack, dispatch_authority_enabled: true });
+	assert.equal(forgedPack.ok, false);
+	assert.match(forgedPack.errors.join("|"), /unknown properties/);
+});
