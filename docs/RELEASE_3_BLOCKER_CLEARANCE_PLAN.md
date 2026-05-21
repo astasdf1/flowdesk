@@ -55,6 +55,8 @@ Durable approval provenance hardening is recorded in `docs/conformance/2026-05-2
 
 Local idempotency reservation contract hardening now also prepares durable `reserved` entries and post-reservation `dispatch_failed`/`quarantined` snapshot updates in `@flowdesk/core`. This proves the snapshot materialization shape through session-evidence writes/reloads without enabling provider calls; adapter-side reservation write/reload/update around the injected SDK call remains a later gated integration step.
 
+The explicit opt-in managed-dispatch adapter now requires an injected reservation store to prove reservation materialization and reload before the SDK prompt method can be invoked, and it calls the store's failure-state hook if the SDK call throws. Fake-client coverage proves zero SDK calls when the reservation proof is missing or failed. A concrete durable reservation-store implementation behind that callback remains a later local integration.
+
 ## Next Safe Actions
 
 1. Keep the managed-dispatch promotion gate wired only to the explicit opt-in adapter path, preserving the ordering: durable evidence reload, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, promotion gate, then SDK call.
@@ -118,6 +120,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 - Production approval source evidence must be durably written/reloaded through its own evidence class and validated with the full approval-source contract before dispatch pre-call readiness can depend on it.
 - Dispatch idempotency snapshots must be durably written/reloaded and checked for reused attempt ids or idempotency keys before dispatch pre-call readiness can proceed.
 - Reservation helpers must prepare `reserved` entries and post-SDK-failure `dispatch_failed`/`quarantined` snapshot updates without enabling dispatch authority; runtime adapter wiring must still prove zero SDK calls when reservation materialization or reload fails.
+- The explicit adapter path must require a reservation materialization/reload proof before SDK calls and must record a failure-state callback after thrown SDK calls; callback absence or failure before dispatch must block with zero SDK calls.
 - Test malformed, truncated, stale, drifted, cross-workflow, cross-profile, schema-version mismatch, symlink/root escape, partial write, and redaction-failure cases.
 - Doctor output must expose redacted fail-closed state without raw payloads or secret-bearing paths.
 
