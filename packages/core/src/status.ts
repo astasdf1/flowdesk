@@ -128,9 +128,12 @@ export function laneRecordToStatusLaneSummaryV1(record: FlowDeskLaneRecordV1, op
     ...(record.completed_at === undefined ? {} : { completed_at: record.completed_at }),
     event_refs: [...record.event_refs],
     audit_refs: [...record.audit_refs],
-    ...(options.logRef === undefined ? {} : { log_ref: options.logRef }),
-    ...(record.debug_ref === undefined ? {} : { debug_ref: record.debug_ref })
-  };
+		...(options.logRef === undefined ? {} : { log_ref: options.logRef }),
+		...(record.observability_ref === undefined
+			? {}
+			: { observability_ref: record.observability_ref }),
+		...(record.debug_ref === undefined ? {} : { debug_ref: record.debug_ref })
+	};
 }
 
 function statusForWorkflowState(workflow: FlowDeskWorkflowRecordV1, checkpoint: FlowDeskCheckpointRecordV1 | undefined, recoveryAllowsResumeRetry: boolean): ToolStatus {

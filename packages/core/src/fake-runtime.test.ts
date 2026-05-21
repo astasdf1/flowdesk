@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FlowDeskNonDispatchPermissionV1, FlowDeskPolicyPackV1, FlowDeskProjectConfigV1, FlowDeskRunRequestV1 } from "./index.js";
-import { evaluateFlowDeskFakeRuntimeCommandV1, mergePolicyPacksV1, validateFlowDeskStateWriteIntent, validateLaneSummaryArtifactV1, validateRunResponseV1 } from "./index.js";
+import { evaluateFlowDeskFakeRuntimeCommandV1, mergePolicyPacksV1, validateFlowDeskLaneObservabilityArtifactV1, validateFlowDeskStateWriteIntent, validateLaneSummaryArtifactV1, validateRunResponseV1 } from "./index.js";
 
 const now = "2026-05-17T00:00:00.000Z";
 
@@ -223,6 +223,7 @@ test("fake-runtime can prepare inert lane records and lane summary artifacts", (
       laneId: "lane-runtime-123",
       laneTaskRef: "task-runtime-123",
       laneSummaryRef: "lane-summary-runtime-123",
+      laneObservabilityRef: "lane-observability-runtime-123",
       laneEventRef: "event-runtime-123",
       laneDebugRef: "debug-runtime-123"
     })
@@ -231,7 +232,16 @@ test("fake-runtime can prepare inert lane records and lane summary artifacts", (
   assert.equal(result.laneRecord?.lane_class, "verification");
   assert.equal(result.laneRecord?.state, "completed");
   assert.equal(result.laneRecord?.safe_next_action, "/flowdesk-status");
+  assert.equal(result.laneRecord?.observability_ref, "lane-observability-runtime-123");
+  assert.ok(result.laneRecord?.refs.includes("lane-observability-runtime-123"));
   assert.equal(validateLaneSummaryArtifactV1(result.laneSummaryArtifact).ok, true);
+  assert.equal(result.laneSummaryArtifact?.observability_ref, "lane-observability-runtime-123");
+  assert.equal(validateFlowDeskLaneObservabilityArtifactV1(result.laneObservabilityArtifact).ok, true);
+  assert.equal(result.laneObservabilityArtifact?.observability_level, "openable_refs");
+  assert.equal(result.laneObservabilityArtifact?.inspection_state, "inspectable");
+  assert.deepEqual(result.laneObservabilityArtifact?.inspect_actions, ["/flowdesk-status", "/flowdesk-export-debug"]);
+  assert.equal(result.laneObservabilityArtifact?.dispatch_authority_enabled, false);
+  assert.equal(result.laneObservabilityArtifact?.provider_call_made, false);
   assert.ok(result.laneRecordIntent);
   assert.equal(result.laneRecordIntent.operation, "append_jsonl");
   assert.equal(result.laneRecordIntent.authority, "redacted_session_support");

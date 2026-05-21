@@ -125,6 +125,7 @@ function laneRecord(overrides: Partial<FlowDeskLaneRecordV1> = {}): FlowDeskLane
     refs: ["lane-summary-123"],
     event_refs: ["event-123"],
     audit_refs: ["audit-123"],
+    observability_ref: "lane-observability-123",
     debug_ref: "debug-123",
     ...overrides
   };
@@ -200,6 +201,7 @@ test("lane record conversion produces display-only summaries with opaque debug r
   assert.equal((summary as { schema_version?: unknown }).schema_version, undefined);
   assert.equal(summary.debug_ref, "debug-123");
   assert.equal(summary.log_ref, "log-123");
+  assert.equal(summary.observability_ref, "lane-observability-123");
   assert.deepEqual(summary.refs, ["lane-summary-123"]);
   assert.equal(validateStatusLaneSummaryV1(summary).ok, true);
   assert.equal(validateStatusLaneSummaryV1({ ...summary, failure_class: "incomplete_result", invocation_ref_kind: "continuation_session", retry_count: 1, verdict_status: "incomplete" }).ok, true);

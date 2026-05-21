@@ -2,7 +2,8 @@ import { preparePreRunAuditWriteIntent } from "./audit.js";
 import { type FlowDeskRelease1MinimumPortableCommandName, getFlowDeskCommandManifestEntry } from "./command-manifest.js";
 import { validateNonDispatchPermissionV1 } from "./config-policy.js";
 import { evaluateGuardBoundaryV1, type GuardBoundaryDecisionV1, type GuardBoundaryInputV1 } from "./guard-boundary.js";
-import type { FlowDeskAttemptRecordV1, FlowDeskAuditEventV1, FlowDeskAuditRecordV1, FlowDeskLaneRecordV1, FlowDeskLaneSummaryArtifactV1, FlowDeskNonDispatchPermissionV1, FlowDeskRunRequestV1, FlowDeskRunResponseV1, FlowDeskVerificationSummaryArtifactV1, IsoTimestamp, OpaqueId, OpaqueRef, RedactedErrorCategory, SafeNextAction } from "./release1-contracts.js";
+import { createFlowDeskLaneObservabilityArtifactV1, validateFlowDeskLaneObservabilityArtifactV1 } from "./lane-observability.js";
+import type { FlowDeskAttemptRecordV1, FlowDeskAuditEventV1, FlowDeskAuditRecordV1, FlowDeskLaneObservabilityArtifactV1, FlowDeskLaneRecordV1, FlowDeskLaneSummaryArtifactV1, FlowDeskNonDispatchPermissionV1, FlowDeskRunRequestV1, FlowDeskRunResponseV1, FlowDeskVerificationSummaryArtifactV1, IsoTimestamp, OpaqueId, OpaqueRef, RedactedErrorCategory, SafeNextAction } from "./release1-contracts.js";
 import type { FlowDeskStateWriteIntent } from "./state-store.js";
 import { prepareAttemptRecordWriteIntent, prepareLaneRecordWriteIntent } from "./state-store.js";
 import { laneRecordToStatusLaneSummaryV1 } from "./status.js";
@@ -30,6 +31,7 @@ export interface FlowDeskFakeRuntimeCommandInputV1 {
   laneId?: OpaqueId;
   laneTaskRef?: OpaqueRef;
   laneSummaryRef?: OpaqueRef;
+  laneObservabilityRef?: OpaqueRef;
   laneEventRef?: OpaqueRef;
   laneDebugRef?: OpaqueRef;
 }
@@ -56,6 +58,7 @@ export interface FlowDeskFakeRuntimeCommandEvaluationV1 extends ValidationResult
   verificationSummaryArtifact?: FlowDeskVerificationSummaryArtifactV1;
   laneRecord?: FlowDeskLaneRecordV1;
   laneSummaryArtifact?: FlowDeskLaneSummaryArtifactV1;
+  laneObservabilityArtifact?: FlowDeskLaneObservabilityArtifactV1;
   preRunAuditIntent?: FlowDeskStateWriteIntent<FlowDeskAuditRecordV1>;
   outcomeAuditIntent?: FlowDeskStateWriteIntent<FlowDeskAuditRecordV1>;
   attemptRecordIntent?: FlowDeskStateWriteIntent<FlowDeskAttemptRecordV1>;
@@ -102,10 +105,10 @@ function redactedError(category: RedactedErrorCategory, safeRemediation: string)
   return { category, safe_remediation: safeRemediation };
 }
 
-function optionalFakeRuntimeLane(input: FlowDeskFakeRuntimeCommandInputV1, workflowId: OpaqueId): { laneRecord?: FlowDeskLaneRecordV1; laneSummaryArtifact?: FlowDeskLaneSummaryArtifactV1; laneRecordIntent?: FlowDeskStateWriteIntent<FlowDeskLaneRecordV1>; errors: string[] } {
-  const provided = [input.laneId, input.laneTaskRef, input.laneSummaryRef, input.laneEventRef].filter((value) => value !== undefined).length;
+function optionalFakeRuntimeLane(input: FlowDeskFakeRuntimeCommandInputV1, workflowId: OpaqueId): { laneRecord?: FlowDeskLaneRecordV1; laneSummaryArtifact?: FlowDeskLaneSummaryArtifactV1; laneObservabilityArtifact?: FlowDeskLaneObservabilityArtifactV1; laneRecordIntent?: FlowDeskStateWriteIntent<FlowDeskLaneRecordV1>; errors: string[] } {
+  const provided = [input.laneId, input.laneTaskRef, input.laneSummaryRef, input.laneObservabilityRef, input.laneEventRef].filter((value) => value !== undefined).length;
   if (provided === 0) return { errors: [] };
-  if (provided !== 4) return { errors: ["fake-runtime lane output requires lane id, task ref, summary ref, and event ref together"] };
+  if (provided !== 5) return { errors: ["fake-runtime lane output requires lane id, task ref, summary ref, observability ref, and event ref together"] };
   const laneRecord: FlowDeskLaneRecordV1 = {
     schema_version: "flowdesk.lane_record.v1",
     lane_id: input.laneId as OpaqueId,
@@ -120,22 +123,35 @@ function optionalFakeRuntimeLane(input: FlowDeskFakeRuntimeCommandInputV1, workf
     updated_at: input.nowIso,
     completed_at: input.nowIso,
     safe_next_action: "/flowdesk-status",
-    refs: [input.laneSummaryRef as OpaqueRef],
+    refs: [input.laneSummaryRef as OpaqueRef, input.laneObservabilityRef as OpaqueRef],
     event_refs: [input.laneEventRef as OpaqueRef],
     audit_refs: [input.guardBoundary.auditRef ?? input.decisionRef],
+    observability_ref: input.laneObservabilityRef as OpaqueRef,
     ...(input.laneDebugRef === undefined ? {} : { debug_ref: input.laneDebugRef })
   };
   const laneSummaryArtifact: FlowDeskLaneSummaryArtifactV1 = {
     schema_version: "flowdesk.lane_summary.v1",
     ...laneRecordToStatusLaneSummaryV1(laneRecord, { planRevisionId: input.request.plan_revision_id })
   };
+  const laneObservabilityArtifact = createFlowDeskLaneObservabilityArtifactV1({
+    observabilityId: input.laneObservabilityRef as OpaqueRef,
+    statusSummaryRef: input.laneSummaryRef as OpaqueRef,
+    laneSummary: laneSummaryArtifact,
+    observabilityLevel: "openable_refs",
+    inspectionState: "inspectable",
+    detailRef: input.laneSummaryRef as OpaqueRef,
+    debugRef: input.laneDebugRef,
+    redactionStatus: "passed"
+  });
   const laneSummaryResult = validateLaneSummaryArtifactV1(laneSummaryArtifact);
+  const laneObservabilityResult = validateFlowDeskLaneObservabilityArtifactV1(laneObservabilityArtifact);
   const laneIntentResult = prepareLaneRecordWriteIntent(input.sessionId, laneRecord);
   return {
     laneRecord,
     laneSummaryArtifact,
+    laneObservabilityArtifact,
     laneRecordIntent: laneIntentResult.writeIntent,
-    errors: [...laneSummaryResult.errors, ...laneIntentResult.errors]
+    errors: [...laneSummaryResult.errors, ...laneObservabilityResult.errors, ...laneIntentResult.errors]
   };
 }
 
@@ -349,6 +365,7 @@ export function evaluateFlowDeskFakeRuntimeCommandV1(input: FlowDeskFakeRuntimeC
     verificationSummaryArtifact,
     laneRecord: laneOutput.laneRecord,
     laneSummaryArtifact: laneOutput.laneSummaryArtifact,
+    laneObservabilityArtifact: laneOutput.laneObservabilityArtifact,
     preRunAuditIntent: auditIntentResult.writeIntent,
     outcomeAuditIntent: outcomeAuditResult.writeIntent,
     attemptRecordIntent: attemptResult.writeIntent,
