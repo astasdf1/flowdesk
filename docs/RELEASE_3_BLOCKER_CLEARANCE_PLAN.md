@@ -36,6 +36,10 @@ Bounded OpenCode 1.15.5 runtime evidence is recorded in `docs/conformance/2026-0
 
 The parent-prompted fan-out attempt produced duplicate GPT children and an unmatched Claude sentinel, so FlowDesk must use coordinator-controlled child session creation rather than freeform parent-model fan-out instructions. Hard chat cancellation/no-reply, automatic fallback execution, external writes, and typed reviewer verdict approval remain blocked.
 
+## 2026-05-21 Authority Hardening Batch
+
+Post-live hardening is recorded in `docs/conformance/2026-05-21-release3-authority-hardening.md`. The pass tightened duplicate durable-evidence target rejection, approval issuer/method compatibility, approval consumption timing, dispatch manifest state transitions, complete/failed lane lifecycle invariants, invalid-cache reviewer binding suppression, fallback fresh-evidence requirements, and advisory-only operational-intelligence consistency. These changes reduce authority-smuggling and overclaim risk without enabling new runtime authority.
+
 ## Next Safe Actions
 
 1. Convert the blocker inventory into enforceable contracts before any runtime authority is promoted. The critical review consensus requires explicit fail-closed probe outcomes, committed durable writes, atomic approval consumption, deterministic cache invalidation, and bounded fallback depth.
@@ -80,7 +84,7 @@ The dependency-safe order is:
 
 ## Contract Requirements Before Each Gate Can Close
 
-Contract status as of 2026-05-21: blockers #3 through #11 have local non-authorizing contract/test foundations, and a bounded live runtime batch has now proven selected OpenCode/provider/lane surfaces under explicit user approval. The live batch closes only the observed provider smoke, opt-in managed-dispatch adapter call, actual child session launch, coordinator-controlled reviewer fan-out, active-profile tool discovery, FDS-1 runtime validation, and non-authorizing fallback/operational-intelligence artifacts. Hard chat authority, automatic fallback execution, external writes, and typed reviewer verdict approval remain blocked.
+Contract status as of 2026-05-21: blockers #3 through #11 have local non-authorizing contract/test foundations, a bounded live runtime batch has proven selected OpenCode/provider/lane surfaces under explicit user approval, and a follow-up authority-hardening batch tightened local negative tests around evidence, approval, dispatch, lanes, cache planning, fallback, and advisory artifacts. The live batch closes only the observed provider smoke, opt-in managed-dispatch adapter call, actual child session launch, coordinator-controlled reviewer fan-out, active-profile tool discovery, FDS-1 runtime validation, and non-authorizing fallback/operational-intelligence artifacts. Hard chat authority, automatic fallback execution, external writes, and typed reviewer verdict approval remain blocked.
 
 ### Blocker #3: FDS-1 Schema Conversion
 
