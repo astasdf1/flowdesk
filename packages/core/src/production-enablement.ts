@@ -1,3 +1,5 @@
+import type { FlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
+import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import type { FlowDeskSessionEvidenceReloadResultV1 } from "./session-evidence.js";
 import type { FlowDeskSessionEvidenceClass } from "./state-paths.js";
 import {
@@ -27,6 +29,9 @@ export const FLOWDESK_PRODUCTION_ENABLEMENT_BLOCKER_LABELS = [
 	"telemetry_correlation_missing",
 	"pre_dispatch_audit_missing",
 	"configured_verification_missing",
+	"configured_verification_result_missing",
+	"configured_verification_invalid",
+	"configured_verification_failed",
 	"external_auth_policy_missing",
 	"provider_policy_missing",
 	"approval_missing",
@@ -76,6 +81,7 @@ export interface FlowDeskProductionEnablementInputV1 {
 	evidenceReload: FlowDeskSessionEvidenceReloadResultV1;
 	preDispatchAuditRef?: string;
 	configuredVerificationRef?: string;
+	configuredVerificationResult?: FlowDeskConfiguredVerificationResultV1;
 	externalAuthPolicyRef?: string;
 	providerPolicyRef?: string;
 	laneConformanceRefs?: string[];
@@ -96,6 +102,8 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	dispatch_authority_enabled: false;
 	default_release1_non_dispatch_preserved: true;
 	safe_next_actions: string[];
+	configured_verification_result?: FlowDeskConfiguredVerificationResultV1["result"];
+	configured_verification_ref?: string;
 }
 
 const REQUIRED_SESSION_EVIDENCE_CLASSES: FlowDeskSessionEvidenceClass[] = [
@@ -303,6 +311,31 @@ export function evaluateFlowDeskProductionEnablementV1(
 		}
 	}
 
+	const configuredVerificationResult = input.configuredVerificationResult;
+	let validConfiguredVerificationResult:
+		| FlowDeskConfiguredVerificationResultV1
+		| undefined;
+	if (configuredVerificationResult !== undefined) {
+		const verificationResult = validateFlowDeskConfiguredVerificationResultV1(
+			configuredVerificationResult,
+			input.workflowId,
+			input.configuredVerificationRef,
+		);
+		errors.push(...verificationResult.errors);
+		if (!verificationResult.ok) blockerLabels.push("configured_verification_invalid");
+		else if (input.configuredVerificationRef !== undefined)
+			validConfiguredVerificationResult = configuredVerificationResult;
+		if (verificationResult.ok && configuredVerificationResult.result !== "passed")
+			blockerLabels.push("configured_verification_failed");
+	}
+	if (input.configuredVerificationRef !== undefined) {
+		if (validConfiguredVerificationResult === undefined) {
+			blockerLabels.push("configured_verification_result_missing");
+			if (configuredVerificationResult === undefined)
+				errors.push("configured verification result is required");
+		}
+	}
+
 	const laneConformanceRefs = input.laneConformanceRefs ?? [];
 	if (laneConformanceRefs.length === 0) {
 		if (input.allowIncompleteConformance === true)
@@ -327,6 +360,7 @@ export function evaluateFlowDeskProductionEnablementV1(
 			...evidenceRefsFromReload(input.evidenceReload),
 			input.preDispatchAuditRef,
 			input.configuredVerificationRef,
+			...(validConfiguredVerificationResult?.evidence_refs ?? []),
 			input.externalAuthPolicyRef,
 			input.providerPolicyRef,
 			...laneConformanceRefs,
@@ -383,6 +417,13 @@ export function evaluateFlowDeskProductionEnablementV1(
 		managed_dispatch_ready: errors.length === 0 && state === "dispatch_capable",
 		dispatch_authority_enabled: false,
 		default_release1_non_dispatch_preserved: true,
+		...(validConfiguredVerificationResult === undefined
+			? {}
+			: {
+					configured_verification_result: validConfiguredVerificationResult.result,
+					configured_verification_ref:
+						validConfiguredVerificationResult.verification_ref,
+				}),
 		safe_next_actions:
 			state === "dispatch_capable"
 				? ["/flowdesk-status"]
