@@ -4,7 +4,7 @@ Date: 2026-05-21
 
 ## Scope
 
-This note records explicit Release 3 authority-promotion contracts in `@flowdesk/core`. The pass does not flip existing Release 1 `dispatch_authority_enabled: false` artifacts and does not perform provider calls, lane launches, fallback execution, active-profile mutation, GitHub writes, connector writes, storage writes, or hard chat control.
+This note records explicit Release 3 authority-promotion contracts in `@flowdesk/core` and the follow-up opt-in managed-dispatch adapter wiring. The pass does not flip existing Release 1 `dispatch_authority_enabled: false` artifacts and does not perform live provider calls, live lane launches, fallback execution, active-profile mutation, GitHub writes, connector writes, storage writes, or hard chat control.
 
 ## Promoted Gates
 
@@ -13,6 +13,7 @@ This note records explicit Release 3 authority-promotion contracts in `@flowdesk
 - `promoteFlowDeskManagedDispatchBetaAuthorityV1` requires an eligible Guard boundary, a valid pre-call evaluation with `sdk_call_permitted=true`, a consumed scoped `managed_dispatch_beta` approval, and matching audit/conformance refs.
 - The result enables only `managed_dispatch_beta_authority_enabled`; generic Release 1 dispatch, fallback, provider call, lane launch, and runtime execution fields remain false.
 - Missing conformance, blocked pre-call labels, wrong approval action type, and authority-smuggling fields block.
+- The opt-in `dispatchManagedDispatchBetaPromptV1` adapter now calls this promotion gate after the existing manifest/consumed-approval pre-call check and before resolving or calling `prompt`/`promptAsync` on the injected OpenCode SDK client.
 
 ### Reviewer Typed Verdict Acceptance
 
@@ -39,7 +40,8 @@ This note records explicit Release 3 authority-promotion contracts in `@flowdesk
 Commands run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 
 1. `npm test --workspace @flowdesk/core -- --test-name-pattern "authority promotion|managed dispatch promotion|reviewer typed verdict promotion|fallback reselection promotion|external write promotion"` passed: 253/253 tests in the matched core run.
-2. LSP diagnostics were clean for `packages/core/src/authority-promotion.ts`, `packages/core/src/authority-promotion.test.ts`, and `packages/core/src/index.ts`.
+2. `npm test --workspace @flowdesk/opencode-plugin -- --test-name-pattern "managed dispatch beta adapter"` passed: 69/69 tests in the matched plugin run.
+3. LSP diagnostics were clean for `packages/core/src/authority-promotion.ts`, `packages/core/src/authority-promotion.test.ts`, `packages/core/src/index.ts`, `packages/opencode-plugin/src/managed-dispatch-adapter.ts`, and `packages/opencode-plugin/src/managed-dispatch-adapter.test.ts`.
 
 ## Remaining Blocked Authority
 
