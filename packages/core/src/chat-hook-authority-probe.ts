@@ -82,9 +82,15 @@ export function createFlowDeskChatHookAuthorityProbeV1(input: {
 			: "malformed_return_not_fail_closed",
 	].filter((label): label is string => label !== undefined);
 	const hardControlProven =
+		input.mutationObserved === true &&
 		input.throwBlocksReply === true &&
 		input.noReplySupported === true &&
 		input.cancelOrStopSupported === true &&
+		input.duplicateAssistantReplyObserved !== true &&
+		input.timeoutOrNullFailClosed === true &&
+		input.malformedReturnFailClosed === true;
+	const steeringOnly =
+		input.mutationObserved === true &&
 		input.duplicateAssistantReplyObserved !== true &&
 		input.timeoutOrNullFailClosed === true &&
 		input.malformedReturnFailClosed === true;
@@ -93,7 +99,11 @@ export function createFlowDeskChatHookAuthorityProbeV1(input: {
 		probe_id: input.probeId,
 		chat_hook_ref: input.chatHookRef,
 		observed_at: input.observedAt,
-		outcome: hardControlProven ? "hard_control_proven" : "steering_only",
+		outcome: hardControlProven
+			? "hard_control_proven"
+			: steeringOnly
+				? "steering_only"
+				: "blocked",
 		mutation_observed: input.mutationObserved,
 		throw_blocks_reply: input.throwBlocksReply === true,
 		no_reply_supported: input.noReplySupported === true,
@@ -173,6 +183,7 @@ export function validateFlowDeskChatHookAuthorityProbeV1(
 	if (
 		record.outcome === "hard_control_proven" &&
 		(record.throw_blocks_reply !== true ||
+			record.mutation_observed !== true ||
 			record.no_reply_supported !== true ||
 			record.cancel_or_stop_supported !== true ||
 			record.timeout_or_null_fail_closed !== true ||
@@ -180,6 +191,16 @@ export function validateFlowDeskChatHookAuthorityProbeV1(
 			record.duplicate_assistant_reply_observed !== false)
 	)
 		errors.push("hard_control_proven requires all hard-control observations");
+	if (
+		record.outcome === "steering_only" &&
+		(record.mutation_observed !== true ||
+			record.duplicate_assistant_reply_observed !== false ||
+			record.timeout_or_null_fail_closed !== true ||
+			record.malformed_return_fail_closed !== true)
+	)
+		errors.push("steering_only requires mutation-only fail-closed observations");
+	if (record.outcome === "blocked" && record.failure_labels?.length === 0)
+		errors.push("blocked chat hook probes require failure labels");
 	if (
 		record.dispatch_authority_enabled !== false ||
 		record.providerCall !== false ||

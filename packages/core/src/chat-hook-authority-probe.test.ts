@@ -42,6 +42,74 @@ test("chat hook hard-control proof still cannot set authority field", () => {
 	assert.equal(validateFlowDeskChatHookAuthorityProbeV1(result).ok, true);
 });
 
+test("chat hook probe blocks hard-control gaps that are not fail-closed", () => {
+	const timeoutGap = createFlowDeskChatHookAuthorityProbeV1({
+		probeId: "chat-probe-timeout-gap",
+		chatHookRef: "chat-message-hook-timeout-gap",
+		observedAt: "2026-05-21T00:00:00.000Z",
+		mutationObserved: true,
+		throwBlocksReply: false,
+		noReplySupported: false,
+		cancelOrStopSupported: false,
+		duplicateAssistantReplyObserved: false,
+		// timeout/null and malformed-return behavior are unknown, so hard chat authority is blocked.
+	});
+	assert.equal(timeoutGap.outcome, "blocked");
+	assert.equal(timeoutGap.hardCancelOrNoReplyAuthority, false);
+	assert.ok(
+		timeoutGap.failure_labels.includes("timeout_or_null_not_fail_closed"),
+	);
+	assert.ok(
+		timeoutGap.failure_labels.includes("malformed_return_not_fail_closed"),
+	);
+	assert.equal(validateFlowDeskChatHookAuthorityProbeV1(timeoutGap).ok, true);
+
+	const duplicateReply = createFlowDeskChatHookAuthorityProbeV1({
+		probeId: "chat-probe-duplicate-reply",
+		chatHookRef: "chat-message-hook-duplicate-reply",
+		observedAt: "2026-05-21T00:00:00.000Z",
+		mutationObserved: true,
+		throwBlocksReply: true,
+		noReplySupported: true,
+		cancelOrStopSupported: true,
+		duplicateAssistantReplyObserved: true,
+		timeoutOrNullFailClosed: true,
+		malformedReturnFailClosed: true,
+	});
+	assert.equal(duplicateReply.outcome, "blocked");
+	assert.equal(duplicateReply.hardCancelOrNoReplyAuthority, false);
+	assert.ok(
+		duplicateReply.failure_labels.includes("duplicate_assistant_reply_observed"),
+	);
+	assert.equal(validateFlowDeskChatHookAuthorityProbeV1(duplicateReply).ok, true);
+});
+
+test("chat hook probe validator rejects inconsistent steering-only and blocked states", () => {
+	const blockedWithoutLabels = {
+		...createFlowDeskChatHookAuthorityProbeV1({
+			probeId: "chat-probe-empty-blocked",
+			chatHookRef: "chat-message-hook-empty-blocked",
+			observedAt: "2026-05-21T00:00:00.000Z",
+			mutationObserved: true,
+		}),
+		failure_labels: [],
+	};
+	assert.equal(validateFlowDeskChatHookAuthorityProbeV1(blockedWithoutLabels).ok, false);
+
+	const forgedSteering = {
+		...createFlowDeskChatHookAuthorityProbeV1({
+			probeId: "chat-probe-forged-steering",
+			chatHookRef: "chat-message-hook-forged-steering",
+			observedAt: "2026-05-21T00:00:00.000Z",
+			mutationObserved: true,
+		}),
+		outcome: "steering_only",
+	};
+	const result = validateFlowDeskChatHookAuthorityProbeV1(forgedSteering);
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("|"), /steering_only requires/);
+});
+
 test("chat hook probe rejects malformed hard-control and authority smuggling", () => {
 	const forged = {
 		...createFlowDeskChatHookAuthorityProbeV1({
