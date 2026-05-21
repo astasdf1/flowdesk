@@ -99,7 +99,7 @@ export interface ManagedDispatchBetaEvidenceValidationOptionsV1 {
   now?: number;
 }
 
-function validateConcreteProviderQualifiedModelId(value: unknown, label = "provider_qualified_model_id"): ValidationResult {
+export function validateConcreteProviderQualifiedModelId(value: unknown, label = "provider_qualified_model_id"): ValidationResult {
   const result = validateProviderQualifiedModelId(value);
   if (!result.ok) return result;
   const model = (value as string).split("/")[1] ?? "";
@@ -217,7 +217,7 @@ export function validateProviderQualifiedModelId(value: unknown): ValidationResu
 
 export function validateNoForbiddenRawPayloads(value: unknown, label = "payload"): ValidationResult {
   const errors: string[] = [];
-    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "credential_scope_ref", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref"]);
+    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "credential_scope_ref", "raw_auth_object_persisted", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref", "token_material_persisted"]);
   const visit = (current: unknown, path: string): void => {
     if (typeof current === "string") {
       const lower = current.toLowerCase();

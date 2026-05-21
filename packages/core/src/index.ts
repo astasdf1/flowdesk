@@ -30,6 +30,7 @@ export * from "./bootstrap-foundation.js";
 export * from "./chat-routing.js";
 export * from "./command-manifest.js";
 export * from "./config-policy.js";
+export * from "./external-auth-policy.js";
 export * from "./fake-runtime.js";
 export * from "./guard-boundary.js";
 export * from "./guarded-dry-run.js";
