@@ -38,6 +38,7 @@ export * from "./hook-harness.js";
 export * from "./lane-observability.js";
 export * from "./plan.js";
 export * from "./production-enablement.js";
+export * from "./production-approval-source.js";
 export * from "./production-verification.js";
 export * from "./provider-failures.js";
 export * from "./provider-usage-collector.js";
