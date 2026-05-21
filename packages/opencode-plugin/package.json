@@ -1,6 +1,6 @@
 {
   "name": "@flowdesk/opencode-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FlowDesk OpenCode plugin with Release 1 non-dispatch command-backed registration.",
   "type": "module",
   "license": "MIT",
