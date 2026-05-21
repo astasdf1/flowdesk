@@ -339,6 +339,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
     durable_provenance_required: _durableProvenanceRequired,
     reloaded_approval_source_ref: _reloadedApprovalSourceRef,
     reloaded_pre_dispatch_audit_ref: _reloadedPreDispatchAuditRef,
+    reloaded_idempotency_snapshot_ref: _reloadedIdempotencySnapshotRef,
     ...promotionPrecall
   } = precall;
 

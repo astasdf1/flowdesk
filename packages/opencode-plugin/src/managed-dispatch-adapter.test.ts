@@ -355,6 +355,23 @@ function reloadedEvidence(
 		errors: [],
 		entries: [
 			{
+				evidenceClass: "dispatch_idempotency",
+				evidenceId: "idempotency-snapshot-123",
+				record: {
+					schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+					workflow_id: "workflow-123",
+					snapshot_ref: "idempotency-snapshot-123",
+					observed_at: now,
+					entries: [],
+					dispatch_authority_enabled: false,
+					realOpenCodeDispatch: false,
+					actualLaneLaunch: false,
+					providerCall: false,
+					runtimeExecution: false,
+				},
+				path: ".flowdesk/sessions/workflow-123/evidence/dispatch-idempotency/idempotency-snapshot-123.json",
+			},
+			{
 				evidenceClass: "production_approval_source",
 				evidenceId: "approval-source-123",
 				record: consumedApproval() as unknown as Record<string, unknown>,
@@ -610,8 +627,25 @@ test("managed dispatch beta adapter requires promotion gate before fake client c
 		boundaryInput: managedDispatchInput(),
 		request: dispatchRequest(),
 		dispatchManifest: dispatchManifest(),
-		reloadedEvidence: reloadedEvidence({
+			reloadedEvidence: reloadedEvidence({
 			entries: [
+				{
+					evidenceClass: "dispatch_idempotency",
+					evidenceId: "idempotency-snapshot-123",
+					record: {
+						schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+						workflow_id: "workflow-123",
+						snapshot_ref: "idempotency-snapshot-123",
+						observed_at: now,
+						entries: [],
+						dispatch_authority_enabled: false,
+						realOpenCodeDispatch: false,
+						actualLaneLaunch: false,
+						providerCall: false,
+						runtimeExecution: false,
+					},
+					path: ".flowdesk/sessions/workflow-123/evidence/dispatch-idempotency/idempotency-snapshot-123.json",
+				},
 				{
 					evidenceClass: "production_approval_source",
 					evidenceId: "approval-source-123",
