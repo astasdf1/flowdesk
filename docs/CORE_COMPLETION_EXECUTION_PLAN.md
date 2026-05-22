@@ -296,7 +296,15 @@ The implemented 2026-05-23 slice adds `planFlowDeskReviewerFanoutFromReloadedCac
 
 Missing, drifted, invalid, or ambiguous durable cache evidence blocks before fan-out request materialization. Even ready plans remain request topology only: provider calls, runtime execution, actual lane launch, dispatch authority, cache discovery, and cache refresh remain disabled.
 
-Next safe slice: wire this helper into a doctor/status or command-backed product path that already has a durable evidence root, so user-visible fan-out diagnostics can be derived from reloaded session evidence without launching reviewer lanes.
+Completed follow-up slice: `/flowdesk-doctor` and `/flowdesk-status` can now derive reviewer fan-out diagnostics from reloaded durable exact-model cache evidence when `reviewerFanoutDiagnostics` is explicitly configured with a durable state root.
+
+## Confirmed Follow-Up Slice: Fan-Out Diagnostic Wiring
+
+The implemented 2026-05-23 slice wires `planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1` into the local non-dispatch adapter as a diagnostic-only option. The server option `reviewerFanoutDiagnostics` supplies the expected cache context and fan-out planning refs; the adapter reloads session evidence from the configured durable state root for the requested workflow, derives the selected-cache fan-out plan, and passes only diagnostic artifacts into the existing doctor/status surfaces.
+
+Ready durable cache evidence can surface `exact_model_cache_refresh_state=cache_hit` and `reviewer_fanout_state=fanout_ready` in `/flowdesk-doctor`. Drifted or missing selected cache evidence can surface blocked reviewer fan-out refs in `/flowdesk-status`. This does not persist a fan-out plan, launch lanes, call providers, refresh caches, or enable runtime/dispatch authority.
+
+Next safe slice: persist the derived reviewer fan-out plan as durable `reviewer_fanout_plan` evidence only after the diagnostic derivation succeeds, still without lane launch or provider calls.
 
 ## Review Questions
 
