@@ -19,7 +19,7 @@ Derived diagnostics are then surfaced through existing diagnostic fields:
 
 ## Safety Boundary
 
-This slice only reloads local durable evidence and derives diagnostic planning artifacts. It does not discover models, refresh caches, call providers, launch reviewer lanes, accept verdicts, authorize dispatch, or run SDK prompts. All surfaced artifacts preserve `providerCall=false`, `actualLaneLaunch=false`, and `runtimeExecution=false`.
+This slice only reloads local durable evidence and derives diagnostic planning artifacts. It does not discover models, refresh caches, call providers, launch reviewer lanes, accept verdicts, authorize dispatch, or run SDK prompts. All surfaced artifacts preserve `providerCall=false`, `actualLaneLaunch=false`, and `runtimeExecution=false`. A later 2026-05-23 slice can optionally persist a ready derived plan as durable `reviewer_fanout_plan` evidence, but that evidence remains diagnostic planning input only.
 
 ## Verification
 
@@ -27,4 +27,4 @@ Targeted product-path tests cover ready durable cache evidence surfacing through
 
 ## Remaining Gaps
 
-Actual cache discovery acquisition, provider probing, runtime launch approval, SDK-client lane launch, durable fan-out plan materialization from the product path, typed verdict persistence, and verdict acceptance remain later-gated.
+Actual cache discovery acquisition, provider probing, runtime launch approval, SDK-client lane launch, typed verdict persistence, and verdict acceptance remain later-gated.
