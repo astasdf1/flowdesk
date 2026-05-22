@@ -28,6 +28,7 @@ export * from "./agent-profiles.js";
 export * from "./audit.js";
 export * from "./authority-promotion.js";
 export * from "./bootstrap-foundation.js";
+export * from "./chat-control-authority.js";
 export * from "./chat-hook-authority-probe.js";
 export * from "./chat-routing.js";
 export * from "./command-manifest.js";
