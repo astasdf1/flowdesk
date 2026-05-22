@@ -302,9 +302,17 @@ Completed follow-up slice: `/flowdesk-doctor` and `/flowdesk-status` can now der
 
 The implemented 2026-05-23 slice wires `planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1` into the local non-dispatch adapter as a diagnostic-only option. The server option `reviewerFanoutDiagnostics` supplies the expected cache context and fan-out planning refs; the adapter reloads session evidence from the configured durable state root for the requested workflow, derives the selected-cache fan-out plan, and passes only diagnostic artifacts into the existing doctor/status surfaces.
 
-Ready durable cache evidence can surface `exact_model_cache_refresh_state=cache_hit` and `reviewer_fanout_state=fanout_ready` in `/flowdesk-doctor`. Drifted or missing selected cache evidence can surface blocked reviewer fan-out refs in `/flowdesk-status`. This does not persist a fan-out plan, launch lanes, call providers, refresh caches, or enable runtime/dispatch authority.
+Ready durable cache evidence can surface `exact_model_cache_refresh_state=cache_hit` and `reviewer_fanout_state=fanout_ready` in `/flowdesk-doctor`. Drifted or missing selected cache evidence can surface blocked reviewer fan-out refs in `/flowdesk-status`. This diagnostic derivation does not launch lanes, call providers, refresh caches, or enable runtime/dispatch authority.
 
-Next safe slice: persist the derived reviewer fan-out plan as durable `reviewer_fanout_plan` evidence only after the diagnostic derivation succeeds, still without lane launch or provider calls.
+Completed follow-up slice: ready derived reviewer fan-out diagnostics can now optionally persist durable `reviewer_fanout_plan` evidence after diagnostic derivation succeeds. Blocked derivations write no fan-out plan evidence.
+
+## Confirmed Follow-Up Slice: Derived Fan-Out Plan Materialization
+
+The implemented 2026-05-23 slice adds optional materialization to the existing `reviewerFanoutDiagnostics` product path. When explicit diagnostic options include `persistDerivedFanoutPlanEvidence`, and selected-cache fan-out derivation returns `fanout_ready`, the local adapter writes the ready plan through `prepareFlowDeskSessionEvidenceWriteIntentV1` and `applyFlowDeskSessionEvidenceWriteIntentsV1` as `reviewer_fanout_plan` evidence.
+
+Blocked, drifted, missing, invalid, or ambiguous cache evidence leaves the durable fan-out plan inventory unchanged. Ready materialized records still represent topology planning only and keep lane launch, provider calls, cache discovery/refresh, runtime execution, dispatch authority, and approval inference disabled.
+
+Next safe slice: choose between actual cache discovery acquisition planning or typed verdict persistence, both still gated before any provider calls or reviewer lane launch.
 
 ## Review Questions
 
