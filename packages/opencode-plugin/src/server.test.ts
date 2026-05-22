@@ -33,13 +33,14 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskNaturalLanguageRoutingOption,
 	flowdeskPreSpikeDoctorToolName,
 	flowdeskProductionEnablementOption,
+	flowdeskReviewerFanoutDiagnosticsOption,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
 
 interface LocalAdapterTestResult {
 	adapterProfile?: unknown;
-	handler?: {
+		handler?: {
 		ok?: unknown;
 		handlerMode?: unknown;
 		errors?: unknown[];
@@ -47,6 +48,7 @@ interface LocalAdapterTestResult {
 		response?: {
 			status?: unknown;
 			doctor_results?: { section?: unknown; refs?: string[] }[];
+			blocker?: { refs?: string[] };
 			plan_revision_id?: unknown;
 			workflow_id?: unknown;
 			workflow_state?: unknown;
@@ -109,6 +111,87 @@ interface ChatMessageHooks {
 
 function toolOutput(value: string | { output: string }): string {
 	return typeof value === "string" ? value : value.output;
+}
+
+function exactModelAvailabilityCacheRecord(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.exact_model_availability_cache.v1",
+		cache_id: "cache-1",
+		local_date: "2026-05-19",
+		active_profile_ref: "profile-1",
+		opencode_version_ref: "opencode-1.15.6",
+		flowdesk_package_version_ref: "flowdesk-0.1.1",
+		registry_hash: "hash-registry-1",
+		policy_pack_hash: "hash-policy-1",
+		auth_account_boundary_ref: "account-1",
+		entries: [{
+			entry_id: "entry-claude-1",
+			provider_family: "claude",
+			provider_identity_ref: "provider-claude-1",
+			provider_qualified_model_id: "claude/claude-opus-4-5",
+			model_family: "opus",
+			registered: true,
+			available: true,
+			highest_tier_eligible: true,
+			availability_ref: "availability-1",
+		}],
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
+		ok: true,
+		errors: [],
+		state: "cache_hit",
+		blocked_labels: [],
+		refresh_reason_labels: [],
+		expected_local_date: "2026-05-19",
+		expected_active_profile_ref: "profile-1",
+		expected_opencode_version_ref: "opencode-1.15.6",
+		expected_flowdesk_package_version_ref: "flowdesk-0.1.1",
+		expected_registry_hash: "hash-registry-1",
+		expected_policy_pack_hash: "hash-policy-1",
+		expected_auth_account_boundary_ref: "account-1",
+		cache_id: "cache-1",
+		cache_local_date: "2026-05-19",
+		cache_active_profile_ref: "profile-1",
+		cache_opencode_version_ref: "opencode-1.15.6",
+		cache_flowdesk_package_version_ref: "flowdesk-0.1.1",
+		cache_registry_hash: "hash-registry-1",
+		cache_policy_pack_hash: "hash-policy-1",
+		cache_auth_account_boundary_ref: "account-1",
+		discovery_required: false,
+		refresh_required: false,
+		cache_usable_for_assignment: true,
+		discovery_attempted: false,
+		refresh_attempted: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function writeSessionEvidence(root: string, workflowId: string, records: Record<string, unknown>[]) {
+	const intents = records.map((record, index) => {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: `reviewer-evidence-${index + 1}`,
+			record,
+		});
+		assert.equal(prepared.ok, true, prepared.errors.join("; "));
+		assert.ok(prepared.writeIntent);
+		return prepared.writeIntent;
+	});
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, intents);
+	assert.equal(applied.ok, true, applied.errors.join("; "));
 }
 
 test("server plugin defaults to safe local command-backed chat mode", async () => {
@@ -1268,6 +1351,196 @@ test("server option wires production enablement evidence into doctor diagnostics
 		assert.equal(doctor.providerCall, false);
 		assert.equal(doctor.runtimeExecution, false);
 		assert.equal(doctor.actualLaneLaunch, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("server option derives reviewer fanout diagnostics from durable cache evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-server-fanout-evidence-"));
+	const workflowId = "workflow-local";
+	try {
+		writeSessionEvidence(root, workflowId, [
+			exactModelAvailabilityCacheRecord(),
+			exactModelAvailabilityCacheRefreshPlanRecord(),
+		]);
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskReviewerFanoutDiagnosticsOption]: {
+					enabled: true,
+					localDate: "2026-05-19",
+					activeProfileRef: "profile-1",
+					opencodeVersionRef: "opencode-1.15.6",
+					flowdeskPackageVersionRef: "flowdesk-0.1.1",
+					registryHash: "hash-registry-1",
+					policyPackHash: "hash-policy-1",
+					authAccountBoundaryRef: "account-1",
+					attemptId: "attempt-1",
+					parentSessionRef: "ses-parent-1",
+					agentRef: "agent-reviewer",
+					requestedAt: "2026-05-19T00:01:00.000Z",
+					preLaunchAuditRef: "audit-pre-launch-1",
+					laneLaunchApprovalRef: "approval-lane-launch-1",
+				},
+			},
+		)) as ChatMessageHooks;
+		const doctorTool = hooks.tool?.flowdesk_doctor;
+		const statusTool = hooks.tool?.flowdesk_status;
+		assert.ok(doctorTool);
+		assert.ok(statusTool);
+		const doctorFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find(
+			(entry) =>
+				entry.toolName === "flowdesk_doctor" &&
+				entry.schemaKind === "tool_request",
+		);
+		const statusFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find(
+			(entry) =>
+				entry.toolName === "flowdesk_status" &&
+				entry.schemaKind === "tool_request",
+		);
+		assert.ok(doctorFixture);
+		assert.ok(statusFixture);
+
+		const doctor = JSON.parse(
+			toolOutput(
+				await doctorTool.execute(
+					{
+						...doctorFixture.categories["valid.minimal"].sample,
+						request_id: "request-fanout-doctor",
+						check_scope: "all",
+						profile: "test",
+					},
+					undefined as never,
+				),
+			),
+		) as LocalAdapterTestResult;
+		assert.equal(doctor.handler?.ok, true);
+		const compatibility = doctor.handler?.response?.doctor_results?.find(
+			(section) => section.section === "opencode_plugin_compatibility",
+		);
+		assert.ok(compatibility);
+		assert.ok(
+			compatibility.refs?.includes("exact_model_cache_refresh_state=cache_hit"),
+		);
+		assert.ok(
+			compatibility.refs?.includes("exact_model_cache_usable_for_assignment=true"),
+		);
+		assert.ok(
+			compatibility.refs?.includes("reviewer_fanout_state=fanout_ready"),
+		);
+		assert.ok(
+			compatibility.refs?.includes("reviewer_fanout_planned_perspectives=3"),
+		);
+		assert.ok(
+			compatibility.refs?.includes("reviewer_fanout_actualLaneLaunch=false"),
+		);
+		assert.ok(
+			compatibility.refs?.includes("reviewer_fanout_providerCall=false"),
+		);
+		assert.equal(doctor.providerCall, false);
+		assert.equal(doctor.runtimeExecution, false);
+		assert.equal(doctor.actualLaneLaunch, false);
+
+		const status = JSON.parse(
+			toolOutput(
+				await statusTool.execute(
+					{
+						...statusFixture.categories["valid.minimal"].sample,
+						request_id: "request-fanout-status",
+						workflow_id: workflowId,
+						detail_level: "diagnostic",
+					},
+					undefined as never,
+				),
+			),
+		) as LocalAdapterTestResult;
+		assert.equal(status.handler?.ok, true, status.handler?.errors?.join("; "));
+		assert.equal(status.handler?.response?.workflow_id, workflowId);
+		assert.equal(status.handler?.response?.blocker, undefined);
+		assert.equal(status.providerCall, false);
+		assert.equal(status.runtimeExecution, false);
+		assert.equal(status.actualLaneLaunch, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("server option surfaces blocked reviewer fanout diagnostics from drifted cache evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-server-fanout-blocked-"));
+	const workflowId = "workflow-local";
+	try {
+		writeSessionEvidence(root, workflowId, [
+			exactModelAvailabilityCacheRecord(),
+			exactModelAvailabilityCacheRefreshPlanRecord({ expected_policy_pack_hash: "hash-policy-other" }),
+		]);
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskReviewerFanoutDiagnosticsOption]: {
+					enabled: true,
+					localDate: "2026-05-19",
+					activeProfileRef: "profile-1",
+					opencodeVersionRef: "opencode-1.15.6",
+					flowdeskPackageVersionRef: "flowdesk-0.1.1",
+					registryHash: "hash-registry-1",
+					policyPackHash: "hash-policy-1",
+					authAccountBoundaryRef: "account-1",
+					attemptId: "attempt-1",
+					parentSessionRef: "ses-parent-1",
+					agentRef: "agent-reviewer",
+					requestedAt: "2026-05-19T00:01:00.000Z",
+				},
+			},
+		)) as ChatMessageHooks;
+		const statusTool = hooks.tool?.flowdesk_status;
+		assert.ok(statusTool);
+		const statusFixture = FLOWDESK_FDS1_FIXTURE_CATALOG.find(
+			(entry) =>
+				entry.toolName === "flowdesk_status" &&
+				entry.schemaKind === "tool_request",
+		);
+		assert.ok(statusFixture);
+
+		const status = JSON.parse(
+			toolOutput(
+				await statusTool.execute(
+					{
+						...statusFixture.categories["valid.minimal"].sample,
+						request_id: "request-fanout-blocked-status",
+						workflow_id: workflowId,
+						detail_level: "diagnostic",
+					},
+					undefined as never,
+				),
+			),
+		) as LocalAdapterTestResult;
+		assert.equal(status.handler?.ok, true, status.handler?.errors?.join("; "));
+		assert.ok(status.handler?.response?.blocker);
+		assert.ok(
+			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_state=blocked"),
+		);
+		assert.ok(
+			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_blocker=assignment_revalidation_blocked"),
+		);
+		assert.ok(
+			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_blocker=cache_refresh_pair_missing"),
+		);
+		assert.ok(
+			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_actualLaneLaunch=false"),
+		);
+		assert.ok(
+			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_providerCall=false"),
+		);
+		assert.equal(status.providerCall, false);
+		assert.equal(status.runtimeExecution, false);
+		assert.equal(status.actualLaneLaunch, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
