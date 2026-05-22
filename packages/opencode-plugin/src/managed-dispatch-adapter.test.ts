@@ -53,7 +53,9 @@ import {
 } from "./managed-dispatch-adapter.js";
 import flowdeskOpenCodeServerPlugin, {
 	flowdeskChatIntakeToolName,
+	flowdeskDefaultManagedDispatchAuthorizationOption,
 	flowdeskDurableStateRootOption,
+	flowdeskLocalNonDispatchAdapterOption,
 	flowdeskManagedDispatchBetaAdapterOption,
 	flowdeskManagedDispatchBetaToolName,
 	flowdeskPreSpikeDoctorToolName,
@@ -64,6 +66,33 @@ function toolOutput(value: string | { output: string }): string {
 }
 
 const now = "2026-05-17T00:00:00.000Z";
+
+function defaultManagedDispatchAuthorization() {
+	return {
+		schema_version: "flowdesk.default_managed_dispatch_authorization.v1",
+		authorization_id: "default-auth-123",
+		workflow_id: "workflow-123",
+		ok: true,
+		errors: [],
+		state: "authorized",
+		blocked_labels: [],
+		readiness_ref: "default-managed-dispatch-default_candidate",
+		actor_ref: "actor-ops-123",
+		profile_ref: "profile-prod-123",
+		release_gate_ref: "release-gate-123",
+		rollback_ref: "rollback-123",
+		created_at: "2026-05-22T00:00:00.000Z",
+		expires_at: "2026-05-23T00:00:00.000Z",
+		default_enablement_requested: true,
+		kill_switch_state: "inactive",
+		default_managed_dispatch_authority_enabled: true,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		safe_next_actions: ["/flowdesk-status"],
+	};
+}
 
 function sha256Ref(content: string): string {
 	return `sha256-${createHash("sha256").update(content, "utf8").digest("hex")}`;
@@ -2289,6 +2318,200 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
 	assert.equal("response" in result, false);
 	assert.equal(promptAsyncCalls.length, 1);
 	assert.equal(reservation.reserveCalls.length, 1);
+});
+
+test("default managed-dispatch authorization can register the SDK tool without beta option", async () => {
+	const { client, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
+	const hooks = await flowdeskOpenCodeServerPlugin.server(
+		{ client, reservationStore: reservation.store } as never,
+		{
+			[flowdeskDefaultManagedDispatchAuthorizationOption]:
+				defaultManagedDispatchAuthorization(),
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	const betaTool = hooks.tool?.[flowdeskManagedDispatchBetaToolName];
+	assert.ok(betaTool);
+	const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+	assert.ok(doctor);
+	const doctorResult = JSON.parse(
+		toolOutput(await doctor.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(doctorResult.defaultManagedDispatchRegistrationAuthorized, true);
+	assert.equal(
+		doctorResult.productionPromotionGate,
+		"default_managed_dispatch_authorized_registration_ready",
+	);
+
+	const raw = await betaTool.execute(
+		{
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+		},
+		undefined as never,
+	);
+	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+	assert.equal(result.status, "dispatch_accepted");
+	assert.equal(result.dispatchAttempted, true);
+	assert.equal(promptAsyncCalls.length, 1);
+	assert.equal(reservation.reserveCalls.length, 1);
+});
+
+test("/flowdesk-run managed-dispatch blocks without default authorization", async () => {
+	const { client, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
+	const hooks = await flowdeskOpenCodeServerPlugin.server(
+		{ client, reservationStore: reservation.store } as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: true,
+			naturalLanguageRouting: false,
+		},
+	);
+	const runTool = hooks.tool?.flowdesk_run;
+	assert.ok(runTool);
+
+	const raw = await runTool.execute(
+		{
+			schema_version: "flowdesk.run.request.v1",
+			request_id: "request-managed-run-no-auth",
+			input_mode: "portable_command",
+			workflow_id: "workflow-123",
+			run_mode: "managed-dispatch",
+			plan_revision_id: "plan-123",
+			step_id: "step-123",
+			managed_dispatch_boundary_input: managedDispatchInput(),
+			managed_dispatch_request: dispatchRequest({
+				directory: undefined,
+				promptText: undefined,
+				promptSummary: "Approved bounded step.",
+			}),
+			managed_dispatch_manifest: dispatchManifest(),
+			managed_dispatch_reloaded_evidence: reloadedEvidence(),
+		},
+		undefined as never,
+	);
+	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+	assert.equal(result.runRouteProfile, "flowdesk_run_default_managed_dispatch_route");
+	assert.equal(result.status, "blocked_before_dispatch");
+	assert.equal(result.dispatchAttempted, false);
+	assert.match(String(result.redactedBlockReason), /default managed-dispatch authorization/);
+	assert.equal(promptAsyncCalls.length, 0);
+	assert.equal(reservation.reserveCalls.length, 0);
+});
+
+test("/flowdesk-run managed-dispatch rejects invalid run envelopes before adapter gates", async () => {
+	const { client, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
+	const hooks = await flowdeskOpenCodeServerPlugin.server(
+		{ client, reservationStore: reservation.store } as never,
+		{
+			[flowdeskDefaultManagedDispatchAuthorizationOption]:
+				defaultManagedDispatchAuthorization(),
+			[flowdeskLocalNonDispatchAdapterOption]: true,
+			naturalLanguageRouting: false,
+		},
+	);
+	const runTool = hooks.tool?.flowdesk_run;
+	assert.ok(runTool);
+
+	const raw = await runTool.execute(
+		{
+			schema_version: "flowdesk.run.request.v1",
+			request_id: "request-managed-run-invalid-envelope",
+			input_mode: "portable_command",
+			workflow_id: "workflow-123",
+			run_mode: "managed-dispatch",
+			step_id: "step-123",
+			managed_dispatch_boundary_input: managedDispatchInput(),
+			managed_dispatch_request: dispatchRequest({
+				directory: undefined,
+				promptText: undefined,
+				promptSummary: "Approved bounded step.",
+			}),
+			managed_dispatch_manifest: dispatchManifest(),
+			managed_dispatch_reloaded_evidence: reloadedEvidence(),
+		},
+		undefined as never,
+	);
+	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+	assert.equal(result.runRouteProfile, "flowdesk_run_default_managed_dispatch_route");
+	assert.equal(result.status, "blocked_before_dispatch");
+	assert.match(String(result.redactedBlockReason), /valid flowdesk.run.request.v1 envelope/);
+	assert.equal(promptAsyncCalls.length, 0);
+	assert.equal(reservation.reserveCalls.length, 0);
+});
+
+test("/flowdesk-run managed-dispatch routes through default authorization and managed adapter", async () => {
+	const { client, promptAsyncCalls } = fakeClient();
+	const reservation = fakeReservationStore();
+	const hooks = await flowdeskOpenCodeServerPlugin.server(
+		{ client, reservationStore: reservation.store } as never,
+		{
+			[flowdeskDefaultManagedDispatchAuthorizationOption]:
+				defaultManagedDispatchAuthorization(),
+			[flowdeskLocalNonDispatchAdapterOption]: true,
+			naturalLanguageRouting: false,
+		},
+	);
+	const runTool = hooks.tool?.flowdesk_run;
+	assert.ok(runTool);
+
+	const raw = await runTool.execute(
+		{
+			schema_version: "flowdesk.run.request.v1",
+			request_id: "request-managed-run-authorized",
+			input_mode: "portable_command",
+			workflow_id: "workflow-123",
+			run_mode: "managed-dispatch",
+			plan_revision_id: "plan-123",
+			step_id: "step-123",
+			managed_dispatch_boundary_input: managedDispatchInput(),
+			managed_dispatch_request: dispatchRequest({
+				directory: undefined,
+				promptText: undefined,
+				promptSummary: "Approved bounded step.",
+			}),
+			managed_dispatch_manifest: dispatchManifest(),
+			managed_dispatch_reloaded_evidence: reloadedEvidence(),
+		},
+		undefined as never,
+	);
+	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+	assert.equal(result.runRouteProfile, "flowdesk_run_default_managed_dispatch_route");
+	assert.equal(result.defaultManagedDispatchAuthorizationRef, "default-auth-123");
+	assert.equal(result.status, "dispatch_accepted");
+	assert.equal(result.dispatchAttempted, true);
+	assert.equal(result.responseObserved, false);
+	assert.equal("response" in result, false);
+	assert.equal(promptAsyncCalls.length, 1);
+	assert.equal(reservation.reserveCalls.length, 1);
+});
+
+test("default managed-dispatch authorization gate blocks registration when forged or disabled", async () => {
+	const { client } = fakeClient();
+	const hooks = await flowdeskOpenCodeServerPlugin.server({ client } as never, {
+		[flowdeskDefaultManagedDispatchAuthorizationOption]: {
+			...defaultManagedDispatchAuthorization(),
+			state: "blocked",
+			default_managed_dispatch_authority_enabled: true,
+		},
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(
+		Object.keys(hooks.tool ?? {}).includes(flowdeskManagedDispatchBetaToolName),
+		false,
+	);
+	const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+	assert.ok(doctor);
+	const doctorResult = JSON.parse(
+		toolOutput(await doctor.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(doctorResult.defaultManagedDispatchRegistrationAuthorized, false);
 });
 
 test("managed dispatch beta server can build durable reservation store from state root", async () => {

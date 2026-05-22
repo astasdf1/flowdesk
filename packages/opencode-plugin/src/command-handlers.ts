@@ -4,6 +4,7 @@ import type {
   DoctorSectionResultV1,
   FlowDeskAbortRequestV1,
   FlowDeskAbortResponseV1,
+  FlowDeskDefaultManagedDispatchPromotionReadinessV1,
   FlowDeskDoctorRequestV1,
   FlowDeskDoctorResponseV1,
   FlowDeskExportDebugRequestV1,
@@ -59,6 +60,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     sourceRef?: string;
     providerHealthSnapshotRef?: string;
     productionEnablement?: FlowDeskProductionEnablementEvaluationV1;
+    defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
   };
 }
 
@@ -186,12 +188,34 @@ function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1
   ];
 }
 
+function defaultManagedDispatchPromotionRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const readiness = context.diagnostic?.defaultManagedDispatchPromotionReadiness;
+  if (readiness === undefined) return ["default_dispatch_candidate=false", "default_dispatch_promotion_state=blocked"];
+  return [
+    `default_dispatch_promotion_state=${readiness.state}`,
+    `default_dispatch_candidate=${readiness.default_dispatch_candidate}`,
+    `default_dispatch_doctor_status_ref=${readiness.doctor_status_ref}`,
+    `default_dispatch_production_enablement_state=${readiness.production_enablement_state}`,
+    `default_dispatch_managed_dispatch_ready=${readiness.managed_dispatch_ready}`,
+    `default_dispatch_durable_precall_ready=${readiness.durable_precall_ready}`,
+    `default_dispatch_adapter_available=${readiness.adapter_available}`,
+    `default_dispatch_sdk_client_available=${readiness.sdk_client_available}`,
+    `default_dispatch_authority_enabled=${readiness.dispatch_authority_enabled}`,
+    `default_dispatch_providerCall=${readiness.providerCall}`,
+    `default_dispatch_actualLaneLaunch=${readiness.actualLaneLaunch}`,
+    `default_dispatch_runtimeExecution=${readiness.runtimeExecution}`,
+    ...(readiness.release_enablement_ref === undefined ? [] : [`default_dispatch_release_enablement_ref=${readiness.release_enablement_ref}`]),
+    ...readiness.blocked_labels.map((label) => `default_dispatch_blocker=${label}`)
+  ];
+}
+
 function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
+  const promotionRefs = defaultManagedDispatchPromotionRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; Release 2/2.5 production enablement is explicit opt-in and evidence-tracked.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion is diagnostic-only until a candidate gate is visible.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
   ];
@@ -340,17 +364,18 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
     return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
   }
 
-  if (toolName === "flowdesk_run") {
-    const runRequest = request as FlowDeskRunRequestV1;
-    if (runRequest.run_mode === "guarded-dry-run") {
-      if (context.run?.guardedDryRun === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("guarded dry-run evaluator input is required"), undefined, false);
-      const evaluation = evaluateFlowDeskGuardedDryRunCommandV1({ ...context.run.guardedDryRun, commandName: "/flowdesk-run", request: runRequest });
-      return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
-    }
-    if (context.run?.fakeRuntime === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("fake-runtime evaluator input is required"), undefined, false);
-    const evaluation = evaluateFlowDeskFakeRuntimeCommandV1({ ...context.run.fakeRuntime, commandName: "/flowdesk-run", request: runRequest });
-    return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
-  }
+	if (toolName === "flowdesk_run") {
+		const runRequest = request as FlowDeskRunRequestV1;
+		if (runRequest.run_mode === "guarded-dry-run") {
+			if (context.run?.guardedDryRun === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("guarded dry-run evaluator input is required"), undefined, false);
+			const evaluation = evaluateFlowDeskGuardedDryRunCommandV1({ ...context.run.guardedDryRun, commandName: "/flowdesk-run", request: runRequest });
+			return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
+		}
+		if (runRequest.run_mode === "managed-dispatch") return result("missing_evaluator_input", toolName, requestResult, invalid("managed-dispatch requires server-level default managed-dispatch route authorization"), undefined, false);
+		if (context.run?.fakeRuntime === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("fake-runtime evaluator input is required"), undefined, false);
+		const evaluation = evaluateFlowDeskFakeRuntimeCommandV1({ ...context.run.fakeRuntime, commandName: "/flowdesk-run", request: runRequest });
+		return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
+	}
 
   if (toolName === "flowdesk_status") {
     if (context.status === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("status evaluator input is required"), undefined, false);

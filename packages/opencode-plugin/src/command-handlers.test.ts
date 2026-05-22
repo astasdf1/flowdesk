@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
 	FlowDeskAttemptRecordV1,
+	FlowDeskDefaultManagedDispatchPromotionReadinessV1,
 	FlowDeskDoctorResponseV1,
 	FlowDeskExportDebugRequestV1,
 	FlowDeskFds1FixtureCatalogEntryV1,
@@ -428,6 +429,33 @@ function productionEnablement(
 	};
 }
 
+function promotionReadiness(
+	overrides: Partial<FlowDeskDefaultManagedDispatchPromotionReadinessV1> = {},
+): FlowDeskDefaultManagedDispatchPromotionReadinessV1 {
+	return {
+		schema_version: "flowdesk.default_managed_dispatch_promotion_readiness.v1",
+		workflow_id: "workflow-123",
+		ok: true,
+		errors: [],
+		state: "configured",
+		blocked_labels: ["durable_precall_missing", "default_release_enablement_missing"],
+		evidence_refs: ["usage-authority-123", "adapter-profile-123"],
+		production_enablement_state: "dispatch_capable",
+		managed_dispatch_ready: true,
+		durable_precall_ready: false,
+		adapter_available: true,
+		sdk_client_available: true,
+		doctor_status_ref: "default-managed-dispatch-configured",
+		default_dispatch_candidate: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
+		...overrides,
+	};
+}
+
 function statusContext(
 	request: Readonly<Record<string, unknown>>,
 ): Omit<FlowDeskStatusCommandInputV1, "request"> {
@@ -656,6 +684,12 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 		compatibility.refs.includes("production_managed_dispatch_ready=false"),
 	);
 	assert.ok(
+		compatibility.refs.includes("default_dispatch_candidate=false"),
+	);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_promotion_state=blocked"),
+	);
+	assert.ok(
 		compatibility.refs.includes("production_dispatch_authority_enabled=false"),
 	);
 	assert.ok(compatibility.refs.includes("production_blocker=approval_missing"));
@@ -729,6 +763,62 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 		"non_dispatchable",
 	);
 	assertNoRuntimeAuthority(result);
+});
+
+test("doctor and status surface default managed-dispatch promotion readiness without authority", () => {
+	const readiness = promotionReadiness();
+	const doctor = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{ diagnostic: { defaultManagedDispatchPromotionReadiness: readiness } },
+	);
+	assert.equal(doctor.ok, true, doctor.errors.join("; "));
+	const doctorResponse = doctor.response as FlowDeskDoctorResponseV1;
+	const compatibility = doctorResponse.doctor_results.find(
+		(section) => section.section === "opencode_plugin_compatibility",
+	);
+	assert.ok(compatibility);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_promotion_state=configured"),
+	);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_candidate=false"),
+	);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_durable_precall_ready=false"),
+	);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_authority_enabled=false"),
+	);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_providerCall=false"),
+	);
+	assert.ok(
+		compatibility.refs.includes("default_dispatch_blocker=durable_precall_missing"),
+	);
+	assertNoRuntimeAuthority(doctor);
+
+	const statusRequest = requestFixture("flowdesk_status");
+	const status = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_status",
+		{ ...statusRequest, detail_level: "diagnostic" },
+		{
+			status: {
+				...statusContext(statusRequest),
+				defaultManagedDispatchPromotionReadiness: readiness,
+			},
+		},
+	);
+	assert.equal(status.ok, true, status.errors.join("; "));
+	const statusResponse = status.response as { blocker?: { refs?: string[] } };
+	assert.ok(statusResponse.blocker);
+	assert.ok(
+		statusResponse.blocker.refs?.includes("default_dispatch_candidate=false"),
+	);
+	assert.ok(
+		statusResponse.blocker.refs?.includes("promotion_blocker=durable_precall_missing"),
+	);
+	assertNoRuntimeAuthority(status);
 });
 
 test("doctor diagnostic handler scopes section checks without authorizing runtime", () => {

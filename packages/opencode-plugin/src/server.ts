@@ -3,6 +3,7 @@ import type {
 	FlowDeskChatIntakeRequestV1,
 	FlowDeskConfiguredVerificationResultV1,
 	FlowDeskDispatchAttemptManifestV1,
+	FlowDeskDefaultManagedDispatchAuthorizationV1,
 	FlowDeskExternalAuthProviderPolicyResultV1,
 	FlowDeskProductionApprovalDecisionV1,
 	FlowDeskRelease1MinimumPortableCommandName,
@@ -19,6 +20,8 @@ import {
 	getFlowDeskPortableCommandToolName,
 	getRelease1SchemaArtifact,
 	reloadFlowDeskSessionEvidenceV1,
+	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
+	validateRunRequestV1,
 } from "@flowdesk/core";
 import type { Plugin, PluginModule, PluginOptions } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
@@ -65,12 +68,21 @@ export const flowdeskProductionEnablementOption =
 	"productionEnablement" as const;
 export const flowdeskManagedDispatchBetaAdapterOption =
 	"managedDispatchBetaAdapter" as const;
+export const flowdeskDefaultManagedDispatchAuthorizationOption =
+	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
 type FlowDeskOpenCodeToolArg = z.ZodType;
+
+export interface FlowDeskManagedDispatchRunRouteOptionsV1 {
+	client?: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	reservationStore?: FlowDeskManagedDispatchBetaReservationStoreV1;
+	durableStateRootDir?: string;
+	defaultAuthorization?: FlowDeskDefaultManagedDispatchAuthorizationV1;
+}
 
 interface FlowDeskChatMessageOutput {
 	parts?: unknown[];
@@ -564,6 +576,7 @@ export function createFlowDeskFds1SchemaConversionProbeTools(): Record<
 export function createFlowDeskLocalNonDispatchAdapterTools(
 	now = new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
+	managedDispatchRunRoute: FlowDeskManagedDispatchRunRouteOptionsV1 = {},
 ): Record<string, FlowDeskOpenCodeTool> {
 	return Object.fromEntries(
 		FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.map((stub) => {
@@ -589,6 +602,18 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					description: `FlowDesk local non-dispatch command adapter for ${stub.toolName}; no provider call, real dispatch, or lane launch.`,
 					args,
 					async execute(request) {
+						const record: Record<string, unknown> = isRecord(request) ? request : {};
+						if (
+							stub.toolName === "flowdesk_run" &&
+							record.run_mode === "managed-dispatch"
+						) {
+							return JSON.stringify(
+								await evaluateFlowDeskManagedDispatchRunRoute(
+									record,
+									managedDispatchRunRoute,
+								),
+							);
+						}
 						return JSON.stringify(session.evaluate(stub.toolName, request));
 					},
 				}),
@@ -657,6 +682,106 @@ function redactedManagedDispatchBetaToolResult(
 						"response" in result && result.response !== undefined,
 				}
 			: { redactedBlockReason: result.redactedBlockReason }),
+	};
+}
+
+function blockedManagedDispatchRunRoute(
+	redactedBlockReason: string,
+	defaultAuthorization?: FlowDeskDefaultManagedDispatchAuthorizationV1,
+): Record<string, unknown> {
+	return {
+		runRouteProfile: "flowdesk_run_default_managed_dispatch_route",
+		status: "blocked_before_dispatch",
+		dispatchAttempted: false,
+		redactedBlockReason,
+		...(defaultAuthorization === undefined
+			? {}
+			: {
+					defaultManagedDispatchAuthorizationRef:
+						defaultAuthorization.authorization_id,
+					defaultManagedDispatchReadinessRef:
+						defaultAuthorization.readiness_ref,
+				}),
+		authority: { ...disabledAuthority, toolAuthority: false },
+		verification: {
+			defaultManagedDispatchAuthorizationRequired: true,
+			managedDispatchAdapterGateRequired: true,
+			defaultRelease1NonDispatchModesUnchanged: true,
+		},
+	};
+}
+
+async function evaluateFlowDeskManagedDispatchRunRoute(
+	request: Record<string, unknown>,
+	options: FlowDeskManagedDispatchRunRouteOptionsV1 = {},
+): Promise<Record<string, unknown>> {
+	const requestValidation = validateRunRequestV1(request);
+	if (!requestValidation.ok) {
+		return blockedManagedDispatchRunRoute(
+			"/flowdesk-run managed-dispatch requires a valid flowdesk.run.request.v1 envelope before dispatch routing.",
+			options.defaultAuthorization,
+		);
+	}
+	const authorization = options.defaultAuthorization;
+	const authorizationResult =
+		authorization === undefined
+			? undefined
+			: validateFlowDeskDefaultManagedDispatchAuthorizationV1(authorization);
+	if (
+		authorization === undefined ||
+		authorizationResult?.ok !== true ||
+		authorization.state !== "authorized" ||
+		authorization.default_managed_dispatch_authority_enabled !== true
+	) {
+		return blockedManagedDispatchRunRoute(
+			"/flowdesk-run managed-dispatch requires a valid default managed-dispatch authorization.",
+			authorization,
+		);
+	}
+	if (options.client === undefined) {
+		return blockedManagedDispatchRunRoute(
+			"/flowdesk-run managed-dispatch requires an injected OpenCode SDK client.",
+			authorization,
+		);
+	}
+	if (
+		!isRecord(request.managed_dispatch_boundary_input) ||
+		!isRecord(request.managed_dispatch_request) ||
+		!isRecord(request.managed_dispatch_manifest)
+	) {
+		return blockedManagedDispatchRunRoute(
+			"/flowdesk-run managed-dispatch requires boundary input, dispatch request, and dispatch manifest records.",
+			authorization,
+		);
+	}
+	const boundaryInput =
+		request.managed_dispatch_boundary_input as unknown as ManagedDispatchBetaBoundaryInputV1;
+	const reloadedEvidence = isRecord(request.managed_dispatch_reloaded_evidence)
+		? (request.managed_dispatch_reloaded_evidence as unknown as FlowDeskSessionEvidenceReloadResultV1)
+		: options.durableStateRootDir !== undefined &&
+				typeof boundaryInput.workflowId === "string"
+			? reloadFlowDeskSessionEvidenceV1({
+					workflowId: boundaryInput.workflowId,
+					rootDir: options.durableStateRootDir,
+				})
+			: undefined;
+	const result = await dispatchManagedDispatchBetaPromptV1({
+		client: options.client,
+		boundaryInput,
+		request:
+			request.managed_dispatch_request as unknown as FlowDeskManagedDispatchBetaDispatchRequestV1,
+		dispatchManifest:
+			request.managed_dispatch_manifest as unknown as FlowDeskDispatchAttemptManifestV1,
+		...(reloadedEvidence === undefined ? {} : { reloadedEvidence }),
+		...(options.reservationStore === undefined
+			? {}
+			: { reservationStore: options.reservationStore }),
+	});
+	return {
+		runRouteProfile: "flowdesk_run_default_managed_dispatch_route",
+		defaultManagedDispatchAuthorizationRef: authorization.authorization_id,
+		defaultManagedDispatchReadinessRef: authorization.readiness_ref,
+		...redactedManagedDispatchBetaToolResult(result),
 	};
 }
 
@@ -863,6 +988,24 @@ function isManagedDispatchBetaAdapterEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
+function defaultManagedDispatchAuthorizationFromOptions(
+	options?: PluginOptions,
+): FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined {
+	const value = options?.[flowdeskDefaultManagedDispatchAuthorizationOption];
+	if (!isRecord(value)) return undefined;
+	const authorization = value as unknown as FlowDeskDefaultManagedDispatchAuthorizationV1;
+	const validation = validateFlowDeskDefaultManagedDispatchAuthorizationV1(authorization);
+	return validation.ok &&
+		authorization.state === "authorized" &&
+		authorization.default_managed_dispatch_authority_enabled === true
+		? authorization
+		: undefined;
+}
+
+function isDefaultManagedDispatchAuthorized(options?: PluginOptions): boolean {
+	return defaultManagedDispatchAuthorizationFromOptions(options) !== undefined;
+}
+
 function managedDispatchBetaClientFrom(
 	input: unknown,
 	options?: PluginOptions,
@@ -917,13 +1060,15 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				})
 			: undefined;
 	const managedDispatchBetaClient = isManagedDispatchBetaAdapterEnabled(options)
+		|| isDefaultManagedDispatchAuthorized(options)
 		? managedDispatchBetaClientFrom(input, options)
 		: undefined;
 	const managedDispatchBetaReservationStore =
-		isManagedDispatchBetaAdapterEnabled(options)
+		isManagedDispatchBetaAdapterEnabled(options) || isDefaultManagedDispatchAuthorized(options)
 			? (managedDispatchBetaReservationStoreFrom(input, options) ??
 				managedDispatchBetaDurableReservationStoreFrom(options))
 			: undefined;
+	const defaultAuthorization = defaultManagedDispatchAuthorizationFromOptions(options);
 	const tools: Record<string, FlowDeskOpenCodeTool> = {
 		[flowdeskPreSpikeDoctorToolName]: tool({
 			description:
@@ -947,7 +1092,19 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						? "chat_steering_command_backed_non_dispatch"
 						: "disabled",
 					productionPromotionGate:
-						"release1_non_dispatch_command_registration_ready",
+						defaultAuthorization === undefined
+							? "release1_non_dispatch_command_registration_ready"
+							: "default_managed_dispatch_authorized_registration_ready",
+					defaultManagedDispatchRegistrationAuthorized:
+						defaultAuthorization !== undefined,
+					...(defaultAuthorization === undefined
+						? {}
+						: {
+								defaultManagedDispatchAuthorizationRef:
+									defaultAuthorization.authorization_id,
+								defaultManagedDispatchReadinessRef:
+									defaultAuthorization.readiness_ref,
+							}),
 					productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
 					productionToolRegistration:
 						flowdeskPluginScaffold.productionToolRegistration,
@@ -973,7 +1130,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	if (isLocalNonDispatchAdapterEnabled(options))
 		Object.assign(
 			tools,
-			createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession),
+			createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession, {
+				client: managedDispatchBetaClient,
+				reservationStore: managedDispatchBetaReservationStore,
+				durableStateRootDir: durableStateRootFromOptions(options),
+				defaultAuthorization,
+			}),
 		);
 	if (isNaturalLanguageRoutingEnabled(options))
 		Object.assign(

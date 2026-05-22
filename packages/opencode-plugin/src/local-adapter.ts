@@ -371,6 +371,7 @@ function makeRunContext(request: Record<string, unknown>, parts: ReturnType<type
       }
     };
   }
+  if (runMode === "managed-dispatch") return {};
   return {
     fakeRuntime: {
       guardBoundary: guardBoundary(permissionProvider, parts, workflowId, "fake_runtime_write"),
