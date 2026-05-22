@@ -43,6 +43,7 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 17. Controlled redacted audit export local writer/ledger now exists for `redacted_audit_export` only: it consumes a `write_ready` result, rechecks the consumed `external_write` approval, writes only `.flowdesk/sessions/<workflow_id>/redacted-audit/<target_ref>.json`, persists reloadable `controlled_redacted_audit_export_write` evidence, verifies the SHA-256 content hash, blocks raw payload/secret/path-shaped export JSON, and keeps remote/GitHub/connector/storage/database/URL/raw-path writes blocked.
 18. Managed fallback re-gate orchestration now exists as a local non-authorizing plan layer: a valid fallback decision plus consumed `fallback_reselection` approval can produce a `flowdesk.fallback_regate_plan.v1` requiring the new attempt to re-run the full managed-dispatch gate from scratch. The orchestrator never switches providers, calls the SDK, launches lanes, or enables automatic fallback authority.
 19. Claude managed-dispatch live proof now exists for the explicit opt-in adapter path: FlowDesk evidence bound to `claude/claude-sonnet-4-5` was mapped to OpenCode runtime `anthropic/claude-sonnet-4-5`, passed the durable pre-call/reservation/promotion gates, returned `dispatch_completed`, and matched the expected sentinel. Default Release 1 dispatch remains disabled.
+20. Runtime lane lifecycle live proof now exists for coordinator-controlled SDK lanes: a parent/child/message/agent/model observation returned `observed` with no missing labels, ordinary child output was classified as `missing_verdict` rather than approval, and lifecycle records validate complete/no-output/missing-verdict/timeout/orphaned states only when authority remains disabled.
 
 ## 2026-05-21 Live Runtime Batch
 
@@ -121,6 +122,10 @@ Managed fallback re-gate orchestration is recorded in `docs/conformance/2026-05-
 ## 2026-05-22 Claude Managed-Dispatch Live Proof
 
 Claude managed-dispatch live proof is recorded in `docs/conformance/2026-05-22-release3-claude-managed-dispatch-live-proof.md`. The proof used `opencode serve` and the active SDK client, not `opencode run`. `dispatchManagedDispatchBetaPromptV1` completed through the explicit opt-in path after durable pre-call evidence and idempotency reservation materialization. The adapter mapped FlowDesk `claude/claude-sonnet-4-5` to OpenCode runtime `anthropic/claude-sonnet-4-5`, returned `dispatch_completed`, and matched the expected sentinel. No token material or raw provider payload was printed.
+
+## 2026-05-22 Runtime Lane Lifecycle Live Proof
+
+Runtime lane lifecycle live proof is recorded in `docs/conformance/2026-05-22-release3-runtime-lane-lifecycle-live-proof.md`. The proof used `opencode serve` and the active SDK client to create a parent session, create a coordinator-controlled child session, prompt the child with `openai/gpt-5.4-mini-fast`, and observe the lane through `observeInjectedSdkLaneV1`. The observer returned `observed` with parent/child/message/agent/model refs and no missing labels. A live reviewer-verdict observation over ordinary sentinel output returned `missing_verdict` with no approval authority, and local lifecycle contract validation passed for `complete`, `no_output`, `missing_verdict`, `timeout`, and `orphaned` records.
 
 ## Next Safe Actions
 
