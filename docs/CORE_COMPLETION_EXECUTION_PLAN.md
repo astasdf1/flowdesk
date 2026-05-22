@@ -264,7 +264,15 @@ The implemented 2026-05-23 slice adds `flowdesk.exact_model_availability_cache_r
 
 The contract records `discovery_required`, `refresh_required`, and `cache_usable_for_assignment` as diagnostics only, while keeping `discovery_attempted=false`, `refresh_attempted=false`, `providerCall=false`, `actualLaneLaunch=false`, `runtimeExecution=false`, and `dispatch_authority_enabled=false`. `/flowdesk-doctor` and `/flowdesk-status` can now expose cache-refresh blockers before reviewer fan-out. Actual cache discovery/provider probing remains a later gate that still needs a bounded acquisition adapter, durable evidence persistence, and explicit approval/conformance before any provider interaction.
 
-Next safe slice: persist exact-model cache refresh plans and resulting cache evidence through session evidence, then wire fan-out revalidation to require reloaded cache-refresh/cache evidence rather than externally supplied in-memory records.
+Completed follow-up slice: exact-model availability cache records and cache-refresh plans are now managed session-evidence classes. They can be prepared, applied, reloaded, and rejected through the same fail-closed evidence spine used by reviewer fan-out, typed verdicts, lane lifecycle, and dispatch idempotency.
+
+## Confirmed Follow-Up Slice: Exact-Model Cache Evidence Persistence
+
+The implemented 2026-05-23 slice adds `exact_model_availability_cache` and `exact_model_availability_cache_refresh_plan` to the session evidence class registry. `flowdesk.exact_model_availability_cache.v1` records validate through the cache validator before prepare/apply/reload. `flowdesk.exact_model_availability_cache_refresh_plan.v1` records validate through the refresh-plan validator before prepare/apply/reload.
+
+Forged cache evidence that enables provider calls, runtime execution, dispatch authority, or actual lane launch is rejected. Forged refresh-plan evidence that claims discovery or refresh was attempted is rejected. This is durable evidence support only; actual cache acquisition and provider probing remain unimplemented.
+
+Next safe slice: wire reviewer assignment revalidation/fan-out planning to consume reloaded exact-model cache evidence and cache-refresh-plan evidence rather than accepting only in-memory cache records.
 
 ## Review Questions
 
