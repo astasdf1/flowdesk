@@ -41,4 +41,4 @@ Verification passed locally with paired cache revalidation tests, typecheck, and
 
 ## Remaining Gaps
 
-Product fan-out still needs a selector that derives the paired cache/cache-refresh inputs from reloaded session-evidence entries. Actual cache discovery acquisition and provider probing remain later-gated.
+The reloaded evidence selector is now implemented in `selectFlowDeskExactModelCacheEvidencePairV1`; product fan-out still needs to consume that selected pair before fan-out planning. Actual cache discovery acquisition and provider probing remain later-gated.
