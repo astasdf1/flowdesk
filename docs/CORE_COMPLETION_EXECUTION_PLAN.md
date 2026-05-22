@@ -226,9 +226,29 @@ The first execution slice is intentionally non-authorizing:
 5. Add reviewer lane no-deliverable/tool-call-only classification if absent. Completed 2026-05-22.
 6. Wire schemas into artifacts/registry/exports and add negative tests. Completed 2026-05-22.
 7. Add non-authorizing generic connector gateway invocation planning. Completed 2026-05-22.
-8. Update progress and conformance docs after verification. Completed for the first two slices.
+8. Add non-authorizing default managed-dispatch promotion readiness so doctor/status can show why opt-in proof has not become default provider execution. Completed 2026-05-22.
+9. Update progress and conformance docs after verification. Completed for the first two slices; in progress for default promotion readiness.
+10. Add non-authorizing runtime lane launch/lifecycle productization contracts before reviewer fan-out. Completed 2026-05-22.
 
 This slice must not call providers, launch lanes, execute connector tools, install packages, mutate profiles, dispatch prompts, perform remote writes, or enable default managed dispatch.
+
+## Confirmed Follow-Up Slice: Runtime Lane Lifecycle Productization
+
+After the default `/flowdesk-run` managed-dispatch route landed, the next candidate stages were reviewed as remote connector gateway first, runtime lane lifecycle first, reviewer availability cache first, or local operational intelligence first. The selected path is runtime lane lifecycle first because reviewer fan-out depends on durable lane launch/lifecycle contracts, while real connector writes are higher risk and not required for reviewer productization.
+
+The implemented 2026-05-22 slice is intentionally non-authorizing: it adds typed runtime lane launch request, launch plan, and lifecycle projection contracts; requires exact agent/model binding, pre-launch audit, lane-launch approval, SDK-client availability, and durable evidence-root refs before a plan can be `launch_ready`; and still records `launch_attempted=false`, `actualLaneLaunch=false`, `providerCall=false`, and `runtimeExecution=false`. Ordinary child output, missing verdicts, no-output, tool-call-only, timeout, aborted, orphaned, or invocation-failed lifecycle states remain non-approval evidence.
+
+Multi-model reviewer lanes were attempted twice plus fresh replacement lanes for this planning step, but all returned no deliverable. They are recorded as sub-agent instability and not counted as approval. The plan was therefore confirmed by direct document/code review and fail-closed tests only.
+
+Completed follow-up slice: reviewer availability cache assignment-time revalidation and deterministic fan-out planning now exist on top of the runtime lane contracts, still without launching reviewers by default or silently substituting lower-tier models.
+
+## Confirmed Follow-Up Slice: Reviewer Assignment Revalidation and Fan-Out Planning
+
+The implemented 2026-05-23 slice is intentionally non-authorizing. It adds `flowdesk.reviewer_assignment_revalidation.v1` and `flowdesk.reviewer_fanout_plan.v1` as pure planning contracts. Revalidation checks the cache at assignment time against the expected local date, active profile, OpenCode version, FlowDesk package version, registry hash, Policy Pack hash, and auth/account boundary. Stale, drifted, invalid, alias, or lower-tier-only caches block before eligible bindings are exposed.
+
+Fan-out planning deterministically creates `flowdesk.runtime_lane_launch_request.v1` records for the required reviewer perspectives. This is request materialization only: each resulting plan still requires a later runtime launch plan and explicit lane-launch approval, records `launch_attempted=false`, `approval_inferred=false`, and keeps dispatch/provider/lane/runtime authority disabled.
+
+Next safe slice: add durable fan-out evidence persistence and doctor/status projection, or implement the daily exact-model availability cache discovery/refresh path. Actual reviewer lane launch remains blocked until runtime launch planning, approval, SDK-client availability, durable evidence-root refs, and live lane conformance all pass.
 
 ## Review Questions
 
