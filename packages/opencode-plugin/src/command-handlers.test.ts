@@ -13,6 +13,7 @@ import type {
 	FlowDeskProductionEnablementEvaluationV1,
 	FlowDeskProjectConfigV1,
 	FlowDeskProviderHealthSnapshotV1,
+	FlowDeskReviewerFanoutPlanV1,
 	FlowDeskRelease1MinimumToolName,
 	FlowDeskRunRequestV1,
 	FlowDeskStatusCommandInputV1,
@@ -456,6 +457,34 @@ function promotionReadiness(
 	};
 }
 
+function reviewerFanoutPlan(
+	overrides: Partial<FlowDeskReviewerFanoutPlanV1> = {},
+): FlowDeskReviewerFanoutPlanV1 {
+	return {
+		schema_version: "flowdesk.reviewer_fanout_plan.v1",
+		workflow_id: "workflow-123",
+		attempt_id: "attempt-123",
+		ok: true,
+		errors: [],
+		cache_id: "cache-123",
+		state: "blocked",
+		blocked_labels: ["assignment_revalidation_blocked"],
+		required_perspectives: ["policy_security", "architecture", "verification_implementation"],
+		planned_perspectives: [],
+		runtime_lane_launch_requests: [],
+		max_concurrent_lane_count: 3,
+		runtime_launch_plan_required: true,
+		lane_launch_approval_required: true,
+		launch_attempted: false,
+		approval_inferred: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
 function statusContext(
 	request: Readonly<Record<string, unknown>>,
 ): Omit<FlowDeskStatusCommandInputV1, "request"> {
@@ -767,10 +796,11 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 
 test("doctor and status surface default managed-dispatch promotion readiness without authority", () => {
 	const readiness = promotionReadiness();
+	const fanout = reviewerFanoutPlan();
 	const doctor = evaluateFlowDeskCommandBackedHandlerV1(
 		"flowdesk_doctor",
 		doctorRequest(),
-		{ diagnostic: { defaultManagedDispatchPromotionReadiness: readiness } },
+		{ diagnostic: { defaultManagedDispatchPromotionReadiness: readiness, reviewerFanoutPlan: fanout } },
 	);
 	assert.equal(doctor.ok, true, doctor.errors.join("; "));
 	const doctorResponse = doctor.response as FlowDeskDoctorResponseV1;
@@ -796,6 +826,15 @@ test("doctor and status surface default managed-dispatch promotion readiness wit
 	assert.ok(
 		compatibility.refs.includes("default_dispatch_blocker=durable_precall_missing"),
 	);
+	assert.ok(
+		compatibility.refs.includes("reviewer_fanout_state=blocked"),
+	);
+	assert.ok(
+		compatibility.refs.includes("reviewer_fanout_blocker=assignment_revalidation_blocked"),
+	);
+	assert.ok(
+		compatibility.refs.includes("reviewer_fanout_actualLaneLaunch=false"),
+	);
 	assertNoRuntimeAuthority(doctor);
 
 	const statusRequest = requestFixture("flowdesk_status");
@@ -806,6 +845,7 @@ test("doctor and status surface default managed-dispatch promotion readiness wit
 			status: {
 				...statusContext(statusRequest),
 				defaultManagedDispatchPromotionReadiness: readiness,
+				reviewerFanoutPlan: fanout,
 			},
 		},
 	);
@@ -813,10 +853,10 @@ test("doctor and status surface default managed-dispatch promotion readiness wit
 	const statusResponse = status.response as { blocker?: { refs?: string[] } };
 	assert.ok(statusResponse.blocker);
 	assert.ok(
-		statusResponse.blocker.refs?.includes("default_dispatch_candidate=false"),
+		statusResponse.blocker.refs?.includes("reviewer_fanout_state=blocked"),
 	);
 	assert.ok(
-		statusResponse.blocker.refs?.includes("promotion_blocker=durable_precall_missing"),
+		statusResponse.blocker.refs?.includes("reviewer_fanout_blocker=assignment_revalidation_blocked"),
 	);
 	assertNoRuntimeAuthority(status);
 });

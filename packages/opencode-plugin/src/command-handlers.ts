@@ -13,6 +13,7 @@ import type {
   FlowDeskGuardedDryRunCommandInputV1,
   FlowDeskPlanCommandInputV1,
   FlowDeskProductionEnablementEvaluationV1,
+  FlowDeskReviewerFanoutPlanV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskResumeRequestV1,
   FlowDeskResumeResponseV1,
@@ -61,6 +62,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     providerHealthSnapshotRef?: string;
     productionEnablement?: FlowDeskProductionEnablementEvaluationV1;
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
+    reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
   };
 }
 
@@ -209,13 +211,32 @@ function defaultManagedDispatchPromotionRefs(context: FlowDeskCommandBackedHandl
   ];
 }
 
+function reviewerFanoutRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const plan = context.diagnostic?.reviewerFanoutPlan;
+  if (plan === undefined) return ["reviewer_fanout_state=blocked", "reviewer_fanout_evidence=missing"];
+  return [
+    `reviewer_fanout_state=${plan.state}`,
+    `reviewer_fanout_required_perspectives=${plan.required_perspectives.length}`,
+    `reviewer_fanout_planned_perspectives=${plan.planned_perspectives.length}`,
+    `reviewer_fanout_runtime_launch_plan_required=${plan.runtime_launch_plan_required}`,
+    `reviewer_fanout_lane_launch_approval_required=${plan.lane_launch_approval_required}`,
+    `reviewer_fanout_launch_attempted=${plan.launch_attempted}`,
+    `reviewer_fanout_approval_inferred=${plan.approval_inferred}`,
+    `reviewer_fanout_actualLaneLaunch=${plan.actualLaneLaunch}`,
+    `reviewer_fanout_providerCall=${plan.providerCall}`,
+    `reviewer_fanout_runtimeExecution=${plan.runtimeExecution}`,
+    ...plan.blocked_labels.map((label) => `reviewer_fanout_blocker=${label}`)
+  ];
+}
+
 function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
   const promotionRefs = defaultManagedDispatchPromotionRefs(context);
+  const fanoutRefs = reviewerFanoutRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion is diagnostic-only until a candidate gate is visible.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion and reviewer fan-out planning are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...fanoutRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
   ];
