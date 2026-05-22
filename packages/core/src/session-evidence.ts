@@ -10,7 +10,13 @@ import {
 import { dirname, resolve, sep } from "node:path";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
-import { validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1, validateFlowDeskExactModelAvailabilityCacheV1, validateFlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
+import {
+	type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+	type FlowDeskExactModelAvailabilityCacheV1,
+	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+	validateFlowDeskExactModelAvailabilityCacheV1,
+	validateFlowDeskReviewerFanoutPlanV1,
+} from "./model-availability-cache.js";
 import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import { validateFlowDeskReviewerLaneConformanceObservationV1 } from "./reviewer-lane-conformance.js";
 import {
@@ -129,6 +135,17 @@ export interface FlowDeskSessionEvidenceInventoryV1 {
 	runtimeExecution: false;
 }
 
+export interface FlowDeskExactModelCacheEvidencePairSelectionV1 extends ValidationResult {
+	state: "pair_ready" | "blocked";
+	blocked_labels: string[];
+	cache?: FlowDeskExactModelAvailabilityCacheV1;
+	cacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskSessionEvidenceApplyResultV1 extends ValidationResult {
 	rootDir?: string;
 	writtenPaths: string[];
@@ -147,6 +164,82 @@ const disabledEvidenceAuthority = {
 
 function isRecordObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function exactModelCacheRefreshPlanMatchesContext(
+	plan: FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+	input: FlowDeskExactModelCacheEvidencePairSelectionInputV1,
+): boolean {
+	return plan.state === "cache_hit" &&
+		plan.cache_usable_for_assignment === true &&
+		plan.expected_local_date === input.localDate &&
+		plan.expected_active_profile_ref === input.activeProfileRef &&
+		plan.expected_opencode_version_ref === input.opencodeVersionRef &&
+		plan.expected_flowdesk_package_version_ref === input.flowdeskPackageVersionRef &&
+		plan.expected_registry_hash === input.registryHash &&
+		plan.expected_policy_pack_hash === input.policyPackHash &&
+		plan.expected_auth_account_boundary_ref === input.authAccountBoundaryRef;
+}
+
+function exactModelCacheMatchesRefreshPlan(
+	cache: FlowDeskExactModelAvailabilityCacheV1,
+	plan: FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+): boolean {
+	return plan.cache_id === cache.cache_id &&
+		plan.cache_local_date === cache.local_date &&
+		plan.cache_active_profile_ref === cache.active_profile_ref &&
+		plan.cache_opencode_version_ref === cache.opencode_version_ref &&
+		plan.cache_flowdesk_package_version_ref === cache.flowdesk_package_version_ref &&
+		plan.cache_registry_hash === cache.registry_hash &&
+		plan.cache_policy_pack_hash === cache.policy_pack_hash &&
+		plan.cache_auth_account_boundary_ref === cache.auth_account_boundary_ref;
+}
+
+export interface FlowDeskExactModelCacheEvidencePairSelectionInputV1 {
+	reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+	localDate: string;
+	activeProfileRef: string;
+	opencodeVersionRef: string;
+	flowdeskPackageVersionRef: string;
+	registryHash: string;
+	policyPackHash: string;
+	authAccountBoundaryRef: string;
+}
+
+export function selectFlowDeskExactModelCacheEvidencePairV1(
+	input: FlowDeskExactModelCacheEvidencePairSelectionInputV1,
+): FlowDeskExactModelCacheEvidencePairSelectionV1 {
+	const errors = [...input.reloadedEvidence.errors];
+	const blockedLabels: string[] = [];
+	if (!input.reloadedEvidence.ok) blockedLabels.push("session_evidence_reload_invalid");
+	const refreshPlans = input.reloadedEvidence.entries
+		.filter((entry) => entry.evidenceClass === "exact_model_availability_cache_refresh_plan")
+		.map((entry) => entry.record)
+		.filter((record) => validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(record).ok)
+		.map((record) => record as unknown as FlowDeskExactModelAvailabilityCacheRefreshPlanV1)
+		.filter((plan) => exactModelCacheRefreshPlanMatchesContext(plan, input));
+	if (refreshPlans.length === 0) blockedLabels.push("cache_refresh_pair_missing");
+	if (refreshPlans.length > 1) blockedLabels.push("cache_refresh_pair_ambiguous");
+	const cacheRefreshPlan = refreshPlans.length === 1 ? refreshPlans[0] : undefined;
+	const caches = cacheRefreshPlan === undefined ? [] : input.reloadedEvidence.entries
+		.filter((entry) => entry.evidenceClass === "exact_model_availability_cache")
+		.map((entry) => entry.record)
+		.filter((record) => validateFlowDeskExactModelAvailabilityCacheV1(record).ok)
+		.map((record) => record as unknown as FlowDeskExactModelAvailabilityCacheV1)
+		.filter((cache) => exactModelCacheMatchesRefreshPlan(cache, cacheRefreshPlan));
+	if (cacheRefreshPlan !== undefined && caches.length === 0) blockedLabels.push("cache_pair_missing");
+	if (caches.length > 1) blockedLabels.push("cache_pair_ambiguous");
+	const cache = caches.length === 1 ? caches[0] : undefined;
+	const ready = blockedLabels.length === 0 && cache !== undefined && cacheRefreshPlan !== undefined;
+	return {
+		ok: ready && errors.length === 0,
+		errors,
+		state: ready ? "pair_ready" : "blocked",
+		blocked_labels: [...new Set(blockedLabels)],
+		...(cache === undefined ? {} : { cache }),
+		...(cacheRefreshPlan === undefined ? {} : { cacheRefreshPlan }),
+		...disabledEvidenceAuthority,
+	};
 }
 
 function validateSchemaVersionForClass(

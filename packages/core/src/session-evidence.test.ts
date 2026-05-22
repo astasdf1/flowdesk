@@ -6,9 +6,10 @@ import test from "node:test";
 import {
   applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
-  prepareFlowDeskSessionEvidenceWriteIntentV1,
   prepareFlowDeskDispatchIdempotencyReservationV1,
+  prepareFlowDeskSessionEvidenceWriteIntentV1,
   reloadFlowDeskSessionEvidenceV1,
+  selectFlowDeskExactModelCacheEvidencePairV1,
   sessionEvidenceDirectoryPath,
   sessionEvidenceRecordPath,
   summarizeFlowDeskSessionEvidenceInventoryV1
@@ -506,6 +507,69 @@ test("session evidence reload validates exact-model cache and refresh-plan evide
     assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["exact_model_availability_cache", "exact_model_availability_cache_refresh_plan"]));
     assert.equal(result.blocked.length, 2);
     assert.match(result.blocked.map((entry) => entry.reason).join("|"), /cannot enable runtime authority|cannot attempt discovery/);
+  });
+});
+
+test("session evidence selector returns paired exact-model cache evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-good"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const selection = selectFlowDeskExactModelCacheEvidencePairV1({
+      reloadedEvidence: reloaded,
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1"
+    });
+    assert.equal(selection.state, "pair_ready", selection.errors.join("; "));
+    assert.equal(selection.cache?.cache_id, "cache-1");
+    assert.equal(selection.cacheRefreshPlan?.state, "cache_hit");
+    assert.equal(selection.providerCall, false);
+    assert.equal(selection.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence selector blocks missing ambiguous or drifted exact-model cache evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-drift"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord({ expected_policy_pack_hash: "hash-policy-other" })));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const drift = selectFlowDeskExactModelCacheEvidencePairV1({
+      reloadedEvidence: reloaded,
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1"
+    });
+    assert.equal(drift.state, "blocked");
+    assert.ok(drift.blocked_labels.includes("cache_refresh_pair_missing"));
+  });
+
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-one"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-two"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const ambiguous = selectFlowDeskExactModelCacheEvidencePairV1({
+      reloadedEvidence: reloaded,
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1"
+    });
+    assert.equal(ambiguous.state, "blocked");
+    assert.ok(ambiguous.blocked_labels.includes("cache_refresh_pair_ambiguous"));
+    assert.equal(ambiguous.cache, undefined);
   });
 });
 
