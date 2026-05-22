@@ -16,6 +16,8 @@ This note records local hardening for `flowdesk.chat_hook_authority_probe.v1`. I
 
 All outcomes continue to force `hardCancelOrNoReplyAuthority=false`, `dispatch_authority_enabled=false`, `providerCall=false`, `runtimeExecution=false`, and `actualLaneLaunch=false`.
 
+`@flowdesk/opencode-plugin` now also exposes `createFlowDeskChatHookAuthorityProbeFromObservationV1`, a local adapter that converts observed `chat.message` hook behavior into the core probe shape without promoting authority. The adapter treats the current plugin hook's mutation-only behavior as blocked hard-control evidence unless timeout/null and malformed-return fail-closed behavior are explicitly proven, and it treats unsupported `noReply`, `cancel`, or `stop` return fields as malformed blocked evidence rather than support.
+
 ## Verification
 
 Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
@@ -23,9 +25,10 @@ Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 1. `npm test --workspace @flowdesk/core -- --test-name-pattern "chat hook probe"` passed: 255/255 tests in the matched core run.
 2. LSP diagnostics were clean for `packages/core/src/chat-hook-authority-probe.ts` and `packages/core/src/chat-hook-authority-probe.test.ts`.
 3. `npm run typecheck` passed.
-4. `npm test` passed: 324/324 tests.
-5. `GIT_MASTER=1 git diff --check` passed.
+4. Plugin tests cover the local hook observation adapter and unsupported hard-control return fields.
+5. `npm test` passed: 324/324 tests at the original core hardening point; later plugin adapter verification is recorded in the progress snapshot for the current work session.
+6. `GIT_MASTER=1 git diff --check` passed.
 
 ## Authority State
 
-Hard chat authority remains blocked. This hardening only prevents timeout/null, malformed-return, duplicate-reply, and missing-mutation gaps from being misread as sufficient steering or hard-control proof.
+Hard chat authority remains blocked. This hardening only prevents timeout/null, malformed-return, duplicate-reply, unsupported-return-field, and missing-mutation gaps from being misread as sufficient steering or hard-control proof.

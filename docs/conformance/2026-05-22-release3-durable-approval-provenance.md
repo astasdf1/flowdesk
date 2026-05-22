@@ -28,7 +28,7 @@ This note records local durable-provenance hardening for production approval sou
 
 The evaluator remains non-authorizing: `dispatch_authority_enabled=false`, `realOpenCodeDispatch=false`, `providerCall=false`, `runtimeExecution=false`, and `actualLaneLaunch=false`.
 
-The explicit opt-in `dispatchManagedDispatchBetaPromptV1` adapter now requires this durable evaluator before managed-dispatch promotion and injected SDK calls. The adapter no longer accepts a direct in-memory `consumedApproval` object as sufficient pre-call provenance; callers must provide a reloaded evidence bundle containing the matching consumed approval source and pre-dispatch audit evidence. After promotion, the adapter also requires an injected reservation store to prove reservation materialization/reload before invoking the injected SDK prompt method, and it calls that store's failure-state hook when the SDK call throws.
+The explicit opt-in `dispatchManagedDispatchBetaPromptV1` adapter now requires this durable evaluator before managed-dispatch promotion and injected SDK calls. The adapter no longer accepts a direct in-memory `consumedApproval` object as sufficient pre-call provenance; callers must provide a reloaded evidence bundle containing the matching consumed approval source and pre-dispatch audit evidence. After promotion, the adapter also requires a reservation store to prove reservation materialization/reload before invoking the injected SDK prompt method, and it calls that store's failure-state hook when the SDK call throws. `createFlowDeskManagedDispatchBetaDurableReservationStoreV1` is the local concrete store implementation: it writes reserved and failure snapshots through session-evidence apply/reload and reloads current durable idempotency evidence to block stale replay attempts before the SDK boundary.
 
 ## Verification
 
@@ -36,11 +36,11 @@ Command run from `/Users/bagel_macpro_055/Documents/work/projects/flowdesk`:
 
 1. `npm test --workspace @flowdesk/core -- --test-name-pattern "dispatch attempt|session evidence|idempotency"` passed: 266/266 tests in the matched core run.
 2. LSP diagnostics were clean for changed TypeScript files.
-3. `npm test --workspace @flowdesk/opencode-plugin -- --test-name-pattern "managed dispatch beta adapter|managed dispatch beta server"` passed: 71/71 tests in the matched plugin run after adapter reservation-store wiring.
+3. `npm test --workspace @flowdesk/opencode-plugin -- --test-name-pattern "managed dispatch beta adapter|managed dispatch beta server"` passed after adapter reservation-store wiring.
 4. `npm run typecheck` passed.
 5. `npm test` passed: 332/332 tests after the idempotency edge-case hardening and adapter wiring.
 6. `GIT_MASTER=1 git diff --check` passed.
 
 ## Authority State
 
-Managed dispatch remains gated and default Release 1 dispatch remains disabled. This change prevents later gates from treating arbitrary in-memory approval objects as durable approval-source provenance, provides local idempotency reservation/state-update snapshot contracts, and gates the explicit adapter on an injected reservation-store proof. The concrete durable reservation-store implementation remains later-gated.
+Managed dispatch remains gated and default Release 1 dispatch remains disabled. This change prevents later gates from treating arbitrary in-memory approval objects as durable approval-source provenance, provides local idempotency reservation/state-update snapshot contracts, gates the explicit adapter on reservation-store proof, and adds the concrete durable reservation-store implementation behind that callback. Runtime provider use is still explicit opt-in and still depends on all managed-dispatch gates.
