@@ -280,7 +280,15 @@ The implemented 2026-05-23 slice adds `revalidateFlowDeskReviewerAssignmentsFrom
 
 The helper blocks when refresh evidence is missing, invalid, not `cache_hit`, not usable for assignment, mismatched to the cache id, drifted from expected profile/version/hash/auth-boundary context, or drifted from the cache record itself. Blocked paired evidence suppresses eligible bindings before fan-out can materialize launch requests.
 
-Next safe slice: add a small selector over reloaded session evidence entries so callers can derive the paired cache/cache-refresh inputs from durable evidence inventories instead of manually supplying records.
+Completed follow-up slice: reloaded session evidence now has a selector for deriving a single exact-model cache/cache-refresh pair from durable evidence entries.
+
+## Confirmed Follow-Up Slice: Reloaded Cache Evidence Pair Selector
+
+The implemented 2026-05-23 slice adds `selectFlowDeskExactModelCacheEvidencePairV1`. It scans reloaded session evidence for a single valid `flowdesk.exact_model_availability_cache_refresh_plan.v1` in `cache_hit` state matching the requested local date, active profile, OpenCode version, FlowDesk package version, registry hash, Policy Pack hash, and auth/account boundary. It then requires exactly one matching `flowdesk.exact_model_availability_cache.v1` record for the refresh plan cache id and echoed cache context.
+
+Missing, drifted, invalid, or ambiguous cache-refresh/cache evidence blocks before callers can feed paired records into reviewer assignment revalidation. The selector remains non-authorizing and preserves disabled provider-call, lane-launch, runtime, and dispatch authority.
+
+Next safe slice: connect the selector result to reviewer fan-out planning in the product path, so fan-out can be built only from reloaded paired evidence and paired assignment revalidation.
 
 ## Review Questions
 
