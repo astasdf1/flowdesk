@@ -198,6 +198,72 @@ function reviewerFanoutPlanRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function exactModelAvailabilityCacheRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.exact_model_availability_cache.v1",
+    cache_id: "cache-1",
+    local_date: "2026-05-19",
+    active_profile_ref: "profile-1",
+    opencode_version_ref: "opencode-1.15.6",
+    flowdesk_package_version_ref: "flowdesk-0.1.1",
+    registry_hash: "hash-registry-1",
+    policy_pack_hash: "hash-policy-1",
+    auth_account_boundary_ref: "account-1",
+    entries: [{
+      entry_id: "entry-claude-1",
+      provider_family: "claude",
+      provider_identity_ref: "provider-claude-1",
+      provider_qualified_model_id: "claude/claude-opus-4-5",
+      model_family: "opus",
+      registered: true,
+      available: true,
+      highest_tier_eligible: true,
+      availability_ref: "availability-1"
+    }],
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
+function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
+    ok: true,
+    errors: [],
+    state: "cache_hit",
+    blocked_labels: [],
+    refresh_reason_labels: [],
+    expected_local_date: "2026-05-19",
+    expected_active_profile_ref: "profile-1",
+    expected_opencode_version_ref: "opencode-1.15.6",
+    expected_flowdesk_package_version_ref: "flowdesk-0.1.1",
+    expected_registry_hash: "hash-registry-1",
+    expected_policy_pack_hash: "hash-policy-1",
+    expected_auth_account_boundary_ref: "account-1",
+    cache_id: "cache-1",
+    cache_local_date: "2026-05-19",
+    cache_active_profile_ref: "profile-1",
+    cache_opencode_version_ref: "opencode-1.15.6",
+    cache_flowdesk_package_version_ref: "flowdesk-0.1.1",
+    cache_registry_hash: "hash-registry-1",
+    cache_policy_pack_hash: "hash-policy-1",
+    cache_auth_account_boundary_ref: "account-1",
+    discovery_required: false,
+    refresh_required: false,
+    cache_usable_for_assignment: true,
+    discovery_attempted: false,
+    refresh_attempted: false,
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
 function laneLifecycleRecord(overrides: Record<string, unknown> = {}) {
   return {
     schema_version: "flowdesk.lane_lifecycle_record.v1",
@@ -408,7 +474,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -418,14 +484,28 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 12);
+    assert.equal(applied.writtenPaths.length, 14);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 12);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
+    assert.equal(reloaded.entries.length, 14);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
+  });
+});
+
+test("session evidence reload validates exact-model cache and refresh-plan evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-forged"), JSON.stringify(exactModelAvailabilityCacheRecord({ providerCall: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-good"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-forged"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord({ refresh_attempted: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 2);
+    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["exact_model_availability_cache", "exact_model_availability_cache_refresh_plan"]));
+    assert.equal(result.blocked.length, 2);
+    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /cannot enable runtime authority|cannot attempt discovery/);
   });
 });
 

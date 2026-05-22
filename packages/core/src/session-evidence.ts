@@ -10,7 +10,7 @@ import {
 import { dirname, resolve, sep } from "node:path";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
-import { validateFlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
+import { validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1, validateFlowDeskExactModelAvailabilityCacheV1, validateFlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
 import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import { validateFlowDeskReviewerLaneConformanceObservationV1 } from "./reviewer-lane-conformance.js";
 import {
@@ -44,6 +44,10 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	production_approval_source: "flowdesk.production_approval_source.v1",
 	dispatch_idempotency: "flowdesk.dispatch_idempotency_snapshot.v1",
 	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
+	exact_model_availability_cache:
+		"flowdesk.exact_model_availability_cache.v1",
+	exact_model_availability_cache_refresh_plan:
+		"flowdesk.exact_model_availability_cache_refresh_plan.v1",
 	reviewer_verdict: "flowdesk.top_tier_review_verdict.v1",
 	reviewer_fanout_plan: "flowdesk.reviewer_fanout_plan.v1",
 	lane_lifecycle: "flowdesk.lane_lifecycle_record.v1",
@@ -167,6 +171,10 @@ function validateEvidenceShape(
 		return validateFlowDeskProductionApprovalSourceV1(record);
 	if (evidenceClass === "reviewer_verdict")
 		return validateTopTierReviewVerdictV1(record);
+	if (evidenceClass === "exact_model_availability_cache")
+		return validateFlowDeskExactModelAvailabilityCacheV1(record);
+	if (evidenceClass === "exact_model_availability_cache_refresh_plan")
+		return validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(record);
 	if (evidenceClass === "reviewer_fanout_plan")
 		return validateFlowDeskReviewerFanoutPlanV1(record);
 	if (evidenceClass === "lane_lifecycle")
