@@ -256,7 +256,15 @@ The implemented 2026-05-23 slice adds a `reviewer_fanout_plan` session-evidence 
 
 Doctor and status projections now expose fan-out state without promoting execution. `/flowdesk-doctor` can show fan-out state, required/planned perspective counts, runtime launch plan and lane-launch approval requirements, launch-attempt and approval-inference flags, and blocker labels. `/flowdesk-status` can surface blocked fan-out plans as redacted conformance blockers for the active workflow. Ready fan-out plans remain diagnostic only and do not launch lanes.
 
-Next safe slice: implement daily exact-model availability cache discovery/refresh contracts, including stale/cache-hit/cache-refresh states and doctor/status diagnostics. This should precede actual reviewer lane launch because fan-out currently depends on externally supplied cache records.
+Completed follow-up slice: daily exact-model availability cache discovery/refresh contracts now classify cache-hit, refresh-required, and blocked states before reviewer assignment. Doctor/status projections can surface missing, stale, drifted, or invalid cache evidence without attempting discovery, refresh, provider calls, or lane launch.
+
+## Confirmed Follow-Up Slice: Exact-Model Cache Refresh Planning
+
+The implemented 2026-05-23 slice adds `flowdesk.exact_model_availability_cache_refresh_plan.v1` as a pure non-authorizing contract. A current cache is usable only when it validates and matches the same local date, active profile, OpenCode version, FlowDesk package version, registry hash, Policy Pack hash, and auth/account boundary. Missing, stale, or drifted cache inputs produce `refresh_required`; malformed or unsafe cache/context inputs produce `blocked`.
+
+The contract records `discovery_required`, `refresh_required`, and `cache_usable_for_assignment` as diagnostics only, while keeping `discovery_attempted=false`, `refresh_attempted=false`, `providerCall=false`, `actualLaneLaunch=false`, `runtimeExecution=false`, and `dispatch_authority_enabled=false`. `/flowdesk-doctor` and `/flowdesk-status` can now expose cache-refresh blockers before reviewer fan-out. Actual cache discovery/provider probing remains a later gate that still needs a bounded acquisition adapter, durable evidence persistence, and explicit approval/conformance before any provider interaction.
+
+Next safe slice: persist exact-model cache refresh plans and resulting cache evidence through session evidence, then wire fan-out revalidation to require reloaded cache-refresh/cache evidence rather than externally supplied in-memory records.
 
 ## Review Questions
 
