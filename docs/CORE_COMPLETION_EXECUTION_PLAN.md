@@ -272,7 +272,15 @@ The implemented 2026-05-23 slice adds `exact_model_availability_cache` and `exac
 
 Forged cache evidence that enables provider calls, runtime execution, dispatch authority, or actual lane launch is rejected. Forged refresh-plan evidence that claims discovery or refresh was attempted is rejected. This is durable evidence support only; actual cache acquisition and provider probing remain unimplemented.
 
-Next safe slice: wire reviewer assignment revalidation/fan-out planning to consume reloaded exact-model cache evidence and cache-refresh-plan evidence rather than accepting only in-memory cache records.
+Completed follow-up slice: reviewer assignment revalidation can now require paired exact-model cache evidence plus a cache-hit refresh plan before exposing eligible reviewer bindings.
+
+## Confirmed Follow-Up Slice: Paired Cache Evidence Revalidation
+
+The implemented 2026-05-23 slice adds `revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1`. It wraps assignment revalidation with the additional requirement that the cache record is paired with a valid `flowdesk.exact_model_availability_cache_refresh_plan.v1` in `cache_hit` state for the same cache id and expected context.
+
+The helper blocks when refresh evidence is missing, invalid, not `cache_hit`, not usable for assignment, mismatched to the cache id, drifted from expected profile/version/hash/auth-boundary context, or drifted from the cache record itself. Blocked paired evidence suppresses eligible bindings before fan-out can materialize launch requests.
+
+Next safe slice: add a small selector over reloaded session evidence entries so callers can derive the paired cache/cache-refresh inputs from durable evidence inventories instead of manually supplying records.
 
 ## Review Questions
 
