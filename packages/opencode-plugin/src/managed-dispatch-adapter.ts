@@ -16,7 +16,10 @@ import type {
 	FlowDeskDispatchIdempotencySnapshotV1,
 	FlowDeskFallbackDecisionV1,
 	FlowDeskLaneLifecycleRecordV1,
+	FlowDeskPermissionAskDecisionV1,
+	FlowDeskPromptNoReplyDecisionV1,
 	FlowDeskProductionApprovalSourceV1,
+	FlowDeskSessionAbortDecisionV1,
 	FlowDeskSessionEvidenceReloadResultV1,
 	FlowDeskTopTierReviewPerspective,
 	FlowDeskTopTierReviewVerdictV1,
@@ -35,6 +38,9 @@ import {
 	promoteFlowDeskManagedDispatchBetaAuthorityV1,
 	promoteFlowDeskReviewerTypedVerdictsV1,
 	reloadFlowDeskSessionEvidenceV1,
+	validateFlowDeskPermissionAskDecisionV1,
+	validateFlowDeskPromptNoReplyDecisionV1,
+	validateFlowDeskSessionAbortDecisionV1,
 	validateTopTierReviewVerdictV1,
 } from "@flowdesk/core";
 
@@ -161,6 +167,49 @@ export interface FlowDeskControlledConformanceDocLocalWriterResultV1 {
 	};
 }
 
+export interface FlowDeskPermissionAskControlAdapterResultV1 {
+	adapterProfile: "permission_ask_control_adapter";
+	status: "permission_status_applied" | "blocked_before_permission_status";
+	permissionStatusApplied: boolean;
+	permissionStatus?: "ask" | "deny" | "allow";
+	workflowId?: string;
+	attemptId?: string;
+	redactedBlockReason?: string;
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		permissionAskStatusControlAuthorized: boolean;
+	};
+}
+
+export interface FlowDeskSessionAbortControlAdapterResultV1 {
+	adapterProfile: "session_abort_control_adapter";
+	status: "session_abort_sent" | "blocked_before_session_abort";
+	abortAttempted: boolean;
+	workflowId?: string;
+	attemptId?: string;
+	sessionRef?: string;
+	response?: unknown;
+	redactedBlockReason?: string;
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		sessionAbortAuthorized: boolean;
+	};
+}
+
+export interface FlowDeskPromptNoReplyControlAdapterResultV1 {
+	adapterProfile: "prompt_no_reply_control_adapter";
+	status: "no_reply_prompt_sent" | "blocked_before_no_reply_prompt";
+	promptAttempted: boolean;
+	workflowId?: string;
+	attemptId?: string;
+	sessionRef?: string;
+	agent?: string;
+	model?: { providerID: string; modelID: string };
+	response?: unknown;
+	redactedBlockReason?: string;
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		promptNoReplyAuthorized: boolean;
+	};
+}
+
 export interface FlowDeskManagedDispatchBetaVerificationStatusV1 {
 	ambiguityQuarantined: boolean;
 	configuredVerificationRef?: string;
@@ -225,6 +274,7 @@ export interface FlowDeskManagedDispatchBetaPromptOptionsV1 {
 	body: {
 		model: { providerID: string; modelID: string };
 		agent: string;
+		noReply?: boolean;
 		parts: Array<{ type: "text"; text: string }>;
 	};
 }
@@ -237,6 +287,10 @@ export interface FlowDeskManagedDispatchBetaOpenCodeClientV1 {
 		promptAsync?(
 			options: FlowDeskManagedDispatchBetaPromptOptionsV1,
 		): unknown | Promise<unknown>;
+		abort?(options: {
+			path: { id: string };
+			query?: { directory?: string };
+		}): unknown | Promise<unknown>;
 		children?(options: {
 			path: { id: string };
 			query?: { directory?: string };
@@ -386,6 +440,32 @@ function controlledConformanceDocWriteAuthority(
 	};
 }
 
+function permissionAskControlAuthority(
+	authorized: boolean,
+): FlowDeskPermissionAskControlAdapterResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		permissionAskStatusControlAuthorized: authorized,
+	};
+}
+
+function sessionAbortControlAuthority(
+	authorized: boolean,
+): FlowDeskSessionAbortControlAdapterResultV1["authority"] {
+	return { ...disabledAuthority(), sessionAbortAuthorized: authorized };
+}
+
+function promptNoReplyControlAuthority(
+	authorized: boolean,
+): FlowDeskPromptNoReplyControlAdapterResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		providerCall: authorized,
+		runtimeExecution: authorized,
+		promptNoReplyAuthorized: authorized,
+	};
+}
+
 function blockControlledConformanceDocWrite(input: {
 	request?: FlowDeskControlledExternalWriteRequestV1;
 	reason: string;
@@ -405,6 +485,187 @@ function blockControlledConformanceDocWrite(input: {
 		redactedBlockReason: input.reason,
 		safeNextActions: ["/flowdesk-status"],
 		authority: controlledConformanceDocWriteAuthority(false),
+	};
+}
+
+export function applyFlowDeskPermissionAskControlV1(input: {
+	decision: FlowDeskPermissionAskDecisionV1;
+	output: { status: "ask" | "deny" | "allow" };
+}): FlowDeskPermissionAskControlAdapterResultV1 {
+	const validation = validateFlowDeskPermissionAskDecisionV1(input.decision);
+	if (!validation.ok) {
+		return {
+			adapterProfile: "permission_ask_control_adapter",
+			status: "blocked_before_permission_status",
+			permissionStatusApplied: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			redactedBlockReason: validation.errors.join(",") || "invalid permission decision",
+			authority: permissionAskControlAuthority(false),
+		};
+	}
+	input.output.status = input.decision.status;
+	return {
+		adapterProfile: "permission_ask_control_adapter",
+		status: "permission_status_applied",
+		permissionStatusApplied: true,
+		permissionStatus: input.decision.status,
+		workflowId: input.decision.workflow_id,
+		attemptId: input.decision.attempt_id,
+		authority: permissionAskControlAuthority(true),
+	};
+}
+
+export async function abortFlowDeskSessionWithDecisionV1(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	decision: FlowDeskSessionAbortDecisionV1;
+	directory?: string;
+}): Promise<FlowDeskSessionAbortControlAdapterResultV1> {
+	const validation = validateFlowDeskSessionAbortDecisionV1(input.decision);
+	if (!validation.ok) {
+		return {
+			adapterProfile: "session_abort_control_adapter",
+			status: "blocked_before_session_abort",
+			abortAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: validation.errors.join(",") || "invalid abort decision",
+			authority: sessionAbortControlAuthority(false),
+		};
+	}
+	const abort = input.client.session.abort;
+	if (abort === undefined) {
+		return {
+			adapterProfile: "session_abort_control_adapter",
+			status: "blocked_before_session_abort",
+			abortAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: "Injected OpenCode client is missing session.abort.",
+			authority: sessionAbortControlAuthority(false),
+		};
+	}
+	const response = await abort.call(input.client.session, {
+		path: { id: input.decision.session_ref },
+		...(input.directory === undefined ? {} : { query: { directory: input.directory } }),
+	});
+	return {
+		adapterProfile: "session_abort_control_adapter",
+		status: "session_abort_sent",
+		abortAttempted: true,
+		workflowId: input.decision.workflow_id,
+		attemptId: input.decision.attempt_id,
+		sessionRef: input.decision.session_ref,
+		response,
+		authority: sessionAbortControlAuthority(true),
+	};
+}
+
+export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	decision: FlowDeskPromptNoReplyDecisionV1;
+	request: FlowDeskManagedDispatchBetaDispatchRequestV1;
+}): Promise<FlowDeskPromptNoReplyControlAdapterResultV1> {
+	const validation = validateFlowDeskPromptNoReplyDecisionV1(input.decision);
+	if (!validation.ok) {
+		return {
+			adapterProfile: "prompt_no_reply_control_adapter",
+			status: "blocked_before_no_reply_prompt",
+			promptAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: validation.errors.join(",") || "invalid no-reply decision",
+			authority: promptNoReplyControlAuthority(false),
+		};
+	}
+	if (input.request.sessionId !== input.decision.session_ref) {
+		return {
+			adapterProfile: "prompt_no_reply_control_adapter",
+			status: "blocked_before_no_reply_prompt",
+			promptAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: "No-reply decision session_ref must match request sessionId.",
+			authority: promptNoReplyControlAuthority(false),
+		};
+	}
+	if (refFrom("agent", input.request.agent) !== input.decision.agent_ref) {
+		return {
+			adapterProfile: "prompt_no_reply_control_adapter",
+			status: "blocked_before_no_reply_prompt",
+			promptAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: "No-reply decision agent_ref must match request agent.",
+			authority: promptNoReplyControlAuthority(false),
+		};
+	}
+	if (
+		input.request.provider_qualified_model_id !==
+		input.decision.provider_qualified_model_id
+	) {
+		return {
+			adapterProfile: "prompt_no_reply_control_adapter",
+			status: "blocked_before_no_reply_prompt",
+			promptAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason:
+				"No-reply decision provider_qualified_model_id must match request model.",
+			authority: promptNoReplyControlAuthority(false),
+		};
+	}
+	const text = promptTextFrom(input.request);
+	const model = parseProviderQualifiedModelId(input.request.provider_qualified_model_id);
+	const runtimeModel = model === undefined ? undefined : opencodeRuntimeModelForFlowDeskModel(model);
+	if (text === undefined || runtimeModel === undefined || input.request.agent.trim().length === 0) {
+		return {
+			adapterProfile: "prompt_no_reply_control_adapter",
+			status: "blocked_before_no_reply_prompt",
+			promptAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: "No-reply prompt request is missing agent, model, or bounded text.",
+			authority: promptNoReplyControlAuthority(false),
+		};
+	}
+	const dispatchMethod = input.request.dispatchMethod ?? "prompt";
+	const dispatch = input.client.session[dispatchMethod];
+	if (dispatch === undefined) {
+		return {
+			adapterProfile: "prompt_no_reply_control_adapter",
+			status: "blocked_before_no_reply_prompt",
+			promptAttempted: false,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: "Injected OpenCode client is missing the requested prompt method.",
+			authority: promptNoReplyControlAuthority(false),
+		};
+	}
+	const options = dispatchOptions(input.request, runtimeModel, text);
+	const response = await dispatch.call(input.client.session, {
+		...options,
+		body: { ...options.body, noReply: true },
+	});
+	return {
+		adapterProfile: "prompt_no_reply_control_adapter",
+		status: "no_reply_prompt_sent",
+		promptAttempted: true,
+		workflowId: input.decision.workflow_id,
+		attemptId: input.decision.attempt_id,
+		sessionRef: input.decision.session_ref,
+		agent: input.request.agent,
+		model: runtimeModel,
+		response,
+		authority: promptNoReplyControlAuthority(true),
 	};
 }
 

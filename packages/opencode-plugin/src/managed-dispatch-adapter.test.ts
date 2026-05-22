@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-	consumeFlowDeskProductionApprovalSourceV1,
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
+	consumeFlowDeskProductionApprovalSourceV1,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
+	reloadFlowDeskSessionEvidenceV1,
 	type FlowDeskConformanceRuntimeMetadataV1,
 	type FlowDeskControlledExternalWriteRequestV1,
 	type FlowDeskDispatchAttemptManifestV1,
@@ -19,23 +20,28 @@ import {
 	type FlowDeskManagedDispatchBetaRuntimeEchoEvidenceV1,
 	type FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
 	type FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
+	type FlowDeskPermissionAskDecisionV1,
+	type FlowDeskPromptNoReplyDecisionV1,
 	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskProviderHealthSnapshotV1,
+	type FlowDeskSessionAbortDecisionV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
 	type FlowDeskTopTierReviewVerdictV1,
 	type FlowDeskUsageSnapshotV1,
 	type GuardApprovedDispatchV1,
 	type ManagedDispatchBetaBoundaryInputV1,
-	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
 import { flowdeskPluginScaffold } from "./index.js";
 import {
+	abortFlowDeskSessionWithDecisionV1,
+	applyFlowDeskPermissionAskControlV1,
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
+	dispatchFlowDeskPromptNoReplyWithDecisionV1,
 	dispatchManagedDispatchBetaPromptV1,
+	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
-	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	observeInjectedSdkLaneV1,
 	observeInjectedSdkReviewerVerdictV1,
 	prepareFlowDeskControlledExternalWriteAdapterV1,
@@ -667,6 +673,7 @@ function reloadedEvidence(
 function fakeClient() {
 	const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
 	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
+	const abortCalls: Array<{ path: { id: string }; query?: { directory?: string } }> = [];
 	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
 		session: {
 			prompt(options) {
@@ -677,9 +684,86 @@ function fakeClient() {
 				promptAsyncCalls.push(options);
 				return Promise.resolve(undefined);
 			},
+			abort(options) {
+				abortCalls.push(options);
+				return Promise.resolve(true);
+			},
 		},
 	};
-	return { client, promptCalls, promptAsyncCalls };
+	return { client, promptCalls, promptAsyncCalls, abortCalls };
+}
+
+function permissionAskDecision(
+	overrides: Partial<FlowDeskPermissionAskDecisionV1> = {},
+): FlowDeskPermissionAskDecisionV1 {
+	return {
+		schema_version: "flowdesk.permission_ask_decision.v1",
+		decision_id: "permission-decision-123",
+		workflow_id: "workflow-123",
+		attempt_id: "attempt-123",
+		session_ref: "session-123",
+		requested_permission_kind_ref: "tool-write-ref-123",
+		policy_pack_ref: "policy-pack-ref-123",
+		status: "deny",
+		deny_reason: "guard_unapproved",
+		observed_at: now,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		hardCancelOrNoReplyAuthority: false,
+		...overrides,
+	};
+}
+
+function sessionAbortDecision(
+	overrides: Partial<FlowDeskSessionAbortDecisionV1> = {},
+): FlowDeskSessionAbortDecisionV1 {
+	return {
+		schema_version: "flowdesk.session_abort_decision.v1",
+		decision_id: "session-abort-decision-123",
+		workflow_id: "workflow-123",
+		attempt_id: "attempt-123",
+		session_ref: "session-123",
+		abort_reason: "guard_revoked",
+		policy_pack_ref: "policy-pack-ref-123",
+		guard_decision_ref: "guard-decision-ref-123",
+		pre_abort_audit_ref: "pre-abort-audit-ref-123",
+		created_at: now,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		hardCancelOrNoReplyAuthority: false,
+		session_abort_authorized: true,
+		...overrides,
+	};
+}
+
+function promptNoReplyDecision(
+	overrides: Partial<FlowDeskPromptNoReplyDecisionV1> = {},
+): FlowDeskPromptNoReplyDecisionV1 {
+	return {
+		schema_version: "flowdesk.prompt_no_reply_decision.v1",
+		decision_id: "noreply-decision-123",
+		workflow_id: "workflow-123",
+		attempt_id: "attempt-123",
+		session_ref: "session-123",
+		agent_ref: "agent-build",
+		provider_qualified_model_id: "claude/sonnet-4",
+		no_reply_reason: "context_commit_only",
+		policy_pack_ref: "policy-pack-ref-123",
+		guard_decision_ref: "guard-decision-ref-123",
+		pre_call_audit_ref: "pre-call-audit-ref-123",
+		created_at: now,
+		dispatch_authority_enabled: false,
+		providerCall: true,
+		actualLaneLaunch: false,
+		runtimeExecution: true,
+		hardCancelOrNoReplyAuthority: false,
+		prompt_no_reply_authorized: true,
+		...overrides,
+	};
 }
 
 function failingPromptAsyncClient() {
@@ -1341,6 +1425,114 @@ test("controlled conformance doc local writer fails closed before unsafe writes"
 		});
 		assert.equal(reloaded.entries.length, 0);
 	});
+});
+
+test("permission ask control adapter applies deny without provider calls", () => {
+	const output = { status: "ask" as const };
+	const result = applyFlowDeskPermissionAskControlV1({
+		decision: permissionAskDecision(),
+		output,
+	});
+
+	assert.equal(result.status, "permission_status_applied");
+	assert.equal(output.status, "deny");
+	assert.equal(result.authority.permissionAskStatusControlAuthorized, true);
+	assert.equal(result.authority.providerCall, false);
+	assert.equal(result.authority.runtimeExecution, false);
+});
+
+test("permission ask control adapter blocks malformed status authority", () => {
+	const output = { status: "ask" as const };
+	const result = applyFlowDeskPermissionAskControlV1({
+		decision: ({
+			...permissionAskDecision({ status: "allow", deny_reason: undefined }),
+			hardCancelOrNoReplyAuthority: true,
+		} as unknown) as FlowDeskPermissionAskDecisionV1,
+		output,
+	});
+
+	assert.equal(result.status, "blocked_before_permission_status");
+	assert.equal(output.status, "ask");
+	assert.equal(result.authority.permissionAskStatusControlAuthorized, false);
+});
+
+test("session abort control adapter calls SDK abort only after decision validation", async () => {
+	const { client, abortCalls } = fakeClient();
+	const result = await abortFlowDeskSessionWithDecisionV1({
+		client,
+		decision: sessionAbortDecision(),
+		directory: "/tmp/flowdesk-project",
+	});
+
+	assert.equal(result.status, "session_abort_sent");
+	assert.equal(result.abortAttempted, true);
+	assert.equal(result.authority.sessionAbortAuthorized, true);
+	assert.equal(result.authority.providerCall, false);
+	assert.equal(abortCalls.length, 1);
+	assert.deepEqual(abortCalls[0], {
+		path: { id: "session-123" },
+		query: { directory: "/tmp/flowdesk-project" },
+	});
+});
+
+test("prompt no-reply control adapter sends SDK noReply without lane authority", async () => {
+	const { client, promptCalls, promptAsyncCalls } = fakeClient();
+	const result = await dispatchFlowDeskPromptNoReplyWithDecisionV1({
+		client,
+		decision: promptNoReplyDecision(),
+		request: dispatchRequest({ dispatchMethod: "prompt" }),
+	});
+
+	assert.equal(result.status, "no_reply_prompt_sent");
+	assert.equal(result.promptAttempted, true);
+	assert.equal(result.authority.promptNoReplyAuthorized, true);
+	assert.equal(result.authority.providerCall, true);
+	assert.equal(result.authority.actualLaneLaunch, false);
+	assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
+	assert.equal(promptCalls.length, 1);
+	assert.equal(promptAsyncCalls.length, 0);
+	assert.equal(promptCalls[0].body.noReply, true);
+	assert.deepEqual(promptCalls[0].body.model, {
+		providerID: "anthropic",
+		modelID: "sonnet-4",
+	});
+	assert.equal(/tools|cancel/.test(JSON.stringify(promptCalls[0])), false);
+});
+
+test("prompt no-reply control adapter blocks mismatched session decisions", async () => {
+	const { client, promptCalls, promptAsyncCalls } = fakeClient();
+	const result = await dispatchFlowDeskPromptNoReplyWithDecisionV1({
+		client,
+		decision: promptNoReplyDecision({ session_ref: "session-other" }),
+		request: dispatchRequest({ dispatchMethod: "prompt" }),
+	});
+
+	assert.equal(result.status, "blocked_before_no_reply_prompt");
+	assert.equal(result.promptAttempted, false);
+	assert.equal(result.authority.promptNoReplyAuthorized, false);
+	assert.equal(promptCalls.length, 0);
+	assert.equal(promptAsyncCalls.length, 0);
+});
+
+test("prompt no-reply control adapter blocks mismatched agent and model decisions", async () => {
+	const { client, promptCalls, promptAsyncCalls } = fakeClient();
+	const agentMismatch = await dispatchFlowDeskPromptNoReplyWithDecisionV1({
+		client,
+		decision: promptNoReplyDecision({ agent_ref: "agent-reviewer" }),
+		request: dispatchRequest({ dispatchMethod: "prompt" }),
+	});
+	const modelMismatch = await dispatchFlowDeskPromptNoReplyWithDecisionV1({
+		client,
+		decision: promptNoReplyDecision({
+			provider_qualified_model_id: "openai/gpt-5.5",
+		}),
+		request: dispatchRequest({ dispatchMethod: "prompt" }),
+	});
+
+	assert.equal(agentMismatch.status, "blocked_before_no_reply_prompt");
+	assert.equal(modelMismatch.status, "blocked_before_no_reply_prompt");
+	assert.equal(promptCalls.length, 0);
+	assert.equal(promptAsyncCalls.length, 0);
 });
 
 test("managed dispatch beta adapter maps FlowDesk Claude binding to OpenCode Anthropic provider", async () => {
