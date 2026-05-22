@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
+  planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
   prepareFlowDeskDispatchIdempotencyReservationV1,
   prepareFlowDeskSessionEvidenceWriteIntentV1,
   reloadFlowDeskSessionEvidenceV1,
@@ -570,6 +571,99 @@ test("session evidence selector blocks missing ambiguous or drifted exact-model 
     assert.equal(ambiguous.state, "blocked");
     assert.ok(ambiguous.blocked_labels.includes("cache_refresh_pair_ambiguous"));
     assert.equal(ambiguous.cache, undefined);
+  });
+});
+
+test("session evidence can plan reviewer fanout from selected cache evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-good"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const plan = planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
+      reloadedEvidence: reloaded,
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1",
+      workflowId,
+      attemptId: "attempt-1",
+      parentSessionRef: "ses-parent-1",
+      agentRef: "agent-reviewer",
+      requestedAt: "2026-05-19T00:01:00.000Z",
+      preLaunchAuditRef: "audit-pre-launch-1",
+      laneLaunchApprovalRef: "approval-lane-launch-1"
+    });
+    assert.equal(plan.state, "fanout_ready", plan.errors.join("; "));
+    assert.equal(plan.selection.state, "pair_ready");
+    assert.equal(plan.revalidation.state, "revalidated");
+    assert.equal(plan.fanoutPlan.state, "fanout_ready");
+    assert.equal(plan.fanoutPlan.runtime_lane_launch_requests.length, 3);
+    assert.deepEqual(plan.fanoutPlan.planned_perspectives, ["policy_security", "architecture", "verification_implementation"]);
+    assert.equal(plan.dispatch_authority_enabled, false);
+    assert.equal(plan.fanoutPlan.launch_attempted, false);
+    assert.equal(plan.fanoutPlan.approval_inferred, false);
+    assert.equal(plan.providerCall, false);
+    assert.equal(plan.actualLaneLaunch, false);
+    assert.equal(plan.runtimeExecution, false);
+  });
+});
+
+test("session evidence blocks reviewer fanout when selected cache evidence is missing or ambiguous", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-drift"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord({ expected_policy_pack_hash: "hash-policy-other" })));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const blocked = planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
+      reloadedEvidence: reloaded,
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1",
+      workflowId,
+      attemptId: "attempt-1",
+      parentSessionRef: "ses-parent-1",
+      agentRef: "agent-reviewer",
+      requestedAt: "2026-05-19T00:01:00.000Z"
+    });
+    assert.equal(blocked.state, "blocked");
+    assert.equal(blocked.selection.state, "blocked");
+    assert.ok(blocked.blocked_labels.includes("cache_refresh_pair_missing"));
+    assert.ok(blocked.revalidation.blocked_labels.includes("cache_evidence_pair_selection_blocked"));
+    assert.ok(blocked.fanoutPlan.blocked_labels.includes("assignment_revalidation_blocked"));
+    assert.equal(blocked.fanoutPlan.runtime_lane_launch_requests.length, 0);
+    assert.equal(blocked.providerCall, false);
+    assert.equal(blocked.actualLaneLaunch, false);
+  });
+
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-one"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-two"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const ambiguous = planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
+      reloadedEvidence: reloaded,
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1",
+      workflowId,
+      attemptId: "attempt-1",
+      parentSessionRef: "ses-parent-1",
+      agentRef: "agent-reviewer",
+      requestedAt: "2026-05-19T00:01:00.000Z"
+    });
+    assert.equal(ambiguous.state, "blocked");
+    assert.ok(ambiguous.blocked_labels.includes("cache_refresh_pair_ambiguous"));
+    assert.equal(ambiguous.fanoutPlan.runtime_lane_launch_requests.length, 0);
   });
 });
 

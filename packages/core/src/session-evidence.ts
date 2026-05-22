@@ -8,16 +8,23 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
+import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
 import {
 	type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	type FlowDeskExactModelAvailabilityCacheV1,
+	type FlowDeskReviewerAssignmentRevalidationV1,
+	type FlowDeskReviewerFanoutPlanV1,
+	planFlowDeskReviewerFanoutV1,
+	revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1,
 	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	validateFlowDeskExactModelAvailabilityCacheV1,
 	validateFlowDeskReviewerFanoutPlanV1,
 } from "./model-availability-cache.js";
 import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
+import type { FlowDeskTopTierReviewPerspective } from "./release1-contracts.js";
 import { validateFlowDeskReviewerLaneConformanceObservationV1 } from "./reviewer-lane-conformance.js";
 import {
 	FLOWDESK_SESSION_EVIDENCE_CLASSES,
@@ -34,8 +41,6 @@ import {
 	validateOpaqueRef,
 	validateTopTierReviewVerdictV1,
 } from "./validators.js";
-import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
-import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
 
 const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	usage_authority: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
@@ -146,6 +151,19 @@ export interface FlowDeskExactModelCacheEvidencePairSelectionV1 extends Validati
 	runtimeExecution: false;
 }
 
+export interface FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1 extends ValidationResult {
+	state: "fanout_ready" | "blocked";
+	blocked_labels: string[];
+	selection: FlowDeskExactModelCacheEvidencePairSelectionV1;
+	revalidation: FlowDeskReviewerAssignmentRevalidationV1;
+	fanoutPlan: FlowDeskReviewerFanoutPlanV1;
+	dispatch_authority_enabled: false;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskSessionEvidenceApplyResultV1 extends ValidationResult {
 	rootDir?: string;
 	writtenPaths: string[];
@@ -206,6 +224,21 @@ export interface FlowDeskExactModelCacheEvidencePairSelectionInputV1 {
 	authAccountBoundaryRef: string;
 }
 
+export interface FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1 extends FlowDeskExactModelCacheEvidencePairSelectionInputV1 {
+	workflowId: string;
+	attemptId: string;
+	parentSessionRef: string;
+	agentRef: string;
+	requestedAt: string;
+	requestedPerspectives?: FlowDeskTopTierReviewPerspective[];
+	maxConcurrentLaneCount?: number;
+	timeoutMs?: number;
+	orphanMaxAgeMs?: number;
+	retryBudget?: number;
+	preLaunchAuditRef?: string;
+	laneLaunchApprovalRef?: string;
+}
+
 export function selectFlowDeskExactModelCacheEvidencePairV1(
 	input: FlowDeskExactModelCacheEvidencePairSelectionInputV1,
 ): FlowDeskExactModelCacheEvidencePairSelectionV1 {
@@ -238,6 +271,77 @@ export function selectFlowDeskExactModelCacheEvidencePairV1(
 		blocked_labels: [...new Set(blockedLabels)],
 		...(cache === undefined ? {} : { cache }),
 		...(cacheRefreshPlan === undefined ? {} : { cacheRefreshPlan }),
+		...disabledEvidenceAuthority,
+	};
+}
+
+function blockedReviewerAssignmentRevalidationFromSelection(
+	input: FlowDeskExactModelCacheEvidencePairSelectionInputV1,
+	selection: FlowDeskExactModelCacheEvidencePairSelectionV1,
+): FlowDeskReviewerAssignmentRevalidationV1 {
+	return {
+		schema_version: "flowdesk.reviewer_assignment_revalidation.v1",
+		ok: false,
+		errors: selection.errors,
+		state: "blocked",
+		blocked_labels: [...new Set(["cache_evidence_pair_selection_blocked", ...selection.blocked_labels])],
+		expected_local_date: input.localDate,
+		expected_active_profile_ref: input.activeProfileRef,
+		expected_opencode_version_ref: input.opencodeVersionRef,
+		expected_flowdesk_package_version_ref: input.flowdeskPackageVersionRef,
+		expected_registry_hash: input.registryHash,
+		expected_policy_pack_hash: input.policyPackHash,
+		expected_auth_account_boundary_ref: input.authAccountBoundaryRef,
+		eligible_bindings: [],
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+}
+
+export function planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1(
+	input: FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
+): FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1 {
+	const selection = selectFlowDeskExactModelCacheEvidencePairV1(input);
+	const revalidation = selection.state === "pair_ready" && selection.cache !== undefined && selection.cacheRefreshPlan !== undefined
+		? revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+			cache: selection.cache,
+			cacheRefreshPlan: selection.cacheRefreshPlan,
+			localDate: input.localDate,
+			activeProfileRef: input.activeProfileRef,
+			opencodeVersionRef: input.opencodeVersionRef,
+			flowdeskPackageVersionRef: input.flowdeskPackageVersionRef,
+			registryHash: input.registryHash,
+			policyPackHash: input.policyPackHash,
+			authAccountBoundaryRef: input.authAccountBoundaryRef,
+		})
+		: blockedReviewerAssignmentRevalidationFromSelection(input, selection);
+	const fanoutPlan = planFlowDeskReviewerFanoutV1({
+		revalidation,
+		workflowId: input.workflowId,
+		attemptId: input.attemptId,
+		parentSessionRef: input.parentSessionRef,
+		agentRef: input.agentRef,
+		requestedAt: input.requestedAt,
+		requestedPerspectives: input.requestedPerspectives,
+		maxConcurrentLaneCount: input.maxConcurrentLaneCount,
+		timeoutMs: input.timeoutMs,
+		orphanMaxAgeMs: input.orphanMaxAgeMs,
+		retryBudget: input.retryBudget,
+		preLaunchAuditRef: input.preLaunchAuditRef,
+		laneLaunchApprovalRef: input.laneLaunchApprovalRef,
+	});
+	const ready = selection.state === "pair_ready" && revalidation.state === "revalidated" && fanoutPlan.state === "fanout_ready";
+	return {
+		ok: ready && selection.ok && revalidation.ok && fanoutPlan.ok,
+		errors: [...selection.errors, ...revalidation.errors, ...fanoutPlan.errors],
+		state: ready ? "fanout_ready" : "blocked",
+		blocked_labels: [...new Set([...selection.blocked_labels, ...revalidation.blocked_labels, ...fanoutPlan.blocked_labels])],
+		selection,
+		revalidation,
+		fanoutPlan,
+		dispatch_authority_enabled: false,
 		...disabledEvidenceAuthority,
 	};
 }
