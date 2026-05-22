@@ -530,6 +530,57 @@ export function revalidateFlowDeskReviewerAssignmentsV1(input: {
 	};
 }
 
+export function revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1(input: {
+	cache: FlowDeskExactModelAvailabilityCacheV1;
+	cacheRefreshPlan: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
+	localDate: string;
+	activeProfileRef: string;
+	opencodeVersionRef: string;
+	flowdeskPackageVersionRef: string;
+	registryHash: string;
+	policyPackHash: string;
+	authAccountBoundaryRef: string;
+}): FlowDeskReviewerAssignmentRevalidationV1 {
+	const base = revalidateFlowDeskReviewerAssignmentsV1(input);
+	const refreshResult = validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(input.cacheRefreshPlan);
+	const evidenceBlockedLabels: string[] = [];
+	if (!refreshResult.ok) evidenceBlockedLabels.push("cache_refresh_plan_invalid");
+	if (input.cacheRefreshPlan.state !== "cache_hit") evidenceBlockedLabels.push("cache_refresh_not_cache_hit");
+	if (input.cacheRefreshPlan.cache_usable_for_assignment !== true)
+		evidenceBlockedLabels.push("cache_refresh_not_usable_for_assignment");
+	if (input.cacheRefreshPlan.cache_id !== input.cache.cache_id) evidenceBlockedLabels.push("cache_refresh_cache_id_mismatch");
+	for (const [planValue, expectedValue] of [
+		[input.cacheRefreshPlan.expected_local_date, input.localDate],
+		[input.cacheRefreshPlan.expected_active_profile_ref, input.activeProfileRef],
+		[input.cacheRefreshPlan.expected_opencode_version_ref, input.opencodeVersionRef],
+		[input.cacheRefreshPlan.expected_flowdesk_package_version_ref, input.flowdeskPackageVersionRef],
+		[input.cacheRefreshPlan.expected_registry_hash, input.registryHash],
+		[input.cacheRefreshPlan.expected_policy_pack_hash, input.policyPackHash],
+		[input.cacheRefreshPlan.expected_auth_account_boundary_ref, input.authAccountBoundaryRef],
+	] as const)
+		if (planValue !== expectedValue) evidenceBlockedLabels.push("cache_refresh_expected_context_drift");
+	for (const [planValue, cacheValue] of [
+		[input.cacheRefreshPlan.cache_local_date, input.cache.local_date],
+		[input.cacheRefreshPlan.cache_active_profile_ref, input.cache.active_profile_ref],
+		[input.cacheRefreshPlan.cache_opencode_version_ref, input.cache.opencode_version_ref],
+		[input.cacheRefreshPlan.cache_flowdesk_package_version_ref, input.cache.flowdesk_package_version_ref],
+		[input.cacheRefreshPlan.cache_registry_hash, input.cache.registry_hash],
+		[input.cacheRefreshPlan.cache_policy_pack_hash, input.cache.policy_pack_hash],
+		[input.cacheRefreshPlan.cache_auth_account_boundary_ref, input.cache.auth_account_boundary_ref],
+	] as const)
+		if (planValue !== cacheValue) evidenceBlockedLabels.push("cache_refresh_cache_context_drift");
+	const ready = base.state === "revalidated" && evidenceBlockedLabels.length === 0;
+	const errors = [...base.errors, ...refreshResult.errors.map((error) => `cache_refresh_plan: ${error}`)];
+	return {
+		...base,
+		ok: base.ok && refreshResult.ok,
+		errors,
+		state: ready ? "revalidated" : "blocked",
+		blocked_labels: unique([...base.blocked_labels, ...evidenceBlockedLabels]),
+		eligible_bindings: ready ? base.eligible_bindings : [],
+	};
+}
+
 export function validateFlowDeskReviewerAssignmentRevalidationV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("reviewer assignment revalidation must be an object");
 	const record = value as Partial<FlowDeskReviewerAssignmentRevalidationV1>;

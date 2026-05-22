@@ -4,6 +4,7 @@ import {
 	planFlowDeskExactModelAvailabilityCacheRefreshV1,
 	planFlowDeskReviewerAssignmentsV1,
 	planFlowDeskReviewerFanoutV1,
+	revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1,
 	revalidateFlowDeskReviewerAssignmentsV1,
 	validateFlowDeskExactModelAvailabilityCacheV1,
 	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
@@ -54,6 +55,22 @@ function revalidation(overrides: Partial<Parameters<typeof revalidateFlowDeskRev
 		authAccountBoundaryRef: "account-1",
 		...overrides,
 	});
+}
+
+function cacheHitRefreshPlan(overrides: Record<string, unknown> = {}): ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1> {
+	return {
+		...planFlowDeskExactModelAvailabilityCacheRefreshV1({
+			cache: cache(),
+			localDate: "2026-05-21",
+			activeProfileRef: "profile-1",
+			opencodeVersionRef: "opencode-1.15.6",
+			flowdeskPackageVersionRef: "flowdesk-0.1.1",
+			registryHash: "hash-registry-1",
+			policyPackHash: "hash-policy-1",
+			authAccountBoundaryRef: "account-1",
+		}),
+		...overrides,
+	} as ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1>;
 }
 
 test("exact-model availability cache validates same-day concrete model entries", () => {
@@ -214,6 +231,83 @@ test("reviewer assignment revalidation rejects alias and lower-tier substitution
 	assert.equal(lowerTier.state, "blocked");
 	assert.ok(lowerTier.blocked_labels.includes("registered_available_lower_tier_only"));
 	assert.deepEqual(lowerTier.eligible_bindings, []);
+});
+
+test("reviewer assignment revalidation requires paired cache-hit refresh evidence", () => {
+	const ready = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+		cache: cache(),
+		cacheRefreshPlan: cacheHitRefreshPlan(),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(ready.state, "revalidated", ready.errors.join("; "));
+	assert.equal(ready.eligible_bindings.length, 1);
+	assert.equal(validateFlowDeskReviewerAssignmentRevalidationV1(ready).ok, true);
+
+	const refreshRequired = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+		cache: cache(),
+		cacheRefreshPlan: cacheHitRefreshPlan({
+			state: "refresh_required",
+			refresh_reason_labels: ["cache_not_same_day"],
+			discovery_required: true,
+			refresh_required: true,
+			cache_usable_for_assignment: false,
+		}),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(refreshRequired.state, "blocked");
+	assert.ok(refreshRequired.blocked_labels.includes("cache_refresh_not_cache_hit"));
+	assert.ok(refreshRequired.blocked_labels.includes("cache_refresh_not_usable_for_assignment"));
+	assert.deepEqual(refreshRequired.eligible_bindings, []);
+});
+
+test("reviewer assignment revalidation blocks cache refresh evidence drift", () => {
+	const drift = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+		cache: cache(),
+		cacheRefreshPlan: cacheHitRefreshPlan({
+			cache_id: "cache-other",
+			expected_policy_pack_hash: "hash-policy-other",
+			cache_registry_hash: "hash-registry-other",
+		}),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(drift.state, "blocked");
+	assert.ok(drift.blocked_labels.includes("cache_refresh_cache_id_mismatch"));
+	assert.ok(drift.blocked_labels.includes("cache_refresh_expected_context_drift"));
+	assert.ok(drift.blocked_labels.includes("cache_refresh_cache_context_drift"));
+	assert.deepEqual(drift.eligible_bindings, []);
+
+	const forged = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+		cache: cache(),
+		cacheRefreshPlan: cacheHitRefreshPlan({ providerCall: true }),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(forged.state, "blocked");
+	assert.ok(forged.blocked_labels.includes("cache_refresh_plan_invalid"));
+	assert.match(forged.errors.join("|"), /provider call/);
 });
 
 test("reviewer fanout plan deterministically materializes launch requests without launching lanes", () => {
