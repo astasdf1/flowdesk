@@ -7,6 +7,7 @@ import type {
   FlowDeskDefaultManagedDispatchPromotionReadinessV1,
   FlowDeskDoctorRequestV1,
   FlowDeskDoctorResponseV1,
+  FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
   FlowDeskExportDebugRequestV1,
   FlowDeskExportDebugResponseV1,
   FlowDeskFakeRuntimeCommandInputV1,
@@ -61,6 +62,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     sourceRef?: string;
     providerHealthSnapshotRef?: string;
     productionEnablement?: FlowDeskProductionEnablementEvaluationV1;
+    exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
     reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
   };
@@ -211,6 +213,24 @@ function defaultManagedDispatchPromotionRefs(context: FlowDeskCommandBackedHandl
   ];
 }
 
+function exactModelAvailabilityCacheRefreshRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const plan = context.diagnostic?.exactModelAvailabilityCacheRefreshPlan;
+  if (plan === undefined) return ["exact_model_cache_refresh_state=blocked", "exact_model_cache_evidence=missing"];
+  return [
+    `exact_model_cache_refresh_state=${plan.state}`,
+    `exact_model_cache_discovery_required=${plan.discovery_required}`,
+    `exact_model_cache_refresh_required=${plan.refresh_required}`,
+    `exact_model_cache_usable_for_assignment=${plan.cache_usable_for_assignment}`,
+    `exact_model_cache_discovery_attempted=${plan.discovery_attempted}`,
+    `exact_model_cache_refresh_attempted=${plan.refresh_attempted}`,
+    `exact_model_cache_actualLaneLaunch=${plan.actualLaneLaunch}`,
+    `exact_model_cache_providerCall=${plan.providerCall}`,
+    `exact_model_cache_runtimeExecution=${plan.runtimeExecution}`,
+    ...plan.refresh_reason_labels.map((label) => `exact_model_cache_refresh_reason=${label}`),
+    ...plan.blocked_labels.map((label) => `exact_model_cache_blocker=${label}`)
+  ];
+}
+
 function reviewerFanoutRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
   const plan = context.diagnostic?.reviewerFanoutPlan;
   if (plan === undefined) return ["reviewer_fanout_state=blocked", "reviewer_fanout_evidence=missing"];
@@ -233,10 +253,11 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
   const promotionRefs = defaultManagedDispatchPromotionRefs(context);
+  const exactModelCacheRefs = exactModelAvailabilityCacheRefreshRefs(context);
   const fanoutRefs = reviewerFanoutRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion and reviewer fan-out planning are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...fanoutRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion, exact-model cache refresh, and reviewer fan-out planning are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
   ];

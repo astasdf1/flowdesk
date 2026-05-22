@@ -4,6 +4,7 @@ import type {
 	FlowDeskAttemptRecordV1,
 	FlowDeskDefaultManagedDispatchPromotionReadinessV1,
 	FlowDeskDoctorResponseV1,
+	FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	FlowDeskExportDebugRequestV1,
 	FlowDeskFds1FixtureCatalogEntryV1,
 	FlowDeskLaneRecordV1,
@@ -457,6 +458,36 @@ function promotionReadiness(
 	};
 }
 
+function cacheRefreshPlan(
+	overrides: Partial<FlowDeskExactModelAvailabilityCacheRefreshPlanV1> = {},
+): FlowDeskExactModelAvailabilityCacheRefreshPlanV1 {
+	return {
+		schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
+		ok: true,
+		errors: [],
+		state: "refresh_required",
+		blocked_labels: [],
+		refresh_reason_labels: ["cache_missing"],
+		expected_local_date: "2026-05-17",
+		expected_active_profile_ref: "profile-123",
+		expected_opencode_version_ref: "opencode-1.15.6",
+		expected_flowdesk_package_version_ref: "flowdesk-0.1.1",
+		expected_registry_hash: "hash-registry-123",
+		expected_policy_pack_hash: "hash-policy-123",
+		expected_auth_account_boundary_ref: "account-123",
+		discovery_required: true,
+		refresh_required: true,
+		cache_usable_for_assignment: false,
+		discovery_attempted: false,
+		refresh_attempted: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
 function reviewerFanoutPlan(
 	overrides: Partial<FlowDeskReviewerFanoutPlanV1> = {},
 ): FlowDeskReviewerFanoutPlanV1 {
@@ -796,11 +827,12 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 
 test("doctor and status surface default managed-dispatch promotion readiness without authority", () => {
 	const readiness = promotionReadiness();
+	const cacheRefresh = cacheRefreshPlan();
 	const fanout = reviewerFanoutPlan();
 	const doctor = evaluateFlowDeskCommandBackedHandlerV1(
 		"flowdesk_doctor",
 		doctorRequest(),
-		{ diagnostic: { defaultManagedDispatchPromotionReadiness: readiness, reviewerFanoutPlan: fanout } },
+		{ diagnostic: { defaultManagedDispatchPromotionReadiness: readiness, exactModelAvailabilityCacheRefreshPlan: cacheRefresh, reviewerFanoutPlan: fanout } },
 	);
 	assert.equal(doctor.ok, true, doctor.errors.join("; "));
 	const doctorResponse = doctor.response as FlowDeskDoctorResponseV1;
@@ -827,6 +859,15 @@ test("doctor and status surface default managed-dispatch promotion readiness wit
 		compatibility.refs.includes("default_dispatch_blocker=durable_precall_missing"),
 	);
 	assert.ok(
+		compatibility.refs.includes("exact_model_cache_refresh_state=refresh_required"),
+	);
+	assert.ok(
+		compatibility.refs.includes("exact_model_cache_refresh_reason=cache_missing"),
+	);
+	assert.ok(
+		compatibility.refs.includes("exact_model_cache_providerCall=false"),
+	);
+	assert.ok(
 		compatibility.refs.includes("reviewer_fanout_state=blocked"),
 	);
 	assert.ok(
@@ -844,6 +885,7 @@ test("doctor and status surface default managed-dispatch promotion readiness wit
 		{
 			status: {
 				...statusContext(statusRequest),
+				exactModelAvailabilityCacheRefreshPlan: cacheRefresh,
 				defaultManagedDispatchPromotionReadiness: readiness,
 				reviewerFanoutPlan: fanout,
 			},
@@ -853,10 +895,10 @@ test("doctor and status surface default managed-dispatch promotion readiness wit
 	const statusResponse = status.response as { blocker?: { refs?: string[] } };
 	assert.ok(statusResponse.blocker);
 	assert.ok(
-		statusResponse.blocker.refs?.includes("reviewer_fanout_state=blocked"),
+		statusResponse.blocker.refs?.includes("exact_model_cache_refresh_state=refresh_required"),
 	);
 	assert.ok(
-		statusResponse.blocker.refs?.includes("reviewer_fanout_blocker=assignment_revalidation_blocked"),
+		statusResponse.blocker.refs?.includes("exact_model_cache_refresh_reason=cache_missing"),
 	);
 	assertNoRuntimeAuthority(status);
 });
