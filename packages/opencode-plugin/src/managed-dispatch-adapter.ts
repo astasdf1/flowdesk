@@ -19,8 +19,8 @@ import type {
 	FlowDeskFallbackRegatePlanV1,
 	FlowDeskLaneLifecycleRecordV1,
 	FlowDeskPermissionAskDecisionV1,
-	FlowDeskPromptNoReplyDecisionV1,
 	FlowDeskProductionApprovalSourceV1,
+	FlowDeskPromptNoReplyDecisionV1,
 	FlowDeskSessionAbortDecisionV1,
 	FlowDeskSessionEvidenceReloadResultV1,
 	FlowDeskTopTierReviewPerspective,
@@ -32,19 +32,19 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	evaluateFlowDeskDispatchAttemptDurablePrecallV1,
 	evaluateManagedDispatchBetaGuardBoundaryV1,
+	planFlowDeskFallbackRegateV1,
 	prepareFlowDeskDispatchIdempotencyReservationV1,
 	prepareFlowDeskDispatchIdempotencyStateUpdateV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
-	planFlowDeskFallbackRegateV1,
 	promoteFlowDeskExternalWriteAuthorityV1,
 	promoteFlowDeskFallbackReselectionRegateV1,
 	promoteFlowDeskManagedDispatchBetaAuthorityV1,
 	promoteFlowDeskReviewerTypedVerdictsV1,
 	reloadFlowDeskSessionEvidenceV1,
-	validateNoForbiddenRawPayloads,
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
 	validateFlowDeskSessionAbortDecisionV1,
+	validateNoForbiddenRawPayloads,
 	validateTopTierReviewVerdictV1,
 } from "@flowdesk/core";
 
@@ -159,6 +159,27 @@ export interface FlowDeskDurableReviewerVerdictLinkageAdapterResultV1 {
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
 		typedReviewerVerdictsAccepted: boolean;
 		durableReviewerVerdictEvidenceLinked: boolean;
+	};
+}
+
+export interface FlowDeskObservedReviewerVerdictEvidenceMaterializationResultV1 {
+	adapterProfile: "observed_reviewer_verdict_evidence_materializer";
+	status: "verdict_evidence_recorded" | "blocked_before_verdict_evidence";
+	writeAttempted: boolean;
+	workflowId: string;
+	sessionRef: string;
+	lanePlanRef: string;
+	bindingRef: string;
+	perspective: FlowDeskTopTierReviewPerspective;
+	verdictId?: string;
+	evidenceId?: string;
+	evidenceReloaded: boolean;
+	redactedBlockReason?: string;
+	safeNextActions: ["/flowdesk-status"];
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		typedReviewerVerdictPersisted: boolean;
+		typedReviewerVerdictsAccepted: false;
+		durableReviewerVerdictEvidenceLinked: false;
 	};
 }
 
@@ -467,7 +488,10 @@ function managedFallbackRegateAuthority(
 function controlledExternalWriteAuthority(
 	authorized: boolean,
 ): FlowDeskControlledExternalWriteAdapterResultV1["authority"] {
-	return { ...disabledAuthority(), controlledExternalWriteAuthorized: authorized };
+	return {
+		...disabledAuthority(),
+		controlledExternalWriteAuthorized: authorized,
+	};
 }
 
 function reviewerTypedVerdictAuthority(
@@ -483,6 +507,17 @@ function durableReviewerVerdictAuthority(
 		...disabledAuthority(),
 		typedReviewerVerdictsAccepted: accepted,
 		durableReviewerVerdictEvidenceLinked: accepted,
+	};
+}
+
+function observedReviewerVerdictEvidenceAuthority(
+	persisted: boolean,
+): FlowDeskObservedReviewerVerdictEvidenceMaterializationResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		typedReviewerVerdictPersisted: persisted,
+		typedReviewerVerdictsAccepted: false,
+		durableReviewerVerdictEvidenceLinked: false,
 	};
 }
 
@@ -590,6 +625,30 @@ function blockControlledRedactedAuditExportWrite(input: {
 	};
 }
 
+function blockObservedReviewerVerdictEvidence(input: {
+	observation: FlowDeskInjectedSdkReviewerVerdictObservationResultV1;
+	evidenceId?: string;
+	reason: string;
+	evidenceReloaded?: boolean;
+}): FlowDeskObservedReviewerVerdictEvidenceMaterializationResultV1 {
+	return {
+		adapterProfile: "observed_reviewer_verdict_evidence_materializer",
+		status: "blocked_before_verdict_evidence",
+		writeAttempted: false,
+		workflowId: input.observation.workflowId,
+		sessionRef: input.observation.sessionRef,
+		lanePlanRef: input.observation.lanePlanRef,
+		bindingRef: input.observation.bindingRef,
+		perspective: input.observation.perspective,
+		verdictId: input.observation.verdictId,
+		evidenceId: input.evidenceId,
+		evidenceReloaded: input.evidenceReloaded ?? false,
+		redactedBlockReason: input.reason,
+		safeNextActions: ["/flowdesk-status"],
+		authority: observedReviewerVerdictEvidenceAuthority(false),
+	};
+}
+
 export function applyFlowDeskPermissionAskControlV1(input: {
 	decision: FlowDeskPermissionAskDecisionV1;
 	output: { status: "ask" | "deny" | "allow" };
@@ -602,7 +661,8 @@ export function applyFlowDeskPermissionAskControlV1(input: {
 			permissionStatusApplied: false,
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
-			redactedBlockReason: validation.errors.join(",") || "invalid permission decision",
+			redactedBlockReason:
+				validation.errors.join(",") || "invalid permission decision",
 			authority: permissionAskControlAuthority(false),
 		};
 	}
@@ -632,7 +692,8 @@ export async function abortFlowDeskSessionWithDecisionV1(input: {
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
 			sessionRef: input.decision.session_ref,
-			redactedBlockReason: validation.errors.join(",") || "invalid abort decision",
+			redactedBlockReason:
+				validation.errors.join(",") || "invalid abort decision",
 			authority: sessionAbortControlAuthority(false),
 		};
 	}
@@ -651,7 +712,9 @@ export async function abortFlowDeskSessionWithDecisionV1(input: {
 	}
 	const response = await abort.call(input.client.session, {
 		path: { id: input.decision.session_ref },
-		...(input.directory === undefined ? {} : { query: { directory: input.directory } }),
+		...(input.directory === undefined
+			? {}
+			: { query: { directory: input.directory } }),
 	});
 	return {
 		adapterProfile: "session_abort_control_adapter",
@@ -679,7 +742,8 @@ export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
 			sessionRef: input.decision.session_ref,
-			redactedBlockReason: validation.errors.join(",") || "invalid no-reply decision",
+			redactedBlockReason:
+				validation.errors.join(",") || "invalid no-reply decision",
 			authority: promptNoReplyControlAuthority(false),
 		};
 	}
@@ -691,7 +755,8 @@ export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
 			sessionRef: input.decision.session_ref,
-			redactedBlockReason: "No-reply decision session_ref must match request sessionId.",
+			redactedBlockReason:
+				"No-reply decision session_ref must match request sessionId.",
 			authority: promptNoReplyControlAuthority(false),
 		};
 	}
@@ -703,7 +768,8 @@ export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
 			sessionRef: input.decision.session_ref,
-			redactedBlockReason: "No-reply decision agent_ref must match request agent.",
+			redactedBlockReason:
+				"No-reply decision agent_ref must match request agent.",
 			authority: promptNoReplyControlAuthority(false),
 		};
 	}
@@ -724,9 +790,18 @@ export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
 		};
 	}
 	const text = promptTextFrom(input.request);
-	const model = parseProviderQualifiedModelId(input.request.provider_qualified_model_id);
-	const runtimeModel = model === undefined ? undefined : opencodeRuntimeModelForFlowDeskModel(model);
-	if (text === undefined || runtimeModel === undefined || input.request.agent.trim().length === 0) {
+	const model = parseProviderQualifiedModelId(
+		input.request.provider_qualified_model_id,
+	);
+	const runtimeModel =
+		model === undefined
+			? undefined
+			: opencodeRuntimeModelForFlowDeskModel(model);
+	if (
+		text === undefined ||
+		runtimeModel === undefined ||
+		input.request.agent.trim().length === 0
+	) {
 		return {
 			adapterProfile: "prompt_no_reply_control_adapter",
 			status: "blocked_before_no_reply_prompt",
@@ -734,7 +809,8 @@ export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
 			sessionRef: input.decision.session_ref,
-			redactedBlockReason: "No-reply prompt request is missing agent, model, or bounded text.",
+			redactedBlockReason:
+				"No-reply prompt request is missing agent, model, or bounded text.",
 			authority: promptNoReplyControlAuthority(false),
 		};
 	}
@@ -748,7 +824,8 @@ export async function dispatchFlowDeskPromptNoReplyWithDecisionV1(input: {
 			workflowId: input.decision.workflow_id,
 			attemptId: input.decision.attempt_id,
 			sessionRef: input.decision.session_ref,
-			redactedBlockReason: "Injected OpenCode client is missing the requested prompt method.",
+			redactedBlockReason:
+				"Injected OpenCode client is missing the requested prompt method.",
 			authority: promptNoReplyControlAuthority(false),
 		};
 	}
@@ -784,11 +861,16 @@ function safeJoinUnderRoot(rootDir: string, relativePath: string): string {
 	return target;
 }
 
-function ensureNoSymlinkedDirectory(rootDir: string, relativePath: string): void {
+function ensureNoSymlinkedDirectory(
+	rootDir: string,
+	relativePath: string,
+): void {
 	const root = resolve(rootDir);
 	if (existsSync(root) && lstatSync(root).isSymbolicLink())
 		throw new Error("controlled write root must not be a symlink");
-	const parts = dirname(relativePath).split("/").filter((part) => part.length > 0);
+	const parts = dirname(relativePath)
+		.split("/")
+		.filter((part) => part.length > 0);
 	let current = root;
 	for (const part of parts) {
 		current = resolve(current, part);
@@ -852,7 +934,9 @@ export function materializeFlowDeskControlledConformanceDocLocalWriteV1(input: {
 	if (input.readiness.status !== "write_ready")
 		errors.push("controlled external write readiness must be write_ready");
 	if (input.readiness.authority.controlledExternalWriteAuthorized !== true)
-		errors.push("controlled external write readiness must authorize the controlled target");
+		errors.push(
+			"controlled external write readiness must authorize the controlled target",
+		);
 	if (input.request.target_kind !== "release_conformance_doc")
 		errors.push("local writer only supports release_conformance_doc targets");
 	const recheckedReadiness = prepareFlowDeskControlledExternalWriteAdapterV1({
@@ -902,7 +986,8 @@ export function materializeFlowDeskControlledConformanceDocLocalWriteV1(input: {
 		evidence_bundle_hash: input.consumedApproval.evidence_bundle_hash,
 		guard_decision_ref: input.consumedApproval.guard_decision_ref,
 		issuance_audit_ref: input.consumedApproval.issuance_audit_ref,
-		consumption_audit_ref: input.consumedApproval.consumption_audit_ref as string,
+		consumption_audit_ref: input.consumedApproval
+			.consumption_audit_ref as string,
 		redaction_policy_ref: input.request.redaction_policy_ref,
 		content_hash_ref: input.request.content_hash_ref,
 		pre_write_audit_ref: input.request.pre_write_audit_ref,
@@ -959,8 +1044,14 @@ export function materializeFlowDeskControlledConformanceDocLocalWriteV1(input: {
 			input.rootDir,
 			`docs/conformance/.${input.request.target_ref}.tmp-controlled-conformance-doc-write`,
 		);
-		const ledgerTarget = safeJoinUnderRoot(input.rootDir, preparedLedger.writeIntent.path);
-		const ledgerTemp = safeJoinUnderRoot(input.rootDir, preparedLedger.writeIntent.tempPath);
+		const ledgerTarget = safeJoinUnderRoot(
+			input.rootDir,
+			preparedLedger.writeIntent.path,
+		);
+		const ledgerTemp = safeJoinUnderRoot(
+			input.rootDir,
+			preparedLedger.writeIntent.tempPath,
+		);
 		if (existsSync(documentTarget) || existsSync(ledgerTarget))
 			return blockControlledConformanceDocWrite({
 				request: input.request,
@@ -974,7 +1065,8 @@ export function materializeFlowDeskControlledConformanceDocLocalWriteV1(input: {
 		if (dirname(ledgerTarget) !== dirname(ledgerTemp))
 			return blockControlledConformanceDocWrite({
 				request: input.request,
-				reason: "controlled conformance doc ledger temp path must stay beside target",
+				reason:
+					"controlled conformance doc ledger temp path must stay beside target",
 			});
 		mkdirSync(dirname(documentTarget), { recursive: true });
 		mkdirSync(dirname(ledgerTarget), { recursive: true });
@@ -1085,7 +1177,9 @@ export function materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(inp
 	if (input.readiness.status !== "write_ready")
 		errors.push("controlled external write readiness must be write_ready");
 	if (input.readiness.authority.controlledExternalWriteAuthorized !== true)
-		errors.push("controlled external write readiness must authorize the controlled target");
+		errors.push(
+			"controlled external write readiness must authorize the controlled target",
+		);
 	if (input.request.target_kind !== "redacted_audit_export")
 		errors.push("local writer only supports redacted_audit_export targets");
 	const recheckedReadiness = prepareFlowDeskControlledExternalWriteAdapterV1({
@@ -1110,7 +1204,9 @@ export function materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(inp
 		errors.push("external_write approval must include consumption audit ref");
 	const artifactSha256Ref = sha256Ref(input.exportJson);
 	if (input.request.content_hash_ref !== artifactSha256Ref)
-		errors.push("request content_hash_ref must match redacted audit export sha256");
+		errors.push(
+			"request content_hash_ref must match redacted audit export sha256",
+		);
 	const materializedAt = input.materializedAt ?? new Date().toISOString();
 	if (!Number.isFinite(Date.parse(materializedAt)))
 		errors.push("materializedAt must be a parseable timestamp");
@@ -1138,7 +1234,8 @@ export function materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(inp
 		evidence_bundle_hash: input.consumedApproval.evidence_bundle_hash,
 		guard_decision_ref: input.consumedApproval.guard_decision_ref,
 		issuance_audit_ref: input.consumedApproval.issuance_audit_ref,
-		consumption_audit_ref: input.consumedApproval.consumption_audit_ref as string,
+		consumption_audit_ref: input.consumedApproval
+			.consumption_audit_ref as string,
 		redaction_policy_ref: input.request.redaction_policy_ref,
 		content_hash_ref: input.request.content_hash_ref,
 		pre_write_audit_ref: input.request.pre_write_audit_ref,
@@ -1183,7 +1280,8 @@ export function materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(inp
 	if (!preWriteReload.ok || preWriteReload.blocked.length > 0)
 		return blockControlledRedactedAuditExportWrite({
 			request: input.request,
-			reason: "controlled redacted audit export pre-write evidence reload failed",
+			reason:
+				"controlled redacted audit export pre-write evidence reload failed",
 		});
 
 	let exportRenamed = false;
@@ -1196,22 +1294,31 @@ export function materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(inp
 			input.rootDir,
 			`.flowdesk/sessions/${input.request.workflow_id}/redacted-audit/.${input.request.target_ref}.tmp-controlled-redacted-audit-export-write`,
 		);
-		const ledgerTarget = safeJoinUnderRoot(input.rootDir, preparedLedger.writeIntent.path);
-		const ledgerTemp = safeJoinUnderRoot(input.rootDir, preparedLedger.writeIntent.tempPath);
+		const ledgerTarget = safeJoinUnderRoot(
+			input.rootDir,
+			preparedLedger.writeIntent.path,
+		);
+		const ledgerTemp = safeJoinUnderRoot(
+			input.rootDir,
+			preparedLedger.writeIntent.tempPath,
+		);
 		if (existsSync(exportTarget) || existsSync(ledgerTarget))
 			return blockControlledRedactedAuditExportWrite({
 				request: input.request,
-				reason: "controlled redacted audit export or ledger target already exists",
+				reason:
+					"controlled redacted audit export or ledger target already exists",
 			});
 		if (dirname(exportTarget) !== dirname(exportTemp))
 			return blockControlledRedactedAuditExportWrite({
 				request: input.request,
-				reason: "controlled redacted audit export temp path must stay beside target",
+				reason:
+					"controlled redacted audit export temp path must stay beside target",
 			});
 		if (dirname(ledgerTarget) !== dirname(ledgerTemp))
 			return blockControlledRedactedAuditExportWrite({
 				request: input.request,
-				reason: "controlled redacted audit export ledger temp path must stay beside target",
+				reason:
+					"controlled redacted audit export ledger temp path must stay beside target",
 			});
 		mkdirSync(dirname(exportTarget), { recursive: true });
 		mkdirSync(dirname(ledgerTarget), { recursive: true });
@@ -1358,10 +1465,12 @@ export function orchestrateFlowDeskManagedFallbackRegateV1(input: {
 			workflowId: input.decision.workflow_id,
 			parentAttemptId: input.decision.parent_attempt_id,
 			newAttemptId: input.decision.new_attempt_id,
-			fromProviderQualifiedModelId: input.decision.from_provider_qualified_model_id,
+			fromProviderQualifiedModelId:
+				input.decision.from_provider_qualified_model_id,
 			toProviderQualifiedModelId: input.decision.to_provider_qualified_model_id,
 			regatePlan: plan,
-			redactedBlockReason: plan.errors.join(",") || "fallback regate plan blocked",
+			redactedBlockReason:
+				plan.errors.join(",") || "fallback regate plan blocked",
 			safeNextActions: ["/flowdesk-status"],
 			authority: managedFallbackRegateAuthority(false),
 		};
@@ -1550,8 +1659,12 @@ export function prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1(input: {
 			),
 			linkedLifecycleRefs: [...lifecycleRefs.values()],
 			redactedBlockReason: [
-				missingVerdicts.length > 0 ? "missing durable reviewer verdict evidence" : undefined,
-				missingLifecycle.length > 0 ? "missing complete lane lifecycle evidence" : undefined,
+				missingVerdicts.length > 0
+					? "missing durable reviewer verdict evidence"
+					: undefined,
+				missingLifecycle.length > 0
+					? "missing complete lane lifecycle evidence"
+					: undefined,
 			]
 				.filter((reason): reason is string => reason !== undefined)
 				.join(", "),
@@ -1568,6 +1681,124 @@ export function prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1(input: {
 		linkedLifecycleRefs: [...lifecycleRefs.values()],
 		safeNextActions: ["/flowdesk-status", "/flowdesk-run"],
 		authority: durableReviewerVerdictAuthority(true),
+	};
+}
+
+export function materializeFlowDeskObservedReviewerVerdictEvidenceV1(input: {
+	rootDir: string;
+	observation: FlowDeskInjectedSdkReviewerVerdictObservationResultV1;
+	evidenceId?: string;
+}): FlowDeskObservedReviewerVerdictEvidenceMaterializationResultV1 {
+	const evidenceId = input.evidenceId ?? input.observation.verdictId;
+	if (typeof input.rootDir !== "string" || input.rootDir.trim().length === 0)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason: "rootDir is required",
+		});
+	if (
+		input.observation.status !== "verdict_observed" ||
+		input.observation.verdict === undefined
+	)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason: "reviewer verdict observation must be verdict_observed",
+		});
+	if (evidenceId === undefined)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			reason: "reviewer verdict evidence id is required",
+		});
+	const validation = validateTopTierReviewVerdictV1(input.observation.verdict);
+	if (!validation.ok)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason: validation.errors.join(", ") || "reviewer verdict is invalid",
+		});
+	const preWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.observation.workflowId,
+		rootDir: input.rootDir,
+	});
+	if (!preWriteReload.ok || preWriteReload.blocked.length > 0)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason: "reviewer verdict pre-write evidence reload failed",
+			evidenceReloaded: false,
+		});
+	if (
+		preWriteReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "reviewer_verdict" &&
+				entry.evidenceId === evidenceId,
+		)
+	)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason: "reviewer verdict evidence already exists",
+			evidenceReloaded: true,
+		});
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.observation.workflowId,
+		evidenceId,
+		record: input.observation.verdict,
+	});
+	if (!prepared.ok || prepared.writeIntent === undefined)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason:
+				prepared.errors.join(", ") ||
+				"reviewer verdict evidence intent invalid",
+			evidenceReloaded: true,
+		});
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [
+		prepared.writeIntent,
+	]);
+	if (!applied.ok)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason:
+				applied.errors.join(", ") || "reviewer verdict evidence write failed",
+			evidenceReloaded: true,
+		});
+	const postWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.observation.workflowId,
+		rootDir: input.rootDir,
+	});
+	const persisted =
+		postWriteReload.ok &&
+		postWriteReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "reviewer_verdict" &&
+				entry.evidenceId === evidenceId &&
+				entry.record.verdict_id === input.observation.verdictId,
+		);
+	if (!persisted)
+		return blockObservedReviewerVerdictEvidence({
+			observation: input.observation,
+			evidenceId,
+			reason: "reviewer verdict evidence reload verification failed",
+			evidenceReloaded: false,
+		});
+	return {
+		adapterProfile: "observed_reviewer_verdict_evidence_materializer",
+		status: "verdict_evidence_recorded",
+		writeAttempted: true,
+		workflowId: input.observation.workflowId,
+		sessionRef: input.observation.sessionRef,
+		lanePlanRef: input.observation.lanePlanRef,
+		bindingRef: input.observation.bindingRef,
+		perspective: input.observation.perspective,
+		verdictId: input.observation.verdictId,
+		evidenceId,
+		evidenceReloaded: true,
+		safeNextActions: ["/flowdesk-status"],
+		authority: observedReviewerVerdictEvidenceAuthority(true),
 	};
 }
 
@@ -1892,13 +2123,16 @@ function opencodeRuntimeProviderIDForFlowDeskProviderFamily(
 	}
 }
 
-function opencodeRuntimeModelForFlowDeskModel(
-	model: { providerID: string; modelID: string },
-): { providerID: string; modelID: string } | undefined {
+function opencodeRuntimeModelForFlowDeskModel(model: {
+	providerID: string;
+	modelID: string;
+}): { providerID: string; modelID: string } | undefined {
 	const providerID = opencodeRuntimeProviderIDForFlowDeskProviderFamily(
 		model.providerID,
 	);
-	return providerID === undefined ? undefined : { providerID, modelID: model.modelID };
+	return providerID === undefined
+		? undefined
+		: { providerID, modelID: model.modelID };
 }
 
 function refFrom(label: string, value: string): string {

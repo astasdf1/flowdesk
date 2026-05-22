@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,8 +14,6 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	consumeFlowDeskProductionApprovalSourceV1,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
-	prepareFlowDeskSessionEvidenceWriteIntentV1,
-	reloadFlowDeskSessionEvidenceV1,
 	type FlowDeskConformanceRuntimeMetadataV1,
 	type FlowDeskControlledExternalWriteRequestV1,
 	type FlowDeskDispatchAttemptManifestV1,
@@ -21,8 +25,8 @@ import {
 	type FlowDeskManagedDispatchBetaTelemetryCorrelationV1,
 	type FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1,
 	type FlowDeskPermissionAskDecisionV1,
-	type FlowDeskPromptNoReplyDecisionV1,
 	type FlowDeskProductionApprovalSourceV1,
+	type FlowDeskPromptNoReplyDecisionV1,
 	type FlowDeskProviderHealthSnapshotV1,
 	type FlowDeskSessionAbortDecisionV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
@@ -30,6 +34,8 @@ import {
 	type FlowDeskUsageSnapshotV1,
 	type GuardApprovedDispatchV1,
 	type ManagedDispatchBetaBoundaryInputV1,
+	prepareFlowDeskSessionEvidenceWriteIntentV1,
+	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
 import { flowdeskPluginScaffold } from "./index.js";
 import {
@@ -38,14 +44,15 @@ import {
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
 	dispatchFlowDeskPromptNoReplyWithDecisionV1,
 	dispatchManagedDispatchBetaPromptV1,
-	materializeFlowDeskControlledConformanceDocLocalWriteV1,
-	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
-	orchestrateFlowDeskManagedFallbackRegateV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
+	materializeFlowDeskControlledConformanceDocLocalWriteV1,
+	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
+	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
 	observeInjectedSdkLaneV1,
 	observeInjectedSdkReviewerVerdictV1,
+	orchestrateFlowDeskManagedFallbackRegateV1,
 	prepareFlowDeskControlledExternalWriteAdapterV1,
 	prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1,
 	prepareFlowDeskFallbackReselectionRegateAdapterV1,
@@ -354,10 +361,9 @@ function lifecycleForVerdict(
 	verdict: Record<string, unknown>,
 	overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
-	const perspective = String(verdict.perspective ?? "policy_security").replaceAll(
-		"_",
-		"-",
-	);
+	const perspective = String(
+		verdict.perspective ?? "policy_security",
+	).replaceAll("_", "-");
 	return {
 		schema_version: "flowdesk.lane_lifecycle_record.v1",
 		lane_id: `lane-${perspective}`,
@@ -704,7 +710,10 @@ function reloadedEvidence(
 function fakeClient() {
 	const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
 	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
-	const abortCalls: Array<{ path: { id: string }; query?: { directory?: string } }> = [];
+	const abortCalls: Array<{
+		path: { id: string };
+		query?: { directory?: string };
+	}> = [];
 	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
 		session: {
 			prompt(options) {
@@ -1041,11 +1050,156 @@ test("injected sdk reviewer verdict observation separates missing and invalid ve
 	assert.match(invalid.redactedErrors.join("|"), /workflow_id mismatch/);
 });
 
+test("observed typed reviewer verdict can be persisted without acceptance authority", async () => {
+	await withTempRoot(async (rootDir) => {
+		const verdict = typedReviewerVerdict();
+		const observation = await observeInjectedSdkReviewerVerdictV1({
+			client: observingClient(
+				[],
+				[
+					{
+						info: { id: "message-verdict-123" },
+						parts: [{ type: "text", text: JSON.stringify(verdict) }],
+					},
+				],
+			).client,
+			request: {
+				sessionId: "child-session-123",
+				workflowId: "workflow-123",
+				lanePlanRef: "lane-plan-123",
+				bindingRef: "binding-reviewer-123",
+				perspective: "policy_security",
+			},
+		});
+		const materialized = materializeFlowDeskObservedReviewerVerdictEvidenceV1({
+			rootDir,
+			observation,
+			evidenceId: "observed-verdict-1",
+		});
+
+		assert.equal(materialized.status, "verdict_evidence_recorded");
+		assert.equal(materialized.writeAttempted, true);
+		assert.equal(materialized.evidenceReloaded, true);
+		assert.equal(materialized.verdictId, "verdict-policy-security");
+		assert.equal(materialized.evidenceId, "observed-verdict-1");
+		assert.equal(materialized.authority.typedReviewerVerdictPersisted, true);
+		assert.equal(materialized.authority.typedReviewerVerdictsAccepted, false);
+		assert.equal(
+			materialized.authority.durableReviewerVerdictEvidenceLinked,
+			false,
+		);
+		assert.equal(materialized.authority.providerCall, false);
+		assert.equal(materialized.authority.actualLaneLaunch, false);
+		assert.equal(materialized.authority.runtimeExecution, false);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		const reviewerVerdicts = reloaded.entries.filter(
+			(entry) => entry.evidenceClass === "reviewer_verdict",
+		);
+		assert.equal(reviewerVerdicts.length, 1);
+		assert.equal(reviewerVerdicts[0].evidenceId, "observed-verdict-1");
+		assert.equal(
+			reviewerVerdicts[0].record.verdict_id,
+			"verdict-policy-security",
+		);
+		assert.equal(reviewerVerdicts[0].record.dispatch_authority_enabled, false);
+	});
+});
+
+test("reviewer verdict persistence writes nothing for missing or invalid observations", async () => {
+	await withTempRoot(async (rootDir) => {
+		const missing = await observeInjectedSdkReviewerVerdictV1({
+			client: observingClient(
+				[],
+				[
+					{
+						info: { id: "message-no-verdict" },
+						parts: [{ type: "text", text: "ordinary review prose" }],
+					},
+				],
+			).client,
+			request: {
+				sessionId: "child-session-123",
+				workflowId: "workflow-123",
+				lanePlanRef: "lane-plan-123",
+				bindingRef: "binding-reviewer-123",
+				perspective: "policy_security",
+			},
+		});
+		const missingMaterialized =
+			materializeFlowDeskObservedReviewerVerdictEvidenceV1({
+				rootDir,
+				observation: missing,
+				evidenceId: "missing-verdict-1",
+			});
+		assert.equal(missingMaterialized.status, "blocked_before_verdict_evidence");
+		assert.equal(missingMaterialized.writeAttempted, false);
+		assert.equal(
+			missingMaterialized.authority.typedReviewerVerdictPersisted,
+			false,
+		);
+		assert.equal(
+			missingMaterialized.authority.typedReviewerVerdictsAccepted,
+			false,
+		);
+
+		const invalid = await observeInjectedSdkReviewerVerdictV1({
+			client: observingClient(
+				[],
+				[
+					{
+						parts: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									typedReviewerVerdict({ workflow_id: "workflow-other" }),
+								),
+							},
+						],
+					},
+				],
+			).client,
+			request: {
+				sessionId: "child-session-123",
+				workflowId: "workflow-123",
+				lanePlanRef: "lane-plan-123",
+				bindingRef: "binding-reviewer-123",
+				perspective: "policy_security",
+			},
+		});
+		const invalidMaterialized =
+			materializeFlowDeskObservedReviewerVerdictEvidenceV1({
+				rootDir,
+				observation: invalid,
+				evidenceId: "invalid-verdict-1",
+			});
+		assert.equal(invalidMaterialized.status, "blocked_before_verdict_evidence");
+		assert.equal(invalidMaterialized.writeAttempted, false);
+		assert.equal(invalidMaterialized.authority.providerCall, false);
+		assert.equal(invalidMaterialized.authority.actualLaneLaunch, false);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		assert.equal(
+			reloaded.entries.some(
+				(entry) => entry.evidenceClass === "reviewer_verdict",
+			),
+			false,
+		);
+	});
+});
+
 test("reviewer typed verdict acceptance adapter accepts only canonical passing verdicts", () => {
 	const result = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
 		workflowId: "workflow-123",
 		attemptId: "attempt-123",
-		verdicts: canonicalReviewerVerdicts() as unknown as FlowDeskTopTierReviewVerdictV1[],
+		verdicts:
+			canonicalReviewerVerdicts() as unknown as FlowDeskTopTierReviewVerdictV1[],
 		consumedApproval: consumedReviewerFanoutApproval(),
 	});
 
@@ -1060,7 +1214,10 @@ test("reviewer typed verdict acceptance adapter accepts only canonical passing v
 		"architecture",
 		"verification_implementation",
 	]);
-	assert.deepEqual(result.safeNextActions, ["/flowdesk-status", "/flowdesk-run"]);
+	assert.deepEqual(result.safeNextActions, [
+		"/flowdesk-status",
+		"/flowdesk-run",
+	]);
 	assert.equal(result.authority.typedReviewerVerdictsAccepted, true);
 	assert.equal(result.authority.realOpenCodeDispatch, false);
 	assert.equal(result.authority.providerCall, false);
@@ -1085,7 +1242,10 @@ test("durable reviewer verdict linkage adapter requires reloaded verdict and lif
 			assert.ok(prepared.writeIntent);
 			return prepared.writeIntent;
 		});
-		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(
+			rootDir,
+			intents,
+		);
 		assert.equal(applied.ok, true, applied.errors.join("; "));
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
 			workflowId: "workflow-123",
@@ -1134,13 +1294,14 @@ test("durable reviewer verdict linkage adapter blocks missing or incomplete dura
 			workflowId: "workflow-123",
 			rootDir,
 		});
-		const missingLifecycle = prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1({
-			workflowId: "workflow-123",
-			attemptId: "attempt-123",
-			verdicts: verdicts as unknown as FlowDeskTopTierReviewVerdictV1[],
-			consumedApproval: consumedReviewerFanoutApproval(),
-			reloadedEvidence: reloaded,
-		});
+		const missingLifecycle =
+			prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1({
+				workflowId: "workflow-123",
+				attemptId: "attempt-123",
+				verdicts: verdicts as unknown as FlowDeskTopTierReviewVerdictV1[],
+				consumedApproval: consumedReviewerFanoutApproval(),
+				reloadedEvidence: reloaded,
+			});
 		assert.equal(missingLifecycle.status, "blocked_before_durable_acceptance");
 		assert.match(
 			missingLifecycle.redactedBlockReason ?? "",
@@ -1154,12 +1315,16 @@ test("durable reviewer verdict linkage adapter blocks missing or incomplete dura
 });
 
 test("reviewer typed verdict acceptance adapter blocks incomplete or unapproved verdict sets", () => {
-	const missingPerspective = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
-		workflowId: "workflow-123",
-		attemptId: "attempt-123",
-		verdicts: canonicalReviewerVerdicts().slice(0, 2) as unknown as FlowDeskTopTierReviewVerdictV1[],
-		consumedApproval: consumedReviewerFanoutApproval(),
-	});
+	const missingPerspective =
+		prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
+			workflowId: "workflow-123",
+			attemptId: "attempt-123",
+			verdicts: canonicalReviewerVerdicts().slice(
+				0,
+				2,
+			) as unknown as FlowDeskTopTierReviewVerdictV1[],
+			consumedApproval: consumedReviewerFanoutApproval(),
+		});
 	assert.equal(missingPerspective.status, "blocked_before_acceptance");
 	assert.deepEqual(missingPerspective.acceptedVerdictIds, []);
 	assert.match(
@@ -1183,13 +1348,17 @@ test("reviewer typed verdict acceptance adapter blocks incomplete or unapproved 
 		consumedApproval: consumedReviewerFanoutApproval(),
 	});
 	assert.equal(nonPassing.status, "blocked_before_acceptance");
-	assert.match(nonPassing.redactedBlockReason ?? "", /verdict_label must be pass/);
+	assert.match(
+		nonPassing.redactedBlockReason ?? "",
+		/verdict_label must be pass/,
+	);
 	assert.equal(nonPassing.authority.actualLaneLaunch, false);
 
 	const wrongApproval = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
 		workflowId: "workflow-123",
 		attemptId: "attempt-123",
-		verdicts: canonicalReviewerVerdicts() as unknown as FlowDeskTopTierReviewVerdictV1[],
+		verdicts:
+			canonicalReviewerVerdicts() as unknown as FlowDeskTopTierReviewVerdictV1[],
 		consumedApproval: consumedApproval(),
 	});
 	assert.equal(wrongApproval.status, "blocked_before_acceptance");
@@ -1278,13 +1447,22 @@ test("managed fallback regate orchestrator prepares only a fresh full re-gate pl
 		"health-fresh-123",
 		"runtime-fresh-123",
 	]);
-	assert.equal(result.regatePlan?.required_guard_decision_ref, "guard-fallback-123");
-	assert.equal(result.regatePlan?.required_approval_ref, "approval-fallback-123");
+	assert.equal(
+		result.regatePlan?.required_guard_decision_ref,
+		"guard-fallback-123",
+	);
+	assert.equal(
+		result.regatePlan?.required_approval_ref,
+		"approval-fallback-123",
+	);
 	assert.equal(
 		result.regatePlan?.required_pre_dispatch_audit_ref,
 		"audit-fallback-123",
 	);
-	assert.deepEqual(result.safeNextActions, ["/flowdesk-status", "/flowdesk-run"]);
+	assert.deepEqual(result.safeNextActions, [
+		"/flowdesk-status",
+		"/flowdesk-run",
+	]);
 	assert.equal(result.authority.freshRegatePlanPrepared, true);
 	assert.equal(result.authority.automaticFallbackAuthorized, false);
 	assert.equal(result.authority.fallbackAuthority, false);
@@ -1304,13 +1482,18 @@ test("managed fallback regate orchestrator blocks before planning unsafe fallbac
 	assert.equal(terminal.providerSwitchAttempted, false);
 	assert.equal(terminal.sdkCallAttempted, false);
 	assert.deepEqual(terminal.safeNextActions, ["/flowdesk-status"]);
-	assert.match(terminal.redactedBlockReason ?? "", /max-depth|requires_full_regate/);
+	assert.match(
+		terminal.redactedBlockReason ?? "",
+		/max-depth|requires_full_regate/,
+	);
 	assert.equal(terminal.authority.freshRegatePlanPrepared, false);
 	assert.equal(terminal.authority.providerCall, false);
 
 	const drift = orchestrateFlowDeskManagedFallbackRegateV1({
 		decision: fallbackDecision(),
-		consumedApproval: consumedFallbackApproval({ approval_id: "approval-other-123" }),
+		consumedApproval: consumedFallbackApproval({
+			approval_id: "approval-other-123",
+		}),
 	});
 	assert.equal(drift.status, "blocked_before_regate_plan");
 	assert.match(drift.redactedBlockReason ?? "", /approval ref mismatch/);
@@ -1398,7 +1581,10 @@ test("controlled conformance doc local writer records doc and ledger after write
 
 		assert.equal(result.status, "write_recorded");
 		assert.equal(result.writeAttempted, true);
-		assert.equal(result.documentPath, "docs/conformance/release-conformance-doc-123.md");
+		assert.equal(
+			result.documentPath,
+			"docs/conformance/release-conformance-doc-123.md",
+		);
 		assert.equal(result.ledgerEntryId, "controlled-doc-write-123");
 		assert.equal(result.ledgerEvidenceReloaded, true);
 		assert.equal(result.artifactSha256Ref, sha256Ref(documentMarkdown));
@@ -1444,43 +1630,55 @@ test("controlled conformance doc local writer fails closed before unsafe writes"
 			request,
 			consumedApproval,
 		});
-		const blockedReadiness = materializeFlowDeskControlledConformanceDocLocalWriteV1({
-			rootDir,
-			readiness: { ...readiness, status: "blocked_before_write" },
-			request,
-			consumedApproval,
-			ledgerEntryId: "controlled-doc-write-blocked-1",
-			documentMarkdown,
-			materializedAt: now,
-		});
+		const blockedReadiness =
+			materializeFlowDeskControlledConformanceDocLocalWriteV1({
+				rootDir,
+				readiness: { ...readiness, status: "blocked_before_write" },
+				request,
+				consumedApproval,
+				ledgerEntryId: "controlled-doc-write-blocked-1",
+				documentMarkdown,
+				materializedAt: now,
+			});
 		assert.equal(blockedReadiness.status, "blocked_before_local_write");
 		assert.equal(blockedReadiness.writeAttempted, false);
-		assert.equal(blockedReadiness.authority.localConformanceDocWriteRecorded, false);
+		assert.equal(
+			blockedReadiness.authority.localConformanceDocWriteRecorded,
+			false,
+		);
 
-		const wrongTarget = materializeFlowDeskControlledConformanceDocLocalWriteV1({
-			rootDir,
-			readiness,
-			request: controlledExternalWriteRequest({
-				target_kind: "redacted_audit_export",
-				content_hash_ref: sha256Ref(documentMarkdown),
-			}),
-			consumedApproval,
-			ledgerEntryId: "controlled-doc-write-blocked-2",
-			documentMarkdown,
-			materializedAt: now,
-		});
+		const wrongTarget = materializeFlowDeskControlledConformanceDocLocalWriteV1(
+			{
+				rootDir,
+				readiness,
+				request: controlledExternalWriteRequest({
+					target_kind: "redacted_audit_export",
+					content_hash_ref: sha256Ref(documentMarkdown),
+				}),
+				consumedApproval,
+				ledgerEntryId: "controlled-doc-write-blocked-2",
+				documentMarkdown,
+				materializedAt: now,
+			},
+		);
 		assert.equal(wrongTarget.status, "blocked_before_local_write");
-		assert.match(wrongTarget.redactedBlockReason ?? "", /release_conformance_doc|readiness/);
+		assert.match(
+			wrongTarget.redactedBlockReason ?? "",
+			/release_conformance_doc|readiness/,
+		);
 
-		const hashMismatch = materializeFlowDeskControlledConformanceDocLocalWriteV1({
-			rootDir,
-			readiness,
-			request: controlledExternalWriteRequest({ content_hash_ref: "sha256-mismatch" }),
-			consumedApproval,
-			ledgerEntryId: "controlled-doc-write-blocked-3",
-			documentMarkdown,
-			materializedAt: now,
-		});
+		const hashMismatch =
+			materializeFlowDeskControlledConformanceDocLocalWriteV1({
+				rootDir,
+				readiness,
+				request: controlledExternalWriteRequest({
+					content_hash_ref: "sha256-mismatch",
+				}),
+				consumedApproval,
+				ledgerEntryId: "controlled-doc-write-blocked-3",
+				documentMarkdown,
+				materializedAt: now,
+			});
 		assert.equal(hashMismatch.status, "blocked_before_local_write");
 		assert.match(hashMismatch.redactedBlockReason ?? "", /content_hash_ref/);
 		assert.equal(hashMismatch.authority.remoteWriteAttempted, false);
@@ -1491,16 +1689,21 @@ test("controlled conformance doc local writer fails closed before unsafe writes"
 			".flowdesk/sessions/workflow-123/evidence/usage-authority",
 		);
 		mkdirSync(malformedEvidenceDir, { recursive: true });
-		writeFileSync(join(malformedEvidenceDir, "evidence-malformed.json"), "{bad", "utf8");
-		const blockedPreWriteReload = materializeFlowDeskControlledConformanceDocLocalWriteV1({
-			rootDir,
-			readiness,
-			request,
-			consumedApproval,
-			ledgerEntryId: "controlled-doc-write-blocked-4",
-			documentMarkdown,
-			materializedAt: now,
-		});
+		writeFileSync(
+			join(malformedEvidenceDir, "evidence-malformed.json"),
+			"{bad",
+			"utf8",
+		);
+		const blockedPreWriteReload =
+			materializeFlowDeskControlledConformanceDocLocalWriteV1({
+				rootDir,
+				readiness,
+				request,
+				consumedApproval,
+				ledgerEntryId: "controlled-doc-write-blocked-4",
+				documentMarkdown,
+				materializedAt: now,
+			});
 		assert.equal(blockedPreWriteReload.status, "blocked_before_local_write");
 		assert.match(
 			blockedPreWriteReload.redactedBlockReason ?? "",
@@ -1541,15 +1744,17 @@ test("controlled redacted audit export local writer records export and ledger af
 			consumedApproval,
 		});
 
-		const result = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
-			rootDir,
-			readiness,
-			request,
-			consumedApproval,
-			ledgerEntryId: "controlled-audit-export-write-123",
-			exportJson,
-			materializedAt: now,
-		});
+		const result = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(
+			{
+				rootDir,
+				readiness,
+				request,
+				consumedApproval,
+				ledgerEntryId: "controlled-audit-export-write-123",
+				exportJson,
+				materializedAt: now,
+			},
+		);
 
 		assert.equal(result.status, "write_recorded");
 		assert.equal(result.writeAttempted, true);
@@ -1573,13 +1778,17 @@ test("controlled redacted audit export local writer records export and ledger af
 		assert.equal(result.authority.providerCall, false);
 		assert.equal(result.authority.actualLaneLaunch, false);
 		assert.equal(result.authority.runtimeExecution, false);
-		assert.equal(readFileSync(join(rootDir, result.exportPath), "utf8"), exportJson);
+		assert.equal(
+			readFileSync(join(rootDir, result.exportPath), "utf8"),
+			exportJson,
+		);
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
 			workflowId: "workflow-123",
 			rootDir,
 		});
 		const ledger = reloaded.entries.find(
-			(entry) => entry.evidenceClass === "controlled_redacted_audit_export_write",
+			(entry) =>
+				entry.evidenceClass === "controlled_redacted_audit_export_write",
 		);
 		assert.ok(ledger);
 		assert.equal(ledger.evidenceId, "controlled-audit-export-write-123");
@@ -1608,78 +1817,96 @@ test("controlled redacted audit export local writer fails closed before unsafe w
 			consumedApproval,
 		});
 
-		const blockedReadiness = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
-			rootDir,
-			readiness: { ...readiness, status: "blocked_before_write" },
-			request,
-			consumedApproval,
-			ledgerEntryId: "controlled-audit-export-write-blocked-1",
-			exportJson,
-			materializedAt: now,
-		});
+		const blockedReadiness =
+			materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+				rootDir,
+				readiness: { ...readiness, status: "blocked_before_write" },
+				request,
+				consumedApproval,
+				ledgerEntryId: "controlled-audit-export-write-blocked-1",
+				exportJson,
+				materializedAt: now,
+			});
 		assert.equal(blockedReadiness.status, "blocked_before_local_write");
 		assert.equal(blockedReadiness.writeAttempted, false);
-		assert.equal(blockedReadiness.authority.localRedactedAuditExportWriteRecorded, false);
+		assert.equal(
+			blockedReadiness.authority.localRedactedAuditExportWriteRecorded,
+			false,
+		);
 
-		const wrongTarget = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
-			rootDir,
-			readiness,
-			request: controlledExternalWriteRequest({
-				content_hash_ref: sha256Ref(exportJson),
-			}),
-			consumedApproval,
-			ledgerEntryId: "controlled-audit-export-write-blocked-2",
-			exportJson,
-			materializedAt: now,
-		});
+		const wrongTarget =
+			materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+				rootDir,
+				readiness,
+				request: controlledExternalWriteRequest({
+					content_hash_ref: sha256Ref(exportJson),
+				}),
+				consumedApproval,
+				ledgerEntryId: "controlled-audit-export-write-blocked-2",
+				exportJson,
+				materializedAt: now,
+			});
 		assert.equal(wrongTarget.status, "blocked_before_local_write");
-		assert.match(wrongTarget.redactedBlockReason ?? "", /redacted_audit_export|readiness/);
+		assert.match(
+			wrongTarget.redactedBlockReason ?? "",
+			/redacted_audit_export|readiness/,
+		);
 
-		const hashMismatch = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
-			rootDir,
-			readiness,
-			request: controlledExternalWriteRequest({
-				target_kind: "redacted_audit_export",
-				target_ref: "redacted-audit-export-123",
-				content_hash_ref: "sha256-mismatch",
-			}),
-			consumedApproval,
-			ledgerEntryId: "controlled-audit-export-write-blocked-3",
-			exportJson,
-			materializedAt: now,
-		});
+		const hashMismatch =
+			materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+				rootDir,
+				readiness,
+				request: controlledExternalWriteRequest({
+					target_kind: "redacted_audit_export",
+					target_ref: "redacted-audit-export-123",
+					content_hash_ref: "sha256-mismatch",
+				}),
+				consumedApproval,
+				ledgerEntryId: "controlled-audit-export-write-blocked-3",
+				exportJson,
+				materializedAt: now,
+			});
 		assert.equal(hashMismatch.status, "blocked_before_local_write");
 		assert.match(hashMismatch.redactedBlockReason ?? "", /content_hash_ref/);
 		assert.equal(hashMismatch.authority.remoteWriteAttempted, false);
 		assert.equal(hashMismatch.authority.githubWriteAttempted, false);
 
-		const rawPayload = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
-			rootDir,
-			readiness,
-			request,
-			consumedApproval,
-			ledgerEntryId: "controlled-audit-export-write-blocked-4",
-			exportJson: JSON.stringify({ raw_log: "developer message" }),
-			materializedAt: now,
-		});
+		const rawPayload =
+			materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+				rootDir,
+				readiness,
+				request,
+				consumedApproval,
+				ledgerEntryId: "controlled-audit-export-write-blocked-4",
+				exportJson: JSON.stringify({ raw_log: "developer message" }),
+				materializedAt: now,
+			});
 		assert.equal(rawPayload.status, "blocked_before_local_write");
-		assert.match(rawPayload.redactedBlockReason ?? "", /raw payload|prompt-like/);
+		assert.match(
+			rawPayload.redactedBlockReason ?? "",
+			/raw payload|prompt-like/,
+		);
 
 		const malformedEvidenceDir = join(
 			rootDir,
 			".flowdesk/sessions/workflow-123/evidence/usage-authority",
 		);
 		mkdirSync(malformedEvidenceDir, { recursive: true });
-		writeFileSync(join(malformedEvidenceDir, "evidence-malformed.json"), "{bad", "utf8");
-		const blockedPreWriteReload = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
-			rootDir,
-			readiness,
-			request,
-			consumedApproval,
-			ledgerEntryId: "controlled-audit-export-write-blocked-5",
-			exportJson,
-			materializedAt: now,
-		});
+		writeFileSync(
+			join(malformedEvidenceDir, "evidence-malformed.json"),
+			"{bad",
+			"utf8",
+		);
+		const blockedPreWriteReload =
+			materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+				rootDir,
+				readiness,
+				request,
+				consumedApproval,
+				ledgerEntryId: "controlled-audit-export-write-blocked-5",
+				exportJson,
+				materializedAt: now,
+			});
 		assert.equal(blockedPreWriteReload.status, "blocked_before_local_write");
 		assert.match(
 			blockedPreWriteReload.redactedBlockReason ?? "",
@@ -1712,10 +1939,10 @@ test("permission ask control adapter applies deny without provider calls", () =>
 test("permission ask control adapter blocks malformed status authority", () => {
 	const output = { status: "ask" as const };
 	const result = applyFlowDeskPermissionAskControlV1({
-		decision: ({
+		decision: {
 			...permissionAskDecision({ status: "allow", deny_reason: undefined }),
 			hardCancelOrNoReplyAuthority: true,
-		} as unknown) as FlowDeskPermissionAskDecisionV1,
+		} as unknown as FlowDeskPermissionAskDecisionV1,
 		output,
 	});
 
@@ -2395,10 +2622,16 @@ test("/flowdesk-run managed-dispatch blocks without default authorization", asyn
 		undefined as never,
 	);
 	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
-	assert.equal(result.runRouteProfile, "flowdesk_run_default_managed_dispatch_route");
+	assert.equal(
+		result.runRouteProfile,
+		"flowdesk_run_default_managed_dispatch_route",
+	);
 	assert.equal(result.status, "blocked_before_dispatch");
 	assert.equal(result.dispatchAttempted, false);
-	assert.match(String(result.redactedBlockReason), /default managed-dispatch authorization/);
+	assert.match(
+		String(result.redactedBlockReason),
+		/default managed-dispatch authorization/,
+	);
 	assert.equal(promptAsyncCalls.length, 0);
 	assert.equal(reservation.reserveCalls.length, 0);
 });
@@ -2438,9 +2671,15 @@ test("/flowdesk-run managed-dispatch rejects invalid run envelopes before adapte
 		undefined as never,
 	);
 	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
-	assert.equal(result.runRouteProfile, "flowdesk_run_default_managed_dispatch_route");
+	assert.equal(
+		result.runRouteProfile,
+		"flowdesk_run_default_managed_dispatch_route",
+	);
 	assert.equal(result.status, "blocked_before_dispatch");
-	assert.match(String(result.redactedBlockReason), /valid flowdesk.run.request.v1 envelope/);
+	assert.match(
+		String(result.redactedBlockReason),
+		/valid flowdesk.run.request.v1 envelope/,
+	);
 	assert.equal(promptAsyncCalls.length, 0);
 	assert.equal(reservation.reserveCalls.length, 0);
 });
@@ -2481,8 +2720,14 @@ test("/flowdesk-run managed-dispatch routes through default authorization and ma
 		undefined as never,
 	);
 	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
-	assert.equal(result.runRouteProfile, "flowdesk_run_default_managed_dispatch_route");
-	assert.equal(result.defaultManagedDispatchAuthorizationRef, "default-auth-123");
+	assert.equal(
+		result.runRouteProfile,
+		"flowdesk_run_default_managed_dispatch_route",
+	);
+	assert.equal(
+		result.defaultManagedDispatchAuthorizationRef,
+		"default-auth-123",
+	);
 	assert.equal(result.status, "dispatch_accepted");
 	assert.equal(result.dispatchAttempted, true);
 	assert.equal(result.responseObserved, false);
@@ -2511,7 +2756,10 @@ test("default managed-dispatch authorization gate blocks registration when forge
 	const doctorResult = JSON.parse(
 		toolOutput(await doctor.execute({}, undefined as never)),
 	) as Record<string, unknown>;
-	assert.equal(doctorResult.defaultManagedDispatchRegistrationAuthorized, false);
+	assert.equal(
+		doctorResult.defaultManagedDispatchRegistrationAuthorized,
+		false,
+	);
 });
 
 test("managed dispatch beta server can build durable reservation store from state root", async () => {
