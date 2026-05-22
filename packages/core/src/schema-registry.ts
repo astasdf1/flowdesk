@@ -196,6 +196,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.runtime_lane_launch_request.v1", "runtime-lane-launch-request", "FlowDeskRuntimeLaneLaunchRequestV1", "later_release"),
   artifactEntry("flowdesk.runtime_lane_launch_plan.v1", "runtime-lane-launch-plan", "FlowDeskRuntimeLaneLaunchPlanV1", "later_release"),
   artifactEntry("flowdesk.runtime_lane_lifecycle_projection.v1", "runtime-lane-lifecycle-projection", "FlowDeskRuntimeLaneLifecycleProjectionV1", "later_release"),
+  artifactEntry("flowdesk.exact_model_availability_cache_refresh_plan.v1", "exact-model-availability-cache-refresh-plan", "FlowDeskExactModelAvailabilityCacheRefreshPlanV1", "later_release"),
   artifactEntry("flowdesk.reviewer_assignment_revalidation.v1", "reviewer-assignment-revalidation", "FlowDeskReviewerAssignmentRevalidationV1", "later_release"),
   artifactEntry("flowdesk.reviewer_fanout_plan.v1", "reviewer-fanout-plan", "FlowDeskReviewerFanoutPlanV1", "later_release"),
   artifactEntry("flowdesk.advisory_output_firewall.v1", "advisory-output-firewall", "FlowDeskAdvisoryOutputFirewallV1", "later_release"),

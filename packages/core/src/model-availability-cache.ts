@@ -43,6 +43,37 @@ export interface FlowDeskExactModelAvailabilityCacheV1 {
 	runtimeExecution: false;
 }
 
+export interface FlowDeskExactModelAvailabilityCacheRefreshPlanV1 extends ValidationResult {
+	schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1";
+	state: "cache_hit" | "refresh_required" | "blocked";
+	blocked_labels: string[];
+	refresh_reason_labels: string[];
+	expected_local_date: string;
+	expected_active_profile_ref: string;
+	expected_opencode_version_ref: string;
+	expected_flowdesk_package_version_ref: string;
+	expected_registry_hash: string;
+	expected_policy_pack_hash: string;
+	expected_auth_account_boundary_ref: string;
+	cache_id?: string;
+	cache_local_date?: string;
+	cache_active_profile_ref?: string;
+	cache_opencode_version_ref?: string;
+	cache_flowdesk_package_version_ref?: string;
+	cache_registry_hash?: string;
+	cache_policy_pack_hash?: string;
+	cache_auth_account_boundary_ref?: string;
+	discovery_required: boolean;
+	refresh_required: boolean;
+	cache_usable_for_assignment: boolean;
+	discovery_attempted: false;
+	refresh_attempted: false;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskReviewerAssignmentPlanV1 extends ValidationResult {
 	schema_version: "flowdesk.reviewer_assignment_plan.v1";
 	cache_id: string;
@@ -276,6 +307,160 @@ export function planFlowDeskReviewerAssignmentsV1(input: {
 		actualLaneLaunch: false,
 		runtimeExecution: false,
 	};
+}
+
+export function planFlowDeskExactModelAvailabilityCacheRefreshV1(input: {
+	cache?: FlowDeskExactModelAvailabilityCacheV1;
+	localDate: string;
+	activeProfileRef: string;
+	opencodeVersionRef: string;
+	flowdeskPackageVersionRef: string;
+	registryHash: string;
+	policyPackHash: string;
+	authAccountBoundaryRef: string;
+}): FlowDeskExactModelAvailabilityCacheRefreshPlanV1 {
+	const errors: string[] = [];
+	const blockedLabels: string[] = [];
+	const refreshReasonLabels: string[] = [];
+	errors.push(...validateLocalDate(input.localDate, "expected_local_date").errors);
+	errors.push(...validateOpaqueRef(input.activeProfileRef, "expected_active_profile_ref").errors);
+	errors.push(...validateOpaqueRef(input.opencodeVersionRef, "expected_opencode_version_ref").errors);
+	errors.push(...validateOpaqueRef(input.flowdeskPackageVersionRef, "expected_flowdesk_package_version_ref").errors);
+	errors.push(...validateHash(input.registryHash, "expected_registry_hash").errors);
+	errors.push(...validateHash(input.policyPackHash, "expected_policy_pack_hash").errors);
+	errors.push(...validateOpaqueRef(input.authAccountBoundaryRef, "expected_auth_account_boundary_ref").errors);
+	const cacheResult = input.cache === undefined ? valid() : validateFlowDeskExactModelAvailabilityCacheV1(input.cache);
+	if (!cacheResult.ok) {
+		errors.push(...cacheResult.errors);
+		blockedLabels.push("cache_invalid");
+	} else if (input.cache === undefined) refreshReasonLabels.push("cache_missing");
+	else {
+		if (input.cache.local_date !== input.localDate) refreshReasonLabels.push("cache_not_same_day");
+		if (input.cache.active_profile_ref !== input.activeProfileRef) refreshReasonLabels.push("active_profile_changed");
+		if (input.cache.opencode_version_ref !== input.opencodeVersionRef) refreshReasonLabels.push("opencode_version_changed");
+		if (input.cache.flowdesk_package_version_ref !== input.flowdeskPackageVersionRef)
+			refreshReasonLabels.push("flowdesk_package_version_changed");
+		if (input.cache.registry_hash !== input.registryHash) refreshReasonLabels.push("registry_hash_changed");
+		if (input.cache.policy_pack_hash !== input.policyPackHash) refreshReasonLabels.push("policy_pack_hash_changed");
+		if (input.cache.auth_account_boundary_ref !== input.authAccountBoundaryRef)
+			refreshReasonLabels.push("auth_account_boundary_changed");
+	}
+	if (errors.length > 0 && blockedLabels.length === 0) blockedLabels.push("refresh_context_invalid");
+	const hasRefreshReasons = refreshReasonLabels.length > 0;
+	const state = blockedLabels.length > 0 ? "blocked" : hasRefreshReasons ? "refresh_required" : "cache_hit";
+	return {
+		schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
+		ok: errors.length === 0,
+		errors,
+		state,
+		blocked_labels: unique(blockedLabels),
+		refresh_reason_labels: unique(refreshReasonLabels),
+		expected_local_date: input.localDate,
+		expected_active_profile_ref: input.activeProfileRef,
+		expected_opencode_version_ref: input.opencodeVersionRef,
+		expected_flowdesk_package_version_ref: input.flowdeskPackageVersionRef,
+		expected_registry_hash: input.registryHash,
+		expected_policy_pack_hash: input.policyPackHash,
+		expected_auth_account_boundary_ref: input.authAccountBoundaryRef,
+		cache_id: input.cache?.cache_id,
+		cache_local_date: input.cache?.local_date,
+		cache_active_profile_ref: input.cache?.active_profile_ref,
+		cache_opencode_version_ref: input.cache?.opencode_version_ref,
+		cache_flowdesk_package_version_ref: input.cache?.flowdesk_package_version_ref,
+		cache_registry_hash: input.cache?.registry_hash,
+		cache_policy_pack_hash: input.cache?.policy_pack_hash,
+		cache_auth_account_boundary_ref: input.cache?.auth_account_boundary_ref,
+		discovery_required: state !== "cache_hit",
+		refresh_required: state === "refresh_required",
+		cache_usable_for_assignment: state === "cache_hit",
+		discovery_attempted: false,
+		refresh_attempted: false,
+		...disabledReviewerRuntimeAuthority,
+	};
+}
+
+export function validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("exact model availability cache refresh plan must be an object");
+	const record = value as Partial<FlowDeskExactModelAvailabilityCacheRefreshPlanV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"ok",
+		"errors",
+		"state",
+		"blocked_labels",
+		"refresh_reason_labels",
+		"expected_local_date",
+		"expected_active_profile_ref",
+		"expected_opencode_version_ref",
+		"expected_flowdesk_package_version_ref",
+		"expected_registry_hash",
+		"expected_policy_pack_hash",
+		"expected_auth_account_boundary_ref",
+		"cache_id",
+		"cache_local_date",
+		"cache_active_profile_ref",
+		"cache_opencode_version_ref",
+		"cache_flowdesk_package_version_ref",
+		"cache_registry_hash",
+		"cache_policy_pack_hash",
+		"cache_auth_account_boundary_ref",
+		"discovery_required",
+		"refresh_required",
+		"cache_usable_for_assignment",
+		"discovery_attempted",
+		"refresh_attempted",
+		"dispatch_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+	], "availability cache refresh plan").errors);
+	if (record.schema_version !== "flowdesk.exact_model_availability_cache_refresh_plan.v1")
+		errors.push("availability cache refresh plan schema_version is invalid");
+	if (record.state !== "cache_hit" && record.state !== "refresh_required" && record.state !== "blocked")
+		errors.push("availability cache refresh plan state is invalid");
+	for (const [value, label] of [[record.blocked_labels, "blocked_labels"], [record.refresh_reason_labels, "refresh_reason_labels"]] as const) {
+		if (!Array.isArray(value)) errors.push(`${label} must be an array`);
+		else for (const [index, item] of value.entries()) errors.push(...validateOpaqueId(item, `${label}[${index}]`).errors);
+	}
+	if (record.state === "cache_hit" && ((record.blocked_labels?.length ?? 0) > 0 || (record.refresh_reason_labels?.length ?? 0) > 0))
+		errors.push("cache_hit refresh plan cannot carry blockers or refresh reasons");
+	if (record.state === "refresh_required" && (record.refresh_reason_labels?.length ?? 0) === 0)
+		errors.push("refresh_required plan requires refresh reasons");
+	if (record.state === "blocked" && (record.blocked_labels?.length ?? 0) === 0)
+		errors.push("blocked refresh plan requires blocked labels");
+	errors.push(...validateLocalDate(record.expected_local_date, "expected_local_date").errors);
+	errors.push(...validateHash(record.expected_registry_hash, "expected_registry_hash").errors);
+	errors.push(...validateHash(record.expected_policy_pack_hash, "expected_policy_pack_hash").errors);
+	for (const [field, label] of [
+		[record.expected_active_profile_ref, "expected_active_profile_ref"],
+		[record.expected_opencode_version_ref, "expected_opencode_version_ref"],
+		[record.expected_flowdesk_package_version_ref, "expected_flowdesk_package_version_ref"],
+		[record.expected_auth_account_boundary_ref, "expected_auth_account_boundary_ref"],
+		[record.cache_active_profile_ref, "cache_active_profile_ref"],
+		[record.cache_opencode_version_ref, "cache_opencode_version_ref"],
+		[record.cache_flowdesk_package_version_ref, "cache_flowdesk_package_version_ref"],
+		[record.cache_auth_account_boundary_ref, "cache_auth_account_boundary_ref"],
+	] as const)
+		if (field !== undefined) errors.push(...validateOpaqueRef(field, label).errors);
+	if (record.cache_id !== undefined) errors.push(...validateOpaqueId(record.cache_id, "cache_id").errors);
+	if (record.cache_local_date !== undefined) errors.push(...validateLocalDate(record.cache_local_date, "cache_local_date").errors);
+	if (record.cache_registry_hash !== undefined) errors.push(...validateHash(record.cache_registry_hash, "cache_registry_hash").errors);
+	if (record.cache_policy_pack_hash !== undefined) errors.push(...validateHash(record.cache_policy_pack_hash, "cache_policy_pack_hash").errors);
+	if (record.discovery_required !== (record.state !== "cache_hit")) errors.push("discovery_required must match non-cache-hit state");
+	if (record.refresh_required !== (record.state === "refresh_required")) errors.push("refresh_required must match refresh_required state");
+	if (record.cache_usable_for_assignment !== (record.state === "cache_hit")) errors.push("cache_usable_for_assignment must match cache_hit state");
+	if (
+		record.discovery_attempted !== false ||
+		record.refresh_attempted !== false ||
+		record.dispatch_authority_enabled !== false ||
+		record.providerCall !== false ||
+		record.actualLaneLaunch !== false ||
+		record.runtimeExecution !== false
+	)
+		errors.push("availability cache refresh plan cannot attempt discovery, refresh, launch, provider call, or runtime authority");
+	errors.push(...validateNoForbiddenRawPayloads(record, "exact_model_availability_cache_refresh_plan").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
 export function revalidateFlowDeskReviewerAssignmentsV1(input: {

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	planFlowDeskExactModelAvailabilityCacheRefreshV1,
 	planFlowDeskReviewerAssignmentsV1,
 	planFlowDeskReviewerFanoutV1,
 	revalidateFlowDeskReviewerAssignmentsV1,
 	validateFlowDeskExactModelAvailabilityCacheV1,
+	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	validateFlowDeskReviewerAssignmentRevalidationV1,
 	validateFlowDeskReviewerFanoutPlanV1,
 	type FlowDeskExactModelAvailabilityCacheV1,
@@ -90,6 +92,89 @@ test("availability cache rejects unknown properties and provider drift", () => {
 	}));
 	assert.equal(drift.ok, false);
 	assert.match(drift.errors.join("|"), /must match provider_qualified_model_id/);
+});
+
+test("availability cache refresh plan distinguishes cache hit, missing, and drift", () => {
+	const hit = planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		cache: cache(),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(hit.state, "cache_hit");
+	assert.equal(hit.cache_usable_for_assignment, true);
+	assert.equal(hit.discovery_required, false);
+	assert.equal(hit.providerCall, false);
+	assert.equal(validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(hit).ok, true);
+
+	const missing = planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(missing.state, "refresh_required");
+	assert.ok(missing.refresh_reason_labels.includes("cache_missing"));
+	assert.equal(missing.discovery_required, true);
+	assert.equal(missing.refresh_required, true);
+	assert.equal(missing.cache_usable_for_assignment, false);
+
+	const drift = planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		cache: cache(),
+		localDate: "2026-05-22",
+		activeProfileRef: "profile-2",
+		opencodeVersionRef: "opencode-1.15.7",
+		flowdeskPackageVersionRef: "flowdesk-0.1.2",
+		registryHash: "hash-registry-2",
+		policyPackHash: "hash-policy-2",
+		authAccountBoundaryRef: "account-2",
+	});
+	assert.equal(drift.state, "refresh_required");
+	assert.ok(drift.refresh_reason_labels.includes("cache_not_same_day"));
+	assert.ok(drift.refresh_reason_labels.includes("active_profile_changed"));
+	assert.ok(drift.refresh_reason_labels.includes("opencode_version_changed"));
+	assert.ok(drift.refresh_reason_labels.includes("registry_hash_changed"));
+	assert.equal(drift.discovery_attempted, false);
+	assert.equal(drift.refresh_attempted, false);
+});
+
+test("availability cache refresh plan blocks invalid cache and authority smuggling", () => {
+	const invalidCache = planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		cache: cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" }] }),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(invalidCache.state, "blocked");
+	assert.ok(invalidCache.blocked_labels.includes("cache_invalid"));
+	assert.equal(invalidCache.cache_usable_for_assignment, false);
+
+	const forged = validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1({
+		...planFlowDeskExactModelAvailabilityCacheRefreshV1({
+			cache: cache(),
+			localDate: "2026-05-21",
+			activeProfileRef: "profile-1",
+			opencodeVersionRef: "opencode-1.15.6",
+			flowdeskPackageVersionRef: "flowdesk-0.1.1",
+			registryHash: "hash-registry-1",
+			policyPackHash: "hash-policy-1",
+			authAccountBoundaryRef: "account-1",
+		}),
+		providerCall: true,
+	});
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("|"), /cannot attempt discovery, refresh, launch, provider call, or runtime authority/);
 });
 
 test("reviewer assignment revalidation blocks stale cache and context drift", () => {
