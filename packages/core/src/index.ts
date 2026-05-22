@@ -64,6 +64,7 @@ export * from "./release1-contracts.js";
 export * from "./remote-write-connector-gate.js";
 export * from "./retry.js";
 export * from "./reviewer-lane-conformance.js";
+export * from "./runtime-lane-productization.js";
 export * from "./sanitized-auth-capture.js";
 export * from "./schema-artifacts.js";
 export * from "./schema-registry.js";
