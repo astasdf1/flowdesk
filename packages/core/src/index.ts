@@ -40,6 +40,7 @@ export * from "./dispatch-idempotency.js";
 export * from "./external-auth-policy.js";
 export * from "./fake-runtime.js";
 export * from "./fallback-decision.js";
+export * from "./fallback-regate-plan.js";
 export * from "./fds1-schema-probe-result.js";
 export * from "./guard-boundary.js";
 export * from "./guarded-dry-run.js";
