@@ -253,6 +253,52 @@ function controlledConformanceDocWriteRecord(overrides: Record<string, unknown> 
   };
 }
 
+function controlledRedactedAuditExportWriteRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.controlled_redacted_audit_export_write.v1",
+    ledger_entry_id: "controlled-audit-export-write-1",
+    request_id: "request-controlled-audit-export-1",
+    workflow_id: workflowId,
+    attempt_id: "attempt-1",
+    target_kind: "redacted_audit_export",
+    target_ref: "redacted-audit-export-1",
+    approval_id: "approval-1",
+    actor_ref: "actor-user-1",
+    profile_ref: "principal-scope-claude",
+    evidence_bundle_hash: "hash-evidence-bundle-1",
+    guard_decision_ref: "guard-decision-1",
+    issuance_audit_ref: "audit-issuance-1",
+    consumption_audit_ref: "audit-consumption-1",
+    redaction_policy_ref: "redaction-policy-1",
+    content_hash_ref: "sha256-1234567890abcdef",
+    pre_write_audit_ref: "audit-prewrite-1",
+    dry_run_ref: "dry-run-1",
+    artifact_ref: "artifact-redacted-audit-export-1",
+    artifact_path: `.flowdesk/sessions/${workflowId}/redacted-audit/redacted-audit-export-1.json`,
+    artifact_sha256_ref: "sha256-1234567890abcdef",
+    materialized_at: "2026-05-19T00:03:00.000Z",
+    local_only: true,
+    redacted: true,
+    writeAttempted: true,
+    remoteWriteAttempted: false,
+    githubWriteAttempted: false,
+    connectorWriteAttempted: false,
+    storageWriteAttempted: false,
+    databaseWriteAttempted: false,
+    urlWriteAttempted: false,
+    rawPathWriteAttempted: false,
+    dispatch_authority_enabled: false,
+    realOpenCodeDispatch: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    fallbackAuthority: false,
+    toolAuthority: false,
+    hardCancelOrNoReplyAuthority: false,
+    ...overrides
+  };
+}
+
 test("session evidence path builders produce per-class relative paths", () => {
   for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
     const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
@@ -316,7 +362,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), reviewerVerdictRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), reviewerVerdictRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -326,14 +372,14 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 10);
+    assert.equal(applied.writtenPaths.length, 11);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 10);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "reviewer_verdict", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write"]));
+    assert.equal(reloaded.entries.length, 11);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "reviewer_verdict", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
   });
 });
 
@@ -345,6 +391,20 @@ test("session evidence reload validates controlled conformance doc write evidenc
     const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(result.entries.length, 1);
     assert.equal(result.entries[0].evidenceClass, "controlled_conformance_doc_write");
+    assert.equal(result.blocked.length, 2);
+    const reasons = result.blocked.map((entry) => entry.reason).join("|");
+    assert.match(reasons, /cannot enable external|artifact_path/);
+  });
+});
+
+test("session evidence reload validates controlled redacted audit export write evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_redacted_audit_export_write", "controlled-audit-export-write-good"), JSON.stringify(controlledRedactedAuditExportWriteRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_redacted_audit_export_write", "controlled-audit-export-write-forged"), JSON.stringify(controlledRedactedAuditExportWriteRecord({ providerCall: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_redacted_audit_export_write", "controlled-audit-export-write-path"), JSON.stringify(controlledRedactedAuditExportWriteRecord({ artifact_path: `.flowdesk/sessions/${workflowId}/redacted-audit/other.json` })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "controlled_redacted_audit_export_write");
     assert.equal(result.blocked.length, 2);
     const reasons = result.blocked.map((entry) => entry.reason).join("|");
     assert.match(reasons, /cannot enable external|artifact_path/);

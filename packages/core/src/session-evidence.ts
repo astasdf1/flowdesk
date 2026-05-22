@@ -28,6 +28,7 @@ import {
 	validateTopTierReviewVerdictV1,
 } from "./validators.js";
 import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
+import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
 
 const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	usage_authority: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
@@ -48,6 +49,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.top_tier_reviewer_lane_conformance_observation.v1",
 	controlled_conformance_doc_write:
 		"flowdesk.controlled_conformance_doc_write.v1",
+	controlled_redacted_audit_export_write:
+		"flowdesk.controlled_redacted_audit_export_write.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -168,6 +171,8 @@ function validateEvidenceShape(
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")
 		return validateFlowDeskControlledConformanceDocWriteRecordV1(record);
+	if (evidenceClass === "controlled_redacted_audit_export_write")
+		return validateFlowDeskControlledRedactedAuditExportWriteRecordV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))

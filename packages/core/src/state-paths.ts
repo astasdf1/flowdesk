@@ -71,7 +71,8 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
   "reviewer_verdict",
   "lane_lifecycle",
   "reviewer_lane_conformance",
-  "controlled_conformance_doc_write"
+  "controlled_conformance_doc_write",
+  "controlled_redacted_audit_export_write"
 ] as const;
 export type FlowDeskSessionEvidenceClass = (typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
 
@@ -89,7 +90,8 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
   reviewer_verdict: "reviewer-verdict",
   lane_lifecycle: "lane-lifecycle",
   reviewer_lane_conformance: "reviewer-lane-conformance",
-  controlled_conformance_doc_write: "controlled-conformance-doc-write"
+  controlled_conformance_doc_write: "controlled-conformance-doc-write",
+  controlled_redacted_audit_export_write: "controlled-redacted-audit-export-write"
 };
 
 export function sessionEvidenceDirectoryPath(sessionId: string, evidenceClass: FlowDeskSessionEvidenceClass): string {
