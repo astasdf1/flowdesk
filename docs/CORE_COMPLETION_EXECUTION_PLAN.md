@@ -312,7 +312,15 @@ The implemented 2026-05-23 slice adds optional materialization to the existing `
 
 Blocked, drifted, missing, invalid, or ambiguous cache evidence leaves the durable fan-out plan inventory unchanged. Ready materialized records still represent topology planning only and keep lane launch, provider calls, cache discovery/refresh, runtime execution, dispatch authority, and approval inference disabled.
 
-Next safe slice: choose between actual cache discovery acquisition planning or typed verdict persistence, both still gated before any provider calls or reviewer lane launch.
+Completed follow-up slice: an observed typed reviewer verdict can now be materialized as durable `reviewer_verdict` evidence without accepting verdicts or launching lanes.
+
+## Confirmed Follow-Up Slice: Observed Reviewer Verdict Materialization
+
+The implemented 2026-05-23 slice adds `materializeFlowDeskObservedReviewerVerdictEvidenceV1` to the plugin adapter layer. It consumes the result of `observeInjectedSdkReviewerVerdictV1` and persists only a `verdict_observed` result carrying a valid `flowdesk.top_tier_review_verdict.v1` record. Missing, invalid, unavailable, or failed observations write no evidence.
+
+The helper reuses the session-evidence prepare/apply/reload path, blocks duplicate reviewer-verdict evidence ids before write, and verifies that the persisted verdict reloads. It does not invoke acceptance, durable linkage, provider calls, SDK prompts, runtime execution, lane launch, dispatch, or cache discovery.
+
+Next safe slice: either add product wiring around actual typed-verdict observation/materialization once a lane launch path exists, or continue with actual cache discovery acquisition planning. Both remain gated before provider calls or reviewer lane launch.
 
 ## Review Questions
 
