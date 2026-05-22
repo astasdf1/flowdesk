@@ -219,13 +219,14 @@ Required deliverables:
 
 The first execution slice is intentionally non-authorizing:
 
-1. Add connector profile and recipe-ref contracts if they are absent.
-2. Add fallback depth/max-depth contract if absent.
-3. Add advisory-output firewall contract if absent.
-4. Add federated-registry disabled-state contract if absent.
-5. Add reviewer lane no-deliverable/tool-call-only classification if absent.
-6. Wire schemas into artifacts/registry/exports and add negative tests.
-7. Update progress and conformance docs after verification.
+1. Add connector profile and recipe-ref contracts if they are absent. Completed 2026-05-22.
+2. Add fallback depth/max-depth contract if absent. Already covered by existing fallback decision/regate contracts.
+3. Add advisory-output firewall contract if absent. Completed 2026-05-22.
+4. Add federated-registry disabled-state contract if absent. Completed 2026-05-22.
+5. Add reviewer lane no-deliverable/tool-call-only classification if absent. Completed 2026-05-22.
+6. Wire schemas into artifacts/registry/exports and add negative tests. Completed 2026-05-22.
+7. Add non-authorizing generic connector gateway invocation planning. Completed 2026-05-22.
+8. Update progress and conformance docs after verification. Completed for the first two slices.
 
 This slice must not call providers, launch lanes, execute connector tools, install packages, mutate profiles, dispatch prompts, perform remote writes, or enable default managed dispatch.
 
