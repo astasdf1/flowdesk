@@ -248,7 +248,15 @@ The implemented 2026-05-23 slice is intentionally non-authorizing. It adds `flow
 
 Fan-out planning deterministically creates `flowdesk.runtime_lane_launch_request.v1` records for the required reviewer perspectives. This is request materialization only: each resulting plan still requires a later runtime launch plan and explicit lane-launch approval, records `launch_attempted=false`, `approval_inferred=false`, and keeps dispatch/provider/lane/runtime authority disabled.
 
-Next safe slice: add durable fan-out evidence persistence and doctor/status projection, or implement the daily exact-model availability cache discovery/refresh path. Actual reviewer lane launch remains blocked until runtime launch planning, approval, SDK-client availability, durable evidence-root refs, and live lane conformance all pass.
+Completed follow-up slice: durable fan-out evidence persistence and doctor/status projection now exist for `flowdesk.reviewer_fanout_plan.v1` records. Actual reviewer lane launch remains blocked until runtime launch planning, approval, SDK-client availability, durable evidence-root refs, and live lane conformance all pass.
+
+## Confirmed Follow-Up Slice: Reviewer Fan-Out Evidence and Diagnostics
+
+The implemented 2026-05-23 slice adds a `reviewer_fanout_plan` session-evidence class for reloadable `flowdesk.reviewer_fanout_plan.v1` records. The session evidence path validates fan-out records through the same closed validator used for planning, so forged `actualLaneLaunch`, provider-call, runtime-execution, or dispatch-authority fields remain blocked during prepare, apply, and reload.
+
+Doctor and status projections now expose fan-out state without promoting execution. `/flowdesk-doctor` can show fan-out state, required/planned perspective counts, runtime launch plan and lane-launch approval requirements, launch-attempt and approval-inference flags, and blocker labels. `/flowdesk-status` can surface blocked fan-out plans as redacted conformance blockers for the active workflow. Ready fan-out plans remain diagnostic only and do not launch lanes.
+
+Next safe slice: implement daily exact-model availability cache discovery/refresh contracts, including stale/cache-hit/cache-refresh states and doctor/status diagnostics. This should precede actual reviewer lane launch because fan-out currently depends on externally supplied cache records.
 
 ## Review Questions
 
