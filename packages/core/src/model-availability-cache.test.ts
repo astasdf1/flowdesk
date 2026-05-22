@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planFlowDeskReviewerAssignmentsV1, validateFlowDeskExactModelAvailabilityCacheV1, type FlowDeskExactModelAvailabilityCacheV1 } from "./index.js";
+import {
+	planFlowDeskReviewerAssignmentsV1,
+	planFlowDeskReviewerFanoutV1,
+	revalidateFlowDeskReviewerAssignmentsV1,
+	validateFlowDeskExactModelAvailabilityCacheV1,
+	validateFlowDeskReviewerAssignmentRevalidationV1,
+	validateFlowDeskReviewerFanoutPlanV1,
+	type FlowDeskExactModelAvailabilityCacheV1,
+} from "./index.js";
 
 function cache(overrides: Partial<FlowDeskExactModelAvailabilityCacheV1> = {}): FlowDeskExactModelAvailabilityCacheV1 {
 	return {
@@ -30,6 +38,20 @@ function cache(overrides: Partial<FlowDeskExactModelAvailabilityCacheV1> = {}): 
 		runtimeExecution: false,
 		...overrides,
 	};
+}
+
+function revalidation(overrides: Partial<Parameters<typeof revalidateFlowDeskReviewerAssignmentsV1>[0]> = {}) {
+	return revalidateFlowDeskReviewerAssignmentsV1({
+		cache: cache(),
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+		...overrides,
+	});
 }
 
 test("exact-model availability cache validates same-day concrete model entries", () => {
@@ -68,4 +90,107 @@ test("availability cache rejects unknown properties and provider drift", () => {
 	}));
 	assert.equal(drift.ok, false);
 	assert.match(drift.errors.join("|"), /must match provider_qualified_model_id/);
+});
+
+test("reviewer assignment revalidation blocks stale cache and context drift", () => {
+	const ready = revalidation();
+	assert.equal(ready.state, "revalidated");
+	assert.equal(ready.eligible_bindings.length, 1);
+	assert.equal(validateFlowDeskReviewerAssignmentRevalidationV1(ready).ok, true);
+
+	const drift = revalidation({
+		localDate: "2026-05-22",
+		activeProfileRef: "profile-2",
+		policyPackHash: "hash-policy-2",
+		authAccountBoundaryRef: "account-2",
+	});
+	assert.equal(drift.state, "blocked");
+	assert.ok(drift.blocked_labels.includes("cache_not_same_day"));
+	assert.ok(drift.blocked_labels.includes("active_profile_drift"));
+	assert.ok(drift.blocked_labels.includes("policy_pack_hash_drift"));
+	assert.ok(drift.blocked_labels.includes("auth_account_boundary_drift"));
+	assert.deepEqual(drift.eligible_bindings, []);
+});
+
+test("reviewer assignment revalidation rejects alias and lower-tier substitution", () => {
+	const alias = revalidation({
+		cache: cache({
+			entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" }],
+		}),
+	});
+	assert.equal(alias.state, "blocked");
+	assert.ok(alias.blocked_labels.includes("cache_invalid"));
+
+	const lowerTier = revalidation({
+		cache: cache({
+			entries: [{ ...cache().entries[0], highest_tier_eligible: false }],
+		}),
+	});
+	assert.equal(lowerTier.state, "blocked");
+	assert.ok(lowerTier.blocked_labels.includes("registered_available_lower_tier_only"));
+	assert.deepEqual(lowerTier.eligible_bindings, []);
+});
+
+test("reviewer fanout plan deterministically materializes launch requests without launching lanes", () => {
+	const plan = planFlowDeskReviewerFanoutV1({
+		revalidation: revalidation(),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		parentSessionRef: "ses-parent-1",
+		agentRef: "agent-reviewer",
+		requestedAt: "2026-05-21T00:00:00.000Z",
+		preLaunchAuditRef: "audit-pre-launch-1",
+		laneLaunchApprovalRef: "approval-lane-launch-1",
+	});
+	assert.equal(plan.state, "fanout_ready", plan.errors.join("; "));
+	assert.equal(plan.runtime_lane_launch_requests.length, 3);
+	assert.deepEqual(plan.planned_perspectives, ["policy_security", "architecture", "verification_implementation"]);
+	assert.equal(new Set(plan.runtime_lane_launch_requests.map((request) => request.provider_qualified_model_id)).size, 1);
+	assert.equal(plan.launch_attempted, false);
+	assert.equal(plan.approval_inferred, false);
+	assert.equal(plan.providerCall, false);
+	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(validateFlowDeskReviewerFanoutPlanV1(plan).ok, true);
+});
+
+test("reviewer fanout plan blocks missing perspectives and authority smuggling", () => {
+	const blocked = planFlowDeskReviewerFanoutV1({
+		revalidation: revalidation({ localDate: "2026-05-22" }),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		parentSessionRef: "ses-parent-1",
+		agentRef: "agent-reviewer",
+		requestedAt: "2026-05-21T00:00:00.000Z",
+	});
+	assert.equal(blocked.state, "blocked");
+	assert.ok(blocked.blocked_labels.includes("assignment_revalidation_blocked"));
+	assert.equal(blocked.runtime_lane_launch_requests.length, 0);
+
+	const missingPerspective = validateFlowDeskReviewerFanoutPlanV1({
+		...planFlowDeskReviewerFanoutV1({
+			revalidation: revalidation(),
+			workflowId: "workflow-1",
+			attemptId: "attempt-1",
+			parentSessionRef: "ses-parent-1",
+			agentRef: "agent-reviewer",
+			requestedAt: "2026-05-21T00:00:00.000Z",
+		}),
+		planned_perspectives: ["policy_security", "architecture"],
+	});
+	assert.equal(missingPerspective.ok, false);
+	assert.match(missingPerspective.errors.join("|"), /cover every required perspective/);
+
+	const forged = validateFlowDeskReviewerFanoutPlanV1({
+		...planFlowDeskReviewerFanoutV1({
+			revalidation: revalidation(),
+			workflowId: "workflow-1",
+			attemptId: "attempt-1",
+			parentSessionRef: "ses-parent-1",
+			agentRef: "agent-reviewer",
+			requestedAt: "2026-05-21T00:00:00.000Z",
+		}),
+		actualLaneLaunch: true,
+	});
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("|"), /cannot launch lanes/);
 });
