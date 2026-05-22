@@ -9,7 +9,9 @@ import {
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
+import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
 import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
+import { validateFlowDeskReviewerLaneConformanceObservationV1 } from "./reviewer-lane-conformance.js";
 import {
 	FLOWDESK_SESSION_EVIDENCE_CLASSES,
 	type FlowDeskSessionEvidenceClass,
@@ -23,7 +25,9 @@ import {
 	validateNoForbiddenRawPayloads,
 	validateOpaqueId,
 	validateOpaqueRef,
+	validateTopTierReviewVerdictV1,
 } from "./validators.js";
+import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
 
 const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	usage_authority: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
@@ -38,6 +42,12 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	production_approval_source: "flowdesk.production_approval_source.v1",
 	dispatch_idempotency: "flowdesk.dispatch_idempotency_snapshot.v1",
 	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
+	reviewer_verdict: "flowdesk.top_tier_review_verdict.v1",
+	lane_lifecycle: "flowdesk.lane_lifecycle_record.v1",
+	reviewer_lane_conformance:
+		"flowdesk.top_tier_reviewer_lane_conformance_observation.v1",
+	controlled_conformance_doc_write:
+		"flowdesk.controlled_conformance_doc_write.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -150,6 +160,14 @@ function validateEvidenceShape(
 		return validateFlowDeskDispatchIdempotencySnapshotV1(record);
 	if (evidenceClass === "production_approval_source")
 		return validateFlowDeskProductionApprovalSourceV1(record);
+	if (evidenceClass === "reviewer_verdict")
+		return validateTopTierReviewVerdictV1(record);
+	if (evidenceClass === "lane_lifecycle")
+		return validateFlowDeskLaneLifecycleRecordV1(record);
+	if (evidenceClass === "reviewer_lane_conformance")
+		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
+	if (evidenceClass === "controlled_conformance_doc_write")
+		return validateFlowDeskControlledConformanceDocWriteRecordV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))

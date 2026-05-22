@@ -67,7 +67,11 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
   "production_approval",
   "production_approval_source",
   "dispatch_idempotency",
-  "pre_dispatch_audit"
+  "pre_dispatch_audit",
+  "reviewer_verdict",
+  "lane_lifecycle",
+  "reviewer_lane_conformance",
+  "controlled_conformance_doc_write"
 ] as const;
 export type FlowDeskSessionEvidenceClass = (typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
 
@@ -81,7 +85,11 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
   production_approval: "production-approval",
   production_approval_source: "production-approval-source",
   dispatch_idempotency: "dispatch-idempotency",
-  pre_dispatch_audit: "pre-dispatch-audit"
+  pre_dispatch_audit: "pre-dispatch-audit",
+  reviewer_verdict: "reviewer-verdict",
+  lane_lifecycle: "lane-lifecycle",
+  reviewer_lane_conformance: "reviewer-lane-conformance",
+  controlled_conformance_doc_write: "controlled-conformance-doc-write"
 };
 
 export function sessionEvidenceDirectoryPath(sessionId: string, evidenceClass: FlowDeskSessionEvidenceClass): string {

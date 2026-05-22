@@ -130,6 +130,129 @@ function dispatchIdempotencyRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reviewerVerdictRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.top_tier_review_verdict.v1",
+    verdict_id: "verdict-policy-security-1",
+    workflow_id: workflowId,
+    lane_plan_ref: "lane-plan-policy-security-1",
+    binding_ref: "binding-reviewer-1",
+    perspective: "policy_security",
+    source: "claude_opus",
+    created_at: "2026-05-19T00:02:00.000Z",
+    redaction_version: "redaction-v1",
+    findings: [],
+    evidence_refs: ["lane-evidence-policy-security-1"],
+    uncertainty: "low",
+    required_fixes: [],
+    verdict_label: "pass",
+    safe_next_actions: ["/flowdesk-status"],
+    dispatch_authority_enabled: false,
+    ...overrides
+  };
+}
+
+function laneLifecycleRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.lane_lifecycle_record.v1",
+    lane_id: "lane-policy-security-1",
+    workflow_id: workflowId,
+    attempt_id: "attempt-1",
+    parent_session_ref: "ses-parent-1",
+    child_session_ref: "ses-child-1",
+    message_ref: "msg-policy-security-1",
+    agent_ref: "agent-reviewer",
+    provider_qualified_model_id: "claude/claude-opus-4-5",
+    state: "complete",
+    verdict_ref: "verdict-policy-security-1",
+    output_ref: "output-policy-security-1",
+    runtime_echo_ref: "runtime-echo-policy-security-1",
+    telemetry_ref: "telemetry-policy-security-1",
+    timeout_ms: 30000,
+    orphan_max_age_ms: 60000,
+    retry_count: 0,
+    created_at: "2026-05-19T00:01:00.000Z",
+    updated_at: "2026-05-19T00:02:00.000Z",
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
+function reviewerLaneConformanceRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.top_tier_reviewer_lane_conformance_observation.v1",
+    observation_id: "observation-policy-security-1",
+    workflow_id: workflowId,
+    lane_id: "lane-policy-security-1",
+    binding_ref: "binding-reviewer-1",
+    lane_plan_ref: "lane-plan-policy-security-1",
+    channel: "injected_sdk_client",
+    agent_id: "reviewer",
+    provider_qualified_model_id: "claude/claude-opus-4-5",
+    perspective: "policy_security",
+    prompt_hash_ref: "hash-reviewinput-policy-security-1",
+    output_ref: "output-policy-security-1",
+    runtime_echo_ref: "runtime-echo-policy-security-1",
+    telemetry_ref: "telemetry-policy-security-1",
+    parent_task_ref: "parent-task-policy-security-1",
+    subtask_ref: "subtask-policy-security-1",
+    status: "observed",
+    uncertainty_labels: [],
+    observed_at: "2026-05-19T00:02:00.000Z",
+    dispatch_authority_enabled: false,
+    hard_chat_authority_claimed: false,
+    ...overrides
+  };
+}
+
+function controlledConformanceDocWriteRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.controlled_conformance_doc_write.v1",
+    ledger_entry_id: "controlled-doc-write-1",
+    request_id: "request-controlled-doc-1",
+    workflow_id: workflowId,
+    attempt_id: "attempt-1",
+    target_kind: "release_conformance_doc",
+    target_ref: "release-conformance-doc-1",
+    approval_id: "approval-1",
+    actor_ref: "actor-user-1",
+    profile_ref: "principal-scope-claude",
+    evidence_bundle_hash: "hash-evidence-bundle-1",
+    guard_decision_ref: "guard-decision-1",
+    issuance_audit_ref: "audit-issuance-1",
+    consumption_audit_ref: "audit-consumption-1",
+    redaction_policy_ref: "redaction-policy-1",
+    content_hash_ref: "sha256-1234567890abcdef",
+    pre_write_audit_ref: "audit-prewrite-1",
+    dry_run_ref: "dry-run-1",
+    artifact_ref: "artifact-release-conformance-doc-1",
+    artifact_path: "docs/conformance/release-conformance-doc-1.md",
+    artifact_sha256_ref: "sha256-1234567890abcdef",
+    materialized_at: "2026-05-19T00:03:00.000Z",
+    local_only: true,
+    writeAttempted: true,
+    remoteWriteAttempted: false,
+    githubWriteAttempted: false,
+    connectorWriteAttempted: false,
+    storageWriteAttempted: false,
+    databaseWriteAttempted: false,
+    urlWriteAttempted: false,
+    rawPathWriteAttempted: false,
+    dispatch_authority_enabled: false,
+    realOpenCodeDispatch: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    fallbackAuthority: false,
+    toolAuthority: false,
+    hardCancelOrNoReplyAuthority: false,
+    ...overrides
+  };
+}
+
 test("session evidence path builders produce per-class relative paths", () => {
   for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
     const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
@@ -193,7 +316,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), reviewerVerdictRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -203,14 +326,44 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 6);
+    assert.equal(applied.writtenPaths.length, 10);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 6);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit"]));
+    assert.equal(reloaded.entries.length, 10);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "reviewer_verdict", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write"]));
+  });
+});
+
+test("session evidence reload validates controlled conformance doc write evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_conformance_doc_write", "controlled-doc-write-good"), JSON.stringify(controlledConformanceDocWriteRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_conformance_doc_write", "controlled-doc-write-forged"), JSON.stringify(controlledConformanceDocWriteRecord({ providerCall: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_conformance_doc_write", "controlled-doc-write-path"), JSON.stringify(controlledConformanceDocWriteRecord({ artifact_path: "docs/conformance/other.md" })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "controlled_conformance_doc_write");
+    assert.equal(result.blocked.length, 2);
+    const reasons = result.blocked.map((entry) => entry.reason).join("|");
+    assert.match(reasons, /cannot enable external|artifact_path/);
+  });
+});
+
+test("session evidence reload validates reviewer verdict and lifecycle evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_verdict", "verdict-good"), JSON.stringify(reviewerVerdictRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_verdict", "verdict-forged"), JSON.stringify(reviewerVerdictRecord({ dispatch_authority_enabled: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "lane_lifecycle", "lane-good"), JSON.stringify(laneLifecycleRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "lane_lifecycle", "lane-no-output-forged"), JSON.stringify(laneLifecycleRecord({ state: "no_output", output_ref: undefined })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_lane_conformance", "conformance-good"), JSON.stringify(reviewerLaneConformanceRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_lane_conformance", "conformance-forged"), JSON.stringify(reviewerLaneConformanceRecord({ hard_chat_authority_claimed: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 3);
+    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["reviewer_verdict", "lane_lifecycle", "reviewer_lane_conformance"]));
+    assert.equal(result.blocked.length, 3);
+    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /dispatch_authority_enabled|no-output lane lifecycle records cannot carry|hard chat authority/);
   });
 });
 

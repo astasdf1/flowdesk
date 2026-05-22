@@ -32,6 +32,7 @@ export * from "./chat-hook-authority-probe.js";
 export * from "./chat-routing.js";
 export * from "./command-manifest.js";
 export * from "./config-policy.js";
+export * from "./controlled-conformance-doc-write.js";
 export * from "./dispatch-attempt-manifest.js";
 export * from "./dispatch-idempotency.js";
 export * from "./external-auth-policy.js";
