@@ -1,3 +1,4 @@
+import { validateFlowDeskReviewerFanoutPlanV1, type FlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
 import { validateFlowDeskDefaultManagedDispatchPromotionReadinessV1, type FlowDeskDefaultManagedDispatchPromotionReadinessV1 } from "./production-enablement.js";
 import { mapProviderFailureClassToDiagnosticOutcomeV1 } from "./provider-failures.js";
 import type {
@@ -54,6 +55,7 @@ export interface FlowDeskStatusCommandInputV1 {
   providerHealthSnapshot?: FlowDeskProviderHealthSnapshotV1;
   providerHealthSummary?: ProviderHealthSummaryV1;
   defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
+  reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
   statusSummaryArtifact?: FlowDeskStatusSummaryArtifactV1;
   auditRef?: OpaqueRef;
   debugRef?: OpaqueRef;
@@ -191,6 +193,26 @@ function promotionReadinessBlockerSummary(readiness: FlowDeskDefaultManagedDispa
   };
 }
 
+function reviewerFanoutBlockerSummary(plan: FlowDeskReviewerFanoutPlanV1): BlockerSummaryV1 | undefined {
+  if (plan.state === "fanout_ready") return undefined;
+  return {
+    category: "conformance",
+    summary: "Reviewer fan-out planning is blocked; no reviewer lane can launch until assignment revalidation, runtime launch planning, and lane-launch approval all pass.",
+    safe_remediation: "Run /flowdesk-doctor and refresh exact-model availability plus reviewer fan-out evidence before attempting reviewer lanes.",
+    refs: [
+      `reviewer_fanout_state=${plan.state}`,
+      `reviewer_fanout_required_perspectives=${plan.required_perspectives.length}`,
+      `reviewer_fanout_planned_perspectives=${plan.planned_perspectives.length}`,
+      `reviewer_fanout_launch_attempted=${plan.launch_attempted}`,
+      `reviewer_fanout_approval_inferred=${plan.approval_inferred}`,
+      `reviewer_fanout_actualLaneLaunch=${plan.actualLaneLaunch}`,
+      `reviewer_fanout_providerCall=${plan.providerCall}`,
+      `reviewer_fanout_runtimeExecution=${plan.runtimeExecution}`,
+      ...plan.blocked_labels.map((label) => `reviewer_fanout_blocker=${label}`),
+    ].slice(0, 20),
+  };
+}
+
 function failClosedResponse(input: Partial<FlowDeskStatusCommandInputV1> | undefined, category: RedactedErrorCategory, message: string, includeAbort = false): FlowDeskStatusResponseV1 {
   const requestWorkflowId = input?.request?.workflow_id;
   const activeWorkflowId = input?.active?.active_workflow_id;
@@ -242,6 +264,7 @@ function validateStatusInput(input: Partial<FlowDeskStatusCommandInputV1> | unde
   if (input.providerHealthSnapshot !== undefined) appendResultErrors(errors, "provider_health_snapshot", validateProviderHealthSnapshotV1(input.providerHealthSnapshot));
   if (input.providerHealthSummary !== undefined) appendResultErrors(errors, "provider_health_summary", validateProviderHealthSummaryV1(input.providerHealthSummary));
   if (input.defaultManagedDispatchPromotionReadiness !== undefined) appendResultErrors(errors, "default_managed_dispatch_promotion_readiness", validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(input.defaultManagedDispatchPromotionReadiness, input.workflow?.workflow_id ?? input.active?.active_workflow_id ?? input.request?.workflow_id));
+  if (input.reviewerFanoutPlan !== undefined) appendResultErrors(errors, "reviewer_fanout_plan", validateFlowDeskReviewerFanoutPlanV1(input.reviewerFanoutPlan));
   if (input.auditRef !== undefined) appendResultErrors(errors, "audit_ref", validateOpaqueRef(input.auditRef, "audit_ref"));
   if (input.debugRef !== undefined) appendResultErrors(errors, "debug_ref", validateOpaqueRef(input.debugRef, "debug_ref"));
   for (const [index, laneRef] of (input.laneRefs ?? []).entries()) appendResultErrors(errors, `lane_refs[${index}]`, validateOpaqueRef(laneRef, `lane_refs[${index}]`));
@@ -314,6 +337,7 @@ export function buildFlowDeskStatusResponseV1(input: FlowDeskStatusCommandInputV
   const auditRef = input.auditRef ?? (detailAllowsDebugRefs(detailLevel) ? workflow.audit_refs[0] : undefined);
   const laneRefs = detailLevel === "lane_refs" ? [...(input.laneRefs ?? workflow.lane_refs)] : undefined;
   const promotionBlocker = input.defaultManagedDispatchPromotionReadiness === undefined ? undefined : promotionReadinessBlockerSummary(input.defaultManagedDispatchPromotionReadiness);
+  const reviewerFanoutBlocker = input.reviewerFanoutPlan === undefined ? undefined : reviewerFanoutBlockerSummary(input.reviewerFanoutPlan);
   const response: FlowDeskStatusResponseV1 = {
     schema_version: "flowdesk.status.response.v1",
     ok: true,
@@ -328,7 +352,7 @@ export function buildFlowDeskStatusResponseV1(input: FlowDeskStatusCommandInputV
     ...(currentStepId === undefined ? {} : { current_step_id: currentStepId }),
     lane_summaries: laneSummaries,
     provider_health_summary: providerHealthSummary,
-    ...(workflow.blocker_summary === undefined && promotionBlocker === undefined ? {} : { blocker: workflow.blocker_summary ?? promotionBlocker }),
+    ...(workflow.blocker_summary === undefined && reviewerFanoutBlocker === undefined && promotionBlocker === undefined ? {} : { blocker: workflow.blocker_summary ?? reviewerFanoutBlocker ?? promotionBlocker }),
     ...(checkpoint === undefined ? {} : { checkpoint_id: checkpoint.checkpoint_id })
   };
   const responseResult = validateStatusResponseV1(response);

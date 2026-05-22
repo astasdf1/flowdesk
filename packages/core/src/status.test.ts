@@ -5,6 +5,7 @@ import type {
   FlowDeskCheckpointRecordV1,
   FlowDeskLaneRecordV1,
   FlowDeskProviderHealthSnapshotV1,
+  FlowDeskReviewerFanoutPlanV1,
   FlowDeskStatusRequestV1,
   FlowDeskStatusSummaryArtifactV1,
   FlowDeskWorkflowActiveV1,
@@ -150,6 +151,32 @@ function providerHealth(overrides: Partial<FlowDeskProviderHealthSnapshotV1> = {
   };
 }
 
+function reviewerFanoutPlan(overrides: Partial<FlowDeskReviewerFanoutPlanV1> = {}): FlowDeskReviewerFanoutPlanV1 {
+  return {
+    schema_version: "flowdesk.reviewer_fanout_plan.v1",
+    ok: true,
+    errors: [],
+    workflow_id: workflowId,
+    attempt_id: attemptId,
+    cache_id: "cache-123",
+    state: "blocked",
+    blocked_labels: ["assignment_revalidation_blocked"],
+    required_perspectives: ["policy_security", "architecture", "verification_implementation"],
+    planned_perspectives: [],
+    runtime_lane_launch_requests: [],
+    max_concurrent_lane_count: 3,
+    runtime_launch_plan_required: true,
+    lane_launch_approval_required: true,
+    launch_attempted: false,
+    approval_inferred: false,
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
 function checkpoint(resumeMode: ResumeModeV1): FlowDeskCheckpointRecordV1 {
   return {
     schema_version: "flowdesk.checkpoint_record.v1",
@@ -212,6 +239,87 @@ test("lane record conversion produces display-only summaries with opaque debug r
   const withLaneRefs = buildFlowDeskStatusResponseV1(statusInput({ request: request({ detail_level: "lane_refs" }) }));
   assert.deepEqual(withLaneRefs.lane_refs, ["lane-ref-123"]);
   assert.equal(withLaneRefs.lane_summaries.length, 1);
+});
+
+test("status surfaces reviewer fanout planning blockers without lane authority", () => {
+  const response = buildFlowDeskStatusResponseV1(statusInput({ reviewerFanoutPlan: reviewerFanoutPlan() }));
+  assert.equal(response.ok, true);
+  assert.ok(response.blocker);
+  assert.equal(response.blocker.category, "conformance");
+  assert.ok(response.blocker.refs.includes("reviewer_fanout_state=blocked"));
+  assert.ok(response.blocker.refs.includes("reviewer_fanout_blocker=assignment_revalidation_blocked"));
+  assert.ok(response.blocker.refs.includes("reviewer_fanout_actualLaneLaunch=false"));
+  assert.ok(response.blocker.refs.includes("reviewer_fanout_providerCall=false"));
+
+  const ready = buildFlowDeskStatusResponseV1(statusInput({
+    reviewerFanoutPlan: reviewerFanoutPlan({
+      state: "fanout_ready",
+      blocked_labels: [],
+      planned_perspectives: ["policy_security", "architecture", "verification_implementation"],
+      runtime_lane_launch_requests: [{
+        schema_version: "flowdesk.runtime_lane_launch_request.v1",
+        launch_request_id: "reviewer-launch-attempt-123-policy_security",
+        workflow_id: workflowId,
+        attempt_id: attemptId,
+        lane_id: "reviewer-lane-attempt-123-policy_security",
+        parent_session_ref: "ses-parent-1",
+        agent_ref: "agent-reviewer",
+        provider_qualified_model_id: "claude/claude-opus-4-5",
+        launch_reason: "reviewer_fanout",
+        pre_launch_audit_ref: "audit-pre-launch-1",
+        lane_launch_approval_ref: "approval-lane-launch-1",
+        requested_at: now,
+        timeout_ms: 30000,
+        orphan_max_age_ms: 60000,
+        retry_budget: 1,
+        dispatch_authority_enabled: false,
+        providerCall: false,
+        actualLaneLaunch: false,
+        runtimeExecution: false
+      }, {
+        schema_version: "flowdesk.runtime_lane_launch_request.v1",
+        launch_request_id: "reviewer-launch-attempt-123-architecture",
+        workflow_id: workflowId,
+        attempt_id: attemptId,
+        lane_id: "reviewer-lane-attempt-123-architecture",
+        parent_session_ref: "ses-parent-1",
+        agent_ref: "agent-reviewer",
+        provider_qualified_model_id: "claude/claude-opus-4-5",
+        launch_reason: "reviewer_fanout",
+        pre_launch_audit_ref: "audit-pre-launch-1",
+        lane_launch_approval_ref: "approval-lane-launch-1",
+        requested_at: now,
+        timeout_ms: 30000,
+        orphan_max_age_ms: 60000,
+        retry_budget: 1,
+        dispatch_authority_enabled: false,
+        providerCall: false,
+        actualLaneLaunch: false,
+        runtimeExecution: false
+      }, {
+        schema_version: "flowdesk.runtime_lane_launch_request.v1",
+        launch_request_id: "reviewer-launch-attempt-123-verification_implementation",
+        workflow_id: workflowId,
+        attempt_id: attemptId,
+        lane_id: "reviewer-lane-attempt-123-verification_implementation",
+        parent_session_ref: "ses-parent-1",
+        agent_ref: "agent-reviewer",
+        provider_qualified_model_id: "claude/claude-opus-4-5",
+        launch_reason: "reviewer_fanout",
+        pre_launch_audit_ref: "audit-pre-launch-1",
+        lane_launch_approval_ref: "approval-lane-launch-1",
+        requested_at: now,
+        timeout_ms: 30000,
+        orphan_max_age_ms: 60000,
+        retry_budget: 1,
+        dispatch_authority_enabled: false,
+        providerCall: false,
+        actualLaneLaunch: false,
+        runtimeExecution: false
+      }]
+    })
+  }));
+  assert.equal(ready.blocker, undefined);
 });
 
 test("unknown and degraded provider health stay diagnostic and non-authorizing", () => {
