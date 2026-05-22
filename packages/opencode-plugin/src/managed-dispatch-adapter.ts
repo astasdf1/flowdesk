@@ -16,6 +16,7 @@ import type {
 	FlowDeskDispatchAttemptManifestV1,
 	FlowDeskDispatchIdempotencySnapshotV1,
 	FlowDeskFallbackDecisionV1,
+	FlowDeskFallbackRegatePlanV1,
 	FlowDeskLaneLifecycleRecordV1,
 	FlowDeskPermissionAskDecisionV1,
 	FlowDeskPromptNoReplyDecisionV1,
@@ -34,6 +35,7 @@ import {
 	prepareFlowDeskDispatchIdempotencyReservationV1,
 	prepareFlowDeskDispatchIdempotencyStateUpdateV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
+	planFlowDeskFallbackRegateV1,
 	promoteFlowDeskExternalWriteAuthorityV1,
 	promoteFlowDeskFallbackReselectionRegateV1,
 	promoteFlowDeskManagedDispatchBetaAuthorityV1,
@@ -90,6 +92,26 @@ export interface FlowDeskFallbackReselectionRegateAdapterResultV1 {
 	redactedBlockReason?: string;
 	safeNextActions: ["/flowdesk-status", "/flowdesk-run"] | ["/flowdesk-status"];
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		automaticFallbackAuthorized: false;
+	};
+}
+
+export interface FlowDeskManagedFallbackRegateOrchestratorResultV1 {
+	adapterProfile: "managed_fallback_regate_orchestrator";
+	status: "regate_plan_ready" | "blocked_before_regate_plan";
+	dispatchAttempted: false;
+	providerSwitchAttempted: false;
+	sdkCallAttempted: false;
+	workflowId?: string;
+	parentAttemptId?: string;
+	newAttemptId?: string;
+	fromProviderQualifiedModelId?: string;
+	toProviderQualifiedModelId?: string;
+	regatePlan?: FlowDeskFallbackRegatePlanV1;
+	redactedBlockReason?: string;
+	safeNextActions: ["/flowdesk-status", "/flowdesk-run"] | ["/flowdesk-status"];
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		freshRegatePlanPrepared: boolean;
 		automaticFallbackAuthorized: false;
 	};
 }
@@ -430,6 +452,16 @@ function disabledAuthority(): FlowDeskManagedDispatchBetaAuthoritySummaryV1 {
 
 function disabledFallbackAuthority(): FlowDeskFallbackReselectionRegateAdapterResultV1["authority"] {
 	return { ...disabledAuthority(), automaticFallbackAuthorized: false };
+}
+
+function managedFallbackRegateAuthority(
+	prepared: boolean,
+): FlowDeskManagedFallbackRegateOrchestratorResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		freshRegatePlanPrepared: prepared,
+		automaticFallbackAuthorized: false,
+	};
 }
 
 function controlledExternalWriteAuthority(
@@ -1308,6 +1340,46 @@ export function prepareFlowDeskFallbackReselectionRegateAdapterV1(input: {
 		toProviderQualifiedModelId: input.decision.to_provider_qualified_model_id,
 		safeNextActions: ["/flowdesk-status", "/flowdesk-run"],
 		authority: disabledFallbackAuthority(),
+	};
+}
+
+export function orchestrateFlowDeskManagedFallbackRegateV1(input: {
+	decision: FlowDeskFallbackDecisionV1;
+	consumedApproval: FlowDeskProductionApprovalSourceV1;
+}): FlowDeskManagedFallbackRegateOrchestratorResultV1 {
+	const plan = planFlowDeskFallbackRegateV1(input);
+	if (!plan.ok || plan.state !== "full_regate_required") {
+		return {
+			adapterProfile: "managed_fallback_regate_orchestrator",
+			status: "blocked_before_regate_plan",
+			dispatchAttempted: false,
+			providerSwitchAttempted: false,
+			sdkCallAttempted: false,
+			workflowId: input.decision.workflow_id,
+			parentAttemptId: input.decision.parent_attempt_id,
+			newAttemptId: input.decision.new_attempt_id,
+			fromProviderQualifiedModelId: input.decision.from_provider_qualified_model_id,
+			toProviderQualifiedModelId: input.decision.to_provider_qualified_model_id,
+			regatePlan: plan,
+			redactedBlockReason: plan.errors.join(",") || "fallback regate plan blocked",
+			safeNextActions: ["/flowdesk-status"],
+			authority: managedFallbackRegateAuthority(false),
+		};
+	}
+	return {
+		adapterProfile: "managed_fallback_regate_orchestrator",
+		status: "regate_plan_ready",
+		dispatchAttempted: false,
+		providerSwitchAttempted: false,
+		sdkCallAttempted: false,
+		workflowId: plan.workflow_id,
+		parentAttemptId: plan.parent_attempt_id,
+		newAttemptId: plan.new_attempt_id,
+		fromProviderQualifiedModelId: plan.from_provider_qualified_model_id,
+		toProviderQualifiedModelId: plan.to_provider_qualified_model_id,
+		regatePlan: plan,
+		safeNextActions: ["/flowdesk-status", "/flowdesk-run"],
+		authority: managedFallbackRegateAuthority(true),
 	};
 }
 

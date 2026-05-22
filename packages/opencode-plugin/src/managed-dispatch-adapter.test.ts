@@ -40,6 +40,7 @@ import {
 	dispatchManagedDispatchBetaPromptV1,
 	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
+	orchestrateFlowDeskManagedFallbackRegateV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
@@ -1227,6 +1228,64 @@ test("fallback reselection adapter blocks unsafe reselection before re-gate", ()
 		/approval ref mismatch/,
 	);
 	assert.equal(approvalMismatch.authority.actualLaneLaunch, false);
+});
+
+test("managed fallback regate orchestrator prepares only a fresh full re-gate plan", () => {
+	const result = orchestrateFlowDeskManagedFallbackRegateV1({
+		decision: fallbackDecision(),
+		consumedApproval: consumedFallbackApproval(),
+	});
+
+	assert.equal(result.status, "regate_plan_ready");
+	assert.equal(result.dispatchAttempted, false);
+	assert.equal(result.providerSwitchAttempted, false);
+	assert.equal(result.sdkCallAttempted, false);
+	assert.equal(result.workflowId, "workflow-123");
+	assert.equal(result.parentAttemptId, "attempt-123");
+	assert.equal(result.newAttemptId, "attempt-fallback-123");
+	assert.equal(result.regatePlan?.state, "full_regate_required");
+	assert.deepEqual(result.regatePlan?.required_fresh_evidence_refs, [
+		"usage-fresh-123",
+		"health-fresh-123",
+		"runtime-fresh-123",
+	]);
+	assert.equal(result.regatePlan?.required_guard_decision_ref, "guard-fallback-123");
+	assert.equal(result.regatePlan?.required_approval_ref, "approval-fallback-123");
+	assert.equal(
+		result.regatePlan?.required_pre_dispatch_audit_ref,
+		"audit-fallback-123",
+	);
+	assert.deepEqual(result.safeNextActions, ["/flowdesk-status", "/flowdesk-run"]);
+	assert.equal(result.authority.freshRegatePlanPrepared, true);
+	assert.equal(result.authority.automaticFallbackAuthorized, false);
+	assert.equal(result.authority.fallbackAuthority, false);
+	assert.equal(result.authority.realOpenCodeDispatch, false);
+	assert.equal(result.authority.providerCall, false);
+	assert.equal(result.authority.actualLaneLaunch, false);
+	assert.equal(result.authority.runtimeExecution, false);
+});
+
+test("managed fallback regate orchestrator blocks before planning unsafe fallback", () => {
+	const terminal = orchestrateFlowDeskManagedFallbackRegateV1({
+		decision: fallbackDecision({ depth: 2 }),
+		consumedApproval: consumedFallbackApproval(),
+	});
+	assert.equal(terminal.status, "blocked_before_regate_plan");
+	assert.equal(terminal.dispatchAttempted, false);
+	assert.equal(terminal.providerSwitchAttempted, false);
+	assert.equal(terminal.sdkCallAttempted, false);
+	assert.deepEqual(terminal.safeNextActions, ["/flowdesk-status"]);
+	assert.match(terminal.redactedBlockReason ?? "", /max-depth|requires_full_regate/);
+	assert.equal(terminal.authority.freshRegatePlanPrepared, false);
+	assert.equal(terminal.authority.providerCall, false);
+
+	const drift = orchestrateFlowDeskManagedFallbackRegateV1({
+		decision: fallbackDecision(),
+		consumedApproval: consumedFallbackApproval({ approval_id: "approval-other-123" }),
+	});
+	assert.equal(drift.status, "blocked_before_regate_plan");
+	assert.match(drift.redactedBlockReason ?? "", /approval ref mismatch/);
+	assert.equal(drift.authority.automaticFallbackAuthorized, false);
 });
 
 test("controlled external write adapter readies only redacted allowed targets", () => {
