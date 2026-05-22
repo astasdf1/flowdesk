@@ -14,6 +14,7 @@ import type {
   FlowDeskRetryPlanningInputV1,
   FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
   FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
+  FlowDeskReviewerFanoutPlanV1,
   FlowDeskSanitizedAuthCaptureResultV1,
   FlowDeskStateWriteIntent,
   FlowDeskWorkflowActiveV1,
@@ -23,6 +24,7 @@ import type {
   WorkflowTaxonomyV1
 } from "@flowdesk/core";
 import {
+  applyFlowDeskSessionEvidenceWriteIntentsV1,
   applyWriteIntentsToDurableState,
   applyWriteIntentsToInMemoryState,
   evaluateFlowDeskProductionEnablementV1,
@@ -31,6 +33,7 @@ import {
   mergePolicyPacksV1,
   planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
   prepareAttemptRecordWriteIntent,
+  prepareFlowDeskSessionEvidenceWriteIntentV1,
   prepareLaneRecordWriteIntent,
   prepareWorkflowActiveWriteIntent,
   prepareWorkflowRecordWriteIntent,
@@ -101,6 +104,8 @@ export interface FlowDeskLocalNonDispatchAdapterSessionOptionsV1 {
 export interface FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1 extends Omit<FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1, "reloadedEvidence" | "workflowId" | "requestedAt"> {
   enabled: true;
   requestedAt?: string;
+  persistDerivedFanoutPlanEvidence?: boolean;
+  fanoutPlanEvidenceId?: string;
 }
 
 export interface FlowDeskLocalProductionEnablementOptionsV1 {
@@ -685,12 +690,33 @@ function reviewerFanoutDiagnosticsContext(state: LocalAdapterState, request: Rec
   if (state.reviewerFanoutDiagnostics?.enabled !== true || state.durableStateRootDir === undefined) return undefined;
   const workflowId = workflowIdFrom(request);
   const reloadedEvidence = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: state.durableStateRootDir });
-  return planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
+  const plan = planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
     ...state.reviewerFanoutDiagnostics,
     workflowId,
     reloadedEvidence,
     requestedAt: state.reviewerFanoutDiagnostics.requestedAt ?? parts.nowIso
   });
+  if (state.reviewerFanoutDiagnostics.persistDerivedFanoutPlanEvidence === true && plan.state === "fanout_ready") {
+    const materialized = materializeReviewerFanoutPlanEvidence({
+      rootDir: state.durableStateRootDir,
+      workflowId,
+      evidenceId: state.reviewerFanoutDiagnostics.fanoutPlanEvidenceId ?? reviewerFanoutPlanEvidenceId(workflowId, plan.fanoutPlan),
+      fanoutPlan: plan.fanoutPlan
+    });
+    if (!materialized.ok) state.lastDurableStateReadErrors = materialized.errors;
+  }
+  return plan;
+}
+
+function reviewerFanoutPlanEvidenceId(workflowId: string, plan: FlowDeskReviewerFanoutPlanV1): string {
+  return safeToken(`reviewer-fanout-plan-${workflowId}-${plan.attempt_id}-${plan.cache_id ?? "cache"}`, "reviewer-fanout-plan");
+}
+
+function materializeReviewerFanoutPlanEvidence(input: { rootDir: string; workflowId: string; evidenceId: string; fanoutPlan: FlowDeskReviewerFanoutPlanV1 }): ValidationResult {
+  if (input.fanoutPlan.state !== "fanout_ready" || !input.fanoutPlan.ok) return invalid("reviewer fanout plan evidence requires a ready fanout plan");
+  const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId: input.workflowId, evidenceId: input.evidenceId, record: input.fanoutPlan as unknown as Record<string, unknown> });
+  if (!prepared.ok || prepared.writeIntent === undefined) return prepared;
+  return applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
 }
 
 function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown, state: LocalAdapterState, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): FlowDeskCommandBackedHandlerContextV1 {

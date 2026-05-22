@@ -14,6 +14,7 @@ import {
 	FLOWDESK_FDS1_FIXTURE_CATALOG,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
+	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
 import { tool } from "@opencode-ai/plugin";
 import {
@@ -1385,6 +1386,8 @@ test("server option derives reviewer fanout diagnostics from durable cache evide
 					requestedAt: "2026-05-19T00:01:00.000Z",
 					preLaunchAuditRef: "audit-pre-launch-1",
 					laneLaunchApprovalRef: "approval-lane-launch-1",
+					persistDerivedFanoutPlanEvidence: true,
+					fanoutPlanEvidenceId: "derived-fanout-plan-1",
 				},
 			},
 		)) as ChatMessageHooks;
@@ -1444,6 +1447,14 @@ test("server option derives reviewer fanout diagnostics from durable cache evide
 		assert.equal(doctor.providerCall, false);
 		assert.equal(doctor.runtimeExecution, false);
 		assert.equal(doctor.actualLaneLaunch, false);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+		const fanoutPlans = reloaded.entries.filter((entry) => entry.evidenceClass === "reviewer_fanout_plan");
+		assert.equal(fanoutPlans.length, 1);
+		assert.equal(fanoutPlans[0].evidenceId, "derived-fanout-plan-1");
+		assert.equal(fanoutPlans[0].record.state, "fanout_ready");
+		assert.equal(fanoutPlans[0].record.actualLaneLaunch, false);
+		assert.equal(fanoutPlans[0].record.providerCall, false);
+		assert.equal(fanoutPlans[0].record.runtimeExecution, false);
 
 		const status = JSON.parse(
 			toolOutput(
@@ -1496,6 +1507,8 @@ test("server option surfaces blocked reviewer fanout diagnostics from drifted ca
 					parentSessionRef: "ses-parent-1",
 					agentRef: "agent-reviewer",
 					requestedAt: "2026-05-19T00:01:00.000Z",
+					persistDerivedFanoutPlanEvidence: true,
+					fanoutPlanEvidenceId: "blocked-fanout-plan-1",
 				},
 			},
 		)) as ChatMessageHooks;
@@ -1541,6 +1554,8 @@ test("server option surfaces blocked reviewer fanout diagnostics from drifted ca
 		assert.equal(status.providerCall, false);
 		assert.equal(status.runtimeExecution, false);
 		assert.equal(status.actualLaneLaunch, false);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+		assert.equal(reloaded.entries.some((entry) => entry.evidenceClass === "reviewer_fanout_plan"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
