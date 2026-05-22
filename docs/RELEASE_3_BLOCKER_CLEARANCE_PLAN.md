@@ -30,6 +30,15 @@ This plan orders the remaining blockers that would prevent FlowDesk from progres
 4. Fresh public-registry install smoke for `0.1.1` passed in a throwaway profile: 11 tools, `chat.message`, direct doctor/status/usage, and Korean chat-intake routing succeeded with all real-dispatch/lane-launch/fallback/hard cancel authority flags false.
 5. Active OpenCode profile migration from `0.1.0` to `0.1.1` completed at `~/.config/opencode`. The nested `@opencode-ai/plugin@1.15.6` and `@opencode-ai/sdk@1.15.6` resolve under FlowDesk while a separate top-level `@opencode-ai/plugin@1.3.12` remains for other plugins. Module-load smoke from the active profile passed.
 6. Release 3 authority-promotion core contracts now exist for managed-dispatch beta promotion, typed reviewer verdict acceptance, fallback reselection/regate promotion, and controlled external-write promotion. These contracts compose the already-hardened evidence, approval, manifest, reviewer verdict, fallback, and redaction validators while preserving Release 1 non-dispatch defaults.
+7. The fallback reselection adapter helper now converts a valid fallback decision plus consumed `fallback_reselection` approval only into a non-authorizing fresh full re-gate instruction. Same-attempt, max-depth non-terminal, and approval-mismatched fallback decisions block before re-gate, and no SDK/provider call or automatic fallback authority is enabled.
+8. The controlled external-write adapter helper now converts a valid controlled write request plus consumed `external_write` approval only into `write_ready` for controlled redacted targets. GitHub/path-shaped targets and wrong approval actions block before write, and no dispatch/provider/lane/runtime authority is enabled.
+9. The reviewer typed verdict acceptance adapter helper now converts all canonical passing low-uncertainty typed reviewer verdicts plus consumed `reviewer_fanout` approval into `verdicts_accepted`. Missing perspectives, non-pass verdicts, and wrong approval actions block before acceptance, and no dispatch/provider/lane/runtime authority is enabled.
+10. Bounded live reviewer verdict proof now exists for coordinator-controlled registered reviewer lanes: Claude Opus, Gemini Pro, and GPT frontier child sessions produced schema-valid typed verdicts for the canonical perspectives, and the acceptance adapter returned `verdicts_accepted` after consumed `reviewer_fanout` approval while keeping dispatch/provider/lane/runtime authority disabled.
+11. Controlled external-write readiness was proven for the allowed `release_conformance_doc` target kind with a consumed `external_write` approval. The approved recording was materialized as local release conformance documentation only; remote GitHub/connector/storage/database/URL/raw-path writes remain blocked.
+12. Durable reviewer verdict linkage now exists: typed reviewer verdicts can be accepted as durable only after reloaded `reviewer_verdict` evidence and complete `lane_lifecycle` evidence exist for every accepted canonical verdict.
+13. Hard-chat proof was timeboxed and remains blocked: current `chat.message` steering mutates visible parts but does not prove throw blocking, `noReply`, `cancel`, `stop`, timeout/null fail-closed, or malformed-return fail-closed behavior.
+14. Controlled conformance-doc local writer/ledger now exists for `release_conformance_doc` only: it consumes a `write_ready` result, rechecks the consumed `external_write` approval, writes only `docs/conformance/<target_ref>.md`, persists reloadable `controlled_conformance_doc_write` evidence, verifies the SHA-256 content hash, blocks on failed pre-write evidence reload, and keeps remote/GitHub/connector/storage/database/URL/raw-path writes blocked.
+15. D-track managed-dispatch production-integration narrow slice now exists behind the explicit opt-in beta tool: when `reloadedEvidence` is omitted, the server tool can reload durable session evidence from the configured durable state root before running the existing manifest, durable pre-call, reservation, promotion, and injected-SDK gates. The adapter maps FlowDesk provider families to OpenCode runtime provider ids for SDK calls (`claude` -> `anthropic`, `gemini` -> `google`, `openai` -> `openai`). Default Release 1 remains non-dispatch.
 
 ## 2026-05-21 Live Runtime Batch
 
@@ -47,23 +56,59 @@ Promotion contract evidence is recorded in `docs/conformance/2026-05-21-release3
 
 ## 2026-05-22 Hard Chat Blocked-State Hardening
 
-Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-release3-hard-chat-blocked-state.md`. The local probe contract now treats missing mutation, duplicate assistant reply, timeout/null not fail-closed, or malformed return not fail-closed as `blocked` rather than ordinary `steering_only`. This does not prove `noReply`, `cancel`, or `stop` authority; it prevents incomplete hard-chat observations from being overinterpreted as safe steering evidence.
+Hard-chat blocked-state hardening is recorded in `docs/conformance/2026-05-22-release3-hard-chat-blocked-state.md`. The local probe contract now treats missing mutation, duplicate assistant reply, timeout/null not fail-closed, malformed return not fail-closed, or unsupported `noReply`/`cancel`/`stop` return fields as `blocked` rather than ordinary `steering_only`. The plugin can convert local `chat.message` hook observations into that non-authorizing probe shape. This does not prove `noReply`, `cancel`, or `stop` authority; it prevents incomplete hard-chat observations from being overinterpreted as safe steering evidence.
 
 ## 2026-05-22 Durable Approval Provenance Hardening
 
 Durable approval provenance hardening is recorded in `docs/conformance/2026-05-22-release3-durable-approval-provenance.md`. Session evidence now has dedicated `production_approval_source` and `dispatch_idempotency` classes, dispatch pre-call readiness has a pure durable evaluator that requires a reloaded idempotency snapshot, reloaded consumed approval source, and reloaded pre-dispatch audit entry, and the explicit opt-in managed-dispatch adapter now requires that durable evaluator before promotion and injected SDK calls. This closes the in-memory consumed-approval provenance gap and local replay-detection gap while preserving default Release 1 non-dispatch behavior.
 
-Local idempotency reservation contract hardening now also prepares durable `reserved` entries and post-reservation `dispatch_failed`/`quarantined` snapshot updates in `@flowdesk/core`. This proves the snapshot materialization shape through session-evidence writes/reloads without enabling provider calls; adapter-side reservation write/reload/update around the injected SDK call remains a later gated integration step.
+Local idempotency reservation contract hardening now also prepares durable `reserved` entries and post-reservation `dispatch_failed`/`quarantined` snapshot updates in `@flowdesk/core`. The explicit opt-in adapter now has a concrete durable reservation-store factory that writes those snapshots through the session-evidence apply/reload path before the injected SDK call and after SDK failure.
 
-The explicit opt-in managed-dispatch adapter now requires an injected reservation store to prove reservation materialization and reload before the SDK prompt method can be invoked, and it calls the store's failure-state hook if the SDK call throws. Fake-client coverage proves zero SDK calls when the reservation proof is missing or failed. A concrete durable reservation-store implementation behind that callback remains a later local integration.
+The explicit opt-in managed-dispatch adapter now requires a reservation store to prove reservation materialization and reload before the SDK prompt method can be invoked, and it calls the store's failure-state hook if the SDK call throws. Fake-client coverage proves zero SDK calls when the reservation proof is missing or failed; concrete durable-store coverage proves `reserved` materialization, stale replay blocking from reloaded durable evidence, and `dispatch_failed` materialization after SDK failure.
+
+## 2026-05-22 Fallback Reselection Re-Gate Adapter
+
+Fallback reselection adapter wiring is recorded in `docs/conformance/2026-05-22-release3-fallback-reselection-regate-adapter.md`. The adapter maps a successful fallback/reselection promotion to `regate_required` only: the new attempt must still run the full managed-dispatch gate through `/flowdesk-run` before any provider call. Blocked decisions expose `/flowdesk-status` only. Automatic provider/model switching remains blocked.
+
+## 2026-05-22 Controlled External Write Adapter
+
+Controlled external-write adapter wiring is recorded in `docs/conformance/2026-05-22-release3-controlled-external-write-adapter.md`. The adapter maps a successful controlled external-write promotion to `write_ready` only for redacted audit export or release conformance doc targets. It blocks forbidden GitHub/path-shaped targets and approval mismatches before write, and it does not perform the external write itself.
+
+## 2026-05-22 Controlled External Write Recording
+
+Controlled external-write readiness and recording is recorded in `docs/conformance/2026-05-22-release3-controlled-external-write-recording.md`. The adapter returned `write_ready` for a redacted `release_conformance_doc` target after consumed `external_write` approval, and the approved recording was materialized as local release conformance docs. This does not prove remote connector, GitHub, storage, database, URL, raw-path, or external ledger write authority.
+
+## 2026-05-22 Controlled Conformance Doc Local Writer
+
+Controlled conformance-doc local writer/ledger hardening is recorded in `docs/conformance/2026-05-22-release3-controlled-conformance-doc-local-writer.md`. `materializeFlowDeskControlledConformanceDocLocalWriteV1` is a separate opt-in materialization step after `write_ready`: it writes only `docs/conformance/<target_ref>.md`, persists a reloadable `controlled_conformance_doc_write` session-evidence ledger, verifies the document SHA-256 against the request `content_hash_ref`, and blocks non-`release_conformance_doc`, incomplete approval, hash mismatch, failed pre-write evidence reload, existing targets, root escape, or symlinked write paths before local write. Remote/GitHub/connector/storage/database/URL/raw-path writes remain blocked.
+
+## 2026-05-22 Reviewer Verdict Acceptance Adapter
+
+Reviewer verdict acceptance adapter wiring is recorded in `docs/conformance/2026-05-22-release3-reviewer-verdict-acceptance-adapter.md`. The adapter maps a successful typed reviewer verdict promotion to `verdicts_accepted` only after all canonical perspectives return typed passing low-uncertainty verdicts and a consumed `reviewer_fanout` approval is present. It blocks missing perspectives, non-pass verdicts, and approval mismatches before acceptance, and it does not launch reviewer lanes or call providers.
+
+## 2026-05-22 Live Reviewer Verdict Proof
+
+Bounded live reviewer verdict proof is recorded in `docs/conformance/2026-05-22-release3-live-reviewer-verdict-proof.md`. The active SDK requires child sessions to be created with `parentID/title` only, then prompted with `agent` and concrete `model`; using that corrected shape, coordinator-controlled Claude Opus, Gemini Pro, and GPT frontier reviewer child sessions produced schema-valid typed verdicts for `policy_security`, `architecture`, and `verification_implementation`. `observeInjectedSdkReviewerVerdictV1` observed all three verdicts, and `prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1` returned `verdicts_accepted` after consumed `reviewer_fanout` approval. The result keeps real dispatch, provider-call, runtime, lane-launch, fallback, tool, and hard-chat authority false.
+
+## 2026-05-22 Durable Reviewer Verdict Linkage
+
+Durable reviewer verdict linkage is recorded in `docs/conformance/2026-05-22-release3-durable-reviewer-verdict-linkage.md`. Session evidence now supports `reviewer_verdict`, `lane_lifecycle`, and `reviewer_lane_conformance` records. `prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1` blocks durable acceptance unless every accepted canonical verdict is present in reloaded reviewer-verdict evidence and has a complete lifecycle record for the same workflow and attempt. This closes the durable linkage gap without enabling dispatch/provider/runtime/lane/fallback/hard-chat authority.
+
+## 2026-05-22 Hard Chat Timebox
+
+Hard-chat proof timebox is recorded in `docs/conformance/2026-05-22-release3-hard-chat-timebox.md`. The current `chat.message` hook can append visible FlowDesk steering, returns `undefined`, and emits no `noReply`, `cancel`, or `stop` fields. The probe outcome remains `blocked` because throw blocking, no-reply, cancel/stop, timeout/null fail-closed, and malformed-return fail-closed semantics are unproven. Hard chat authority remains disabled.
+
+## 2026-05-22 Managed Dispatch Production Integration Narrow Slice
+
+D-track managed-dispatch production integration is recorded in `docs/conformance/2026-05-22-release3-managed-dispatch-production-integration.md`. The explicit opt-in beta server tool now reloads durable session evidence from the configured durable state root when `reloadedEvidence` is omitted, then continues through the existing fail-closed Guard, manifest, durable pre-call, reservation, and promotion gates before any injected SDK call. The adapter now maps FlowDesk provider families to OpenCode runtime provider ids at the SDK boundary, including `claude` -> `anthropic` and `gemini` -> `google`, while preserving FlowDesk evidence bindings. Local validation passed with clean touched-file LSP errors, `GIT_MASTER=1 git diff --check`, `npm run typecheck`, and full `npm test` (359/359). Claude managed-dispatch live proof remains a next validation step, not a default authority change.
 
 ## Next Safe Actions
 
-1. Keep the managed-dispatch promotion gate wired only to the explicit opt-in adapter path, preserving the ordering: durable evidence reload, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, promotion gate, then SDK call.
+1. Keep the managed-dispatch promotion gate wired only to the explicit opt-in adapter path, preserving the ordering: durable evidence reload from configured state, Guard approval, pre-dispatch audit, consumed scoped approval, manifest pre-call permission, idempotency reservation, promotion gate, then SDK call.
 2. Probe `chat.message` mutation/throw/no-reply/cancel behavior under OpenCode 1.15 to either prove or keep blocked the hard chat-control authority (blocker #4). Timeout, malformed output, null output, and unsupported return fields must all map to explicit denied/blocked results, never implicit allow.
-3. Add runtime emission paths for typed reviewer verdicts only after coordinator-controlled lane launch remains deterministic and no-output/missing-verdict lanes are classified as non-approvals.
-4. Keep fallback/reselection as reselection plus full re-gate, not automatic provider switching. A promoted fallback decision must still pass the managed-dispatch gate before any provider call.
-5. Keep external writes limited to controlled redacted targets with explicit user confirmation. GitHub, connector, storage, database, URL, and raw-path targets remain blocked unless a later dedicated write connector gate is designed and proven.
+3. Keep typed reviewer verdict observation non-authorizing: only schema-valid `flowdesk.top_tier_review_verdict.v1` outputs that match workflow/lane/binding/perspective may be observed, and missing or invalid verdicts remain non-approvals. Durable linkage is now required before typed verdict acceptance can be treated as durable evidence, but this still does not promote managed dispatch.
+4. Keep fallback/reselection as reselection plus full re-gate, not automatic provider switching. The local adapter may return `regate_required`, but the new attempt must still pass the managed-dispatch gate before any provider call.
+5. Keep external writes limited to controlled redacted targets with explicit user confirmation. The local writer may materialize only `release_conformance_doc` targets through the controlled docs path and reloadable ledger evidence. GitHub, connector, storage, database, URL, raw-path, and broader external ledger targets remain blocked unless a later dedicated write connector gate is designed and proven.
 
 ## 2026-05-21 Multi-Model Critical Review Synthesis
 
@@ -154,6 +199,7 @@ Contract status as of 2026-05-21: blockers #3 through #11 have local contract/te
 - Full re-gate means all gates from blocker #7 plus runtime compatibility, policy eligibility, fresh usage/health, fresh evidence, fresh approval, fresh Guard decision, and fresh pre-dispatch audit.
 - Each fallback must have a coordinator-issued new attempt id, parent attempt ref, reason label, max-depth counter, and terminal blocked state.
 - Silent chained fallback and same-attempt fallback are forbidden.
+- Adapter wiring may only surface `regate_required` or `blocked_before_regate`; it must not call the SDK, change providers, or enable automatic fallback authority.
 
 ### Blocker #11: Operational Intelligence
 
