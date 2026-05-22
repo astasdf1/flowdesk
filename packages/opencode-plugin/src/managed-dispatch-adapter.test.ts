@@ -39,6 +39,7 @@ import {
 	dispatchFlowDeskPromptNoReplyWithDecisionV1,
 	dispatchManagedDispatchBetaPromptV1,
 	materializeFlowDeskControlledConformanceDocLocalWriteV1,
+	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
@@ -1410,6 +1411,185 @@ test("controlled conformance doc local writer fails closed before unsafe writes"
 			consumedApproval,
 			ledgerEntryId: "controlled-doc-write-blocked-4",
 			documentMarkdown,
+			materializedAt: now,
+		});
+		assert.equal(blockedPreWriteReload.status, "blocked_before_local_write");
+		assert.match(
+			blockedPreWriteReload.redactedBlockReason ?? "",
+			/pre-write evidence reload failed/,
+		);
+		assert.equal(blockedPreWriteReload.writeAttempted, false);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		assert.equal(reloaded.entries.length, 0);
+	});
+});
+
+test("controlled redacted audit export local writer records export and ledger after write_ready", async () => {
+	await withTempRoot(async (rootDir) => {
+		const exportJson = JSON.stringify({
+			schema_version: "flowdesk.redacted_audit_export.v1",
+			workflow_id: "workflow-123",
+			attempt_id: "attempt-123",
+			redaction_policy_ref: "redaction-policy-123",
+			events: [
+				{
+					event_ref: "event-audit-123",
+					summary_label: "guarded local audit export materialized",
+				},
+			],
+		});
+		const request = controlledExternalWriteRequest({
+			target_kind: "redacted_audit_export",
+			target_ref: "redacted-audit-export-123",
+			content_hash_ref: sha256Ref(exportJson),
+		});
+		const consumedApproval = consumedExternalWriteApproval();
+		const readiness = prepareFlowDeskControlledExternalWriteAdapterV1({
+			request,
+			consumedApproval,
+		});
+
+		const result = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+			rootDir,
+			readiness,
+			request,
+			consumedApproval,
+			ledgerEntryId: "controlled-audit-export-write-123",
+			exportJson,
+			materializedAt: now,
+		});
+
+		assert.equal(result.status, "write_recorded");
+		assert.equal(result.writeAttempted, true);
+		assert.equal(
+			result.exportPath,
+			".flowdesk/sessions/workflow-123/redacted-audit/redacted-audit-export-123.json",
+		);
+		assert.equal(result.ledgerEntryId, "controlled-audit-export-write-123");
+		assert.equal(result.ledgerEvidenceReloaded, true);
+		assert.equal(result.artifactSha256Ref, sha256Ref(exportJson));
+		assert.equal(result.authority.localRedactedAuditExportWriteRecorded, true);
+		assert.equal(result.authority.controlledExternalWriteAuthorized, true);
+		assert.equal(result.authority.remoteWriteAttempted, false);
+		assert.equal(result.authority.githubWriteAttempted, false);
+		assert.equal(result.authority.connectorWriteAttempted, false);
+		assert.equal(result.authority.storageWriteAttempted, false);
+		assert.equal(result.authority.databaseWriteAttempted, false);
+		assert.equal(result.authority.urlWriteAttempted, false);
+		assert.equal(result.authority.rawPathWriteAttempted, false);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.actualLaneLaunch, false);
+		assert.equal(result.authority.runtimeExecution, false);
+		assert.equal(readFileSync(join(rootDir, result.exportPath), "utf8"), exportJson);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		const ledger = reloaded.entries.find(
+			(entry) => entry.evidenceClass === "controlled_redacted_audit_export_write",
+		);
+		assert.ok(ledger);
+		assert.equal(ledger.evidenceId, "controlled-audit-export-write-123");
+		assert.equal(ledger.record.artifact_path, result.exportPath);
+		assert.equal(ledger.record.content_hash_ref, sha256Ref(exportJson));
+		assert.equal(ledger.record.redacted, true);
+	});
+});
+
+test("controlled redacted audit export local writer fails closed before unsafe writes", async () => {
+	await withTempRoot(async (rootDir) => {
+		const exportJson = JSON.stringify({
+			schema_version: "flowdesk.redacted_audit_export.v1",
+			workflow_id: "workflow-123",
+			attempt_id: "attempt-123",
+			summary_label: "redacted audit export ready",
+		});
+		const request = controlledExternalWriteRequest({
+			target_kind: "redacted_audit_export",
+			target_ref: "redacted-audit-export-123",
+			content_hash_ref: sha256Ref(exportJson),
+		});
+		const consumedApproval = consumedExternalWriteApproval();
+		const readiness = prepareFlowDeskControlledExternalWriteAdapterV1({
+			request,
+			consumedApproval,
+		});
+
+		const blockedReadiness = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+			rootDir,
+			readiness: { ...readiness, status: "blocked_before_write" },
+			request,
+			consumedApproval,
+			ledgerEntryId: "controlled-audit-export-write-blocked-1",
+			exportJson,
+			materializedAt: now,
+		});
+		assert.equal(blockedReadiness.status, "blocked_before_local_write");
+		assert.equal(blockedReadiness.writeAttempted, false);
+		assert.equal(blockedReadiness.authority.localRedactedAuditExportWriteRecorded, false);
+
+		const wrongTarget = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+			rootDir,
+			readiness,
+			request: controlledExternalWriteRequest({
+				content_hash_ref: sha256Ref(exportJson),
+			}),
+			consumedApproval,
+			ledgerEntryId: "controlled-audit-export-write-blocked-2",
+			exportJson,
+			materializedAt: now,
+		});
+		assert.equal(wrongTarget.status, "blocked_before_local_write");
+		assert.match(wrongTarget.redactedBlockReason ?? "", /redacted_audit_export|readiness/);
+
+		const hashMismatch = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+			rootDir,
+			readiness,
+			request: controlledExternalWriteRequest({
+				target_kind: "redacted_audit_export",
+				target_ref: "redacted-audit-export-123",
+				content_hash_ref: "sha256-mismatch",
+			}),
+			consumedApproval,
+			ledgerEntryId: "controlled-audit-export-write-blocked-3",
+			exportJson,
+			materializedAt: now,
+		});
+		assert.equal(hashMismatch.status, "blocked_before_local_write");
+		assert.match(hashMismatch.redactedBlockReason ?? "", /content_hash_ref/);
+		assert.equal(hashMismatch.authority.remoteWriteAttempted, false);
+		assert.equal(hashMismatch.authority.githubWriteAttempted, false);
+
+		const rawPayload = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+			rootDir,
+			readiness,
+			request,
+			consumedApproval,
+			ledgerEntryId: "controlled-audit-export-write-blocked-4",
+			exportJson: JSON.stringify({ raw_log: "developer message" }),
+			materializedAt: now,
+		});
+		assert.equal(rawPayload.status, "blocked_before_local_write");
+		assert.match(rawPayload.redactedBlockReason ?? "", /raw payload|prompt-like/);
+
+		const malformedEvidenceDir = join(
+			rootDir,
+			".flowdesk/sessions/workflow-123/evidence/usage-authority",
+		);
+		mkdirSync(malformedEvidenceDir, { recursive: true });
+		writeFileSync(join(malformedEvidenceDir, "evidence-malformed.json"), "{bad", "utf8");
+		const blockedPreWriteReload = materializeFlowDeskControlledRedactedAuditExportLocalWriteV1({
+			rootDir,
+			readiness,
+			request,
+			consumedApproval,
+			ledgerEntryId: "controlled-audit-export-write-blocked-5",
+			exportJson,
 			materializedAt: now,
 		});
 		assert.equal(blockedPreWriteReload.status, "blocked_before_local_write");

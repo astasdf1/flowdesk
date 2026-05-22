@@ -12,6 +12,7 @@ import { dirname, resolve, sep } from "node:path";
 import type {
 	FlowDeskControlledConformanceDocWriteRecordV1,
 	FlowDeskControlledExternalWriteRequestV1,
+	FlowDeskControlledRedactedAuditExportWriteRecordV1,
 	FlowDeskDispatchAttemptManifestV1,
 	FlowDeskDispatchIdempotencySnapshotV1,
 	FlowDeskFallbackDecisionV1,
@@ -38,6 +39,7 @@ import {
 	promoteFlowDeskManagedDispatchBetaAuthorityV1,
 	promoteFlowDeskReviewerTypedVerdictsV1,
 	reloadFlowDeskSessionEvidenceV1,
+	validateNoForbiddenRawPayloads,
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
 	validateFlowDeskSessionAbortDecisionV1,
@@ -157,6 +159,35 @@ export interface FlowDeskControlledConformanceDocLocalWriterResultV1 {
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
 		controlledExternalWriteAuthorized: boolean;
 		localConformanceDocWriteRecorded: boolean;
+		remoteWriteAttempted: false;
+		githubWriteAttempted: false;
+		connectorWriteAttempted: false;
+		storageWriteAttempted: false;
+		databaseWriteAttempted: false;
+		urlWriteAttempted: false;
+		rawPathWriteAttempted: false;
+	};
+}
+
+export interface FlowDeskControlledRedactedAuditExportLocalWriterResultV1 {
+	adapterProfile: "controlled_redacted_audit_export_local_writer";
+	status: "write_recorded" | "blocked_before_local_write";
+	workflowId?: string;
+	attemptId?: string;
+	targetKind?: "redacted_audit_export";
+	targetRef?: string;
+	writeAttempted: boolean;
+	exportPath?: string;
+	ledgerEntryId?: string;
+	ledgerEvidenceReloaded: boolean;
+	artifactSha256Ref?: string;
+	redactedBlockReason?: string;
+	safeNextActions:
+		| ["/flowdesk-status", "/flowdesk-export-debug"]
+		| ["/flowdesk-status"];
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		controlledExternalWriteAuthorized: boolean;
+		localRedactedAuditExportWriteRecorded: boolean;
 		remoteWriteAttempted: false;
 		githubWriteAttempted: false;
 		connectorWriteAttempted: false;
@@ -440,6 +471,23 @@ function controlledConformanceDocWriteAuthority(
 	};
 }
 
+function controlledRedactedAuditExportWriteAuthority(
+	recorded: boolean,
+): FlowDeskControlledRedactedAuditExportLocalWriterResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		controlledExternalWriteAuthorized: recorded,
+		localRedactedAuditExportWriteRecorded: recorded,
+		remoteWriteAttempted: false,
+		githubWriteAttempted: false,
+		connectorWriteAttempted: false,
+		storageWriteAttempted: false,
+		databaseWriteAttempted: false,
+		urlWriteAttempted: false,
+		rawPathWriteAttempted: false,
+	};
+}
+
 function permissionAskControlAuthority(
 	authorized: boolean,
 ): FlowDeskPermissionAskControlAdapterResultV1["authority"] {
@@ -485,6 +533,28 @@ function blockControlledConformanceDocWrite(input: {
 		redactedBlockReason: input.reason,
 		safeNextActions: ["/flowdesk-status"],
 		authority: controlledConformanceDocWriteAuthority(false),
+	};
+}
+
+function blockControlledRedactedAuditExportWrite(input: {
+	request?: FlowDeskControlledExternalWriteRequestV1;
+	reason: string;
+}): FlowDeskControlledRedactedAuditExportLocalWriterResultV1 {
+	return {
+		adapterProfile: "controlled_redacted_audit_export_local_writer",
+		status: "blocked_before_local_write",
+		writeAttempted: false,
+		workflowId: input.request?.workflow_id,
+		attemptId: input.request?.attempt_id,
+		targetKind:
+			input.request?.target_kind === "redacted_audit_export"
+				? "redacted_audit_export"
+				: undefined,
+		targetRef: input.request?.target_ref,
+		ledgerEvidenceReloaded: false,
+		redactedBlockReason: input.reason,
+		safeNextActions: ["/flowdesk-status"],
+		authority: controlledRedactedAuditExportWriteAuthority(false),
 	};
 }
 
@@ -699,12 +769,39 @@ function controlledDocPathFor(targetRef: string): string {
 	return `docs/conformance/${targetRef}.md`;
 }
 
+function controlledRedactedAuditExportPathFor(
+	workflowId: string,
+	targetRef: string,
+): string {
+	return `.flowdesk/sessions/${workflowId}/redacted-audit/${targetRef}.json`;
+}
+
 function validateControlledDocMarkdown(value: unknown): string[] {
 	if (typeof value !== "string" || value.trim().length === 0)
 		return ["documentMarkdown must be a non-empty string"];
 	if (value.length > 200_000)
 		return ["documentMarkdown exceeds controlled conformance doc limit"];
 	return [];
+}
+
+function validateRedactedAuditExportJson(value: unknown): string[] {
+	if (typeof value !== "string" || value.trim().length === 0)
+		return ["exportJson must be a non-empty string"];
+	if (value.length > 200_000)
+		return ["exportJson exceeds controlled redacted audit export limit"];
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		return ["exportJson must be parseable JSON"];
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+		return ["exportJson must be a JSON object"];
+	const redaction = validateNoForbiddenRawPayloads(
+		parsed,
+		"redacted_audit_export",
+	);
+	return redaction.ok ? [] : redaction.errors;
 }
 
 export function materializeFlowDeskControlledConformanceDocLocalWriteV1(input: {
@@ -936,6 +1033,243 @@ export function materializeFlowDeskControlledConformanceDocLocalWriteV1(input: {
 				error instanceof Error
 					? error.message
 					: "controlled conformance doc local write failed",
+		});
+	}
+}
+
+export function materializeFlowDeskControlledRedactedAuditExportLocalWriteV1(input: {
+	rootDir: string;
+	readiness: FlowDeskControlledExternalWriteAdapterResultV1;
+	request: FlowDeskControlledExternalWriteRequestV1;
+	consumedApproval: FlowDeskProductionApprovalSourceV1;
+	ledgerEntryId: string;
+	exportJson: string;
+	materializedAt?: string;
+}): FlowDeskControlledRedactedAuditExportLocalWriterResultV1 {
+	const errors: string[] = [];
+	if (typeof input.rootDir !== "string" || input.rootDir.trim().length === 0)
+		errors.push("rootDir is required");
+	errors.push(...validateRedactedAuditExportJson(input.exportJson));
+	if (input.readiness.status !== "write_ready")
+		errors.push("controlled external write readiness must be write_ready");
+	if (input.readiness.authority.controlledExternalWriteAuthorized !== true)
+		errors.push("controlled external write readiness must authorize the controlled target");
+	if (input.request.target_kind !== "redacted_audit_export")
+		errors.push("local writer only supports redacted_audit_export targets");
+	const recheckedReadiness = prepareFlowDeskControlledExternalWriteAdapterV1({
+		request: input.request,
+		consumedApproval: input.consumedApproval,
+	});
+	if (recheckedReadiness.status !== "write_ready")
+		errors.push(
+			recheckedReadiness.redactedBlockReason ??
+				"controlled external write readiness recheck failed",
+		);
+	if (
+		input.readiness.workflowId !== input.request.workflow_id ||
+		input.readiness.attemptId !== input.request.attempt_id ||
+		input.readiness.targetKind !== input.request.target_kind ||
+		input.readiness.targetRef !== input.request.target_ref
+	)
+		errors.push("readiness result does not match request target");
+	if (input.consumedApproval.consumed_at === undefined)
+		errors.push("external_write approval must be consumed before local write");
+	if (input.consumedApproval.consumption_audit_ref === undefined)
+		errors.push("external_write approval must include consumption audit ref");
+	const artifactSha256Ref = sha256Ref(input.exportJson);
+	if (input.request.content_hash_ref !== artifactSha256Ref)
+		errors.push("request content_hash_ref must match redacted audit export sha256");
+	const materializedAt = input.materializedAt ?? new Date().toISOString();
+	if (!Number.isFinite(Date.parse(materializedAt)))
+		errors.push("materializedAt must be a parseable timestamp");
+	if (errors.length > 0)
+		return blockControlledRedactedAuditExportWrite({
+			request: input.request,
+			reason: errors.join(", "),
+		});
+
+	const exportPath = controlledRedactedAuditExportPathFor(
+		input.request.workflow_id,
+		input.request.target_ref,
+	);
+	const ledgerRecord: FlowDeskControlledRedactedAuditExportWriteRecordV1 = {
+		schema_version: "flowdesk.controlled_redacted_audit_export_write.v1",
+		ledger_entry_id: input.ledgerEntryId,
+		request_id: input.request.request_id,
+		workflow_id: input.request.workflow_id,
+		attempt_id: input.request.attempt_id,
+		target_kind: "redacted_audit_export",
+		target_ref: input.request.target_ref,
+		approval_id: input.consumedApproval.approval_id,
+		actor_ref: input.consumedApproval.actor_ref,
+		profile_ref: input.consumedApproval.profile_ref,
+		evidence_bundle_hash: input.consumedApproval.evidence_bundle_hash,
+		guard_decision_ref: input.consumedApproval.guard_decision_ref,
+		issuance_audit_ref: input.consumedApproval.issuance_audit_ref,
+		consumption_audit_ref: input.consumedApproval.consumption_audit_ref as string,
+		redaction_policy_ref: input.request.redaction_policy_ref,
+		content_hash_ref: input.request.content_hash_ref,
+		pre_write_audit_ref: input.request.pre_write_audit_ref,
+		dry_run_ref: input.request.dry_run_ref,
+		artifact_ref: `artifact-${input.request.target_ref}`,
+		artifact_path: exportPath,
+		artifact_sha256_ref: artifactSha256Ref,
+		materialized_at: materializedAt,
+		local_only: true,
+		redacted: true,
+		writeAttempted: true,
+		remoteWriteAttempted: false,
+		githubWriteAttempted: false,
+		connectorWriteAttempted: false,
+		storageWriteAttempted: false,
+		databaseWriteAttempted: false,
+		urlWriteAttempted: false,
+		rawPathWriteAttempted: false,
+		dispatch_authority_enabled: false,
+		realOpenCodeDispatch: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		fallbackAuthority: false,
+		toolAuthority: false,
+		hardCancelOrNoReplyAuthority: false,
+	};
+	const preparedLedger = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.request.workflow_id,
+		evidenceId: input.ledgerEntryId,
+		record: ledgerRecord,
+	});
+	if (!preparedLedger.ok || preparedLedger.writeIntent === undefined)
+		return blockControlledRedactedAuditExportWrite({
+			request: input.request,
+			reason: preparedLedger.errors.join(", ") || "ledger write intent invalid",
+		});
+	const preWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.request.workflow_id,
+		rootDir: input.rootDir,
+	});
+	if (!preWriteReload.ok || preWriteReload.blocked.length > 0)
+		return blockControlledRedactedAuditExportWrite({
+			request: input.request,
+			reason: "controlled redacted audit export pre-write evidence reload failed",
+		});
+
+	let exportRenamed = false;
+	let ledgerRenamed = false;
+	try {
+		ensureNoSymlinkedDirectory(input.rootDir, exportPath);
+		ensureNoSymlinkedDirectory(input.rootDir, preparedLedger.writeIntent.path);
+		const exportTarget = safeJoinUnderRoot(input.rootDir, exportPath);
+		const exportTemp = safeJoinUnderRoot(
+			input.rootDir,
+			`.flowdesk/sessions/${input.request.workflow_id}/redacted-audit/.${input.request.target_ref}.tmp-controlled-redacted-audit-export-write`,
+		);
+		const ledgerTarget = safeJoinUnderRoot(input.rootDir, preparedLedger.writeIntent.path);
+		const ledgerTemp = safeJoinUnderRoot(input.rootDir, preparedLedger.writeIntent.tempPath);
+		if (existsSync(exportTarget) || existsSync(ledgerTarget))
+			return blockControlledRedactedAuditExportWrite({
+				request: input.request,
+				reason: "controlled redacted audit export or ledger target already exists",
+			});
+		if (dirname(exportTarget) !== dirname(exportTemp))
+			return blockControlledRedactedAuditExportWrite({
+				request: input.request,
+				reason: "controlled redacted audit export temp path must stay beside target",
+			});
+		if (dirname(ledgerTarget) !== dirname(ledgerTemp))
+			return blockControlledRedactedAuditExportWrite({
+				request: input.request,
+				reason: "controlled redacted audit export ledger temp path must stay beside target",
+			});
+		mkdirSync(dirname(exportTarget), { recursive: true });
+		mkdirSync(dirname(ledgerTarget), { recursive: true });
+		writeFileSync(exportTemp, input.exportJson, "utf8");
+		writeFileSync(ledgerTemp, JSON.stringify(ledgerRecord), "utf8");
+		renameSync(exportTemp, exportTarget);
+		exportRenamed = true;
+		renameSync(ledgerTemp, ledgerTarget);
+		ledgerRenamed = true;
+		const writtenHash = sha256Ref(readFileSync(exportTarget, "utf8"));
+		if (writtenHash !== artifactSha256Ref) {
+			try {
+				rmSync(ledgerTarget, { force: true });
+				rmSync(exportTarget, { force: true });
+			} catch {
+				// Best-effort cleanup only; result remains blocked.
+			} finally {
+				exportRenamed = false;
+				ledgerRenamed = false;
+			}
+			return blockControlledRedactedAuditExportWrite({
+				request: input.request,
+				reason: "controlled redacted audit export hash verification failed",
+			});
+		}
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: input.request.workflow_id,
+			rootDir: input.rootDir,
+		});
+		const ledgerReloaded =
+			reloaded.ok &&
+			reloaded.blocked.length === 0 &&
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "controlled_redacted_audit_export_write" &&
+					entry.evidenceId === input.ledgerEntryId &&
+					entry.record.artifact_sha256_ref === artifactSha256Ref,
+			);
+		if (!ledgerReloaded)
+			try {
+				rmSync(ledgerTarget, { force: true });
+				rmSync(exportTarget, { force: true });
+			} catch {
+				// Best-effort cleanup only; result remains blocked.
+			} finally {
+				exportRenamed = false;
+				ledgerRenamed = false;
+			}
+		if (!ledgerReloaded)
+			return blockControlledRedactedAuditExportWrite({
+				request: input.request,
+				reason: "controlled redacted audit export ledger reload failed",
+			});
+		return {
+			adapterProfile: "controlled_redacted_audit_export_local_writer",
+			status: "write_recorded",
+			workflowId: input.request.workflow_id,
+			attemptId: input.request.attempt_id,
+			targetKind: "redacted_audit_export",
+			targetRef: input.request.target_ref,
+			writeAttempted: true,
+			exportPath,
+			ledgerEntryId: input.ledgerEntryId,
+			ledgerEvidenceReloaded: true,
+			artifactSha256Ref,
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+			authority: controlledRedactedAuditExportWriteAuthority(true),
+		};
+	} catch (error) {
+		try {
+			if (ledgerRenamed) {
+				const ledgerTarget = safeJoinUnderRoot(
+					input.rootDir,
+					preparedLedger.writeIntent.path,
+				);
+				rmSync(ledgerTarget, { force: true });
+			}
+			if (exportRenamed) {
+				const exportTarget = safeJoinUnderRoot(input.rootDir, exportPath);
+				rmSync(exportTarget, { force: true });
+			}
+		} catch {
+			// Best-effort cleanup only; result remains blocked.
+		}
+		return blockControlledRedactedAuditExportWrite({
+			request: input.request,
+			reason:
+				error instanceof Error
+					? error.message
+					: "controlled redacted audit export local write failed",
 		});
 	}
 }
