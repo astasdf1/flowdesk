@@ -12,6 +12,8 @@ import type {
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskRetryPlanningInputV1,
+  FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
+  FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
   FlowDeskSanitizedAuthCaptureResultV1,
   FlowDeskStateWriteIntent,
   FlowDeskWorkflowActiveV1,
@@ -27,6 +29,7 @@ import {
   invalid,
   loadFlowDeskDurableWorkflowState,
   mergePolicyPacksV1,
+  planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
   prepareAttemptRecordWriteIntent,
   prepareLaneRecordWriteIntent,
   prepareWorkflowActiveWriteIntent,
@@ -92,6 +95,12 @@ export type FlowDeskLocalClockV1 = Date | (() => Date);
 export interface FlowDeskLocalNonDispatchAdapterSessionOptionsV1 {
   durableStateRootDir?: string;
   productionEnablement?: FlowDeskLocalProductionEnablementOptionsV1;
+  reviewerFanoutDiagnostics?: FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1;
+}
+
+export interface FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1 extends Omit<FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1, "reloadedEvidence" | "workflowId" | "requestedAt"> {
+  enabled: true;
+  requestedAt?: string;
 }
 
 export interface FlowDeskLocalProductionEnablementOptionsV1 {
@@ -118,6 +127,7 @@ interface LocalAdapterState {
   pendingConfirmation?: LocalPendingConfirmation;
   durableStateRootDir?: string;
   productionEnablement?: FlowDeskLocalProductionEnablementOptionsV1;
+  reviewerFanoutDiagnostics?: FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1;
   durableStateWrites: number;
   lastDurableStateWriteApplied: boolean;
   lastDurableStateReadErrors: string[];
@@ -635,12 +645,15 @@ function statusContext(state: LocalAdapterState, request: Record<string, unknown
     state.lastDurableStateReadErrors = [];
   }
   if (state.lastDurableStateReadErrors.length === 0 && (state.workflow === undefined || state.active === undefined)) updateWorkflowState(state, request, parts, "ready_to_run");
+  const fanoutDiagnostics = reviewerFanoutDiagnosticsContext(state, request, parts);
   return {
     active: state.active,
     workflow: state.workflow,
     ...(state.currentAttempt === undefined ? {} : { currentAttempt: state.currentAttempt }),
     laneRecords: state.laneRecords,
     providerHealthSnapshot: providerHealth(parts),
+    ...(fanoutDiagnostics?.selection.cacheRefreshPlan === undefined ? {} : { exactModelAvailabilityCacheRefreshPlan: fanoutDiagnostics.selection.cacheRefreshPlan }),
+    ...(fanoutDiagnostics === undefined ? {} : { reviewerFanoutPlan: fanoutDiagnostics.fanoutPlan }),
     auditRef: "audit-local",
     debugRef: "debug-local",
     now: parts.nowMs
@@ -668,6 +681,18 @@ function productionEnablementContext(state: LocalAdapterState, request: Record<s
   });
 }
 
+function reviewerFanoutDiagnosticsContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1 | undefined {
+  if (state.reviewerFanoutDiagnostics?.enabled !== true || state.durableStateRootDir === undefined) return undefined;
+  const workflowId = workflowIdFrom(request);
+  const reloadedEvidence = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: state.durableStateRootDir });
+  return planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
+    ...state.reviewerFanoutDiagnostics,
+    workflowId,
+    reloadedEvidence,
+    requestedAt: state.reviewerFanoutDiagnostics.requestedAt ?? parts.nowIso
+  });
+}
+
 function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown, state: LocalAdapterState, parts: ReturnType<typeof nowParts>, permissionProvider: FlowDeskLocalNonDispatchPermissionProviderV1): FlowDeskCommandBackedHandlerContextV1 {
   const record = isRecord(request) ? request : {};
   if (toolName === "flowdesk_plan") return { plan: makePlanContext(record, parts) };
@@ -677,7 +702,15 @@ function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown,
     const retry: NonNullable<FlowDeskRetryPlanningInputV1> = { request: record as unknown as FlowDeskRetryPlanningInputV1["request"], providerHealthSnapshot: providerHealth(parts), newAttemptId: id("attempt-retry", record), auditRef: "audit-local", debugRef: "debug-local" };
     return { retry };
   }
-  return { diagnostic: { nowIso: parts.nowIso, deleteAfterIso: parts.expiresAtIso, providerHealthSnapshotRef: "health-local", productionEnablement: productionEnablementContext(state, record) } };
+  const fanoutDiagnostics = reviewerFanoutDiagnosticsContext(state, record, parts);
+  return { diagnostic: {
+    nowIso: parts.nowIso,
+    deleteAfterIso: parts.expiresAtIso,
+    providerHealthSnapshotRef: "health-local",
+    productionEnablement: productionEnablementContext(state, record),
+    ...(fanoutDiagnostics?.selection.cacheRefreshPlan === undefined ? {} : { exactModelAvailabilityCacheRefreshPlan: fanoutDiagnostics.selection.cacheRefreshPlan }),
+    ...(fanoutDiagnostics === undefined ? {} : { reviewerFanoutPlan: fanoutDiagnostics.fanoutPlan })
+  } };
 }
 
 function summarize(state: LocalAdapterState, stateWriteApplied: boolean): FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
@@ -719,7 +752,7 @@ function clockDate(clock: FlowDeskLocalClockV1): Date {
 }
 
 export function createFlowDeskLocalNonDispatchAdapterSession(now: FlowDeskLocalClockV1 = new Date(), permissionProvider = createFlowDeskLocalNonDispatchPermissionProvider(), options: FlowDeskLocalNonDispatchAdapterSessionOptionsV1 = {}): FlowDeskLocalNonDispatchAdapterSessionV1 {
-  const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map(), durableStateRootDir: options.durableStateRootDir, productionEnablement: options.productionEnablement, durableStateWrites: 0, lastDurableStateWriteApplied: false, lastDurableStateReadErrors: [] };
+  const state: LocalAdapterState = { laneRecords: [], inMemoryState: new Map(), durableStateRootDir: options.durableStateRootDir, productionEnablement: options.productionEnablement, reviewerFanoutDiagnostics: options.reviewerFanoutDiagnostics, durableStateWrites: 0, lastDurableStateWriteApplied: false, lastDurableStateReadErrors: [] };
   return {
     state,
     evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1 {

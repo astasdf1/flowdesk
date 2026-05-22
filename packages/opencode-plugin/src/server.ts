@@ -33,10 +33,11 @@ import {
 } from "./index.js";
 import {
 	createFlowDeskLocalNonDispatchAdapterSession,
+	flowdeskLocalNonDispatchAdapterProfile,
 	type FlowDeskLocalClockV1,
 	type FlowDeskLocalNonDispatchAdapterSessionV1,
 	type FlowDeskLocalProductionEnablementOptionsV1,
-	flowdeskLocalNonDispatchAdapterProfile,
+	type FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1,
 } from "./local-adapter.js";
 import {
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
@@ -66,6 +67,8 @@ export const flowdeskNaturalLanguageRoutingOption =
 export const flowdeskDurableStateRootOption = "durableStateRoot" as const;
 export const flowdeskProductionEnablementOption =
 	"productionEnablement" as const;
+export const flowdeskReviewerFanoutDiagnosticsOption =
+	"reviewerFanoutDiagnostics" as const;
 export const flowdeskManagedDispatchBetaAdapterOption =
 	"managedDispatchBetaAdapter" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
@@ -983,6 +986,14 @@ function productionEnablementFromOptions(
 	};
 }
 
+function reviewerFanoutDiagnosticsFromOptions(
+	options?: PluginOptions,
+): FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1 | undefined {
+	const value = options?.[flowdeskReviewerFanoutDiagnosticsOption];
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	return value as unknown as FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1;
+}
+
 function isManagedDispatchBetaAdapterEnabled(options?: PluginOptions): boolean {
 	const value = options?.[flowdeskManagedDispatchBetaAdapterOption];
 	return value === true || (isRecord(value) && value.enabled === true);
@@ -1057,6 +1068,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, {
 					durableStateRootDir: durableStateRootFromOptions(options),
 					productionEnablement: productionEnablementFromOptions(options),
+					reviewerFanoutDiagnostics: reviewerFanoutDiagnosticsFromOptions(options),
 				})
 			: undefined;
 	const managedDispatchBetaClient = isManagedDispatchBetaAdapterEnabled(options)
