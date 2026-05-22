@@ -1,4 +1,4 @@
-import { DOCTOR_FAILURE_CATEGORIES, HOOK_HARNESS_ATTEMPT_KINDS, HOOK_HARNESS_CAPABILITIES, HOOK_HARNESS_DECISIONS, HOOK_HARNESS_MODES, INPUT_MODES, LANE_FAILURE_CLASSES, LANE_INVOCATION_REF_KINDS, LANE_VERDICT_STATUSES, SAFE_NEXT_ACTIONS, TOOL_STATUSES } from "./release1-contracts.js";
+import { DOCTOR_FAILURE_CATEGORIES, FLOWDESK_RUN_REQUEST_MODES, HOOK_HARNESS_ATTEMPT_KINDS, HOOK_HARNESS_CAPABILITIES, HOOK_HARNESS_DECISIONS, HOOK_HARNESS_MODES, INPUT_MODES, LANE_FAILURE_CLASSES, LANE_INVOCATION_REF_KINDS, LANE_VERDICT_STATUSES, SAFE_NEXT_ACTIONS, TOOL_STATUSES } from "./release1-contracts.js";
 import { RELEASE_1_SCHEMA_REGISTRY } from "./schema-registry.js";
 
 export type Release1JsonSchemaPropertyType = "string" | "number" | "boolean" | "array" | "object";
@@ -109,6 +109,10 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.connector_profile.v1": ["schema_version", "profile_id", "connector_kind", "active_profile_ref", "allowed_target_kinds", "required_tool_refs", "auth_scope_refs", "recipe_playbook_refs", "install_policy", "rollback_ref", "doctor_status_ref", "gateway_execution_authority_enabled", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled"],
   "flowdesk.connector_recipe_ref.v1": ["schema_version", "recipe_ref", "connector_profile_ref", "connector_kind", "target_kind", "operation_label", "playbook_ref", "content_hash_required", "dry_run_required", "raw_locator_allowed", "gateway_execution_authority_enabled", "remote_write_authority_enabled", "dispatch_authority_enabled"],
   "flowdesk.connector_gateway_invocation_plan.v1": ["schema_version", "state", "blocked_labels", "gateway_execution_attempted", "remote_write_attempted", "connector_write_attempted", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
+  "flowdesk.default_managed_dispatch_promotion_readiness.v1": ["schema_version", "workflow_id", "state", "blocked_labels", "evidence_refs", "production_enablement_state", "managed_dispatch_ready", "durable_precall_ready", "adapter_available", "sdk_client_available", "doctor_status_ref", "default_dispatch_candidate", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution", "safe_next_actions"],
+  "flowdesk.default_managed_dispatch_authorization.v1": ["schema_version", "authorization_id", "workflow_id", "state", "blocked_labels", "readiness_ref", "actor_ref", "profile_ref", "release_gate_ref", "rollback_ref", "created_at", "expires_at", "default_enablement_requested", "kill_switch_state", "default_managed_dispatch_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution", "safe_next_actions"],
+  "flowdesk.reviewer_assignment_revalidation.v1": ["schema_version", "state", "blocked_labels", "expected_local_date", "expected_active_profile_ref", "expected_opencode_version_ref", "expected_flowdesk_package_version_ref", "expected_registry_hash", "expected_policy_pack_hash", "expected_auth_account_boundary_ref", "eligible_bindings", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
+  "flowdesk.reviewer_fanout_plan.v1": ["schema_version", "workflow_id", "attempt_id", "state", "blocked_labels", "required_perspectives", "planned_perspectives", "runtime_lane_launch_requests", "max_concurrent_lane_count", "runtime_launch_plan_required", "lane_launch_approval_required", "launch_attempted", "approval_inferred", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
   "flowdesk.advisory_output_firewall.v1": ["schema_version", "advisory_ref", "workflow_id", "source_schema_version", "allowed_consumer_refs", "forbidden_consumers", "advisory_only", "guard_authority_enabled", "approval_authority_enabled", "dispatch_authority_enabled", "verification_authority_enabled", "external_write_authority_enabled"],
   "flowdesk.federated_registry_state.v1": ["schema_version", "registry_state_id", "workflow_id", "state", "policy_ref", "remote_upload_enabled", "remote_download_enabled", "planning_influence_enabled", "ranking_influence_enabled", "guard_influence_enabled", "approval_influence_enabled", "dispatch_influence_enabled", "external_write_authority_enabled"],
   "flowdesk.reference_search.request.v1": ["schema_version"]
@@ -125,7 +129,7 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.doctor.request.v1": ["persist_report"],
   "flowdesk.plan.request.v1": [...requestEnvelopeOptional, "existing_plan_revision_id"],
   "flowdesk.plan.response.v1": responseEnvelopeOptional,
-  "flowdesk.run.request.v1": [...requestEnvelopeOptional, "step_id"],
+  "flowdesk.run.request.v1": [...requestEnvelopeOptional, "step_id", "managed_dispatch_boundary_input", "managed_dispatch_request", "managed_dispatch_manifest", "managed_dispatch_reloaded_evidence"],
   "flowdesk.status.response.v1": [...responseEnvelopeOptional, "current_step_id", "blocker", "checkpoint_id"],
   "flowdesk.status.request.v1": [...requestEnvelopeOptional, "detail_level"],
   "flowdesk.retry.request.v1": [...requestEnvelopeOptional, "new_binding_hint"],
@@ -157,15 +161,19 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.remote_write_connector_capability.v1": ["installation_plan_ref"],
   "flowdesk.remote_write_connector_execution_readiness.v1": ["workflow_id", "attempt_id", "connector_kind"],
   "flowdesk.fake_remote_connector_write_result.v1": ["workflow_id", "attempt_id", "connector_kind", "connector_ref", "target_ref", "content_hash_ref", "redacted_remote_ref", "ok", "errors"],
-  "flowdesk.connector_gateway_invocation_plan.v1": ["workflow_id", "attempt_id", "ok", "errors", "connector_profile_ref", "connector_recipe_ref", "connector_kind", "target_ref", "content_hash_ref", "pre_write_audit_ref", "idempotency_key_ref"]
+  "flowdesk.connector_gateway_invocation_plan.v1": ["workflow_id", "attempt_id", "ok", "errors", "connector_profile_ref", "connector_recipe_ref", "connector_kind", "target_ref", "content_hash_ref", "pre_write_audit_ref", "idempotency_key_ref"],
+  "flowdesk.default_managed_dispatch_promotion_readiness.v1": ["ok", "errors", "release_enablement_ref"],
+  "flowdesk.default_managed_dispatch_authorization.v1": ["ok", "errors"],
+  "flowdesk.reviewer_assignment_revalidation.v1": ["ok", "errors", "cache_id", "cache_local_date", "cache_active_profile_ref", "cache_opencode_version_ref", "cache_flowdesk_package_version_ref", "cache_registry_hash", "cache_policy_pack_hash", "cache_auth_account_boundary_ref"],
+  "flowdesk.reviewer_fanout_plan.v1": ["ok", "errors", "cache_id"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {
   if (fieldName === "status" || fieldName === "freshness" || fieldName === "verdict_status") return "string";
-  if (fieldName.startsWith("is_") || fieldName.startsWith("allow_") || fieldName.startsWith("requires_") || fieldName.endsWith("_eligible") || fieldName.endsWith("_enabled") || fieldName.endsWith("_authorized") || fieldName.endsWith("_bypassed") || fieldName.endsWith("_applied") || fieldName.endsWith("_attempted") || fieldName.endsWith("_required") || fieldName.endsWith("_allowed") || fieldName === "ok" || fieldName === "refresh" || fieldName === "persist_report" || fieldName === "providerCall" || fieldName === "actualLaneLaunch" || fieldName === "runtimeExecution" || fieldName === "unrelated_profile_mutation" || fieldName === "omitted_legacy_runtime_imports") return "boolean";
+  if (fieldName.startsWith("is_") || fieldName.startsWith("allow_") || fieldName.startsWith("requires_") || fieldName.endsWith("_eligible") || fieldName.endsWith("_enabled") || fieldName.endsWith("_authorized") || fieldName.endsWith("_bypassed") || fieldName.endsWith("_applied") || fieldName.endsWith("_attempted") || fieldName.endsWith("_required") || fieldName.endsWith("_allowed") || fieldName.endsWith("_confirmed") || fieldName.endsWith("_inferred") || fieldName === "ok" || fieldName === "refresh" || fieldName === "persist_report" || fieldName === "providerCall" || fieldName === "actualLaneLaunch" || fieldName === "runtimeExecution" || fieldName === "unrelated_profile_mutation" || fieldName === "omitted_legacy_runtime_imports") return "boolean";
   if (fieldName.endsWith("_count") || fieldName === "priority" || fieldName === "freshness_ttl" || fieldName === "byte_count" || fieldName === "file_count") return "number";
   if (fieldName.endsWith("s") || fieldName.endsWith("_refs") || fieldName.endsWith("_hashes") || fieldName === "safe_next_actions" || fieldName === "lane_refs" || fieldName === "uncertainty_flags" || fieldName === "include_sections" || fieldName === "diagnostic_observations") return "array";
-  if (["error", "provider_health_summary", "guard_precheck", "blocker", "blocker_summary", "retention", "usage_policy", "provider_health_policy", "hook_policy", "taxonomy", "model_requirements", "retention_override", "usage_policy_override", "provider_health_policy_override", "hook_policy_override"].includes(fieldName)) return "object";
+  if (["error", "provider_health_summary", "guard_precheck", "blocker", "blocker_summary", "retention", "usage_policy", "provider_health_policy", "hook_policy", "taxonomy", "model_requirements", "retention_override", "usage_policy_override", "provider_health_policy_override", "hook_policy_override", "promotion_readiness", "managed_dispatch_boundary_input", "managed_dispatch_request", "managed_dispatch_manifest", "managed_dispatch_reloaded_evidence"].includes(fieldName)) return "object";
   return "string";
 }
 
@@ -174,6 +182,7 @@ function propertyArtifact(fieldName: string): Release1JsonSchemaPropertyArtifact
   return {
     type,
     ...(fieldName === "input_mode" ? { enum: INPUT_MODES } : {}),
+    ...(fieldName === "run_mode" ? { enum: FLOWDESK_RUN_REQUEST_MODES } : {}),
     ...(fieldName === "hook_harness_mode" ? { enum: HOOK_HARNESS_MODES } : {}),
     ...(fieldName === "attempt_kind" ? { enum: HOOK_HARNESS_ATTEMPT_KINDS } : {}),
     ...(fieldName === "requested_capability" ? { enum: HOOK_HARNESS_CAPABILITIES } : {}),

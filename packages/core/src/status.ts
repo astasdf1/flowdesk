@@ -1,3 +1,4 @@
+import { validateFlowDeskDefaultManagedDispatchPromotionReadinessV1, type FlowDeskDefaultManagedDispatchPromotionReadinessV1 } from "./production-enablement.js";
 import { mapProviderFailureClassToDiagnosticOutcomeV1 } from "./provider-failures.js";
 import type {
   BlockerSummaryV1,
@@ -52,6 +53,7 @@ export interface FlowDeskStatusCommandInputV1 {
   laneSummaries?: readonly FlowDeskStatusLaneSummaryV1[];
   providerHealthSnapshot?: FlowDeskProviderHealthSnapshotV1;
   providerHealthSummary?: ProviderHealthSummaryV1;
+  defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
   statusSummaryArtifact?: FlowDeskStatusSummaryArtifactV1;
   auditRef?: OpaqueRef;
   debugRef?: OpaqueRef;
@@ -171,6 +173,24 @@ function redactedError(category: RedactedErrorCategory, safeRemediation: string)
   return { category, safe_remediation: safeRemediation };
 }
 
+function promotionReadinessBlockerSummary(readiness: FlowDeskDefaultManagedDispatchPromotionReadinessV1): BlockerSummaryV1 | undefined {
+  if (readiness.default_dispatch_candidate) return undefined;
+  return {
+    category: "conformance",
+    summary: `Default managed dispatch promotion is ${readiness.state}; real provider execution remains blocked until promotion readiness is a default candidate.`,
+    safe_remediation: "Run /flowdesk-doctor and refresh durable managed-dispatch evidence before enabling default provider execution.",
+    refs: [
+      readiness.doctor_status_ref,
+      `default_dispatch_candidate=${readiness.default_dispatch_candidate}`,
+      `managed_dispatch_ready=${readiness.managed_dispatch_ready}`,
+      `durable_precall_ready=${readiness.durable_precall_ready}`,
+      `adapter_available=${readiness.adapter_available}`,
+      `sdk_client_available=${readiness.sdk_client_available}`,
+      ...readiness.blocked_labels.map((label) => `promotion_blocker=${label}`),
+    ].slice(0, 20),
+  };
+}
+
 function failClosedResponse(input: Partial<FlowDeskStatusCommandInputV1> | undefined, category: RedactedErrorCategory, message: string, includeAbort = false): FlowDeskStatusResponseV1 {
   const requestWorkflowId = input?.request?.workflow_id;
   const activeWorkflowId = input?.active?.active_workflow_id;
@@ -221,6 +241,7 @@ function validateStatusInput(input: Partial<FlowDeskStatusCommandInputV1> | unde
   if (input.statusSummaryArtifact !== undefined) appendResultErrors(errors, "status_summary", validateStatusSummaryArtifactV1(input.statusSummaryArtifact));
   if (input.providerHealthSnapshot !== undefined) appendResultErrors(errors, "provider_health_snapshot", validateProviderHealthSnapshotV1(input.providerHealthSnapshot));
   if (input.providerHealthSummary !== undefined) appendResultErrors(errors, "provider_health_summary", validateProviderHealthSummaryV1(input.providerHealthSummary));
+  if (input.defaultManagedDispatchPromotionReadiness !== undefined) appendResultErrors(errors, "default_managed_dispatch_promotion_readiness", validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(input.defaultManagedDispatchPromotionReadiness, input.workflow?.workflow_id ?? input.active?.active_workflow_id ?? input.request?.workflow_id));
   if (input.auditRef !== undefined) appendResultErrors(errors, "audit_ref", validateOpaqueRef(input.auditRef, "audit_ref"));
   if (input.debugRef !== undefined) appendResultErrors(errors, "debug_ref", validateOpaqueRef(input.debugRef, "debug_ref"));
   for (const [index, laneRef] of (input.laneRefs ?? []).entries()) appendResultErrors(errors, `lane_refs[${index}]`, validateOpaqueRef(laneRef, `lane_refs[${index}]`));
@@ -292,6 +313,7 @@ export function buildFlowDeskStatusResponseV1(input: FlowDeskStatusCommandInputV
   const currentStepId = workflow.current_step_id ?? input.currentAttempt?.step_id ?? checkpoint?.current_step_id;
   const auditRef = input.auditRef ?? (detailAllowsDebugRefs(detailLevel) ? workflow.audit_refs[0] : undefined);
   const laneRefs = detailLevel === "lane_refs" ? [...(input.laneRefs ?? workflow.lane_refs)] : undefined;
+  const promotionBlocker = input.defaultManagedDispatchPromotionReadiness === undefined ? undefined : promotionReadinessBlockerSummary(input.defaultManagedDispatchPromotionReadiness);
   const response: FlowDeskStatusResponseV1 = {
     schema_version: "flowdesk.status.response.v1",
     ok: true,
@@ -306,7 +328,7 @@ export function buildFlowDeskStatusResponseV1(input: FlowDeskStatusCommandInputV
     ...(currentStepId === undefined ? {} : { current_step_id: currentStepId }),
     lane_summaries: laneSummaries,
     provider_health_summary: providerHealthSummary,
-    ...(workflow.blocker_summary === undefined ? {} : { blocker: workflow.blocker_summary }),
+    ...(workflow.blocker_summary === undefined && promotionBlocker === undefined ? {} : { blocker: workflow.blocker_summary ?? promotionBlocker }),
     ...(checkpoint === undefined ? {} : { checkpoint_id: checkpoint.checkpoint_id })
   };
   const responseResult = validateStatusResponseV1(response);

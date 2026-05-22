@@ -6,7 +6,11 @@ import {
   createFlowDeskExternalAuthProviderPolicyResultV1,
   createFlowDeskProductionApprovalDecisionV1,
   createFlowDeskSanitizedAuthCaptureResultV1,
+  authorizeFlowDeskDefaultManagedDispatchV1,
+  evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1,
   evaluateFlowDeskProductionEnablementV1,
+  validateFlowDeskDefaultManagedDispatchAuthorizationV1,
+  validateFlowDeskDefaultManagedDispatchPromotionReadinessV1,
   validateFlowDeskProductionApprovalDecisionV1
 } from "./index.js";
 
@@ -107,6 +111,33 @@ function baseRefs() {
   };
 }
 
+function approvedProductionEnablement() {
+  const approval = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+  });
+  return evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+}
+
+function candidatePromotionReadiness() {
+  return evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1"
+  });
+}
+
 test("production enablement reports configured state when all evidence is present but approval is missing", () => {
   const result = evaluateFlowDeskProductionEnablementV1({
     workflowId,
@@ -150,6 +181,132 @@ test("production enablement becomes dispatch-capable only after explicit approva
   assert.equal(result.dispatch_authority_enabled, false, "diagnostic readiness is not dispatch authorization");
   assert.equal(result.approval_decision, "approve");
   assert.equal(result.approval_ref, "approval-1");
+});
+
+test("default managed dispatch promotion readiness remains diagnostic and non-authorizing", () => {
+  const production = approvedProductionEnablement();
+  const blocked = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production
+  });
+
+  assert.equal(blocked.ok, true, blocked.errors.join("; "));
+  assert.equal(blocked.state, "configured");
+  assert.equal(blocked.default_dispatch_candidate, false);
+  assert.ok(blocked.blocked_labels.includes("durable_precall_missing"));
+  assert.ok(blocked.blocked_labels.includes("adapter_unavailable"));
+  assert.ok(blocked.blocked_labels.includes("sdk_client_unavailable"));
+  assert.ok(blocked.blocked_labels.includes("default_release_enablement_missing"));
+  assert.equal(blocked.dispatch_authority_enabled, false);
+  assert.equal(blocked.providerCall, false);
+  assert.equal(blocked.actualLaneLaunch, false);
+  assert.equal(blocked.runtimeExecution, false);
+
+  const candidate = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1"
+  });
+  assert.equal(candidate.state, "default_candidate");
+  assert.equal(candidate.default_dispatch_candidate, true);
+  assert.deepEqual(candidate.blocked_labels, []);
+  assert.equal(candidate.dispatch_authority_enabled, false, "candidate readiness is still not dispatch authority");
+  assert.equal(candidate.release_enablement_ref, "default-release-enable-1");
+  const validation = validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(candidate, workflowId);
+  assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("default managed dispatch promotion readiness rejects forged authority fields", () => {
+  const production = approvedProductionEnablement();
+  const candidate = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1"
+  });
+  const validation = validateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    ...candidate,
+    dispatch_authority_enabled: true,
+    providerCall: true,
+    unsafe_extra_field: "unsafe"
+  });
+  assert.equal(validation.ok, false);
+  assert.ok(validation.errors.some((error) => error.includes("cannot enable dispatch authority")));
+  assert.ok(validation.errors.some((error) => error.includes("cannot make provider calls")));
+  assert.ok(validation.errors.some((error) => error.includes("unknown properties")));
+});
+
+test("default managed dispatch authorization requires candidate readiness and kill switch inactive", () => {
+  const readiness = candidatePromotionReadiness();
+  const authorized = authorizeFlowDeskDefaultManagedDispatchV1({
+    authorizationId: "default-auth-1",
+    readiness,
+    actorRef: "actor-ops-1",
+    profileRef: "profile-prod-1",
+    releaseGateRef: "release-gate-1",
+    rollbackRef: "rollback-1",
+    createdAt: "2026-05-22T00:00:00.000Z",
+    expiresAt: "2026-05-23T00:00:00.000Z",
+    defaultEnablementRequested: true,
+    killSwitchState: "inactive",
+    now: Date.parse("2026-05-22T01:00:00.000Z")
+  });
+  assert.equal(authorized.ok, true, authorized.errors.join("; "));
+  assert.equal(authorized.state, "authorized");
+  assert.equal(authorized.default_managed_dispatch_authority_enabled, true);
+  assert.equal(authorized.dispatch_authority_enabled, false, "default authorization cannot replace per-attempt dispatch gates");
+  assert.equal(authorized.providerCall, false);
+  assert.equal(authorized.actualLaneLaunch, false);
+  assert.equal(authorized.runtimeExecution, false);
+  const validation = validateFlowDeskDefaultManagedDispatchAuthorizationV1(authorized, workflowId);
+  assert.equal(validation.ok, true, validation.errors.join("; "));
+
+  const blocked = authorizeFlowDeskDefaultManagedDispatchV1({
+    authorizationId: "default-auth-2",
+    readiness,
+    actorRef: "actor-ops-1",
+    profileRef: "profile-prod-1",
+    releaseGateRef: "release-gate-1",
+    rollbackRef: "rollback-1",
+    createdAt: "2026-05-22T00:00:00.000Z",
+    expiresAt: "2026-05-23T00:00:00.000Z",
+    defaultEnablementRequested: true,
+    killSwitchState: "active",
+    now: Date.parse("2026-05-22T01:00:00.000Z")
+  });
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.default_managed_dispatch_authority_enabled, false);
+  assert.ok(blocked.blocked_labels.includes("kill_switch_active"));
+});
+
+test("default managed dispatch authorization rejects forged provider-call authority", () => {
+  const authorized = authorizeFlowDeskDefaultManagedDispatchV1({
+    authorizationId: "default-auth-3",
+    readiness: candidatePromotionReadiness(),
+    actorRef: "actor-ops-1",
+    profileRef: "profile-prod-1",
+    releaseGateRef: "release-gate-1",
+    rollbackRef: "rollback-1",
+    createdAt: "2026-05-22T00:00:00.000Z",
+    expiresAt: "2026-05-23T00:00:00.000Z",
+    defaultEnablementRequested: true,
+    killSwitchState: "inactive",
+    now: Date.parse("2026-05-22T01:00:00.000Z")
+  });
+  const validation = validateFlowDeskDefaultManagedDispatchAuthorizationV1({
+    ...authorized,
+    dispatch_authority_enabled: true,
+    providerCall: true,
+    actualLaneLaunch: true,
+    runtimeExecution: true,
+    raw_extra: "unsafe"
+  });
+  assert.equal(validation.ok, false);
+  assert.ok(validation.errors.some((error) => error.includes("generic dispatch authority")));
+  assert.ok(validation.errors.some((error) => error.includes("cannot make provider calls")));
+  assert.ok(validation.errors.some((error) => error.includes("unknown properties")));
 });
 
 test("production enablement reports valid approval diagnostics without dispatch authority", () => {

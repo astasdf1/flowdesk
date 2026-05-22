@@ -168,8 +168,10 @@ export const DEBUG_SECTIONS = [
 ] as const;
 export type DebugSectionV1 = (typeof DEBUG_SECTIONS)[number];
 
-export const RELEASE_1_RUN_MODES = ["guarded-dry-run", "fake-runtime", "command-steering"] as const;
+export const RELEASE_1_RUN_MODES = ["guarded-dry-run", "fake-runtime", "command-steering", "managed-dispatch"] as const;
 export type Release1RunModeV1 = (typeof RELEASE_1_RUN_MODES)[number];
+export const FLOWDESK_RUN_REQUEST_MODES = ["guarded-dry-run", "fake-runtime", "managed-dispatch"] as const;
+export type FlowDeskRunRequestModeV1 = (typeof FLOWDESK_RUN_REQUEST_MODES)[number];
 
 export const ATTEMPT_STATES = ["created", "guard_pending", "ready", "running", "blocked", "verification_failed", "complete", "aborted"] as const;
 export type AttemptStateV1 = (typeof ATTEMPT_STATES)[number];
@@ -435,9 +437,13 @@ export interface FlowDeskPlanResponseV1 extends FlowDeskToolResponseEnvelopeV1 {
 
 export interface FlowDeskRunRequestV1 extends FlowDeskToolRequestEnvelopeV1 {
   schema_version: "flowdesk.run.request.v1";
-  run_mode: "guarded-dry-run" | "fake-runtime";
+  run_mode: FlowDeskRunRequestModeV1;
   plan_revision_id: OpaqueId;
   step_id?: OpaqueId;
+  managed_dispatch_boundary_input?: Record<string, unknown>;
+  managed_dispatch_request?: Record<string, unknown>;
+  managed_dispatch_manifest?: Record<string, unknown>;
+  managed_dispatch_reloaded_evidence?: Record<string, unknown>;
 }
 
 export interface FlowDeskRunResponseV1 extends FlowDeskToolResponseEnvelopeV1 {

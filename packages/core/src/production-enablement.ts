@@ -126,6 +126,112 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	approval_ref?: string;
 }
 
+export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_STATES = [
+	"blocked",
+	"configured",
+	"default_candidate",
+] as const;
+export type FlowDeskDefaultManagedDispatchPromotionStateV1 =
+	(typeof FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_STATES)[number];
+
+export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_BLOCKER_LABELS = [
+	"production_enablement_not_dispatch_capable",
+	"production_enablement_errors_present",
+	"durable_precall_missing",
+	"adapter_unavailable",
+	"sdk_client_unavailable",
+	"default_release_enablement_missing",
+	"promotion_uncertainty_present",
+] as const;
+export type FlowDeskDefaultManagedDispatchPromotionBlockerLabelV1 =
+	(typeof FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_BLOCKER_LABELS)[number];
+
+export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_STATES = [
+	"blocked",
+	"authorized",
+] as const;
+export type FlowDeskDefaultManagedDispatchAuthorizationStateV1 =
+	(typeof FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_STATES)[number];
+
+export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_BLOCKER_LABELS = [
+	"readiness_not_candidate",
+	"default_enablement_not_requested",
+	"kill_switch_active",
+	"authorization_expired",
+	"authorization_ref_invalid",
+] as const;
+export type FlowDeskDefaultManagedDispatchAuthorizationBlockerLabelV1 =
+	(typeof FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_BLOCKER_LABELS)[number];
+
+export interface FlowDeskDefaultManagedDispatchPromotionReadinessInputV1 {
+	productionEnablement: FlowDeskProductionEnablementEvaluationV1;
+	durablePrecallRef?: string;
+	adapterProfileRef?: string;
+	sdkClientRef?: string;
+	defaultReleaseEnablementRef?: string;
+	allowUncertainty?: boolean;
+}
+
+export interface FlowDeskDefaultManagedDispatchPromotionReadinessV1
+	extends ValidationResult {
+	schema_version: "flowdesk.default_managed_dispatch_promotion_readiness.v1";
+	workflow_id: string;
+	state: FlowDeskDefaultManagedDispatchPromotionStateV1;
+	blocked_labels: FlowDeskDefaultManagedDispatchPromotionBlockerLabelV1[];
+	evidence_refs: string[];
+	production_enablement_state: FlowDeskProductionEnablementStateV1;
+	managed_dispatch_ready: boolean;
+	durable_precall_ready: boolean;
+	adapter_available: boolean;
+	sdk_client_available: boolean;
+	doctor_status_ref: string;
+	default_dispatch_candidate: boolean;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+	safe_next_actions: string[];
+	release_enablement_ref?: string;
+}
+
+export interface FlowDeskDefaultManagedDispatchAuthorizationInputV1 {
+	authorizationId: string;
+	readiness: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
+	actorRef: string;
+	profileRef: string;
+	releaseGateRef: string;
+	rollbackRef: string;
+	createdAt: string;
+	expiresAt: string;
+	defaultEnablementRequested: boolean;
+	killSwitchState: "inactive" | "active";
+	now?: number;
+}
+
+export interface FlowDeskDefaultManagedDispatchAuthorizationV1
+	extends ValidationResult {
+	schema_version: "flowdesk.default_managed_dispatch_authorization.v1";
+	authorization_id: string;
+	workflow_id: string;
+	state: FlowDeskDefaultManagedDispatchAuthorizationStateV1;
+	blocked_labels: FlowDeskDefaultManagedDispatchAuthorizationBlockerLabelV1[];
+	readiness_ref: string;
+	actor_ref: string;
+	profile_ref: string;
+	release_gate_ref: string;
+	rollback_ref: string;
+	created_at: string;
+	expires_at: string;
+	default_enablement_requested: boolean;
+	kill_switch_state: "inactive" | "active";
+	default_managed_dispatch_authority_enabled: boolean;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+	safe_next_actions: string[];
+}
+
 const REQUIRED_SESSION_EVIDENCE_CLASSES: FlowDeskSessionEvidenceClass[] = [
 	"usage_authority",
 	"runtime_echo",
@@ -275,6 +381,365 @@ function missingRequiredApprovalRefs(
 ): string[] {
 	const available = new Set(evidenceRefs);
 	return approval.required_evidence_refs.filter((ref) => !available.has(ref));
+}
+
+function optionalOpaqueRef(
+	value: string | undefined,
+	label: string,
+): ValidationResult {
+	return value === undefined ? valid() : validateOpaqueRef(value, label);
+}
+
+function validDate(value: string): boolean {
+	return Number.isFinite(Date.parse(value));
+}
+
+export function evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
+	input: FlowDeskDefaultManagedDispatchPromotionReadinessInputV1,
+): FlowDeskDefaultManagedDispatchPromotionReadinessV1 {
+	const errors: string[] = [];
+	const blockedLabels: FlowDeskDefaultManagedDispatchPromotionBlockerLabelV1[] = [];
+	const production = input.productionEnablement;
+	errors.push(...validateOpaqueId(production.workflow_id, "workflow_id").errors);
+	if (!production.ok || production.errors.length > 0)
+		blockedLabels.push("production_enablement_errors_present");
+	if (production.state !== "dispatch_capable" || !production.managed_dispatch_ready)
+		blockedLabels.push("production_enablement_not_dispatch_capable");
+	if (
+		production.uncertainty_labels.length > 0 &&
+		input.allowUncertainty !== true
+	)
+		blockedLabels.push("promotion_uncertainty_present");
+
+	const durablePrecallResult = optionalOpaqueRef(
+		input.durablePrecallRef,
+		"durable_precall_ref",
+	);
+	const adapterProfileResult = optionalOpaqueRef(
+		input.adapterProfileRef,
+		"adapter_profile_ref",
+	);
+	const sdkClientResult = optionalOpaqueRef(input.sdkClientRef, "sdk_client_ref");
+	const defaultReleaseResult = optionalOpaqueRef(
+		input.defaultReleaseEnablementRef,
+		"default_release_enablement_ref",
+	);
+	errors.push(
+		...durablePrecallResult.errors,
+		...adapterProfileResult.errors,
+		...sdkClientResult.errors,
+		...defaultReleaseResult.errors,
+	);
+	if (!durablePrecallResult.ok || input.durablePrecallRef === undefined)
+		blockedLabels.push("durable_precall_missing");
+	if (!adapterProfileResult.ok || input.adapterProfileRef === undefined)
+		blockedLabels.push("adapter_unavailable");
+	if (!sdkClientResult.ok || input.sdkClientRef === undefined)
+		blockedLabels.push("sdk_client_unavailable");
+	if (!defaultReleaseResult.ok || input.defaultReleaseEnablementRef === undefined)
+		blockedLabels.push("default_release_enablement_missing");
+
+	const uniqueBlockers = unique(blockedLabels);
+	const candidate = errors.length === 0 && uniqueBlockers.length === 0;
+	const state: FlowDeskDefaultManagedDispatchPromotionStateV1 = candidate
+		? "default_candidate"
+		: production.state === "dispatch_capable" && production.ok
+			? "configured"
+			: "blocked";
+	const evidenceRefs = unique(
+		[
+			...production.evidence_refs,
+			input.durablePrecallRef,
+			input.adapterProfileRef,
+			input.sdkClientRef,
+			input.defaultReleaseEnablementRef,
+		].filter((ref): ref is string => typeof ref === "string"),
+	);
+	return {
+		schema_version: "flowdesk.default_managed_dispatch_promotion_readiness.v1",
+		workflow_id: production.workflow_id,
+		ok: errors.length === 0,
+		errors,
+		state,
+		blocked_labels: uniqueBlockers,
+		evidence_refs: evidenceRefs,
+		production_enablement_state: production.state,
+		managed_dispatch_ready: production.managed_dispatch_ready,
+		durable_precall_ready: input.durablePrecallRef !== undefined && durablePrecallResult.ok,
+		adapter_available: input.adapterProfileRef !== undefined && adapterProfileResult.ok,
+		sdk_client_available: input.sdkClientRef !== undefined && sdkClientResult.ok,
+		doctor_status_ref: `default-managed-dispatch-${state}`,
+		default_dispatch_candidate: candidate,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		safe_next_actions: candidate
+			? ["/flowdesk-status"]
+			: ["/flowdesk-doctor", "/flowdesk-status"],
+		...(input.defaultReleaseEnablementRef === undefined
+			? {}
+			: { release_enablement_ref: input.defaultReleaseEnablementRef }),
+	};
+}
+
+export function validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
+	value: unknown,
+	expectedWorkflowId?: string,
+): ValidationResult {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return invalid("default managed dispatch promotion readiness must be an object");
+	const record = value as Partial<FlowDeskDefaultManagedDispatchPromotionReadinessV1>;
+	const errors: string[] = [];
+	const allowed = new Set([
+		"schema_version",
+		"workflow_id",
+		"ok",
+		"errors",
+		"state",
+		"blocked_labels",
+		"evidence_refs",
+		"production_enablement_state",
+		"managed_dispatch_ready",
+		"durable_precall_ready",
+		"adapter_available",
+		"sdk_client_available",
+		"doctor_status_ref",
+		"default_dispatch_candidate",
+		"dispatch_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+		"safe_next_actions",
+		"release_enablement_ref",
+	]);
+	for (const key of Object.keys(record))
+		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
+	if (
+		record.schema_version !==
+		"flowdesk.default_managed_dispatch_promotion_readiness.v1"
+	)
+		errors.push("promotion readiness schema_version is invalid");
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	if (expectedWorkflowId !== undefined && record.workflow_id !== expectedWorkflowId)
+		errors.push("promotion readiness workflow_id mismatch");
+	if (typeof record.ok !== "boolean") errors.push("ok must be boolean");
+	if (!Array.isArray(record.errors)) errors.push("errors must be an array");
+	if (
+		!(FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_STATES as readonly string[]).includes(
+			String(record.state),
+		)
+	)
+		errors.push("promotion readiness state is invalid");
+	if (!Array.isArray(record.blocked_labels))
+		errors.push("blocked_labels must be an array");
+	else
+		for (const label of record.blocked_labels)
+			if (
+				!(
+					FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_BLOCKER_LABELS as readonly string[]
+				).includes(label)
+			)
+				errors.push(`blocked_label is invalid: ${label}`);
+	if (!Array.isArray(record.evidence_refs))
+		errors.push("evidence_refs must be an array");
+	else
+		for (const [index, ref] of record.evidence_refs.entries())
+			errors.push(...validateOpaqueRef(ref, `evidence_refs[${index}]`).errors);
+	if (
+		!(FLOWDESK_PRODUCTION_ENABLEMENT_STATES as readonly string[]).includes(
+			String(record.production_enablement_state),
+		)
+	)
+		errors.push("production_enablement_state is invalid");
+	for (const key of [
+		"managed_dispatch_ready",
+		"durable_precall_ready",
+		"adapter_available",
+		"sdk_client_available",
+		"default_dispatch_candidate",
+	] as const)
+		if (typeof record[key] !== "boolean") errors.push(`${key} must be boolean`);
+	errors.push(
+		...validateOpaqueRef(record.doctor_status_ref, "doctor_status_ref").errors,
+	);
+	if (record.dispatch_authority_enabled !== false)
+		errors.push("promotion readiness cannot enable dispatch authority");
+	if (record.providerCall !== false)
+		errors.push("promotion readiness cannot make provider calls");
+	if (record.actualLaneLaunch !== false)
+		errors.push("promotion readiness cannot launch lanes");
+	if (record.runtimeExecution !== false)
+		errors.push("promotion readiness cannot execute runtime");
+	if (!Array.isArray(record.safe_next_actions))
+		errors.push("safe_next_actions must be an array");
+	if (record.release_enablement_ref !== undefined)
+		errors.push(
+			...validateOpaqueRef(record.release_enablement_ref, "release_enablement_ref")
+				.errors,
+		);
+	errors.push(
+		...validateNoForbiddenRawPayloads(record, "default_managed_dispatch_promotion_readiness")
+			.errors,
+	);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function authorizeFlowDeskDefaultManagedDispatchV1(
+	input: FlowDeskDefaultManagedDispatchAuthorizationInputV1,
+): FlowDeskDefaultManagedDispatchAuthorizationV1 {
+	const errors: string[] = [];
+	const blockedLabels: FlowDeskDefaultManagedDispatchAuthorizationBlockerLabelV1[] = [];
+	const readinessValidation = validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
+		input.readiness,
+	);
+	errors.push(
+		...validateOpaqueId(input.authorizationId, "authorization_id").errors,
+		...readinessValidation.errors,
+		...validateOpaqueRef(input.actorRef, "actor_ref").errors,
+		...validateOpaqueRef(input.profileRef, "profile_ref").errors,
+		...validateOpaqueRef(input.releaseGateRef, "release_gate_ref").errors,
+		...validateOpaqueRef(input.rollbackRef, "rollback_ref").errors,
+	);
+	if (!readinessValidation.ok || !input.readiness.default_dispatch_candidate)
+		blockedLabels.push("readiness_not_candidate");
+	if (!input.defaultEnablementRequested)
+		blockedLabels.push("default_enablement_not_requested");
+	if (input.killSwitchState === "active") blockedLabels.push("kill_switch_active");
+	else if (input.killSwitchState !== "inactive") {
+		blockedLabels.push("authorization_ref_invalid");
+		errors.push("kill_switch_state is invalid");
+	}
+	if (!validDate(input.createdAt) || !validDate(input.expiresAt)) {
+		blockedLabels.push("authorization_ref_invalid");
+		errors.push("authorization timestamps must be parseable");
+	} else if (Date.parse(input.expiresAt) <= (input.now ?? Date.now()))
+		blockedLabels.push("authorization_expired");
+	const uniqueBlockers = unique(blockedLabels);
+	const authorityEnabled = errors.length === 0 && uniqueBlockers.length === 0;
+	return {
+		schema_version: "flowdesk.default_managed_dispatch_authorization.v1",
+		authorization_id: input.authorizationId,
+		workflow_id: input.readiness.workflow_id,
+		ok: errors.length === 0,
+		errors,
+		state: authorityEnabled ? "authorized" : "blocked",
+		blocked_labels: uniqueBlockers,
+		readiness_ref: input.readiness.doctor_status_ref,
+		actor_ref: input.actorRef,
+		profile_ref: input.profileRef,
+		release_gate_ref: input.releaseGateRef,
+		rollback_ref: input.rollbackRef,
+		created_at: input.createdAt,
+		expires_at: input.expiresAt,
+		default_enablement_requested: input.defaultEnablementRequested,
+		kill_switch_state: input.killSwitchState,
+		default_managed_dispatch_authority_enabled: authorityEnabled,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		safe_next_actions: authorityEnabled
+			? ["/flowdesk-status"]
+			: ["/flowdesk-doctor", "/flowdesk-status"],
+	};
+}
+
+export function validateFlowDeskDefaultManagedDispatchAuthorizationV1(
+	value: unknown,
+	expectedWorkflowId?: string,
+): ValidationResult {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return invalid("default managed dispatch authorization must be an object");
+	const record = value as Partial<FlowDeskDefaultManagedDispatchAuthorizationV1>;
+	const errors: string[] = [];
+	const allowed = new Set([
+		"schema_version",
+		"authorization_id",
+		"workflow_id",
+		"ok",
+		"errors",
+		"state",
+		"blocked_labels",
+		"readiness_ref",
+		"actor_ref",
+		"profile_ref",
+		"release_gate_ref",
+		"rollback_ref",
+		"created_at",
+		"expires_at",
+		"default_enablement_requested",
+		"kill_switch_state",
+		"default_managed_dispatch_authority_enabled",
+		"dispatch_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+		"safe_next_actions",
+	]);
+	for (const key of Object.keys(record))
+		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
+	if (record.schema_version !== "flowdesk.default_managed_dispatch_authorization.v1")
+		errors.push("default managed dispatch authorization schema_version is invalid");
+	errors.push(
+		...validateOpaqueId(record.authorization_id, "authorization_id").errors,
+		...validateOpaqueId(record.workflow_id, "workflow_id").errors,
+		...validateOpaqueRef(record.readiness_ref, "readiness_ref").errors,
+		...validateOpaqueRef(record.actor_ref, "actor_ref").errors,
+		...validateOpaqueRef(record.profile_ref, "profile_ref").errors,
+		...validateOpaqueRef(record.release_gate_ref, "release_gate_ref").errors,
+		...validateOpaqueRef(record.rollback_ref, "rollback_ref").errors,
+	);
+	if (expectedWorkflowId !== undefined && record.workflow_id !== expectedWorkflowId)
+		errors.push("default managed dispatch authorization workflow_id mismatch");
+	if (typeof record.ok !== "boolean") errors.push("ok must be boolean");
+	if (!Array.isArray(record.errors)) errors.push("errors must be an array");
+	if (
+		!(FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_STATES as readonly string[]).includes(
+			String(record.state),
+		)
+	)
+		errors.push("authorization state is invalid");
+	if (!Array.isArray(record.blocked_labels))
+		errors.push("blocked_labels must be an array");
+	else
+		for (const label of record.blocked_labels)
+			if (
+				!(
+					FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_BLOCKER_LABELS as readonly string[]
+				).includes(label)
+			)
+				errors.push(`authorization blocked_label is invalid: ${label}`);
+	if (typeof record.created_at !== "string" || !validDate(record.created_at))
+		errors.push("created_at must be parseable");
+	if (typeof record.expires_at !== "string" || !validDate(record.expires_at))
+		errors.push("expires_at must be parseable");
+	if (typeof record.default_enablement_requested !== "boolean")
+		errors.push("default_enablement_requested must be boolean");
+	if (record.kill_switch_state !== "inactive" && record.kill_switch_state !== "active")
+		errors.push("kill_switch_state is invalid");
+	if (typeof record.default_managed_dispatch_authority_enabled !== "boolean")
+		errors.push("default_managed_dispatch_authority_enabled must be boolean");
+	if (
+		record.state !== "authorized" &&
+		record.default_managed_dispatch_authority_enabled === true
+	)
+		errors.push("blocked authorization cannot enable default managed dispatch");
+	if (record.dispatch_authority_enabled !== false)
+		errors.push("default authorization cannot set generic dispatch authority");
+	if (record.providerCall !== false)
+		errors.push("default authorization cannot make provider calls");
+	if (record.actualLaneLaunch !== false)
+		errors.push("default authorization cannot launch lanes");
+	if (record.runtimeExecution !== false)
+		errors.push("default authorization cannot execute runtime");
+	if (!Array.isArray(record.safe_next_actions))
+		errors.push("safe_next_actions must be an array");
+	errors.push(
+		...validateNoForbiddenRawPayloads(record, "default_managed_dispatch_authorization")
+			.errors,
+	);
+	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
 export function evaluateFlowDeskProductionEnablementV1(

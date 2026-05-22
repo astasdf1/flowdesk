@@ -51,6 +51,7 @@ import {
   DISABLED_MODES,
   DOCTOR_FAILURE_CATEGORIES,
   FORBIDDEN_RAW_PAYLOAD_MARKERS,
+  FLOWDESK_RUN_REQUEST_MODES,
   HOOK_HARNESS_ATTEMPT_KINDS,
   HOOK_HARNESS_CAPABILITIES,
   HOOK_HARNESS_DECISIONS,
@@ -570,11 +571,34 @@ export function assertPlanResponseV1(value: unknown): asserts value is FlowDeskP
 
 export function validateRunRequestV1(value: unknown): ValidationResult {
   if (!isRecord(value)) return invalid("run request must be an object");
+  const envelopeValue = value.run_mode === "managed-dispatch"
+    ? {
+      ...value,
+      managed_dispatch_boundary_input: {},
+      managed_dispatch_request: {},
+      managed_dispatch_manifest: {},
+      ...(value.managed_dispatch_reloaded_evidence === undefined ? {} : { managed_dispatch_reloaded_evidence: {} })
+    }
+    : value;
+  const managedDispatchShape = value.run_mode === "managed-dispatch"
+    ? combine([
+      isRecord(value.managed_dispatch_boundary_input) ? valid() : invalid("managed_dispatch_boundary_input is required for managed-dispatch"),
+      isRecord(value.managed_dispatch_request) ? valid() : invalid("managed_dispatch_request is required for managed-dispatch"),
+      isRecord(value.managed_dispatch_manifest) ? valid() : invalid("managed_dispatch_manifest is required for managed-dispatch"),
+      value.managed_dispatch_reloaded_evidence === undefined || isRecord(value.managed_dispatch_reloaded_evidence) ? valid() : invalid("managed_dispatch_reloaded_evidence must be an object")
+    ])
+    : combine([
+      value.managed_dispatch_boundary_input === undefined ? valid() : invalid("managed_dispatch_boundary_input is only allowed for managed-dispatch"),
+      value.managed_dispatch_request === undefined ? valid() : invalid("managed_dispatch_request is only allowed for managed-dispatch"),
+      value.managed_dispatch_manifest === undefined ? valid() : invalid("managed_dispatch_manifest is only allowed for managed-dispatch"),
+      value.managed_dispatch_reloaded_evidence === undefined ? valid() : invalid("managed_dispatch_reloaded_evidence is only allowed for managed-dispatch")
+    ]);
   return combine([
-    validateRequestEnvelope(value, "flowdesk.run.request.v1"),
-    value.run_mode === "guarded-dry-run" || value.run_mode === "fake-runtime" ? valid() : invalid("run_mode is invalid for Release 1"),
+    validateRequestEnvelope(envelopeValue, "flowdesk.run.request.v1"),
+    isEnumValue(value.run_mode, FLOWDESK_RUN_REQUEST_MODES) ? valid() : invalid("run_mode is invalid for Release 1"),
     validateOpaqueId(value.plan_revision_id, "plan_revision_id"),
-    value.step_id === undefined ? valid() : validateOpaqueId(value.step_id, "step_id")
+    value.step_id === undefined ? valid() : validateOpaqueId(value.step_id, "step_id"),
+    managedDispatchShape
   ]);
 }
 
