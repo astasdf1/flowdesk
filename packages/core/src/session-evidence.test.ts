@@ -152,6 +152,52 @@ function reviewerVerdictRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reviewerFanoutPlanRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.reviewer_fanout_plan.v1",
+    ok: true,
+    errors: [],
+    workflow_id: workflowId,
+    attempt_id: "attempt-1",
+    cache_id: "cache-1",
+    state: "fanout_ready",
+    blocked_labels: [],
+    required_perspectives: ["policy_security", "architecture", "verification_implementation"],
+    planned_perspectives: ["policy_security", "architecture", "verification_implementation"],
+    runtime_lane_launch_requests: ["policy_security", "architecture", "verification_implementation"].map((perspective) => ({
+      schema_version: "flowdesk.runtime_lane_launch_request.v1",
+      launch_request_id: `reviewer-launch-attempt-1-${perspective}`,
+      workflow_id: workflowId,
+      attempt_id: "attempt-1",
+      lane_id: `reviewer-lane-attempt-1-${perspective}`,
+      parent_session_ref: "ses-parent-1",
+      agent_ref: "agent-reviewer",
+      provider_qualified_model_id: "claude/claude-opus-4-5",
+      launch_reason: "reviewer_fanout",
+      pre_launch_audit_ref: "audit-pre-launch-1",
+      lane_launch_approval_ref: "approval-lane-launch-1",
+      requested_at: "2026-05-19T00:01:00.000Z",
+      timeout_ms: 30000,
+      orphan_max_age_ms: 60000,
+      retry_budget: 1,
+      dispatch_authority_enabled: false,
+      providerCall: false,
+      actualLaneLaunch: false,
+      runtimeExecution: false
+    })),
+    max_concurrent_lane_count: 3,
+    runtime_launch_plan_required: true,
+    lane_launch_approval_required: true,
+    launch_attempted: false,
+    approval_inferred: false,
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
 function laneLifecycleRecord(overrides: Record<string, unknown> = {}) {
   return {
     schema_version: "flowdesk.lane_lifecycle_record.v1",
@@ -362,7 +408,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), reviewerVerdictRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -372,14 +418,14 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 11);
+    assert.equal(applied.writtenPaths.length, 12);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 11);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "reviewer_verdict", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
+    assert.equal(reloaded.entries.length, 12);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
   });
 });
 
@@ -415,15 +461,17 @@ test("session evidence reload validates reviewer verdict and lifecycle evidence"
   withEvidenceTree((rootDir) => {
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_verdict", "verdict-good"), JSON.stringify(reviewerVerdictRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_verdict", "verdict-forged"), JSON.stringify(reviewerVerdictRecord({ dispatch_authority_enabled: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_fanout_plan", "fanout-good"), JSON.stringify(reviewerFanoutPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_fanout_plan", "fanout-forged"), JSON.stringify(reviewerFanoutPlanRecord({ actualLaneLaunch: true })));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "lane_lifecycle", "lane-good"), JSON.stringify(laneLifecycleRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "lane_lifecycle", "lane-no-output-forged"), JSON.stringify(laneLifecycleRecord({ state: "no_output", output_ref: undefined })));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_lane_conformance", "conformance-good"), JSON.stringify(reviewerLaneConformanceRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_lane_conformance", "conformance-forged"), JSON.stringify(reviewerLaneConformanceRecord({ hard_chat_authority_claimed: true })));
     const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
-    assert.equal(result.entries.length, 3);
-    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["reviewer_verdict", "lane_lifecycle", "reviewer_lane_conformance"]));
-    assert.equal(result.blocked.length, 3);
-    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /dispatch_authority_enabled|no-output lane lifecycle records cannot carry|hard chat authority/);
+    assert.equal(result.entries.length, 4);
+    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance"]));
+    assert.equal(result.blocked.length, 4);
+    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /dispatch_authority_enabled|cannot launch lanes|no-output lane lifecycle records cannot carry|hard chat authority/);
   });
 });
 
