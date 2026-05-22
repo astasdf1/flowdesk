@@ -190,6 +190,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.fake_remote_connector_write_result.v1", "fake-remote-connector-write-result", "FlowDeskFakeRemoteConnectorWriteResultV1", "later_release"),
   artifactEntry("flowdesk.connector_profile.v1", "connector-profile", "FlowDeskConnectorProfileV1", "later_release"),
   artifactEntry("flowdesk.connector_recipe_ref.v1", "connector-recipe-ref", "FlowDeskConnectorRecipeRefV1", "later_release"),
+  artifactEntry("flowdesk.connector_gateway_invocation_plan.v1", "connector-gateway-invocation-plan", "FlowDeskConnectorGatewayInvocationPlanV1", "later_release"),
   artifactEntry("flowdesk.advisory_output_firewall.v1", "advisory-output-firewall", "FlowDeskAdvisoryOutputFirewallV1", "later_release"),
   artifactEntry("flowdesk.federated_registry_state.v1", "federated-registry-state", "FlowDeskFederatedRegistryStateV1", "later_release"),
   {

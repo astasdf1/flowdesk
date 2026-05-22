@@ -32,6 +32,7 @@ export * from "./chat-control-authority.js";
 export * from "./chat-hook-authority-probe.js";
 export * from "./chat-routing.js";
 export * from "./command-manifest.js";
+export * from "./connector-gateway.js";
 export * from "./config-policy.js";
 export * from "./connector-profile.js";
 export * from "./controlled-conformance-doc-write.js";

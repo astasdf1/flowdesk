@@ -108,6 +108,7 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.fake_remote_connector_write_result.v1": ["schema_version", "state", "blocked_labels", "fake_remote_write_attempted", "remote_write_attempted", "connector_write_attempted", "github_write_attempted", "storage_write_attempted", "database_write_attempted", "url_write_attempted", "raw_path_write_attempted", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
   "flowdesk.connector_profile.v1": ["schema_version", "profile_id", "connector_kind", "active_profile_ref", "allowed_target_kinds", "required_tool_refs", "auth_scope_refs", "recipe_playbook_refs", "install_policy", "rollback_ref", "doctor_status_ref", "gateway_execution_authority_enabled", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled"],
   "flowdesk.connector_recipe_ref.v1": ["schema_version", "recipe_ref", "connector_profile_ref", "connector_kind", "target_kind", "operation_label", "playbook_ref", "content_hash_required", "dry_run_required", "raw_locator_allowed", "gateway_execution_authority_enabled", "remote_write_authority_enabled", "dispatch_authority_enabled"],
+  "flowdesk.connector_gateway_invocation_plan.v1": ["schema_version", "state", "blocked_labels", "gateway_execution_attempted", "remote_write_attempted", "connector_write_attempted", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
   "flowdesk.advisory_output_firewall.v1": ["schema_version", "advisory_ref", "workflow_id", "source_schema_version", "allowed_consumer_refs", "forbidden_consumers", "advisory_only", "guard_authority_enabled", "approval_authority_enabled", "dispatch_authority_enabled", "verification_authority_enabled", "external_write_authority_enabled"],
   "flowdesk.federated_registry_state.v1": ["schema_version", "registry_state_id", "workflow_id", "state", "policy_ref", "remote_upload_enabled", "remote_download_enabled", "planning_influence_enabled", "ranking_influence_enabled", "guard_influence_enabled", "approval_influence_enabled", "dispatch_influence_enabled", "external_write_authority_enabled"],
   "flowdesk.reference_search.request.v1": ["schema_version"]
@@ -155,7 +156,8 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.top_tier_reviewer_lane_probe.result.v1": ["failure_label"],
   "flowdesk.remote_write_connector_capability.v1": ["installation_plan_ref"],
   "flowdesk.remote_write_connector_execution_readiness.v1": ["workflow_id", "attempt_id", "connector_kind"],
-  "flowdesk.fake_remote_connector_write_result.v1": ["workflow_id", "attempt_id", "connector_kind", "connector_ref", "target_ref", "content_hash_ref", "redacted_remote_ref", "ok", "errors"]
+  "flowdesk.fake_remote_connector_write_result.v1": ["workflow_id", "attempt_id", "connector_kind", "connector_ref", "target_ref", "content_hash_ref", "redacted_remote_ref", "ok", "errors"],
+  "flowdesk.connector_gateway_invocation_plan.v1": ["workflow_id", "attempt_id", "ok", "errors", "connector_profile_ref", "connector_recipe_ref", "connector_kind", "target_ref", "content_hash_ref", "pre_write_audit_ref", "idempotency_key_ref"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {
