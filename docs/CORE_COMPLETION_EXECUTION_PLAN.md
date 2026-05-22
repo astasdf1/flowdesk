@@ -288,7 +288,15 @@ The implemented 2026-05-23 slice adds `selectFlowDeskExactModelCacheEvidencePair
 
 Missing, drifted, invalid, or ambiguous cache-refresh/cache evidence blocks before callers can feed paired records into reviewer assignment revalidation. The selector remains non-authorizing and preserves disabled provider-call, lane-launch, runtime, and dispatch authority.
 
-Next safe slice: connect the selector result to reviewer fan-out planning in the product path, so fan-out can be built only from reloaded paired evidence and paired assignment revalidation.
+Completed follow-up slice: selected durable cache evidence can now feed paired assignment revalidation and deterministic reviewer fan-out planning through a single non-authorizing composition helper.
+
+## Confirmed Follow-Up Slice: Selected Cache Fan-Out Planning
+
+The implemented 2026-05-23 slice adds `planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1`. The helper composes reloaded cache evidence selection, paired assignment revalidation, and reviewer fan-out planning while exposing all intermediate artifacts. It returns `fanout_ready` only when exactly one cache/cache-refresh pair is selected, paired revalidation succeeds, and fan-out planning can materialize the required runtime lane launch requests.
+
+Missing, drifted, invalid, or ambiguous durable cache evidence blocks before fan-out request materialization. Even ready plans remain request topology only: provider calls, runtime execution, actual lane launch, dispatch authority, cache discovery, and cache refresh remain disabled.
+
+Next safe slice: wire this helper into a doctor/status or command-backed product path that already has a durable evidence root, so user-visible fan-out diagnostics can be derived from reloaded session evidence without launching reviewer lanes.
 
 ## Review Questions
 
