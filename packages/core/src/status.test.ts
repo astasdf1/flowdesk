@@ -3,6 +3,7 @@ import test from "node:test";
 import type {
   FlowDeskAttemptRecordV1,
   FlowDeskCheckpointRecordV1,
+  FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
   FlowDeskLaneRecordV1,
   FlowDeskProviderHealthSnapshotV1,
   FlowDeskReviewerFanoutPlanV1,
@@ -177,6 +178,34 @@ function reviewerFanoutPlan(overrides: Partial<FlowDeskReviewerFanoutPlanV1> = {
   };
 }
 
+function cacheRefreshPlan(overrides: Partial<FlowDeskExactModelAvailabilityCacheRefreshPlanV1> = {}): FlowDeskExactModelAvailabilityCacheRefreshPlanV1 {
+  return {
+    schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
+    ok: true,
+    errors: [],
+    state: "refresh_required",
+    blocked_labels: [],
+    refresh_reason_labels: ["cache_missing"],
+    expected_local_date: "2026-05-17",
+    expected_active_profile_ref: "profile-123",
+    expected_opencode_version_ref: "opencode-1.15.6",
+    expected_flowdesk_package_version_ref: "flowdesk-0.1.1",
+    expected_registry_hash: "hash-registry-123",
+    expected_policy_pack_hash: "hash-policy-123",
+    expected_auth_account_boundary_ref: "account-123",
+    discovery_required: true,
+    refresh_required: true,
+    cache_usable_for_assignment: false,
+    discovery_attempted: false,
+    refresh_attempted: false,
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  };
+}
+
 function checkpoint(resumeMode: ResumeModeV1): FlowDeskCheckpointRecordV1 {
   return {
     schema_version: "flowdesk.checkpoint_record.v1",
@@ -320,6 +349,38 @@ test("status surfaces reviewer fanout planning blockers without lane authority",
     })
   }));
   assert.equal(ready.blocker, undefined);
+});
+
+test("status surfaces exact-model cache refresh blockers without authority", () => {
+  const response = buildFlowDeskStatusResponseV1(statusInput({ exactModelAvailabilityCacheRefreshPlan: cacheRefreshPlan() }));
+  assert.equal(response.ok, true);
+  assert.ok(response.blocker);
+  assert.equal(response.blocker.category, "conformance");
+  assert.ok(response.blocker.refs.includes("exact_model_cache_refresh_state=refresh_required"));
+  assert.ok(response.blocker.refs.includes("exact_model_cache_refresh_reason=cache_missing"));
+  assert.ok(response.blocker.refs.includes("exact_model_cache_discovery_attempted=false"));
+  assert.ok(response.blocker.refs.includes("exact_model_cache_refresh_attempted=false"));
+  assert.ok(response.blocker.refs.includes("exact_model_cache_providerCall=false"));
+  assert.ok(response.blocker.refs.includes("exact_model_cache_actualLaneLaunch=false"));
+
+  const hit = buildFlowDeskStatusResponseV1(statusInput({
+    exactModelAvailabilityCacheRefreshPlan: cacheRefreshPlan({
+      state: "cache_hit",
+      refresh_reason_labels: [],
+      cache_id: "cache-123",
+      cache_local_date: "2026-05-17",
+      cache_active_profile_ref: "profile-123",
+      cache_opencode_version_ref: "opencode-1.15.6",
+      cache_flowdesk_package_version_ref: "flowdesk-0.1.1",
+      cache_registry_hash: "hash-registry-123",
+      cache_policy_pack_hash: "hash-policy-123",
+      cache_auth_account_boundary_ref: "account-123",
+      discovery_required: false,
+      refresh_required: false,
+      cache_usable_for_assignment: true
+    })
+  }));
+  assert.equal(hit.blocker, undefined);
 });
 
 test("unknown and degraded provider health stay diagnostic and non-authorizing", () => {

@@ -1,4 +1,4 @@
-import { validateFlowDeskReviewerFanoutPlanV1, type FlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
+import { validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1, validateFlowDeskReviewerFanoutPlanV1, type FlowDeskExactModelAvailabilityCacheRefreshPlanV1, type FlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
 import { validateFlowDeskDefaultManagedDispatchPromotionReadinessV1, type FlowDeskDefaultManagedDispatchPromotionReadinessV1 } from "./production-enablement.js";
 import { mapProviderFailureClassToDiagnosticOutcomeV1 } from "./provider-failures.js";
 import type {
@@ -54,6 +54,7 @@ export interface FlowDeskStatusCommandInputV1 {
   laneSummaries?: readonly FlowDeskStatusLaneSummaryV1[];
   providerHealthSnapshot?: FlowDeskProviderHealthSnapshotV1;
   providerHealthSummary?: ProviderHealthSummaryV1;
+  exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
   defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
   reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
   statusSummaryArtifact?: FlowDeskStatusSummaryArtifactV1;
@@ -213,6 +214,28 @@ function reviewerFanoutBlockerSummary(plan: FlowDeskReviewerFanoutPlanV1): Block
   };
 }
 
+function exactModelAvailabilityCacheRefreshBlockerSummary(plan: FlowDeskExactModelAvailabilityCacheRefreshPlanV1): BlockerSummaryV1 | undefined {
+  if (plan.state === "cache_hit") return undefined;
+  return {
+    category: "conformance",
+    summary: `Exact-model availability cache is ${plan.state}; reviewer assignment must wait for a same-day cache bound to the active profile, registry, policy, OpenCode version, package version, and auth boundary.`,
+    safe_remediation: "Run /flowdesk-doctor and refresh exact-model availability discovery evidence before reviewer assignment or fan-out.",
+    refs: [
+      `exact_model_cache_refresh_state=${plan.state}`,
+      `exact_model_cache_discovery_required=${plan.discovery_required}`,
+      `exact_model_cache_refresh_required=${plan.refresh_required}`,
+      `exact_model_cache_usable_for_assignment=${plan.cache_usable_for_assignment}`,
+      `exact_model_cache_discovery_attempted=${plan.discovery_attempted}`,
+      `exact_model_cache_refresh_attempted=${plan.refresh_attempted}`,
+      `exact_model_cache_actualLaneLaunch=${plan.actualLaneLaunch}`,
+      `exact_model_cache_providerCall=${plan.providerCall}`,
+      `exact_model_cache_runtimeExecution=${plan.runtimeExecution}`,
+      ...plan.refresh_reason_labels.map((label) => `exact_model_cache_refresh_reason=${label}`),
+      ...plan.blocked_labels.map((label) => `exact_model_cache_blocker=${label}`),
+    ].slice(0, 20),
+  };
+}
+
 function failClosedResponse(input: Partial<FlowDeskStatusCommandInputV1> | undefined, category: RedactedErrorCategory, message: string, includeAbort = false): FlowDeskStatusResponseV1 {
   const requestWorkflowId = input?.request?.workflow_id;
   const activeWorkflowId = input?.active?.active_workflow_id;
@@ -263,6 +286,7 @@ function validateStatusInput(input: Partial<FlowDeskStatusCommandInputV1> | unde
   if (input.statusSummaryArtifact !== undefined) appendResultErrors(errors, "status_summary", validateStatusSummaryArtifactV1(input.statusSummaryArtifact));
   if (input.providerHealthSnapshot !== undefined) appendResultErrors(errors, "provider_health_snapshot", validateProviderHealthSnapshotV1(input.providerHealthSnapshot));
   if (input.providerHealthSummary !== undefined) appendResultErrors(errors, "provider_health_summary", validateProviderHealthSummaryV1(input.providerHealthSummary));
+  if (input.exactModelAvailabilityCacheRefreshPlan !== undefined) appendResultErrors(errors, "exact_model_availability_cache_refresh_plan", validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(input.exactModelAvailabilityCacheRefreshPlan));
   if (input.defaultManagedDispatchPromotionReadiness !== undefined) appendResultErrors(errors, "default_managed_dispatch_promotion_readiness", validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(input.defaultManagedDispatchPromotionReadiness, input.workflow?.workflow_id ?? input.active?.active_workflow_id ?? input.request?.workflow_id));
   if (input.reviewerFanoutPlan !== undefined) appendResultErrors(errors, "reviewer_fanout_plan", validateFlowDeskReviewerFanoutPlanV1(input.reviewerFanoutPlan));
   if (input.auditRef !== undefined) appendResultErrors(errors, "audit_ref", validateOpaqueRef(input.auditRef, "audit_ref"));
@@ -336,6 +360,7 @@ export function buildFlowDeskStatusResponseV1(input: FlowDeskStatusCommandInputV
   const currentStepId = workflow.current_step_id ?? input.currentAttempt?.step_id ?? checkpoint?.current_step_id;
   const auditRef = input.auditRef ?? (detailAllowsDebugRefs(detailLevel) ? workflow.audit_refs[0] : undefined);
   const laneRefs = detailLevel === "lane_refs" ? [...(input.laneRefs ?? workflow.lane_refs)] : undefined;
+  const exactModelCacheBlocker = input.exactModelAvailabilityCacheRefreshPlan === undefined ? undefined : exactModelAvailabilityCacheRefreshBlockerSummary(input.exactModelAvailabilityCacheRefreshPlan);
   const promotionBlocker = input.defaultManagedDispatchPromotionReadiness === undefined ? undefined : promotionReadinessBlockerSummary(input.defaultManagedDispatchPromotionReadiness);
   const reviewerFanoutBlocker = input.reviewerFanoutPlan === undefined ? undefined : reviewerFanoutBlockerSummary(input.reviewerFanoutPlan);
   const response: FlowDeskStatusResponseV1 = {
@@ -352,7 +377,7 @@ export function buildFlowDeskStatusResponseV1(input: FlowDeskStatusCommandInputV
     ...(currentStepId === undefined ? {} : { current_step_id: currentStepId }),
     lane_summaries: laneSummaries,
     provider_health_summary: providerHealthSummary,
-    ...(workflow.blocker_summary === undefined && reviewerFanoutBlocker === undefined && promotionBlocker === undefined ? {} : { blocker: workflow.blocker_summary ?? reviewerFanoutBlocker ?? promotionBlocker }),
+    ...(workflow.blocker_summary === undefined && exactModelCacheBlocker === undefined && reviewerFanoutBlocker === undefined && promotionBlocker === undefined ? {} : { blocker: workflow.blocker_summary ?? exactModelCacheBlocker ?? reviewerFanoutBlocker ?? promotionBlocker }),
     ...(checkpoint === undefined ? {} : { checkpoint_id: checkpoint.checkpoint_id })
   };
   const responseResult = validateStatusResponseV1(response);
