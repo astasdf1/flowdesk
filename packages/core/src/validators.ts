@@ -217,7 +217,7 @@ export function validateProviderQualifiedModelId(value: unknown): ValidationResu
 
 export function validateNoForbiddenRawPayloads(value: unknown, label = "payload"): ValidationResult {
   const errors: string[] = [];
-    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "credential_scope_ref", "raw_auth_object_persisted", "rawpathwriteattempted", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref", "token_material_persisted"]);
+    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "credential_scope_ref", "raw_auth_object_persisted", "raw_path_write_attempted", "rawpathwriteattempted", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref", "token_material_persisted"]);
   const visit = (current: unknown, path: string): void => {
     if (typeof current === "string") {
       const lower = current.toLowerCase();

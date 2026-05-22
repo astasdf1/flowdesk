@@ -48,6 +48,11 @@ test("lane lifecycle separates no-output and missing-verdict from approvals", ()
 	const forged = validateFlowDeskLaneLifecycleRecordV1(record({ state: "missing_verdict", verdict_ref: "verdict-1" }));
 	assert.equal(forged.ok, false);
 	assert.match(forged.errors.join("; "), /cannot carry verdict_ref/);
+	const toolCallsOnly = validateFlowDeskLaneLifecycleRecordV1(record({ state: "tool_calls_only_no_verdict", verdict_ref: undefined }));
+	assert.equal(toolCallsOnly.ok, true, toolCallsOnly.errors.join("; "));
+	const forgedToolCallsOnly = validateFlowDeskLaneLifecycleRecordV1(record({ state: "tool_calls_only_no_verdict", verdict_ref: "verdict-1" }));
+	assert.equal(forgedToolCallsOnly.ok, false);
+	assert.match(forgedToolCallsOnly.errors.join("; "), /tool-call-only/);
 });
 
 test("lane lifecycle rejects incomplete complete lanes and failed-lane verdicts", () => {

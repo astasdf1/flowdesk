@@ -15,6 +15,7 @@ export const FLOWDESK_LANE_LIFECYCLE_STATES = [
 	"incomplete",
 	"no_output",
 	"missing_verdict",
+	"tool_calls_only_no_verdict",
 	"aborted",
 	"timeout",
 	"late_output",
@@ -156,10 +157,10 @@ export function validateFlowDeskLaneLifecycleRecordV1(
 	)
 		errors.push("complete lane lifecycle records require child, message, output, runtime echo, and telemetry refs");
 	if (
-		(record.state === "no_output" || record.state === "missing_verdict") &&
+		(record.state === "no_output" || record.state === "missing_verdict" || record.state === "tool_calls_only_no_verdict") &&
 		record.verdict_ref !== undefined
 	)
-		errors.push("no-output or missing-verdict lanes cannot carry verdict_ref");
+		errors.push("no-output, missing-verdict, or tool-call-only lanes cannot carry verdict_ref");
 	if (record.state === "no_output" && record.output_ref !== undefined)
 		errors.push("no-output lane lifecycle records cannot carry output_ref");
 	if (
