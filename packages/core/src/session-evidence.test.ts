@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
+  type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+  planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
   planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
   prepareFlowDeskDispatchIdempotencyReservationV1,
   prepareFlowDeskSessionEvidenceWriteIntentV1,
@@ -230,7 +232,7 @@ function exactModelAvailabilityCacheRecord(overrides: Record<string, unknown> = 
   };
 }
 
-function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, unknown> = {}) {
+function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, unknown> = {}): FlowDeskExactModelAvailabilityCacheRefreshPlanV1 {
   return {
     schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
     ok: true,
@@ -262,6 +264,29 @@ function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, 
     providerCall: false,
     actualLaneLaunch: false,
     runtimeExecution: false,
+    ...overrides
+  } as FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
+}
+
+function exactModelAvailabilityCacheAcquisitionPlanRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    ...planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+      refreshPlan: exactModelAvailabilityCacheRefreshPlanRecord({
+        state: "refresh_required",
+        refresh_reason_labels: ["cache_missing"],
+        cache_id: undefined,
+        cache_local_date: undefined,
+        cache_active_profile_ref: undefined,
+        cache_opencode_version_ref: undefined,
+        cache_flowdesk_package_version_ref: undefined,
+        cache_registry_hash: undefined,
+        cache_policy_pack_hash: undefined,
+        cache_auth_account_boundary_ref: undefined,
+        discovery_required: true,
+        refresh_required: true,
+        cache_usable_for_assignment: false
+      })
+    }),
     ...overrides
   };
 }
@@ -476,7 +501,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -486,27 +511,29 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 14);
+    assert.equal(applied.writtenPaths.length, 15);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 14);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
+    assert.equal(reloaded.entries.length, 15);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
   });
 });
 
-test("session evidence reload validates exact-model cache and refresh-plan evidence", () => {
+test("session evidence reload validates exact-model cache refresh and acquisition evidence", () => {
   withEvidenceTree((rootDir) => {
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-good"), JSON.stringify(exactModelAvailabilityCacheRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-forged"), JSON.stringify(exactModelAvailabilityCacheRecord({ providerCall: true })));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-good"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_refresh_plan", "cache-refresh-forged"), JSON.stringify(exactModelAvailabilityCacheRefreshPlanRecord({ refresh_attempted: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_acquisition_plan", "cache-acquisition-good"), JSON.stringify(exactModelAvailabilityCacheAcquisitionPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_acquisition_plan", "cache-acquisition-forged"), JSON.stringify(exactModelAvailabilityCacheAcquisitionPlanRecord({ acquisition_attempted: true })));
     const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
-    assert.equal(result.entries.length, 2);
-    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["exact_model_availability_cache", "exact_model_availability_cache_refresh_plan"]));
-    assert.equal(result.blocked.length, 2);
+    assert.equal(result.entries.length, 3);
+    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan"]));
+    assert.equal(result.blocked.length, 3);
     assert.match(result.blocked.map((entry) => entry.reason).join("|"), /cannot enable runtime authority|cannot attempt discovery/);
   });
 });

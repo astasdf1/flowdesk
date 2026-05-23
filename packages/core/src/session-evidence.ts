@@ -19,6 +19,7 @@ import {
 	type FlowDeskReviewerFanoutPlanV1,
 	planFlowDeskReviewerFanoutV1,
 	revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1,
+	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
 	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	validateFlowDeskExactModelAvailabilityCacheV1,
 	validateFlowDeskReviewerFanoutPlanV1,
@@ -59,6 +60,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.exact_model_availability_cache.v1",
 	exact_model_availability_cache_refresh_plan:
 		"flowdesk.exact_model_availability_cache_refresh_plan.v1",
+	exact_model_availability_cache_acquisition_plan:
+		"flowdesk.exact_model_availability_cache_acquisition_plan.v1",
 	reviewer_verdict: "flowdesk.top_tier_review_verdict.v1",
 	reviewer_fanout_plan: "flowdesk.reviewer_fanout_plan.v1",
 	lane_lifecycle: "flowdesk.lane_lifecycle_record.v1",
@@ -372,6 +375,8 @@ function validateEvidenceShape(
 		return validateFlowDeskExactModelAvailabilityCacheV1(record);
 	if (evidenceClass === "exact_model_availability_cache_refresh_plan")
 		return validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(record);
+	if (evidenceClass === "exact_model_availability_cache_acquisition_plan")
+		return validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(record);
 	if (evidenceClass === "reviewer_fanout_plan")
 		return validateFlowDeskReviewerFanoutPlanV1(record);
 	if (evidenceClass === "lane_lifecycle")
