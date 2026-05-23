@@ -46,6 +46,12 @@ The added regression tests prove:
 3. Missing decision or approval blocks before the orchestrator with `redactedBlockReason` describing the missing record.
 4. Terminal-depth or invalid decisions block with `blocked_before_regate_plan` and zero runtime authority.
 
+## Durable Persistence
+
+A follow-up slice on 2026-05-23 added durable persistence for the regate plan. The tool now accepts optional `persistRegatePlanEvidence: true` plus `regatePlanEvidenceId` arguments. When the orchestrator returns a `regate_plan_ready` result and a durable state root is configured, the tool persists the regate plan as a new `fallback_regate_plan` session evidence record through the existing prepare/apply/reload write path. The evidence class uses schema `flowdesk.fallback_regate_plan.v1` with the same fail-closed schema-artifact and validator gates as other durable session evidence classes. A `regatePlanEvidence` field in the redacted tool result reports persistence status, evidence id, and the same non-authorizing authority flags. Persistence is silent when the option is omitted or when there is no durable state root.
+
+Regression coverage proves the regate plan is persisted as durable evidence with `state="full_regate_required"`, reload returns `ok=true`, and `dispatch_authority_enabled=false`.
+
 ## Interpretation
 
-This closes the user-facing surface for managed fallback re-gate planning. The next product step toward fallback-aware operation is wiring this re-gate plan into a durable evidence record and exposing it through `/flowdesk-status`, so a user who hits a `changes_required` or `provider_unhealthy` attempt can pick up the re-gate plan in a later session. Active dispatch behind the re-gate plan continues to require a fresh `/flowdesk-run` attempt with the listed evidence refs.
+This closes the user-facing surface for managed fallback re-gate planning plus durable evidence persistence. A user who hits `changes_required` or `provider_unhealthy` can now invoke the regate tool, get a fresh plan, and persist it for the next session. Active dispatch behind the re-gate plan continues to require a fresh `/flowdesk-run` attempt that consumes the listed required evidence refs. Doctor/status exposure of the persisted regate plan remains a follow-up step.
