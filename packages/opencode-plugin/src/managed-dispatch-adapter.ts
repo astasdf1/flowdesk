@@ -46,6 +46,7 @@ import {
 	recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
 	reloadFlowDeskSessionEvidenceV1,
 	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
+	validateFlowDeskFallbackRegatePlanV1,
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
 	validateFlowDeskRuntimeLaneLaunchPlanV1,
@@ -2213,6 +2214,208 @@ export function orchestrateFlowDeskManagedFallbackRegateV1(input: {
 		regatePlan: plan,
 		safeNextActions: ["/flowdesk-status", "/flowdesk-run"],
 		authority: managedFallbackRegateAuthority(true),
+	};
+}
+
+export interface FlowDeskManagedFallbackRegatePlanEvidenceMaterializationResultV1 {
+	adapterProfile: "managed_fallback_regate_plan_evidence_materializer";
+	status: "regate_plan_evidence_recorded" | "blocked_before_regate_plan_evidence";
+	writeAttempted: boolean;
+	evidenceReloaded: boolean;
+	workflowId?: string;
+	evidenceId?: string;
+	redactedBlockReason?: string;
+	safeNextActions: ["/flowdesk-status"] | ["/flowdesk-status", "/flowdesk-run"];
+	authority: {
+		realOpenCodeDispatch: false;
+		providerCall: false;
+		runtimeExecution: false;
+		actualLaneLaunch: false;
+		fallbackAuthority: false;
+		automaticFallbackAuthorized: false;
+		regatePlanPersisted: boolean;
+		toolAuthority: false;
+		hardCancelOrNoReplyAuthority: false;
+	};
+}
+
+export function materializeFlowDeskManagedFallbackRegatePlanEvidenceV1(input: {
+	rootDir: string;
+	regatePlan: FlowDeskFallbackRegatePlanV1;
+	evidenceId: string;
+}): FlowDeskManagedFallbackRegatePlanEvidenceMaterializationResultV1 {
+	const blockedAuthority = {
+		realOpenCodeDispatch: false as const,
+		providerCall: false as const,
+		runtimeExecution: false as const,
+		actualLaneLaunch: false as const,
+		fallbackAuthority: false as const,
+		automaticFallbackAuthorized: false as const,
+		regatePlanPersisted: false,
+		toolAuthority: false as const,
+		hardCancelOrNoReplyAuthority: false as const,
+	};
+	if (typeof input.rootDir !== "string" || input.rootDir.trim().length === 0)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: false,
+			workflowId: input.regatePlan?.workflow_id,
+			evidenceId: input.evidenceId,
+			redactedBlockReason: "rootDir is required",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	const planValidation = validateFlowDeskFallbackRegatePlanV1(input.regatePlan);
+	if (!planValidation.ok)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: false,
+			workflowId: input.regatePlan?.workflow_id,
+			evidenceId: input.evidenceId,
+			redactedBlockReason:
+				planValidation.errors.join(", ") ||
+				"fallback regate plan invalid",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	if (
+		input.regatePlan.state !== "full_regate_required" ||
+		input.regatePlan.ok !== true
+	)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: false,
+			workflowId: input.regatePlan?.workflow_id,
+			evidenceId: input.evidenceId,
+			redactedBlockReason: "fallback regate plan must be full_regate_required",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	const workflowId = input.regatePlan.workflow_id;
+	if (typeof workflowId !== "string" || workflowId.trim().length === 0)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: false,
+			evidenceId: input.evidenceId,
+			redactedBlockReason: "fallback regate plan workflow_id is required",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	const preWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: input.rootDir,
+	});
+	if (!preWriteReload.ok || preWriteReload.blocked.length > 0)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: false,
+			workflowId,
+			evidenceId: input.evidenceId,
+			redactedBlockReason: "fallback regate plan pre-write reload failed",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	if (
+		preWriteReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "fallback_regate_plan" &&
+				entry.evidenceId === input.evidenceId,
+		)
+	)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: true,
+			workflowId,
+			evidenceId: input.evidenceId,
+			redactedBlockReason: "fallback regate plan evidence already exists",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId,
+		evidenceId: input.evidenceId,
+		record: input.regatePlan as unknown as Record<string, unknown>,
+	});
+	if (!prepared.ok || prepared.writeIntent === undefined)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: true,
+			workflowId,
+			evidenceId: input.evidenceId,
+			redactedBlockReason:
+				prepared.errors.join(", ") ||
+				"fallback regate plan evidence intent invalid",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [
+		prepared.writeIntent,
+	]);
+	if (!applied.ok)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: false,
+			evidenceReloaded: true,
+			workflowId,
+			evidenceId: input.evidenceId,
+			redactedBlockReason:
+				applied.errors.join(", ") ||
+				"fallback regate plan evidence write failed",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	const postWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: input.rootDir,
+	});
+	const persisted =
+		postWriteReload.ok &&
+		postWriteReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "fallback_regate_plan" &&
+				entry.evidenceId === input.evidenceId &&
+				entry.record.state === "full_regate_required",
+		);
+	if (!persisted)
+		return {
+			adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+			status: "blocked_before_regate_plan_evidence",
+			writeAttempted: true,
+			evidenceReloaded: false,
+			workflowId,
+			evidenceId: input.evidenceId,
+			redactedBlockReason:
+				"fallback regate plan evidence reload verification failed",
+			safeNextActions: ["/flowdesk-status"],
+			authority: blockedAuthority,
+		};
+	return {
+		adapterProfile: "managed_fallback_regate_plan_evidence_materializer",
+		status: "regate_plan_evidence_recorded",
+		writeAttempted: true,
+		evidenceReloaded: true,
+		workflowId,
+		evidenceId: input.evidenceId,
+		safeNextActions: ["/flowdesk-status", "/flowdesk-run"],
+		authority: {
+			...blockedAuthority,
+			regatePlanPersisted: true,
+		},
 	};
 }
 

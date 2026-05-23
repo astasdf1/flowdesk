@@ -60,6 +60,7 @@ import {
 	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
 	dispatchManagedDispatchBetaPromptV1,
 	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
+	materializeFlowDeskManagedFallbackRegatePlanEvidenceV1,
 	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
 	materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1,
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
@@ -2335,10 +2336,9 @@ function redactedManagedFallbackRegateToolResult(
 	};
 }
 
-export function createFlowDeskManagedFallbackRegateOptInTools(): Record<
-	string,
-	FlowDeskOpenCodeTool
-> {
+export function createFlowDeskManagedFallbackRegateOptInTools(
+	rootDir?: string,
+): Record<string, FlowDeskOpenCodeTool> {
 	return {
 		[flowdeskManagedFallbackRegateToolName]: tool({
 			description:
@@ -2353,6 +2353,18 @@ export function createFlowDeskManagedFallbackRegateOptInTools(): Record<
 					.record(tool.schema.string(), tool.schema.unknown())
 					.describe(
 						"Consumed FlowDeskProductionApprovalSourceV1 with action_type=fallback_reselection bound to the new attempt id.",
+					),
+				persistRegatePlanEvidence: tool.schema
+					.boolean()
+					.optional()
+					.describe(
+						"When true and a configured durable state root is available, persist the resulting regate plan as fallback_regate_plan session evidence.",
+					),
+				regatePlanEvidenceId: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Evidence id to use when persisting the regate plan. Required when persistRegatePlanEvidence is true.",
 					),
 			},
 			async execute(input) {
@@ -2373,7 +2385,34 @@ export function createFlowDeskManagedFallbackRegateOptInTools(): Record<
 					consumedApproval:
 						record.consumedApproval as unknown as FlowDeskProductionApprovalSourceV1,
 				});
-				return JSON.stringify(redactedManagedFallbackRegateToolResult(result));
+				const redacted = redactedManagedFallbackRegateToolResult(result);
+				const persistRequested = record.persistRegatePlanEvidence === true;
+				const evidenceId = typeof record.regatePlanEvidenceId === "string"
+					? record.regatePlanEvidenceId
+					: undefined;
+				if (
+					persistRequested &&
+					rootDir !== undefined &&
+					result.regatePlan !== undefined &&
+					result.status === "regate_plan_ready" &&
+					evidenceId !== undefined &&
+					evidenceId.trim().length > 0
+				) {
+					const persistResult = materializeFlowDeskManagedFallbackRegatePlanEvidenceV1({
+						rootDir,
+						regatePlan: result.regatePlan,
+						evidenceId,
+					});
+					redacted.regatePlanEvidence = {
+						status: persistResult.status,
+						writeAttempted: persistResult.writeAttempted,
+						evidenceReloaded: persistResult.evidenceReloaded,
+						evidenceId: persistResult.evidenceId,
+						redactedBlockReason: persistResult.redactedBlockReason,
+						authority: persistResult.authority,
+					};
+				}
+				return JSON.stringify(redacted);
 			},
 		}),
 	};
@@ -2522,7 +2561,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			),
 		);
 	if (isManagedFallbackRegateEnabled(options))
-		Object.assign(tools, createFlowDeskManagedFallbackRegateOptInTools());
+		Object.assign(
+			tools,
+			createFlowDeskManagedFallbackRegateOptInTools(
+				durableStateRootFromOptions(options),
+			),
+		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
 	return {
 		tool: tools,

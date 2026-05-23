@@ -1459,6 +1459,47 @@ test("managed fallback regate tool is explicit opt-in and returns a fresh regate
 	assert.equal(authority.realOpenCodeDispatch, false);
 });
 
+test("managed fallback regate tool persists regate plan as durable evidence when opt-in is set", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-fallback-regate-persist-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskManagedFallbackRegateOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const regateTool = hooks.tool?.[flowdeskManagedFallbackRegateToolName];
+		assert.ok(regateTool);
+		const raw = await regateTool.execute({
+			decision: fallbackDecisionRecord(),
+			consumedApproval: consumedFallbackApprovalRecord(),
+			persistRegatePlanEvidence: true,
+			regatePlanEvidenceId: "regate-plan-evidence-1",
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "regate_plan_ready");
+		const evidence = result.regatePlanEvidence as Record<string, unknown>;
+		assert.equal(evidence.status, "regate_plan_evidence_recorded");
+		assert.equal(evidence.writeAttempted, true);
+		assert.equal(evidence.evidenceReloaded, true);
+		assert.equal(evidence.evidenceId, "regate-plan-evidence-1");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-fallback-1",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		const persisted = reloaded.entries.find(
+			(entry) => entry.evidenceClass === "fallback_regate_plan",
+		);
+		assert.ok(persisted);
+		assert.equal(persisted.evidenceId, "regate-plan-evidence-1");
+		assert.equal(persisted.record.state, "full_regate_required");
+		assert.equal(persisted.record.dispatch_authority_enabled, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("managed fallback regate tool blocks before plan when decision or approval is missing or mismatched", async () => {
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskManagedFallbackRegateOption]: { enabled: true },
