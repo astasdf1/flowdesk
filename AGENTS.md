@@ -6,6 +6,10 @@ This repository is the FlowDesk OpenCode plugin project.
 
 For product and implementation context, use the documentation under `docs/`. The implementation specification is the primary contract when documents conflict unless a newer ADR explicitly changes the decision. This file is not a mandatory traversal path for generated FlowDesk agents.
 
+## Task Tracking Requirement
+
+Always use the `todowrite` tool (or standard OpenCode task tracking mechanisms) to register, track, and update todo items for all non-trivial implementation steps. Todo registration ensures that work is explicitly tracked, progress is visible, and the assistant can resume correctly after interruptions or model changes.
+
 ## Progress Tracking Requirement
 
 `docs/PROGRESS_SNAPSHOT.md` is the required progress tracker for this repository. Every non-trivial work session must check it before concluding and update it when code, tests, docs, packaging, installer behavior, conformance evidence, release gates, blockers, or user-facing readiness changes. If no progress fields changed, the final response must explicitly say the progress snapshot was checked and did not need an update.

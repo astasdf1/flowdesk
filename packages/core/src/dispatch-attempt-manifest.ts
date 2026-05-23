@@ -1,3 +1,4 @@
+import type { FlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
 import {
 	evaluateFlowDeskDispatchIdempotencyReplayV1,
 	validateFlowDeskDispatchIdempotencySnapshotV1,
@@ -390,6 +391,25 @@ export function evaluateFlowDeskDispatchAttemptDurablePrecallV1(input: {
 		durableBlockedLabels.push(
 			...replay.blocked_labels.map((label) => `idempotency_${label}`),
 		);
+
+	const regateEntry = input.reloadedEvidence.entries.find(
+		(entry) => entry.evidenceClass === "fallback_regate_plan",
+	);
+	if (regateEntry !== undefined) {
+		const regatePlan = regateEntry.record as unknown as FlowDeskFallbackRegatePlanV1;
+		if (regatePlan.state === "full_regate_required") {
+			if (regatePlan.new_attempt_id !== input.manifest.attempt_id) {
+				durableBlockedLabels.push("fallback_regate_plan_attempt_mismatch");
+			}
+			const loadedRefs = new Set(input.reloadedEvidence.entries.map((e) => e.evidenceId));
+			for (const reqRef of regatePlan.required_fresh_evidence_refs) {
+				if (!loadedRefs.has(reqRef)) {
+					durableBlockedLabels.push("fallback_regate_plan_fresh_evidence_missing");
+					break;
+				}
+			}
+		}
+	}
 
 	const base = evaluateFlowDeskDispatchAttemptPrecallV1({
 		manifest: input.manifest,

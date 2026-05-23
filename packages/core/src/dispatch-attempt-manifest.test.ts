@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { FlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
 import {
 	consumeFlowDeskProductionApprovalSourceV1,
 	evaluateFlowDeskDispatchAttemptDurablePrecallV1,
@@ -418,4 +419,69 @@ test("dispatch attempt durable pre-call blocks idempotency replay", () => {
 	assert.equal(replayed.sdk_call_permitted, false);
 	assert.ok(replayed.blocked_labels.includes("idempotency_attempt_already_recorded"));
 	assert.ok(replayed.blocked_labels.includes("idempotency_idempotency_key_reused"));
+});
+
+test("dispatch attempt durable pre-call consumes fallback regate plan", () => {
+	const validManifest = manifest({ state: "sdk_call_permitted", attempt_id: "attempt-2" });
+	const app = consumedApproval();
+	app.attempt_id = "attempt-2";
+	app.consumed_by_attempt_id = "attempt-2";
+	
+	const regatePlan: FlowDeskFallbackRegatePlanV1 = {
+		schema_version: "flowdesk.fallback_regate_plan.v1",
+		ok: true,
+		errors: [],
+		workflow_id: "workflow-1",
+		parent_attempt_id: "attempt-1",
+		new_attempt_id: "attempt-2",
+		state: "full_regate_required",
+		required_fresh_evidence_refs: ["evidence-fresh-1"],
+		safe_next_actions: ["/flowdesk-status", "/flowdesk-run"],
+		automatic_fallback_authorized: false,
+		provider_switch_attempted: false,
+		dispatch_authority_enabled: false,
+		realOpenCodeDispatch: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+
+	const baseReloaded: FlowDeskSessionEvidenceReloadResultV1 = {
+		ok: true,
+		errors: [],
+		blocked: [],
+		realOpenCodeDispatch: false,
+		actualLaneLaunch: false,
+		providerCall: false,
+		runtimeExecution: false,
+		entries: [
+			{ evidenceClass: "production_approval_source", evidenceId: validManifest.approval_ref, record: app as unknown as Record<string, unknown>, path: "" },
+			{ evidenceClass: "pre_dispatch_audit", evidenceId: validManifest.pre_dispatch_audit_ref, record: { pre_dispatch_audit_ref: validManifest.pre_dispatch_audit_ref } as any, path: "" },
+			{ evidenceClass: "dispatch_idempotency", evidenceId: "idem-1", record: { schema_version: "flowdesk.dispatch_idempotency_snapshot.v1", workflow_id: "workflow-1", snapshot_ref: "idem-1", observed_at: "2026-05-24T00:00:00.000Z", entries: [], dispatch_authority_enabled: false, realOpenCodeDispatch: false, actualLaneLaunch: false, providerCall: false, runtimeExecution: false } as any, path: "" },
+			{ evidenceClass: "fallback_regate_plan", evidenceId: "regate-1", record: regatePlan as any, path: "" },
+		]
+	};
+
+	const missingFresh = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: validManifest,
+		reloadedEvidence: baseReloaded,
+	});
+	assert.equal(missingFresh.sdk_call_permitted, false);
+	assert.ok(missingFresh.blocked_labels.includes("fallback_regate_plan_fresh_evidence_missing"));
+
+	const attemptMismatch = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: manifest({ state: "sdk_call_permitted", attempt_id: "attempt-3" }),
+		reloadedEvidence: baseReloaded,
+	});
+	assert.equal(attemptMismatch.sdk_call_permitted, false);
+	assert.ok(attemptMismatch.blocked_labels.includes("fallback_regate_plan_attempt_mismatch"));
+
+	const success = evaluateFlowDeskDispatchAttemptDurablePrecallV1({
+		manifest: validManifest,
+		reloadedEvidence: {
+			...baseReloaded,
+			entries: [...baseReloaded.entries, { evidenceClass: "usage_authority", evidenceId: "evidence-fresh-1", record: {} as any, path: "" }]
+		},
+	});
+	assert.equal(success.sdk_call_permitted, true, success.blocked_labels.join(","));
 });

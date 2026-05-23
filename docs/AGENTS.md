@@ -6,6 +6,10 @@ This folder contains FlowDesk planning and design documents.
 
 This file lists the main FlowDesk documents without imposing an agent-specific reading path.
 
+## Task Tracking Requirement
+
+Always use the `todowrite` tool (or standard OpenCode task tracking mechanisms) to register, track, and update todo items for all non-trivial implementation steps. Todo registration ensures that work is explicitly tracked, progress is visible, and the assistant can resume correctly after interruptions or model changes.
+
 ## Progress Tracking Requirement
 
 `PROGRESS_SNAPSHOT.md` is the required progress tracker for implementation status. Every non-trivial work session must check it before concluding and update it when code, tests, docs, packaging, installer behavior, conformance evidence, release gates, blockers, or user-facing readiness changes. If no progress fields changed, the final response must explicitly state that the progress snapshot was checked and did not need an update.
