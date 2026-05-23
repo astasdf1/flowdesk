@@ -1507,6 +1507,13 @@ test("quick reviewer run tool is absent by default and registers only with expli
 	) as Record<string, unknown>;
 	assert.equal(blocked.status, "blocked_before_quick_reviewer_run");
 	assert.match(String(blocked.redactedBlockReason), /developerModeAcknowledged/);
+	const description = String(quickTool.description ?? "");
+	assert.match(description, /code review|multi-perspective/);
+	assert.match(description, /paid provider/);
+	assert.match(description, /synthetic developer-mode approval/);
+	assert.match(description, /MUST first/);
+	assert.match(description, /developerModeAcknowledged=true/);
+	assert.match(description, /allowProviderCall=true/);
 });
 
 test("managed fallback regate tool persists regate plan as durable evidence when opt-in is set", async () => {
