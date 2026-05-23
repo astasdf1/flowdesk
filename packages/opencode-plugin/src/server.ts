@@ -39,13 +39,18 @@ import {
 	type FlowDeskLocalProductionEnablementOptionsV1,
 	type FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1,
 } from "./local-adapter.js";
+import type {
+	FlowDeskExactModelProviderAcquisitionClientV1,
+	FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
+	FlowDeskManagedDispatchBetaAdapterResultV1,
+	FlowDeskManagedDispatchBetaDispatchRequestV1,
+	FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	FlowDeskManagedDispatchBetaReservationStoreV1,
+} from "./managed-dispatch-adapter.js";
 import {
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
 	dispatchManagedDispatchBetaPromptV1,
-	type FlowDeskManagedDispatchBetaAdapterResultV1,
-	type FlowDeskManagedDispatchBetaDispatchRequestV1,
-	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
-	type FlowDeskManagedDispatchBetaReservationStoreV1,
+	runFlowDeskExactModelProviderAcquisitionLiveTestV1,
 } from "./managed-dispatch-adapter.js";
 import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
@@ -71,10 +76,14 @@ export const flowdeskReviewerFanoutDiagnosticsOption =
 	"reviewerFanoutDiagnostics" as const;
 export const flowdeskManagedDispatchBetaAdapterOption =
 	"managedDispatchBetaAdapter" as const;
+export const flowdeskExactModelProviderAcquisitionLiveTestOption =
+	"exactModelProviderAcquisitionLiveTest" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
+export const flowdeskExactModelProviderAcquisitionLiveTestToolName =
+	"flowdesk_exact_model_provider_acquisition_live_test" as const;
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
@@ -171,6 +180,12 @@ function isManagedDispatchBetaReservationStore(
 		typeof value.reserve === "function" &&
 		typeof value.recordDispatchFailure === "function"
 	);
+}
+
+function isExactModelProviderAcquisitionClient(
+	value: unknown,
+): value is FlowDeskExactModelProviderAcquisitionClientV1 {
+	return isRecord(value) && typeof value.checkExactModelAvailability === "function";
 }
 
 function boundedText(value: string, fallback: string): string {
@@ -688,6 +703,28 @@ function redactedManagedDispatchBetaToolResult(
 	};
 }
 
+function redactedExactModelProviderAcquisitionToolResult(
+	result: Awaited<ReturnType<typeof runFlowDeskExactModelProviderAcquisitionLiveTestV1>>,
+): Record<string, unknown> {
+	return {
+		adapterProfile: result.adapterProfile,
+		status: result.status,
+		providerCallAttempted: result.providerCallAttempted,
+		writeAttempted: result.writeAttempted,
+		evidenceReloaded: result.evidenceReloaded,
+		workflowId: result.workflowId,
+		evidenceId: result.evidenceId,
+		resultId: result.resultId,
+		providerQualifiedModelId: result.providerQualifiedModelId,
+		redactedBlockReason: result.redactedBlockReason,
+		authority: result.authority,
+		resultState: result.result?.state,
+		available: result.result?.available,
+		highestTierEligible: result.result?.highest_tier_eligible,
+		sanitizedProviderResultRef: result.result?.sanitized_provider_result_ref,
+	};
+}
+
 function blockedManagedDispatchRunRoute(
 	redactedBlockReason: string,
 	defaultAuthorization?: FlowDeskDefaultManagedDispatchAuthorizationV1,
@@ -865,6 +902,46 @@ export function createFlowDeskManagedDispatchBetaOptInTools(
 	};
 }
 
+export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
+	client: FlowDeskExactModelProviderAcquisitionClientV1,
+	rootDir: string,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskExactModelProviderAcquisitionLiveTestToolName]: tool({
+			description:
+				"FlowDesk exact-model provider acquisition live-test opt-in tool; performs one bounded provider availability check and writes sanitized session evidence without dispatch or reviewer launch.",
+			args: {
+				request: tool.schema
+					.record(tool.schema.string(), tool.schema.unknown())
+					.describe(
+						"Complete FlowDeskExactModelProviderAcquisitionLiveTestRequestV1 with acquisition_plan, profile/auth boundary refs, redaction proof, pre-call audit, idempotency, and exact provider-qualified model.",
+					),
+			},
+			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				if (!isRecord(record.request)) {
+					return JSON.stringify({
+						adapterProfile: "exact_model_provider_acquisition_live_test_adapter",
+						status: "blocked_before_provider_acquisition",
+						providerCallAttempted: false,
+						writeAttempted: false,
+						evidenceReloaded: false,
+						redactedBlockReason:
+							"Exact-model provider acquisition live-test requires a request record.",
+						authority: { ...disabledAuthority, toolAuthority: false },
+					});
+				}
+				const result = await runFlowDeskExactModelProviderAcquisitionLiveTestV1({
+					client,
+					rootDir,
+					request: record.request as unknown as FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
+				});
+				return JSON.stringify(redactedExactModelProviderAcquisitionToolResult(result));
+			},
+		}),
+	};
+}
+
 export function createFlowDeskNaturalLanguageChatMessageHook(
 	now: FlowDeskLocalClockV1 = () => new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
@@ -999,6 +1076,11 @@ function isManagedDispatchBetaAdapterEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
+function isExactModelProviderAcquisitionLiveTestEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
+	return isRecord(value) && value.enabled === true;
+}
+
 function defaultManagedDispatchAuthorizationFromOptions(
 	options?: PluginOptions,
 ): FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined {
@@ -1061,6 +1143,26 @@ function managedDispatchBetaDurableReservationStoreFrom(
 		: createFlowDeskManagedDispatchBetaDurableReservationStoreV1({ rootDir });
 }
 
+function exactModelProviderAcquisitionClientFrom(
+	input: unknown,
+	options?: PluginOptions,
+): FlowDeskExactModelProviderAcquisitionClientV1 | undefined {
+	const option = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
+	if (isRecord(option) && isExactModelProviderAcquisitionClient(option.client))
+		return option.client;
+	return isRecord(input) && isExactModelProviderAcquisitionClient(input.exactModelProviderAcquisitionClient)
+		? input.exactModelProviderAcquisitionClient
+		: undefined;
+}
+
+function exactModelProviderAcquisitionRootFrom(options?: PluginOptions): string | undefined {
+	const option = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
+	const optionRoot = isRecord(option) && typeof option.durableStateRoot === "string" && option.durableStateRoot.trim().length > 0
+		? option.durableStateRoot
+		: undefined;
+	return optionRoot ?? durableStateRootFromOptions(options);
+}
+
 const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const localSession =
 		isLocalNonDispatchAdapterEnabled(options) ||
@@ -1081,6 +1183,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				managedDispatchBetaDurableReservationStoreFrom(options))
 			: undefined;
 	const defaultAuthorization = defaultManagedDispatchAuthorizationFromOptions(options);
+	const exactModelProviderAcquisitionClient = isExactModelProviderAcquisitionLiveTestEnabled(options)
+		? exactModelProviderAcquisitionClientFrom(input, options)
+		: undefined;
+	const exactModelProviderAcquisitionRoot = exactModelProviderAcquisitionRootFrom(options);
 	const tools: Record<string, FlowDeskOpenCodeTool> = {
 		[flowdeskPreSpikeDoctorToolName]: tool({
 			description:
@@ -1161,6 +1267,14 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				managedDispatchBetaClient,
 				managedDispatchBetaReservationStore,
 				durableStateRootFromOptions(options),
+			),
+		);
+	if (exactModelProviderAcquisitionClient !== undefined && exactModelProviderAcquisitionRoot !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
+				exactModelProviderAcquisitionClient,
+				exactModelProviderAcquisitionRoot,
 			),
 		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };

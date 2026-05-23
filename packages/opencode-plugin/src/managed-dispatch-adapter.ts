@@ -15,6 +15,8 @@ import type {
 	FlowDeskControlledRedactedAuditExportWriteRecordV1,
 	FlowDeskDispatchAttemptManifestV1,
 	FlowDeskDispatchIdempotencySnapshotV1,
+	FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
+	FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
 	FlowDeskFallbackDecisionV1,
 	FlowDeskFallbackRegatePlanV1,
 	FlowDeskLaneLifecycleRecordV1,
@@ -40,7 +42,9 @@ import {
 	promoteFlowDeskFallbackReselectionRegateV1,
 	promoteFlowDeskManagedDispatchBetaAuthorityV1,
 	promoteFlowDeskReviewerTypedVerdictsV1,
+	recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
 	reloadFlowDeskSessionEvidenceV1,
+	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
 	validateFlowDeskSessionAbortDecisionV1,
@@ -130,6 +134,78 @@ export interface FlowDeskControlledExternalWriteAdapterResultV1 {
 		| ["/flowdesk-status"];
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
 		controlledExternalWriteAuthorized: boolean;
+	};
+}
+
+export interface FlowDeskExactModelProviderAcquisitionClientRequestV1 {
+	provider_family: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1["provider_family"];
+	provider_identity_ref: string;
+	provider_qualified_model_id: string;
+	model_family: string;
+	active_profile_ref: string;
+	auth_account_boundary_ref: string;
+	live_test_run_ref: string;
+	redaction_proof_ref: string;
+}
+
+export interface FlowDeskExactModelProviderAcquisitionClientResultV1 {
+	outcome: "available" | "unavailable" | "blocked";
+	sanitized_provider_result_ref?: string;
+	availability_ref?: string;
+	highest_tier_eligible?: boolean;
+	blocked_labels?: string[];
+}
+
+export interface FlowDeskExactModelProviderAcquisitionClientV1 {
+	checkExactModelAvailability(
+		request: FlowDeskExactModelProviderAcquisitionClientRequestV1,
+	): Promise<FlowDeskExactModelProviderAcquisitionClientResultV1> | FlowDeskExactModelProviderAcquisitionClientResultV1;
+}
+
+export interface FlowDeskExactModelProviderAcquisitionLiveTestRequestV1 {
+	workflowId: string;
+	evidenceId: string;
+	acquisitionPlan: FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1;
+	resultId: string;
+	localDate: string;
+	activeProfileRef: string;
+	opencodeVersionRef: string;
+	flowdeskPackageVersionRef: string;
+	registryHash: string;
+	policyPackHash: string;
+	authAccountBoundaryRef: string;
+	providerFamily: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1["provider_family"];
+	providerIdentityRef: string;
+	providerQualifiedModelId: string;
+	modelFamily: string;
+	availabilityRef: string;
+	preCallAuditRef: string;
+	idempotencyRef: string;
+	liveTestRunRef: string;
+	redactionProofRef: string;
+	observedAt: string;
+}
+
+export interface FlowDeskExactModelProviderAcquisitionLiveTestResultV1 {
+	adapterProfile: "exact_model_provider_acquisition_live_test_adapter";
+	status:
+		| "provider_acquisition_recorded"
+		| "provider_acquisition_blocked"
+		| "blocked_before_provider_acquisition";
+	providerCallAttempted: boolean;
+	writeAttempted: boolean;
+	evidenceReloaded: boolean;
+	workflowId?: string;
+	evidenceId?: string;
+	resultId?: string;
+	providerQualifiedModelId?: string;
+	redactedBlockReason?: string;
+	result?: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1;
+	safeNextActions: ["/flowdesk-status"];
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		exactModelProviderAcquisitionRecorded: boolean;
+		reviewerLaunchAuthorized: false;
+		dispatchAuthorityEnabled: false;
 	};
 }
 
@@ -491,6 +567,154 @@ function controlledExternalWriteAuthority(
 	return {
 		...disabledAuthority(),
 		controlledExternalWriteAuthorized: authorized,
+	};
+}
+
+function exactModelProviderAcquisitionAuthority(
+	recorded: boolean,
+): FlowDeskExactModelProviderAcquisitionLiveTestResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		exactModelProviderAcquisitionRecorded: recorded,
+		reviewerLaunchAuthorized: false,
+		dispatchAuthorityEnabled: false,
+	};
+}
+
+function blockedExactModelProviderAcquisition(
+	reason: string,
+	input?: Partial<FlowDeskExactModelProviderAcquisitionLiveTestRequestV1>,
+): FlowDeskExactModelProviderAcquisitionLiveTestResultV1 {
+	return {
+		adapterProfile: "exact_model_provider_acquisition_live_test_adapter",
+		status: "blocked_before_provider_acquisition",
+		providerCallAttempted: false,
+		writeAttempted: false,
+		evidenceReloaded: false,
+		workflowId: input?.workflowId,
+		evidenceId: input?.evidenceId,
+		resultId: input?.resultId,
+		providerQualifiedModelId: input?.providerQualifiedModelId,
+		redactedBlockReason: reason,
+		safeNextActions: ["/flowdesk-status"],
+		authority: exactModelProviderAcquisitionAuthority(false),
+	};
+}
+
+export async function runFlowDeskExactModelProviderAcquisitionLiveTestV1(input: {
+	client: FlowDeskExactModelProviderAcquisitionClientV1;
+	request: FlowDeskExactModelProviderAcquisitionLiveTestRequestV1;
+	rootDir: string;
+}): Promise<FlowDeskExactModelProviderAcquisitionLiveTestResultV1> {
+	if (typeof input.rootDir !== "string" || input.rootDir.trim().length === 0)
+		return blockedExactModelProviderAcquisition(
+			"Exact-model provider acquisition live-test requires a durable state root before any provider call.",
+			input.request,
+		);
+	const planValidation = validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(input.request.acquisitionPlan);
+	if (!planValidation.ok || input.request.acquisitionPlan.state !== "acquisition_planned") {
+		return blockedExactModelProviderAcquisition(
+			"Exact-model provider acquisition live-test requires valid acquisition_planned evidence before any provider call.",
+			input.request,
+		);
+	}
+
+	let clientResult: FlowDeskExactModelProviderAcquisitionClientResultV1;
+	let providerCallAttempted = false;
+	try {
+		providerCallAttempted = true;
+		clientResult = await input.client.checkExactModelAvailability({
+			provider_family: input.request.providerFamily,
+			provider_identity_ref: input.request.providerIdentityRef,
+			provider_qualified_model_id: input.request.providerQualifiedModelId,
+			model_family: input.request.modelFamily,
+			active_profile_ref: input.request.activeProfileRef,
+			auth_account_boundary_ref: input.request.authAccountBoundaryRef,
+			live_test_run_ref: input.request.liveTestRunRef,
+			redaction_proof_ref: input.request.redactionProofRef,
+		});
+	} catch {
+		clientResult = {
+			outcome: "blocked",
+			blocked_labels: ["provider_acquisition_client_error"],
+		};
+	}
+
+	const rawCheck = validateNoForbiddenRawPayloads(clientResult, "provider_acquisition_client_result");
+	const blockedLabels = [
+		...(clientResult.blocked_labels ?? []),
+		...(rawCheck.ok ? [] : ["provider_acquisition_result_not_sanitized"]),
+	];
+	const result = recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1({
+		acquisitionPlan: input.request.acquisitionPlan,
+		resultId: input.request.resultId,
+		localDate: input.request.localDate,
+		activeProfileRef: input.request.activeProfileRef,
+		opencodeVersionRef: input.request.opencodeVersionRef,
+		flowdeskPackageVersionRef: input.request.flowdeskPackageVersionRef,
+		registryHash: input.request.registryHash,
+		policyPackHash: input.request.policyPackHash,
+		authAccountBoundaryRef: input.request.authAccountBoundaryRef,
+		providerFamily: input.request.providerFamily,
+		providerIdentityRef: input.request.providerIdentityRef,
+		providerQualifiedModelId: input.request.providerQualifiedModelId,
+		modelFamily: input.request.modelFamily,
+		availabilityRef: clientResult.availability_ref ?? input.request.availabilityRef,
+		preCallAuditRef: input.request.preCallAuditRef,
+		idempotencyRef: input.request.idempotencyRef,
+		liveTestRunRef: input.request.liveTestRunRef,
+		redactionProofRef: input.request.redactionProofRef,
+		sanitizedProviderResultRef: clientResult.sanitized_provider_result_ref,
+		observedAt: input.request.observedAt,
+		outcome: rawCheck.ok ? clientResult.outcome : "blocked",
+		highestTierEligible: clientResult.highest_tier_eligible,
+		blockedLabels,
+		providerCall: providerCallAttempted,
+	});
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.request.workflowId,
+		evidenceId: input.request.evidenceId,
+		record: result,
+	});
+	if (!prepared.ok || prepared.writeIntent === undefined) {
+		return {
+			adapterProfile: "exact_model_provider_acquisition_live_test_adapter",
+			status: "provider_acquisition_blocked",
+			providerCallAttempted,
+			writeAttempted: false,
+			evidenceReloaded: false,
+			workflowId: input.request.workflowId,
+			evidenceId: input.request.evidenceId,
+			resultId: input.request.resultId,
+			providerQualifiedModelId: input.request.providerQualifiedModelId,
+			redactedBlockReason: "Provider acquisition result could not be prepared as durable session evidence.",
+			result,
+			safeNextActions: ["/flowdesk-status"],
+			authority: exactModelProviderAcquisitionAuthority(false),
+		};
+	}
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+	const reloaded = applied.ok
+		? reloadFlowDeskSessionEvidenceV1({ workflowId: input.request.workflowId, rootDir: input.rootDir })
+		: undefined;
+	const evidenceReloaded = reloaded?.entries.some(
+		(entry) => entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result" && entry.evidenceId === input.request.evidenceId,
+	) === true;
+	const recorded = applied.ok && evidenceReloaded && result.state === "availability_acquired" && result.ok;
+	return {
+		adapterProfile: "exact_model_provider_acquisition_live_test_adapter",
+		status: recorded ? "provider_acquisition_recorded" : "provider_acquisition_blocked",
+		providerCallAttempted,
+		writeAttempted: true,
+		evidenceReloaded,
+		workflowId: input.request.workflowId,
+		evidenceId: input.request.evidenceId,
+		resultId: input.request.resultId,
+		providerQualifiedModelId: input.request.providerQualifiedModelId,
+		...(recorded ? {} : { redactedBlockReason: "Provider acquisition live-test did not produce reloadable availability evidence." }),
+		result,
+		safeNextActions: ["/flowdesk-status"],
+		authority: exactModelProviderAcquisitionAuthority(recorded),
 	};
 }
 

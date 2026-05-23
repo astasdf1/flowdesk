@@ -13,6 +13,7 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	FLOWDESK_FDS1_FIXTURE_CATALOG,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
+	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
@@ -29,6 +30,8 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskChatIntakeToolName,
 	flowdeskDurableStateRootOption,
+	flowdeskExactModelProviderAcquisitionLiveTestOption,
+	flowdeskExactModelProviderAcquisitionLiveTestToolName,
 	flowdeskFds1SchemaConversionProbeOption,
 	flowdeskLocalNonDispatchAdapterOption,
 	flowdeskNaturalLanguageRoutingOption,
@@ -180,6 +183,26 @@ function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, 
 	};
 }
 
+function exactModelAvailabilityCacheAcquisitionPlanRecord() {
+	return planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+		refreshPlan: exactModelAvailabilityCacheRefreshPlanRecord({
+			state: "refresh_required",
+			refresh_reason_labels: ["cache_missing"],
+			cache_id: undefined,
+			cache_local_date: undefined,
+			cache_active_profile_ref: undefined,
+			cache_opencode_version_ref: undefined,
+			cache_flowdesk_package_version_ref: undefined,
+			cache_registry_hash: undefined,
+			cache_policy_pack_hash: undefined,
+			cache_auth_account_boundary_ref: undefined,
+			discovery_required: true,
+			refresh_required: true,
+			cache_usable_for_assignment: false,
+		}) as Parameters<typeof planFlowDeskExactModelAvailabilityCacheAcquisitionV1>[0]["refreshPlan"],
+	});
+}
+
 function writeSessionEvidence(root: string, workflowId: string, records: Record<string, unknown>[]) {
 	const intents = records.map((record, index) => {
 		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
@@ -270,6 +293,90 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
 	assert.equal(result.actualLaneLaunch, false);
 	assert.equal(result.fallbackAuthority, false);
 	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("exact-model provider acquisition live-test tool is explicit opt-in and writes redacted evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-"));
+	const calls: unknown[] = [];
+	try {
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never);
+		assert.equal(
+			Object.keys(defaultHooks.tool ?? {}).includes(
+				flowdeskExactModelProviderAcquisitionLiveTestToolName,
+			),
+			false,
+		);
+
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				client: {
+					checkExactModelAvailability(request: unknown) {
+						calls.push(request);
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-1",
+							availability_ref: "availability-live-1",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: {
+				workflowId: "workflow-provider-acquisition-1",
+				evidenceId: "provider-acquisition-evidence-1",
+				acquisitionPlan: exactModelAvailabilityCacheAcquisitionPlanRecord(),
+				resultId: "provider-acquisition-result-1",
+				localDate: "2026-05-19",
+				activeProfileRef: "profile-1",
+				opencodeVersionRef: "opencode-1.15.6",
+				flowdeskPackageVersionRef: "flowdesk-0.1.1",
+				registryHash: "hash-registry-1",
+				policyPackHash: "hash-policy-1",
+				authAccountBoundaryRef: "account-1",
+				providerFamily: "claude",
+				providerIdentityRef: "provider-claude-1",
+				providerQualifiedModelId: "claude/claude-opus-4-5",
+				modelFamily: "opus",
+				availabilityRef: "availability-planned-1",
+				preCallAuditRef: "audit-provider-acquisition-1",
+				idempotencyRef: "idempotency-provider-acquisition-1",
+				liveTestRunRef: "live-test-run-1",
+				redactionProofRef: "redaction-proof-1",
+				observedAt: "2026-05-19T00:00:00.000Z",
+			},
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "provider_acquisition_recorded");
+		assert.equal(result.providerCallAttempted, true);
+		assert.equal(result.writeAttempted, true);
+		assert.equal(result.evidenceReloaded, true);
+		assert.equal((result.authority as Record<string, unknown>).providerCall, false);
+		assert.equal((result.authority as Record<string, unknown>).dispatchAuthorityEnabled, false);
+		assert.equal(result.sanitizedProviderResultRef, "provider-result-redacted-1");
+		assert.equal("result" in result, false);
+		assert.equal(calls.length, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-acquisition-1",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.some((entry) =>
+				entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result"
+			),
+			true,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("server plugin can expose local non-dispatch command-backed tools", async () => {
