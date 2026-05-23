@@ -467,6 +467,16 @@ test("provider acquisition result records bounded live-test facts without dispat
 		validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(unavailable).ok,
 		true,
 	);
+
+	const metadataOnly = providerAcquisitionResult({ providerCall: false });
+	assert.equal(metadataOnly.state, "availability_acquired");
+	assert.equal(metadataOnly.providerCall, false);
+	assert.equal(metadataOnly.acquisition_attempted, true);
+	assert.equal(metadataOnly.discovery_attempted, true);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(metadataOnly).ok,
+		true,
+	);
 });
 
 test("provider acquisition result blocks invalid plans and authority smuggling", () => {

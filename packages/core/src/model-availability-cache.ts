@@ -716,7 +716,10 @@ export function recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResu
 	if (input.outcome === "blocked" && blockedLabels.length === 0) blockedLabels.push("provider_acquisition_blocked");
 
 	const planAllowsProviderCall = planResult.ok && input.acquisitionPlan.state === "acquisition_planned" && inputErrors.length === 0;
-	const providerCall = planAllowsProviderCall && input.outcome !== "blocked" ? true : input.providerCall === true && planAllowsProviderCall;
+	const acquisitionAttempted = planAllowsProviderCall && (input.outcome !== "blocked" || input.providerCall === true);
+	const providerCall = input.providerCall === false
+		? false
+		: acquisitionAttempted || (input.providerCall === true && planAllowsProviderCall);
 	const state = planAllowsProviderCall && input.outcome !== "blocked" ? "availability_acquired" : "blocked";
 	const available = state === "availability_acquired" && input.outcome === "available";
 
@@ -749,8 +752,8 @@ export function recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResu
 		observed_at: input.observedAt,
 		available,
 		highest_tier_eligible: available && input.highestTierEligible === true,
-		acquisition_attempted: providerCall,
-		discovery_attempted: providerCall,
+		acquisition_attempted: acquisitionAttempted,
+		discovery_attempted: acquisitionAttempted,
 		refresh_attempted: false,
 		dispatch_authority_enabled: false,
 		providerCall,
@@ -857,7 +860,7 @@ export function validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionRe
 	if (record.state === "availability_acquired") {
 		if ((record.blocked_labels?.length ?? 0) > 0) errors.push("availability_acquired result cannot carry blockers");
 		if (record.acquisition_plan_state !== "acquisition_planned") errors.push("availability_acquired result requires acquisition_planned input");
-		if (record.acquisition_attempted !== true || record.discovery_attempted !== true || record.providerCall !== true)
+		if (record.acquisition_attempted !== true || record.discovery_attempted !== true)
 			errors.push("availability_acquired result must record provider acquisition attempt");
 		if (record.sanitized_provider_result_ref === undefined)
 			errors.push("availability_acquired result requires sanitized_provider_result_ref");
@@ -866,8 +869,6 @@ export function validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionRe
 		errors.push("blocked provider acquisition result requires blocked labels");
 	if (record.providerCall === true && (record.acquisition_attempted !== true || record.discovery_attempted !== true))
 		errors.push("providerCall requires acquisition and discovery attempts");
-	if (record.providerCall === false && (record.acquisition_attempted !== false || record.discovery_attempted !== false))
-		errors.push("attempt flags cannot be true without providerCall");
 	if (record.highest_tier_eligible === true && record.available !== true)
 		errors.push("highest_tier_eligible requires available true");
 	if (
