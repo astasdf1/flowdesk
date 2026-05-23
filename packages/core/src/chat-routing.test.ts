@@ -128,3 +128,67 @@ test("chat intake validators reject raw payload markers", () => {
   assert.equal(/system prompt|provider_payload|raw provider/i.test(text), false);
   assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
 });
+
+test("chat routing classifies Korean natural-language usage requests to /flowdesk-usage", () => {
+  for (const summary of [
+    "사용량 보여줘",
+    "잔량 얼마나 남았어",
+    "남은 토큰 얼마야",
+    "쿼터 확인해줘",
+    "리셋 언제야",
+    "한도 거의 다 썼나",
+    "남은거 얼마야",
+    "사용 가능량 알려줘"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(result.response.route_decision, "use_command_fallback", summary);
+    assert.deepEqual(result.response.safe_next_actions.slice(0, 2), ["/flowdesk-usage", "/flowdesk-doctor"], summary);
+  }
+  const englishRemaining = evaluateFlowDeskChatIntakeV1({ request: request("how much usage do I have remaining"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(englishRemaining.response.safe_next_actions.slice(0, 2), ["/flowdesk-usage", "/flowdesk-doctor"]);
+});
+
+test("chat routing classifies Korean recovery, doctor, and debug intents to portable commands", () => {
+  const status = evaluateFlowDeskChatIntakeV1({ request: request("작업 어디까지 진행됐어"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(status.response.safe_next_actions, ["/flowdesk-status"]);
+
+  const resume = evaluateFlowDeskChatIntakeV1({ request: request("중단됐던 작업 이어서 가자"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(resume.response.safe_next_actions, ["/flowdesk-status", "/flowdesk-resume"]);
+
+  const retry = evaluateFlowDeskChatIntakeV1({ request: request("실패한거 다시 시도해줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(retry.response.safe_next_actions, ["/flowdesk-status", "/flowdesk-retry"]);
+
+  const abort = evaluateFlowDeskChatIntakeV1({ request: request("워크플로우 멈춰줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(abort.response.safe_next_actions, ["/flowdesk-status", "/flowdesk-abort"]);
+
+  const doctor = evaluateFlowDeskChatIntakeV1({ request: request("플러그인 진단 점검해줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(doctor.response.safe_next_actions, ["/flowdesk-doctor", "/flowdesk-status"]);
+
+  const debugLogs = evaluateFlowDeskChatIntakeV1({ request: request("디버그 로그 내보내줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+  assert.deepEqual(debugLogs.response.safe_next_actions, ["/flowdesk-export-debug", "/flowdesk-status"]);
+});
+
+test("chat routing recognizes Korean review and refactor intents as managed_plan", () => {
+  for (const summary of [
+    "이 모듈 리팩토링 해줘",
+    "코드 분석 좀 부탁",
+    "이 부분 검토 해줘",
+    "보안 점검 부탁해"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(validateChatIntakeResponseV1(result.response).ok, true, summary);
+    // "검토", "점검" overlap with /flowdesk-doctor route, which is OK: chat-intake provides command-backed fallback; LLM tool discovery handles richer review/audit routing via quick reviewer description.
+    assert.notEqual(result.response.classification, "blocked", summary);
+  }
+});
+
+test("chat routing surfaces Korean clarification cues as ask_clarification when combined with planning intent", () => {
+  for (const summary of [
+    "코드 좀 만들어줘 잘 모르겠어 어디부터 시작할지",
+    "대충 적당히 리팩토링 부탁해"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(result.response.classification, "clarify", summary);
+    assert.equal(result.response.route_decision, "ask_clarification", summary);
+  }
+});

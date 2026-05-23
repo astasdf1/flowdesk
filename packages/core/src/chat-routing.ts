@@ -23,19 +23,19 @@ export interface FlowDeskChatRoutingEvaluationV1 extends ValidationResult {
 
 const fallbackActions = ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"] as const;
 const unsafeLaterGatePattern = /\b(real[\s_-]*(?:opencode[\s_-]*)?dispatch|realOpenCodeDispatch|actual[\s_-]*lane[\s_-]*launch|actualLaneLaunch|provider[\s_-]*(?:call|request|api)|providerCall|automatic[\s_-]*(?:fallback|reselection)|automaticFallbackOrReselection|fallback[\s_-]*(?:provider|model|authority)|fallbackAuthority|reselect(?:ion)?|hard[\s_-]*(?:cancel|stop|no[\s_-]*reply)|hardCancelOrNoReply|noReply|no[\s_-]*reply|cancel:\s*true|stop:\s*true|opencode[\s_-]*run)\b/i;
-const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve)\b|(?:계획|구현)/i;
-const executionLikePattern = /\b(?:run|execute|start)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:실행|진행(?:해|하))/i;
-const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead)\b|(?:승인|확인|동의|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요))/i;
-const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this)\b/i;
+const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve|audit|critique|assess|evaluate|analyze|inspect)\b|(?:계획|구현|만들|개발|수정|버그|개선|리팩토|테스트|작성|조사|분석|리뷰|검토|점검|진단|평가)/i;
+const executionLikePattern = /\b(?:run|execute|start|kick[\s_-]*off|launch)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:실행|진행(?:해|하))|(?:(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?).{0,40}(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)))|(?:(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)).{0,40}(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?))/i;
+const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead|ok(?:ay)?|sure|sounds good)\b|(?:승인|확인|동의|좋아|네|예|오케이|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요)|그렇게\s*해|해주세요)/i;
+const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this|kinda|sort of|whatever)\b|(?:잘\s*모르(?:겠|겠어)|애매|뭐였|뭔가|어떻게\s*해(?:야)?|뭐\s*해야|아무거나|적당히|대충)/i;
 
 const commandRoutes: readonly (readonly [RegExp, readonly SafeNextAction[]])[] = [
-  [/\b(?:show|current|check|get|what(?:'s| is))\b.{0,40}\b(?:status|progress|state|checkpoint)\b|\bflowdesk-status\b|(?:상태|진행상황)/i, ["/flowdesk-status"]],
-  [/\b(doctor|diagnos(?:e|tic)|compatibility|health)\b/i, ["/flowdesk-doctor"]],
-  [/\b(resume|continue from checkpoint)\b/i, ["/flowdesk-status", "/flowdesk-resume"]],
-  [/\b(retry|try again)\b/i, ["/flowdesk-status", "/flowdesk-retry"]],
-  [/\b(abort|cancel workflow|stop workflow)\b/i, ["/flowdesk-status", "/flowdesk-abort"]],
-  [/\b(usage|quota|limit)\b/i, ["/flowdesk-usage", "/flowdesk-doctor"]],
-  [/\b(debug export|export debug|debug bundle|logs?)\b/i, ["/flowdesk-export-debug", "/flowdesk-status"]]
+  [/\b(?:show|current|check|get|what(?:'s| is)|how(?:'s| is) (?:it|things))\b.{0,40}\b(?:status|progress|state|checkpoint|workflow|lane|attempt)\b|\bflowdesk-status\b|(?:상태|진행\s*상황|진행\s*상태|어디까지|어디 까지|어디쯤|현재\s*상태|현재\s*진행|작업\s*상태|작업\s*어디까지|workflow\s*상태)/i, ["/flowdesk-status"]],
+  [/\b(usage|quota|limit|rate[\s_-]*limit|reset(?:s)?|remaining|budget|credits?|tokens? left|how (?:much|many) (?:tokens?|requests?|usage|left|remaining))\b|(?:사용량|잔량|남은\s*(?:사용량|토큰|요청|쿼터|크레딧|예산)|남은(?:거|것)?\s*얼마|얼마\s*남(?:았|아|아서)|쿼터|한도|리셋|사용\s*가능량|쓸\s*수\s*있|토큰\s*남은|크레딧)/i, ["/flowdesk-usage", "/flowdesk-doctor"]],
+  [/\b(doctor|diagnos(?:e|tic)|compatibility|health[\s_-]*check|sanity[\s_-]*check)\b|(?:진단|점검|건강\s*상태|설정\s*확인|환경\s*확인|호환성)/i, ["/flowdesk-doctor"]],
+  [/\b(resume|continue from checkpoint|pick up where|continue (?:the )?workflow)\b|(?:이어\s*(?:서|가)|재개|중단(?:된|했던)\s*거|체크포인트|이어가)/i, ["/flowdesk-status", "/flowdesk-resume"]],
+  [/\b(retry|try again|run again|do over)\b|(?:다시\s*(?:해|시도|돌려|실행)|재시도|또\s*해)/i, ["/flowdesk-status", "/flowdesk-retry"]],
+  [/\b(abort|cancel workflow|stop workflow|kill (?:the )?(?:workflow|run))\b|(?:중단|취소|멈춰|그만|작업\s*취소|워크플로(?:우)?\s*(?:중단|취소|멈춰))/i, ["/flowdesk-status", "/flowdesk-abort"]],
+  [/\b(debug export|export debug|debug bundle|logs?|debug info|export logs?)\b|(?:디버그(?:\s*(?:내보내|덤프|번들|로그))?|로그\s*(?:내보내|덤프|export)?|버그\s*정보|문제\s*정보)/i, ["/flowdesk-export-debug", "/flowdesk-status"]]
 ];
 
 function uniqueActions(actions: readonly SafeNextAction[]): SafeNextAction[] {
