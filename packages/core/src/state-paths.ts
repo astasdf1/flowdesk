@@ -104,6 +104,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"exact_model_availability_cache",
 	"exact_model_availability_cache_refresh_plan",
 	"exact_model_availability_cache_acquisition_plan",
+	"exact_model_availability_cache_provider_acquisition_result",
 	"reviewer_verdict",
 	"reviewer_fanout_plan",
 	"lane_lifecycle",
@@ -130,6 +131,8 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 		"exact-model-availability-cache-refresh-plan",
 	exact_model_availability_cache_acquisition_plan:
 		"exact-model-availability-cache-acquisition-plan",
+	exact_model_availability_cache_provider_acquisition_result:
+		"exact-model-availability-cache-provider-acquisition-result",
 	reviewer_verdict: "reviewer-verdict",
 	reviewer_fanout_plan: "reviewer-fanout-plan",
 	lane_lifecycle: "lane-lifecycle",
