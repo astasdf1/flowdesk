@@ -320,7 +320,15 @@ The implemented 2026-05-23 slice adds `materializeFlowDeskObservedReviewerVerdic
 
 The helper reuses the session-evidence prepare/apply/reload path, blocks duplicate reviewer-verdict evidence ids before write, and verifies that the persisted verdict reloads. It does not invoke acceptance, durable linkage, provider calls, SDK prompts, runtime execution, lane launch, dispatch, or cache discovery.
 
-Next safe slice: either add product wiring around actual typed-verdict observation/materialization once a lane launch path exists, or continue with actual cache discovery acquisition planning. Both remain gated before provider calls or reviewer lane launch.
+Completed follow-up slice: exact-model cache discovery acquisition planning now exists as a durable fail-closed contract, without implementing provider probing or cache refresh execution.
+
+## Confirmed Follow-Up Slice: Exact-Model Cache Acquisition Planning
+
+The implemented 2026-05-23 slice adds `flowdesk.exact_model_availability_cache_acquisition_plan.v1` and `planFlowDeskExactModelAvailabilityCacheAcquisitionV1`. The helper consumes a cache-refresh plan and distinguishes cache-hit no-op, refresh-required acquisition planning, and invalid/blocked refresh evidence.
+
+The acquisition plan can be persisted and reloaded as `exact_model_availability_cache_acquisition_plan` session evidence. It records `acquisition_attempted=false`, `discovery_attempted=false`, `refresh_attempted=false`, `providerCall=false`, `actualLaneLaunch=false`, `runtimeExecution=false`, and `dispatch_authority_enabled=false`. Forged records that claim attempted discovery/acquisition/refresh or runtime authority fail closed during validation and reload.
+
+Next safe slice: product diagnostics can surface acquisition-plan blockers, or a later explicit acquisition adapter can be designed. Actual provider probing, cache discovery, cache refresh, reviewer lane launch, and verdict acceptance remain gated.
 
 ## Review Questions
 
