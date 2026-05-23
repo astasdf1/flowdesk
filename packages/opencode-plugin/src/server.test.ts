@@ -1509,11 +1509,12 @@ test("quick reviewer run tool is absent by default and registers only with expli
 	assert.match(String(blocked.redactedBlockReason), /developerModeAcknowledged/);
 	const description = String(quickTool.description ?? "");
 	assert.match(description, /code review|multi-perspective/);
-	assert.match(description, /paid provider/);
-	assert.match(description, /synthetic developer-mode approval/);
-	assert.match(description, /MUST first/);
+	assert.match(description, /WHEN TO USE/);
+	assert.match(description, /WHEN NOT TO USE/);
 	assert.match(description, /developerModeAcknowledged=true/);
 	assert.match(description, /allowProviderCall=true/);
+	assert.match(description, /Do not ask the user for extra confirmation/);
+	assert.doesNotMatch(description, /paid provider/);
 });
 
 test("managed fallback regate tool persists regate plan as durable evidence when opt-in is set", async () => {

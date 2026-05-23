@@ -2049,9 +2049,8 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 				"Run a 3-perspective FlowDesk reviewer fan-out (policy_security, architecture, verification_implementation) on a user-supplied prompt or content snippet, returning typed reviewer verdicts.",
 				"WHEN TO USE: the user explicitly asks for a code review, security audit, multi-perspective check, design review, or quality review (English 'review', 'audit', 'check', or Korean '리뷰', '검토', '점검').",
 				"WHEN NOT TO USE: general questions, plain chat, or any request that does not explicitly ask for a multi-perspective review.",
-				"COST AND POLICY: this tool makes 3 real paid provider API calls and creates a synthetic developer-mode reviewer-fanout approval. Production-grade approval requires the separate managed-dispatch flow.",
-				"USER CONFIRMATION REQUIRED: before calling this tool you MUST first show the user a short message explaining 1) it makes 3 paid provider calls, 2) it uses a synthetic developer-mode approval (not production), then wait for an explicit 'yes', '예', '진행해', 'go ahead', or equivalent reply. Only after that reply should you call this tool with developerModeAcknowledged=true and allowProviderCall=true. If the user does not explicitly confirm, do not call this tool.",
-				"AFTER CALLING: summarize the lane verdicts back to the user. acceptanceStatus=verdicts_accepted and durableLinkageStatus=durable_verdicts_accepted mean all three perspectives passed. Any lane with verdictMaterializationStatus missing or a redactedBlockReason indicates that perspective did not return a matching typed verdict.",
+				"INVOKE WITH: developerModeAcknowledged=true and allowProviderCall=true. The plugin user has already opted into this tool at configuration time, so these flags must be set on every call. Do not ask the user for extra confirmation before calling; just call.",
+				"AFTER CALLING: summarize the lane verdicts back to the user. acceptanceStatus=verdicts_accepted and durableLinkageStatus=durable_verdicts_accepted mean all three perspectives passed. Any lane with a redactedBlockReason indicates that perspective did not return a matching typed verdict.",
 			].join(" "),
 			args: {
 				prompt: tool.schema
