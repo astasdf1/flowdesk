@@ -43,6 +43,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskRuntimeReviewerExecutionToolName,
 	flowdeskManagedFallbackRegateOption,
 	flowdeskManagedFallbackRegateToolName,
+	flowdeskQuickReviewerRunOption,
+	flowdeskQuickReviewerRunToolName,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -1457,6 +1459,54 @@ test("managed fallback regate tool is explicit opt-in and returns a fresh regate
 	assert.equal(authority.runtimeExecution, false);
 	assert.equal(authority.actualLaneLaunch, false);
 	assert.equal(authority.realOpenCodeDispatch, false);
+});
+
+test("quick reviewer run tool is absent by default and registers only with explicit opt-in", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(defaultHooks.tool?.[flowdeskQuickReviewerRunToolName], undefined);
+
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-quick-server-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-quick-server-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+		{ client: dummyClient } as never,
+		{
+			[flowdeskQuickReviewerRunOption]: {
+				enabled: true,
+				providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+				runtimeAgent: "reviewer-gpt-frontier",
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	const quickTool = enabledHooks.tool?.[flowdeskQuickReviewerRunToolName];
+	assert.ok(quickTool);
+
+	const blocked = JSON.parse(
+		toolOutput(
+			await quickTool.execute({
+				prompt: "Review this content",
+				developerModeAcknowledged: false,
+				allowProviderCall: true,
+			}, undefined as never),
+		),
+	) as Record<string, unknown>;
+	assert.equal(blocked.status, "blocked_before_quick_reviewer_run");
+	assert.match(String(blocked.redactedBlockReason), /developerModeAcknowledged/);
 });
 
 test("managed fallback regate tool persists regate plan as durable evidence when opt-in is set", async () => {
