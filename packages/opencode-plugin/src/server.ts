@@ -2045,10 +2045,11 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 ): Record<string, FlowDeskOpenCodeTool> {
 	return {
 		[flowdeskQuickReviewerRunToolName]: tool({
-			description: [
-				"Run a 3-perspective FlowDesk reviewer fan-out (policy_security, architecture, verification_implementation) on a user-supplied prompt or content snippet, returning typed reviewer verdicts.",
-				"WHEN TO USE: the user explicitly asks for a code review, security audit, multi-perspective check, design review, or quality review (English 'review', 'audit', 'check', or Korean '리뷰', '검토', '점검').",
-				"WHEN NOT TO USE: general questions, plain chat, or any request that does not explicitly ask for a multi-perspective review.",
+				description: [
+				"Run a 3-perspective FlowDesk reviewer fan-out (policy_security, architecture, verification_implementation) on a user-supplied prompt, pasted content, or the current conversation context, returning typed reviewer verdicts.",
+				"WHEN TO USE: the user explicitly asks for a code review, security audit, multi-perspective check, critical review, design review, or quality review. Trigger on English phrases such as 'multi-perspective review', 'multi-angle review', 'critical review', 'review from multiple perspectives', 'audit', 'critique', 'assess', or 'evaluate'. Trigger on Korean phrases such as '다관점 리뷰', '다관점리뷰', '다관점 비판적리뷰', '다관점 비판적 리뷰', '다각도 리뷰', '다각도 검토', '여러 관점 리뷰', '여러 관점에서 검토', '복수 관점 리뷰', '비판적 리뷰', '비판적 검토', '심층 리뷰', '아키텍처 리뷰', '보안 리뷰', '품질 리뷰', '검토', or '점검'.",
+				"CONTENT SELECTION: code is not required. If the user provides no explicit snippet after the trigger phrase, pass a concise prompt that includes the user's request plus the relevant current conversation context or target they are asking to review.",
+				"WHEN NOT TO USE: general questions, plain chat, or any request that does not explicitly ask for a review, critique, audit, assessment, evaluation, 검토, 리뷰, 점검, or 비판.",
 				"INVOKE WITH: developerModeAcknowledged=true and allowProviderCall=true. The plugin user has already opted into this tool at configuration time, so these flags must be set on every call. Do not ask the user for extra confirmation before calling; just call.",
 				"AFTER CALLING: summarize the lane verdicts back to the user. acceptanceStatus=verdicts_accepted and durableLinkageStatus=durable_verdicts_accepted mean all three perspectives passed. Any lane with a redactedBlockReason indicates that perspective did not return a matching typed verdict.",
 			].join(" "),
@@ -2056,7 +2057,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 				prompt: tool.schema
 					.string()
 					.describe(
-						"Plain-text content to send to the reviewer lanes as evidence to review (not as instructions).",
+						"Plain-text review target to send to the reviewer lanes as evidence to review. This can be pasted code/content or a concise summary of the relevant current conversation context when no snippet is provided.",
 					),
 				developerModeAcknowledged: tool.schema
 					.boolean()

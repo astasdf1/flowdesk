@@ -35,8 +35,10 @@ Typical interaction:
 
    - English: `Please review this snippet for security and architecture: [snippet]`
    - Korean: `이 코드를 보안과 아키텍처 관점에서 검토해줘: [snippet]`
+   - Korean multi-perspective trigger: `다관점 리뷰 해줘`
+   - Korean critical multi-perspective trigger: `다관점 비판적리뷰 해줘`
 
-2. The assistant recognizes the review intent and calls `flowdesk_quick_reviewer_run` directly with the user's content as `prompt` and both `developerModeAcknowledged: true` and `allowProviderCall: true`. The plugin user already opted in by enabling `quickReviewerRun` in the plugin config, so the assistant does not ask for per-call confirmation.
+2. The assistant recognizes the review intent and calls `flowdesk_quick_reviewer_run` directly with the user's review target as `prompt` and both `developerModeAcknowledged: true` and `allowProviderCall: true`. The target does not have to be pasted code. If the user only says a trigger phrase such as `다관점 리뷰`, the assistant should use the current request plus the relevant conversation context as the review target. The plugin user already opted in by enabling `quickReviewerRun` in the plugin config, so the assistant does not ask for per-call confirmation.
 
 3. FlowDesk returns a redacted summary including:
    - `status: "quick_reviewer_run_completed"` when all three lanes returned matching typed verdicts and durable linkage was accepted.
@@ -45,6 +47,20 @@ Typical interaction:
    - When any lane fails verdict observation, that lane appears with a `redactedBlockReason` and the overall status is `quick_reviewer_run_incomplete`.
 
 4. The assistant summarizes the verdicts back to the user.
+
+## Trigger Phrases
+
+The quick reviewer run is intended to fire for explicit review, critique, audit, assessment, or evaluation requests. Representative Korean trigger phrases include:
+
+- `다관점 리뷰`, `다관점리뷰`
+- `다관점 비판적리뷰`, `다관점 비판적 리뷰`
+- `다각도 리뷰`, `다각도 검토`
+- `여러 관점 리뷰`, `여러 관점에서 검토`
+- `복수 관점 리뷰`
+- `비판적 리뷰`, `비판적 검토`
+- `심층 리뷰`, `아키텍처 리뷰`, `보안 리뷰`, `품질 리뷰`
+
+English equivalents include `multi-perspective review`, `multi-angle review`, `critical review`, `review from multiple perspectives`, `audit`, `critique`, `assess`, and `evaluate`.
 
 ## What The Two Flags Mean
 

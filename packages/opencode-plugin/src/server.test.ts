@@ -1510,6 +1510,14 @@ test("quick reviewer run tool is absent by default and registers only with expli
 	const description = String(quickTool.description ?? "");
 	assert.match(description, /code review|multi-perspective/);
 	assert.match(description, /WHEN TO USE/);
+	assert.match(description, /다관점 리뷰/);
+	assert.match(description, /다관점리뷰/);
+	assert.match(description, /다관점 비판적리뷰/);
+	assert.match(description, /다각도 검토/);
+	assert.match(description, /여러 관점에서 검토/);
+	assert.match(description, /비판적 검토/);
+	assert.match(description, /code is not required/);
+	assert.match(description, /current conversation context/);
 	assert.match(description, /WHEN NOT TO USE/);
 	assert.match(description, /developerModeAcknowledged=true/);
 	assert.match(description, /allowProviderCall=true/);
