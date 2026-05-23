@@ -11,6 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
+	consumeFlowDeskProductionApprovalSourceV1,
 	FLOWDESK_FDS1_FIXTURE_CATALOG,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
 	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
@@ -38,6 +39,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskPreSpikeDoctorToolName,
 	flowdeskProductionEnablementOption,
 	flowdeskReviewerFanoutDiagnosticsOption,
+	flowdeskRuntimeReviewerExecutionOption,
+	flowdeskRuntimeReviewerExecutionToolName,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -180,6 +183,159 @@ function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, 
 		actualLaneLaunch: false,
 		runtimeExecution: false,
 		...overrides,
+	};
+}
+
+function runtimeLaneLaunchPlanRecord(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.runtime_lane_launch_plan.v1",
+		ok: true,
+		errors: [],
+		launch_request_id: "launch-request-runtime-reviewer-1",
+		workflow_id: "workflow-runtime-reviewer-execution",
+		attempt_id: "attempt-runtime-reviewer-execution",
+		lane_id: "lane-runtime-reviewer-1",
+		state: "launch_ready",
+		blocked_labels: [],
+		parent_session_ref: "ses-parent-runtime-reviewer",
+		agent_ref: "agent-reviewer-gpt-frontier",
+		provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+		launch_reason: "reviewer_fanout",
+		pre_launch_audit_ref: "audit-runtime-reviewer-1",
+		lane_launch_approval_ref: "approval-runtime-reviewer-1",
+		durable_evidence_root_ref: "evidence-root-runtime-reviewer",
+		lifecycle_evidence_class: "lane_lifecycle",
+		exact_binding_confirmed: true,
+		sdk_client_required: true,
+		launch_attempted: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function reviewerVerdictRecord(perspective: string) {
+	return {
+		schema_version: "flowdesk.top_tier_review_verdict.v1",
+		verdict_id: `verdict-${perspective}-runtime-reviewer`,
+		workflow_id: "workflow-runtime-reviewer-execution",
+		lane_plan_ref: `lane-plan-${perspective}-runtime-reviewer`,
+		binding_ref: `binding-${perspective}-runtime-reviewer`,
+		perspective,
+		source: "gpt_frontier",
+		created_at: now,
+		redaction_version: "redaction-v1",
+		findings: [],
+		evidence_refs: [`evidence-${perspective}-runtime-reviewer`],
+		uncertainty: "low",
+		required_fixes: [],
+		verdict_label: "pass",
+		safe_next_actions: ["/flowdesk-status"],
+		dispatch_authority_enabled: false,
+	};
+}
+
+function consumedReviewerFanoutApprovalRecord() {
+	const result = consumeFlowDeskProductionApprovalSourceV1({
+		approval: {
+			schema_version: "flowdesk.production_approval_source.v1",
+			approval_id: "approval-runtime-reviewer-fanout",
+			workflow_id: "workflow-runtime-reviewer-execution",
+			attempt_id: "attempt-runtime-reviewer-execution",
+			action_type: "reviewer_fanout",
+			issuer_boundary: "external_user_confirmation",
+			approval_method: "typed_phrase",
+			actor_ref: "actor-runtime-reviewer",
+			profile_ref: "profile-runtime-reviewer",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			provider_binding_hash: "hash-provider-runtime-reviewer",
+			evidence_bundle_hash: "hash-evidence-runtime-reviewer",
+			guard_decision_ref: "guard-runtime-reviewer",
+			issuance_audit_ref: "audit-issuance-runtime-reviewer",
+			nonce_ref: "nonce-runtime-reviewer",
+			issued_at: "2026-05-17T00:00:00.000Z",
+			expires_at: "2026-05-17T00:10:00.000Z",
+			revoked: false,
+			consume_strategy: "atomic_compare_and_swap_required",
+			dispatch_authority_enabled: false,
+		},
+		workflowId: "workflow-runtime-reviewer-execution",
+		attemptId: "attempt-runtime-reviewer-execution",
+		actionType: "reviewer_fanout",
+		actorRef: "actor-runtime-reviewer",
+		profileRef: "profile-runtime-reviewer",
+		providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+		providerBindingHash: "hash-provider-runtime-reviewer",
+		evidenceBundleHash: "hash-evidence-runtime-reviewer",
+		guardDecisionRef: "guard-runtime-reviewer",
+		consumptionAuditRef: "audit-consumption-runtime-reviewer",
+		consumedAt: "2026-05-17T00:05:00.000Z",
+	});
+	assert.ok(result.consumed_approval, result.errors.join("; "));
+	return result.consumed_approval;
+}
+
+function fakeRuntimeReviewerExecutionClient() {
+	const createCalls: unknown[] = [];
+	const promptCalls: unknown[] = [];
+	const messageCalls: unknown[] = [];
+	const childPerspectives = new Map<string, string>();
+	let next = 0;
+	const perspectives = [
+		"policy_security",
+		"architecture",
+		"verification_implementation",
+	];
+	return {
+		client: {
+			session: {
+				create(options: unknown) {
+					createCalls.push(options);
+					const perspective = perspectives[next++] ?? "policy_security";
+					const childId = `child-runtime-reviewer-${perspective}`;
+					childPerspectives.set(childId, perspective);
+					return Promise.resolve({ id: childId });
+				},
+				prompt(options: unknown) {
+					promptCalls.push(options);
+					return Promise.resolve({ info: { id: "message-runtime-reviewer" } });
+				},
+				messages(options: unknown) {
+					messageCalls.push(options);
+					const sessionID = (options as { sessionID?: string }).sessionID ?? "";
+					const perspective = childPerspectives.get(sessionID) ?? "policy_security";
+					return Promise.resolve([
+						{
+							info: { id: `message-verdict-${perspective}` },
+							parts: [
+								{ type: "text", text: JSON.stringify(reviewerVerdictRecord(perspective)) },
+							],
+						},
+					]);
+				},
+			},
+		},
+		createCalls,
+		promptCalls,
+		messageCalls,
+	};
+}
+
+function runtimeReviewerExecutionExpectation(perspective: string) {
+	return {
+		launchPlanEvidenceId: `launch-plan-${perspective}-runtime-reviewer`,
+		lanePlanRef: `lane-plan-${perspective}-runtime-reviewer`,
+		bindingRef: `binding-${perspective}-runtime-reviewer`,
+		perspective,
+		promptText: `Return typed FlowDesk reviewer verdict for ${perspective}.`,
+		runningLifecycleEvidenceId: `lifecycle-running-${perspective}-runtime-reviewer`,
+		completeLifecycleEvidenceId: `lifecycle-complete-${perspective}-runtime-reviewer`,
+		reviewerVerdictEvidenceId: `reviewer-verdict-${perspective}-runtime-reviewer`,
+		outputRef: `output-${perspective}-runtime-reviewer`,
+		runtimeEchoRef: `runtime-echo-${perspective}-runtime-reviewer`,
+		telemetryRef: `telemetry-${perspective}-runtime-reviewer`,
 	};
 }
 
@@ -865,6 +1021,126 @@ test("exact-model provider acquisition runtime launch-plan materialization requi
 		);
 	} finally {
 		rmSync(blockedRoot, { recursive: true, force: true });
+	}
+});
+
+test("runtime reviewer execution bridge launches persisted plans and accepts durable verdict linkage", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-runtime-reviewer-execution-"));
+	try {
+		const perspectives = [
+			"policy_security",
+			"architecture",
+			"verification_implementation",
+		];
+		const writeIntents = perspectives.map((perspective) => {
+			const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+				workflowId: "workflow-runtime-reviewer-execution",
+				evidenceId: `launch-plan-${perspective}-runtime-reviewer`,
+				record: runtimeLaneLaunchPlanRecord({
+					launch_request_id: `launch-request-${perspective}-runtime-reviewer`,
+					lane_id: `lane-${perspective}-runtime-reviewer`,
+				}) as Record<string, unknown>,
+			});
+			assert.equal(prepared.ok, true, prepared.errors.join("; "));
+			assert.ok(prepared.writeIntent);
+			return prepared.writeIntent;
+		});
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, writeIntents);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+
+		const fake = fakeRuntimeReviewerExecutionClient();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskRuntimeReviewerExecutionOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				client: fake.client,
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const executionTool = hooks.tool?.[flowdeskRuntimeReviewerExecutionToolName];
+		assert.ok(executionTool);
+		const raw = await executionTool.execute({
+			request: {
+				workflowId: "workflow-runtime-reviewer-execution",
+				attemptId: "attempt-runtime-reviewer-execution",
+				parentSessionId: "parent-runtime-reviewer",
+				allowActualLaneLaunch: true,
+				observedAt: now,
+				consumedReviewerFanoutApproval: consumedReviewerFanoutApprovalRecord(),
+				verdictExpectations: perspectives.map(runtimeReviewerExecutionExpectation),
+			},
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "runtime_reviewer_execution_completed");
+		assert.equal(result.laneCount, 3);
+		assert.equal(result.acceptanceStatus, "verdicts_accepted");
+		assert.equal(result.durableLinkageStatus, "durable_verdicts_accepted");
+		assert.equal(result.linkedVerdictCount, 3);
+		assert.equal(result.linkedLifecycleCount, 3);
+		assert.equal(fake.createCalls.length, 3);
+		assert.deepEqual(fake.createCalls[0], { parentID: "parent-runtime-reviewer" });
+		assert.equal(fake.promptCalls.length, 3);
+		assert.equal((fake.promptCalls[0] as { sessionID?: string }).sessionID, "child-runtime-reviewer-policy_security");
+		assert.equal(fake.messageCalls.length, 3);
+		assert.equal((fake.messageCalls[0] as { sessionID?: string }).sessionID, "child-runtime-reviewer-policy_security");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-runtime-reviewer-execution",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.filter((entry) => entry.evidenceClass === "reviewer_verdict").length,
+			3,
+		);
+		assert.equal(
+			reloaded.entries.filter((entry) => entry.evidenceClass === "lane_lifecycle").length,
+			6,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("runtime reviewer execution bridge is explicit opt-in and blocks before SDK calls without approval", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-runtime-reviewer-execution-blocked-"));
+	try {
+		const fake = fakeRuntimeReviewerExecutionClient();
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(
+			defaultHooks.tool?.[flowdeskRuntimeReviewerExecutionToolName],
+			undefined,
+		);
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskRuntimeReviewerExecutionOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				client: fake.client,
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const executionTool = hooks.tool?.[flowdeskRuntimeReviewerExecutionToolName];
+		assert.ok(executionTool);
+		const raw = await executionTool.execute({
+			request: {
+				workflowId: "workflow-runtime-reviewer-execution",
+				attemptId: "attempt-runtime-reviewer-execution",
+				parentSessionId: "parent-runtime-reviewer",
+				allowActualLaneLaunch: true,
+				verdictExpectations: [runtimeReviewerExecutionExpectation("policy_security")],
+			},
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "blocked_before_runtime_reviewer_execution");
+		assert.equal(result.launchAttempted, false);
+		assert.equal(fake.createCalls.length, 0);
+		assert.equal(fake.promptCalls.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 

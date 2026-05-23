@@ -5,13 +5,17 @@ import {
 	type FlowDeskDispatchAttemptManifestV1,
 	type FlowDeskDefaultManagedDispatchAuthorizationV1,
 	type FlowDeskExternalAuthProviderPolicyResultV1,
+	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskProductionApprovalDecisionV1,
 	type FlowDeskRelease1MinimumPortableCommandName,
 	type FlowDeskRelease1MinimumToolName,
 	type FlowDeskSanitizedAuthCaptureResultV1,
 	type FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
 	type FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
+	type FlowDeskRuntimeLaneLaunchPlanV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
+	type FlowDeskTopTierReviewPerspective,
+	type FlowDeskTopTierReviewVerdictV1,
 	type FlowDeskToolRequestEnvelopeV1,
 	type ManagedDispatchBetaBoundaryInputV1,
 	type SafeNextAction,
@@ -54,6 +58,13 @@ import {
 	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
 	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
 	dispatchManagedDispatchBetaPromptV1,
+	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
+	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
+	materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1,
+	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
+	observeInjectedSdkReviewerVerdictV1,
+	prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1,
+	prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1,
 	runFlowDeskExactModelProviderAcquisitionLiveTestV1,
 } from "./managed-dispatch-adapter.js";
 import {
@@ -82,12 +93,16 @@ export const flowdeskManagedDispatchBetaAdapterOption =
 	"managedDispatchBetaAdapter" as const;
 export const flowdeskExactModelProviderAcquisitionLiveTestOption =
 	"exactModelProviderAcquisitionLiveTest" as const;
+export const flowdeskRuntimeReviewerExecutionOption =
+	"runtimeReviewerExecution" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
 export const flowdeskExactModelProviderAcquisitionLiveTestToolName =
 	"flowdesk_exact_model_provider_acquisition_live_test" as const;
+export const flowdeskRuntimeReviewerExecutionToolName =
+	"flowdesk_runtime_reviewer_execution" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -124,6 +139,27 @@ interface FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 {
 	targetLaunchPlanEvidenceIds: string[];
 	sdkClientAvailable?: boolean;
 	durableEvidenceRootRef?: string;
+}
+
+interface FlowDeskRuntimeReviewerExecutionOptionsV1 {
+	enabled: true;
+	durableStateRoot?: string;
+	client?: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+}
+
+interface FlowDeskRuntimeReviewerExecutionExpectationV1 {
+	launchPlanEvidenceId: string;
+	lanePlanRef: string;
+	bindingRef: string;
+	perspective: string;
+	promptText: string;
+	runningLifecycleEvidenceId: string;
+	completeLifecycleEvidenceId: string;
+	reviewerVerdictEvidenceId: string;
+	outputRef: string;
+	runtimeEchoRef: string;
+	telemetryRef: string;
+	title?: string;
 }
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
@@ -891,6 +927,301 @@ function redactedExactModelProviderAcquisitionToolResult(
 	};
 }
 
+function runtimeReviewerExecutionExpectationFromValue(
+	value: unknown,
+): FlowDeskRuntimeReviewerExecutionExpectationV1 | undefined {
+	if (!isRecord(value)) return undefined;
+	const required = [
+		"launchPlanEvidenceId",
+		"lanePlanRef",
+		"bindingRef",
+		"perspective",
+		"promptText",
+		"runningLifecycleEvidenceId",
+		"completeLifecycleEvidenceId",
+		"reviewerVerdictEvidenceId",
+		"outputRef",
+		"runtimeEchoRef",
+		"telemetryRef",
+	] as const;
+	if (
+		required.some(
+			(key) => typeof value[key] !== "string" || value[key].trim().length === 0,
+		)
+	)
+		return undefined;
+	return {
+		launchPlanEvidenceId: value.launchPlanEvidenceId as string,
+		lanePlanRef: value.lanePlanRef as string,
+		bindingRef: value.bindingRef as string,
+		perspective: value.perspective as string,
+		promptText: value.promptText as string,
+		runningLifecycleEvidenceId: value.runningLifecycleEvidenceId as string,
+		completeLifecycleEvidenceId: value.completeLifecycleEvidenceId as string,
+		reviewerVerdictEvidenceId: value.reviewerVerdictEvidenceId as string,
+		outputRef: value.outputRef as string,
+		runtimeEchoRef: value.runtimeEchoRef as string,
+		telemetryRef: value.telemetryRef as string,
+		...(typeof value.title === "string" && value.title.trim().length > 0
+			? { title: value.title }
+			: {}),
+	};
+}
+
+function runtimeReviewerExecutionExpectationsFromValue(
+	value: unknown,
+): FlowDeskRuntimeReviewerExecutionExpectationV1[] | undefined {
+	if (!Array.isArray(value) || value.length === 0) return undefined;
+	const expectations = value.map(runtimeReviewerExecutionExpectationFromValue);
+	return expectations.every(
+		(expectation): expectation is FlowDeskRuntimeReviewerExecutionExpectationV1 =>
+			expectation !== undefined,
+	)
+		? expectations
+		: undefined;
+}
+
+function runtimeLaunchPlanFromReloadedEvidence(input: {
+	reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+	evidenceId: string;
+}): FlowDeskRuntimeLaneLaunchPlanV1 | undefined {
+	const entry = input.reloadedEvidence.entries.find(
+		(candidate) =>
+			candidate.evidenceClass === "runtime_lane_launch_plan" &&
+			candidate.evidenceId === input.evidenceId,
+	);
+	return entry?.record as unknown as FlowDeskRuntimeLaneLaunchPlanV1 | undefined;
+}
+
+function redactedRuntimeReviewerExecutionBlocked(reason: string) {
+	return {
+		adapterProfile: "runtime_reviewer_execution_bridge",
+		status: "blocked_before_runtime_reviewer_execution",
+		launchAttempted: false,
+		writeAttempted: false,
+		evidenceReloaded: false,
+		redactedBlockReason: reason,
+		safeNextActions: ["/flowdesk-status"],
+		authority: { ...disabledAuthority, toolAuthority: false },
+	};
+}
+
+async function executeFlowDeskRuntimeReviewerExecutionBridge(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	rootDir: string;
+	request: Record<string, unknown>;
+}): Promise<Record<string, unknown>> {
+	const workflowId =
+		typeof input.request.workflowId === "string"
+			? input.request.workflowId
+			: undefined;
+	const attemptId =
+		typeof input.request.attemptId === "string"
+			? input.request.attemptId
+			: undefined;
+	const parentSessionId =
+		typeof input.request.parentSessionId === "string"
+			? input.request.parentSessionId
+			: undefined;
+	const observedAt =
+		typeof input.request.observedAt === "string"
+			? input.request.observedAt
+			: new Date().toISOString();
+	const expectations = runtimeReviewerExecutionExpectationsFromValue(
+		input.request.verdictExpectations,
+	);
+	const consumedApproval = isRecord(input.request.consumedReviewerFanoutApproval)
+		? (input.request
+				.consumedReviewerFanoutApproval as unknown as FlowDeskProductionApprovalSourceV1)
+		: undefined;
+	if (
+		workflowId === undefined ||
+		attemptId === undefined ||
+		parentSessionId === undefined ||
+		expectations === undefined ||
+		input.request.allowActualLaneLaunch !== true ||
+		consumedApproval === undefined
+	)
+		return redactedRuntimeReviewerExecutionBlocked(
+			"Runtime reviewer execution requires workflowId, attemptId, parentSessionId, allowActualLaneLaunch=true, consumedReviewerFanoutApproval, and verdictExpectations.",
+		);
+	const reloadedBefore = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: input.rootDir,
+	});
+	if (!reloadedBefore.ok || reloadedBefore.blocked.length > 0)
+		return redactedRuntimeReviewerExecutionBlocked(
+			"runtime reviewer execution evidence reload failed",
+		);
+	const verdicts: FlowDeskTopTierReviewVerdictV1[] = [];
+	const lanes = [];
+	for (const expectation of expectations) {
+		const launchPlan = runtimeLaunchPlanFromReloadedEvidence({
+			reloadedEvidence: reloadedBefore,
+			evidenceId: expectation.launchPlanEvidenceId,
+		});
+		if (launchPlan === undefined)
+			return redactedRuntimeReviewerExecutionBlocked(
+				"runtime launch plan evidence is missing",
+			);
+		const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client: input.client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: true,
+				parentSessionId,
+				promptText: expectation.promptText,
+				dispatchMethod: "prompt",
+				...(expectation.title === undefined
+					? {}
+					: { title: expectation.title }),
+			},
+		});
+		const runningLifecycle =
+			materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
+				rootDir: input.rootDir,
+				launchPlan,
+				launchResult,
+				evidenceId: expectation.runningLifecycleEvidenceId,
+				observedAt,
+			});
+		if (launchResult.status !== "lane_launch_started")
+			return {
+				adapterProfile: "runtime_reviewer_execution_bridge",
+				status: "runtime_reviewer_execution_incomplete",
+				launchAttempted: true,
+				writeAttempted: runningLifecycle.writeAttempted,
+				evidenceReloaded: runningLifecycle.evidenceReloaded,
+				redactedBlockReason: "runtime lane launch did not start",
+				lanes,
+				safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+				authority: { ...disabledAuthority, toolAuthority: false },
+			};
+		const childSessionId = launchResult.childSessionRef?.startsWith("ses-")
+			? launchResult.childSessionRef.slice("ses-".length)
+			: undefined;
+		if (childSessionId === undefined)
+			return redactedRuntimeReviewerExecutionBlocked(
+				"runtime lane launch did not return a child session ref",
+			);
+		const observation = await observeInjectedSdkReviewerVerdictV1({
+			client: input.client,
+			request: {
+				sessionId: childSessionId,
+				workflowId,
+				lanePlanRef: expectation.lanePlanRef,
+				bindingRef: expectation.bindingRef,
+				perspective:
+					expectation.perspective as FlowDeskTopTierReviewPerspective,
+			},
+		});
+		if (observation.status !== "verdict_observed")
+			return {
+				adapterProfile: "runtime_reviewer_execution_bridge",
+				status: "runtime_reviewer_execution_incomplete",
+				launchAttempted: true,
+				writeAttempted: runningLifecycle.writeAttempted,
+				evidenceReloaded: runningLifecycle.evidenceReloaded,
+				redactedBlockReason: "typed reviewer verdict was not observed",
+				lanes,
+				safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+				authority: { ...disabledAuthority, toolAuthority: false },
+			};
+		const observedVerdict = observation.verdict;
+		if (observedVerdict === undefined)
+			return redactedRuntimeReviewerExecutionBlocked(
+				"typed reviewer verdict observation did not include a verdict record",
+			);
+		const verdictMaterialization =
+			materializeFlowDeskObservedReviewerVerdictEvidenceV1({
+				rootDir: input.rootDir,
+				observation,
+				evidenceId: expectation.reviewerVerdictEvidenceId,
+			});
+		const completeLifecycle =
+			materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1({
+				rootDir: input.rootDir,
+				launchPlan,
+				launchResult,
+				verdictObservation: observation,
+				evidenceId: expectation.completeLifecycleEvidenceId,
+				observedAt,
+				outputRef: expectation.outputRef,
+				runtimeEchoRef: expectation.runtimeEchoRef,
+				telemetryRef: expectation.telemetryRef,
+			});
+		if (
+			verdictMaterialization.status !== "verdict_evidence_recorded" ||
+			completeLifecycle.status !== "lane_lifecycle_recorded"
+		)
+			return {
+				adapterProfile: "runtime_reviewer_execution_bridge",
+				status: "runtime_reviewer_execution_incomplete",
+				launchAttempted: true,
+				writeAttempted: true,
+				evidenceReloaded: false,
+				redactedBlockReason:
+					"runtime reviewer durable evidence materialization failed",
+				lanes,
+				safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+				authority: { ...disabledAuthority, toolAuthority: false },
+			};
+		verdicts.push(observedVerdict);
+		lanes.push({
+			launchPlanEvidenceId: expectation.launchPlanEvidenceId,
+			perspective: expectation.perspective,
+			launchStatus: launchResult.status,
+			runningLifecycle: runningLifecycle.lifecycleState,
+			observationStatus: observation.status,
+			verdictMaterializationStatus: verdictMaterialization.status,
+			completeLifecycle: completeLifecycle.lifecycleState,
+			verdictId: observation.verdictId,
+		});
+	}
+	const acceptance = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
+		workflowId,
+		attemptId,
+		verdicts,
+		consumedApproval,
+	});
+	const reloadedAfter = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: input.rootDir,
+	});
+	const durableLinkage = prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1({
+		workflowId,
+		attemptId,
+		verdicts,
+		consumedApproval,
+		reloadedEvidence: reloadedAfter,
+	});
+	return {
+		adapterProfile: "runtime_reviewer_execution_bridge",
+		status:
+			durableLinkage.status === "durable_verdicts_accepted"
+				? "runtime_reviewer_execution_completed"
+				: "runtime_reviewer_execution_incomplete",
+		launchAttempted: true,
+		writeAttempted: true,
+		evidenceReloaded: reloadedAfter.ok,
+		workflowId,
+		attemptId,
+		laneCount: lanes.length,
+		lanes,
+		acceptanceStatus: acceptance.status,
+		acceptedPerspectives: acceptance.acceptedPerspectives,
+		durableLinkageStatus: durableLinkage.status,
+		linkedVerdictCount: durableLinkage.linkedVerdictIds.length,
+		linkedLifecycleCount: durableLinkage.linkedLifecycleRefs.length,
+		blockedCount: reloadedAfter.blocked.length,
+		safeNextActions: ["/flowdesk-status"],
+		authority: {
+			...durableLinkage.authority,
+			toolAuthority: false,
+		},
+	};
+}
+
 function providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
 	value: unknown,
 ): FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 | undefined {
@@ -1605,6 +1936,11 @@ function isExactModelProviderAcquisitionLiveTestEnabled(options?: PluginOptions)
 	return isRecord(value) && value.enabled === true;
 }
 
+function isRuntimeReviewerExecutionEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskRuntimeReviewerExecutionOption];
+	return isRecord(value) && value.enabled === true;
+}
+
 function defaultManagedDispatchAuthorizationFromOptions(
 	options?: PluginOptions,
 ): FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined {
@@ -1714,6 +2050,72 @@ function exactModelProviderAcquisitionRootFrom(options?: PluginOptions): string 
 	return optionRoot ?? durableStateRootFromOptions(options);
 }
 
+function runtimeReviewerExecutionOptionsFrom(
+	options?: PluginOptions,
+): FlowDeskRuntimeReviewerExecutionOptionsV1 | undefined {
+	const value = options?.[flowdeskRuntimeReviewerExecutionOption];
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	return {
+		enabled: true,
+		...(typeof value.durableStateRoot === "string" &&
+		value.durableStateRoot.trim().length > 0
+			? { durableStateRoot: value.durableStateRoot }
+			: {}),
+		...(isManagedDispatchBetaClient(value.client) ? { client: value.client } : {}),
+	};
+}
+
+function runtimeReviewerExecutionClientFrom(
+	input: unknown,
+	options?: PluginOptions,
+): FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined {
+	const runtimeOptions = runtimeReviewerExecutionOptionsFrom(options);
+	if (runtimeOptions?.client !== undefined) return runtimeOptions.client;
+	return isRecord(input) && isManagedDispatchBetaClient(input.client)
+		? input.client
+		: undefined;
+}
+
+function runtimeReviewerExecutionRootFrom(options?: PluginOptions): string | undefined {
+	const runtimeOptions = runtimeReviewerExecutionOptionsFrom(options);
+	return runtimeOptions?.durableStateRoot ?? durableStateRootFromOptions(options);
+}
+
+export function createFlowDeskRuntimeReviewerExecutionOptInTools(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	rootDir: string,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskRuntimeReviewerExecutionToolName]: tool({
+			description:
+				"FlowDesk explicit runtime reviewer execution bridge; launches persisted runtime lane plans through an injected SDK client and persists typed reviewer verdict/lifecycle evidence without default dispatch promotion.",
+			args: {
+				request: tool.schema
+					.record(tool.schema.string(), tool.schema.unknown())
+					.describe(
+						"Explicit runtime reviewer execution request with workflow/attempt/session refs, consumed reviewer-fanout approval, and one verdict expectation per persisted launch-plan evidence id.",
+					),
+			},
+			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				if (!isRecord(record.request)) {
+					return JSON.stringify(
+						redactedRuntimeReviewerExecutionBlocked(
+							"Runtime reviewer execution requires a request record.",
+						),
+					);
+				}
+				const result = await executeFlowDeskRuntimeReviewerExecutionBridge({
+					client,
+					rootDir,
+					request: record.request,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const localSession =
 		isLocalNonDispatchAdapterEnabled(options) ||
@@ -1740,6 +2142,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const exactModelProviderAcquisitionRoot = exactModelProviderAcquisitionRootFrom(options);
 	const exactModelProviderAcquisitionCacheMaterialization =
 		exactModelProviderAcquisitionCacheMaterializationFromOptions(options);
+	const runtimeReviewerExecutionClient = isRuntimeReviewerExecutionEnabled(options)
+		? runtimeReviewerExecutionClientFrom(input, options)
+		: undefined;
+	const runtimeReviewerExecutionRoot = runtimeReviewerExecutionRootFrom(options);
 	const tools: Record<string, FlowDeskOpenCodeTool> = {
 		[flowdeskPreSpikeDoctorToolName]: tool({
 			description:
@@ -1829,6 +2235,17 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				exactModelProviderAcquisitionClient,
 				exactModelProviderAcquisitionRoot,
 				exactModelProviderAcquisitionCacheMaterialization,
+			),
+		);
+	if (
+		runtimeReviewerExecutionClient !== undefined &&
+		runtimeReviewerExecutionRoot !== undefined
+	)
+		Object.assign(
+			tools,
+			createFlowDeskRuntimeReviewerExecutionOptInTools(
+				runtimeReviewerExecutionClient,
+				runtimeReviewerExecutionRoot,
 			),
 		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
