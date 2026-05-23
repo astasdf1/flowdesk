@@ -50,6 +50,7 @@ import type {
 import {
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
 	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
+	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
 	dispatchManagedDispatchBetaPromptV1,
 	runFlowDeskExactModelProviderAcquisitionLiveTestV1,
 } from "./managed-dispatch-adapter.js";
@@ -723,6 +724,8 @@ function redactedExactModelProviderAcquisitionToolResult(
 		available: result.result?.available,
 		highestTierEligible: result.result?.highest_tier_eligible,
 		sanitizedProviderResultRef: result.result?.sanitized_provider_result_ref,
+		availabilityRef: result.result?.availability_ref,
+		blockedLabels: result.result?.blocked_labels,
 	};
 }
 
@@ -1153,12 +1156,34 @@ function exactModelProviderAcquisitionClientFrom(
 		return option.client;
 	if (isRecord(input) && isExactModelProviderAcquisitionClient(input.exactModelProviderAcquisitionClient))
 		return input.exactModelProviderAcquisitionClient;
-	return isRecord(input)
-		? createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1({
-				client: input.client,
-				...(typeof input.directory === "string" ? { directory: input.directory } : {}),
-			})
+	if (!isRecord(input)) return undefined;
+	const promptBackedCheck = isRecord(option) && isRecord(option.promptBackedCheck)
+		? option.promptBackedCheck
 		: undefined;
+	const commonOptions = {
+		client: input.client,
+		...(typeof input.directory === "string" ? { directory: input.directory } : {}),
+		...(typeof input.workspace === "string" ? { workspace: input.workspace } : {}),
+	};
+	if (promptBackedCheck?.enabled === true) {
+		const allowedProviderQualifiedModelIds = Array.isArray(promptBackedCheck.allowedProviderQualifiedModelIds)
+			? promptBackedCheck.allowedProviderQualifiedModelIds.filter(
+					(value): value is string => typeof value === "string",
+				)
+			: [];
+		return createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1({
+			...commonOptions,
+			allowProviderCall: promptBackedCheck.allowProviderCall === true,
+			allowedProviderQualifiedModelIds,
+			...(typeof promptBackedCheck.sessionId === "string"
+				? { sessionId: promptBackedCheck.sessionId }
+				: {}),
+			...(typeof promptBackedCheck.agent === "string"
+				? { agent: promptBackedCheck.agent }
+				: {}),
+		});
+	}
+	return createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(commonOptions);
 }
 
 function exactModelProviderAcquisitionRootFrom(options?: PluginOptions): string | undefined {

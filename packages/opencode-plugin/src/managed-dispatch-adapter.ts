@@ -169,6 +169,13 @@ export interface FlowDeskOpenCodeMetadataProviderAcquisitionClientOptionsV1 {
 	workspace?: string;
 }
 
+export interface FlowDeskOpenCodePromptBackedProviderAcquisitionClientOptionsV1 extends FlowDeskOpenCodeMetadataProviderAcquisitionClientOptionsV1 {
+	allowProviderCall: boolean;
+	allowedProviderQualifiedModelIds: readonly string[];
+	sessionId?: string;
+	agent?: string;
+}
+
 interface FlowDeskOpenCodeMetadataProviderSurfaceV1 {
 	config?: {
 		providers?(parameters?: { directory?: string; workspace?: string }): unknown;
@@ -176,6 +183,10 @@ interface FlowDeskOpenCodeMetadataProviderSurfaceV1 {
 	provider?: {
 		list?(parameters?: { directory?: string; workspace?: string }): unknown;
 		auth?(parameters?: { directory?: string; workspace?: string }): unknown;
+	};
+	session?: {
+		prompt?(options: FlowDeskManagedDispatchBetaPromptOptionsV1): unknown;
+		promptAsync?(options: FlowDeskManagedDispatchBetaPromptOptionsV1): unknown;
 	};
 }
 
@@ -690,6 +701,68 @@ function unavailableMetadataResult(
 	};
 }
 
+const flowdeskExactModelProviderAcquisitionSentinelPromptV1 =
+	"FlowDesk exact-model provider acquisition sentinel. Return a short acknowledgement only.";
+
+function providerAcquisitionPromptOptions(input: {
+	request: FlowDeskExactModelProviderAcquisitionClientRequestV1;
+	model: { providerID: string; modelID: string };
+	sessionId?: string;
+	agent?: string;
+	directory?: string;
+}): FlowDeskManagedDispatchBetaPromptOptionsV1 {
+	const sessionId = input.sessionId?.trim() || input.request.live_test_run_ref;
+	return {
+		path: { id: sessionId },
+		...(input.directory === undefined
+			? {}
+			: { query: { directory: input.directory } }),
+		body: {
+			model: input.model,
+			agent: input.agent?.trim() || "general",
+			parts: [{ type: "text", text: flowdeskExactModelProviderAcquisitionSentinelPromptV1 }],
+		},
+	};
+}
+
+function providerAcquisitionDuplicateLabels(input: {
+	request: FlowDeskExactModelProviderAcquisitionLiveTestRequestV1;
+	rootDir: string;
+}): { ok: true } | { ok: false; reason: string } {
+	const reloaded = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.request.workflowId,
+		rootDir: input.rootDir,
+	});
+	if (!reloaded.ok || reloaded.blocked.length > 0) {
+		return {
+			ok: false,
+			reason:
+				"Exact-model provider acquisition live-test requires reloadable durable evidence before any provider call.",
+		};
+	}
+	for (const entry of reloaded.entries) {
+		if (
+			entry.evidenceClass !==
+			"exact_model_availability_cache_provider_acquisition_result"
+		) {
+			continue;
+		}
+		const record =
+			entry.record as unknown as FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1;
+		if (
+			record.live_test_run_ref === input.request.liveTestRunRef ||
+			record.idempotency_ref === input.request.idempotencyRef
+		) {
+			return {
+				ok: false,
+				reason:
+					"Exact-model provider acquisition live-test duplicate idempotency evidence blocks before any provider call.",
+			};
+		}
+	}
+	return { ok: true };
+}
+
 export function createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(
 	options: FlowDeskOpenCodeMetadataProviderAcquisitionClientOptionsV1,
 ): FlowDeskExactModelProviderAcquisitionClientV1 | undefined {
@@ -809,6 +882,87 @@ export function createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(
 	};
 }
 
+export function createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1(
+	options: FlowDeskOpenCodePromptBackedProviderAcquisitionClientOptionsV1,
+): FlowDeskExactModelProviderAcquisitionClientV1 | undefined {
+	const client = asRecord(options.client) as
+		| FlowDeskOpenCodeMetadataProviderSurfaceV1
+		| undefined;
+	const metadataClient = createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(options);
+	if (client === undefined || metadataClient === undefined) return undefined;
+	return {
+		async checkExactModelAvailability(request) {
+			const metadataResult = await metadataClient.checkExactModelAvailability(request);
+			if (metadataResult.outcome !== "available") {
+				return { ...metadataResult, provider_call_confirmed: false };
+			}
+
+			if (options.allowProviderCall !== true) {
+				return unavailableMetadataResult([
+					"opencode_sdk_provider_call_not_allowed",
+				]);
+			}
+			if (!options.allowedProviderQualifiedModelIds.includes(request.provider_qualified_model_id)) {
+				return unavailableMetadataResult([
+					"opencode_sdk_provider_model_not_allowed",
+				]);
+			}
+
+			const parsedModel = parseProviderQualifiedModelId(
+				request.provider_qualified_model_id,
+			);
+			const runtimeModel = parsedModel === undefined || parsedModel.providerID !== request.provider_family
+				? undefined
+				: opencodeRuntimeModelForFlowDeskModel(parsedModel);
+			if (runtimeModel === undefined) {
+				return unavailableMetadataResult([
+					"opencode_provider_mapping_missing",
+				]);
+			}
+
+			const prompt = typeof client.session?.promptAsync === "function"
+				? client.session.promptAsync
+				: client.session?.prompt;
+			if (prompt === undefined) {
+				return unavailableMetadataResult([
+					"opencode_sdk_surface_missing",
+				]);
+			}
+
+			const promptOptions = providerAcquisitionPromptOptions({
+				request,
+				model: runtimeModel,
+				...(typeof options.sessionId === "string" ? { sessionId: options.sessionId } : {}),
+				...(typeof options.agent === "string" ? { agent: options.agent } : {}),
+				...(typeof options.directory === "string" ? { directory: options.directory } : {}),
+			});
+			try {
+				await prompt.call(client.session, promptOptions);
+			} catch {
+				return {
+					outcome: "blocked",
+					blocked_labels: ["opencode_sdk_provider_call_failed"],
+					provider_call_confirmed: true,
+				};
+			}
+
+			return {
+				outcome: "available",
+				sanitized_provider_result_ref: refFrom(
+					"provider-result",
+					`${runtimeModel.providerID}-${runtimeModel.modelID}-sdk-sentinel`,
+				),
+				availability_ref: refFrom(
+					"availability",
+					`${runtimeModel.providerID}-${runtimeModel.modelID}-sdk-sentinel`,
+				),
+				highest_tier_eligible: metadataResult.highest_tier_eligible === true,
+				provider_call_confirmed: true,
+			};
+		},
+	};
+}
+
 export async function runFlowDeskExactModelProviderAcquisitionLiveTestV1(input: {
 	client: FlowDeskExactModelProviderAcquisitionClientV1;
 	request: FlowDeskExactModelProviderAcquisitionLiveTestRequestV1;
@@ -823,6 +977,13 @@ export async function runFlowDeskExactModelProviderAcquisitionLiveTestV1(input: 
 	if (!planValidation.ok || input.request.acquisitionPlan.state !== "acquisition_planned") {
 		return blockedExactModelProviderAcquisition(
 			"Exact-model provider acquisition live-test requires valid acquisition_planned evidence before any provider call.",
+			input.request,
+		);
+	}
+	const duplicateCheck = providerAcquisitionDuplicateLabels(input);
+	if (!duplicateCheck.ok) {
+		return blockedExactModelProviderAcquisition(
+			duplicateCheck.reason,
 			input.request,
 		);
 	}

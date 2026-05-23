@@ -230,6 +230,79 @@ function exactModelProviderAcquisitionToolRequest(overrides: Record<string, unkn
 	};
 }
 
+function promptBackedAcquisitionOpenCodeClient(input: {
+	metadataAvailable?: boolean;
+	promptThrows?: boolean;
+	promptResponse?: unknown;
+	promptAsync?: boolean;
+} = {}) {
+	const metadataCalls: string[] = [];
+	const promptCalls: unknown[] = [];
+	const prompt = (options: unknown) => {
+		promptCalls.push(options);
+		if (input.promptThrows) throw new Error("provider response token secret raw failure");
+		return input.promptResponse ?? { data: { text: "RAW_MODEL_SECRET_RESPONSE" } };
+	};
+	const client = {
+		config: {
+			providers(parameters?: { directory?: string }) {
+				metadataCalls.push(`config.providers:${parameters?.directory ?? "none"}`);
+				return {
+					data: {
+						providers: input.metadataAvailable === false
+							? []
+							: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }],
+					},
+				};
+			},
+		},
+		provider: {
+			list(parameters?: { directory?: string }) {
+				metadataCalls.push(`provider.list:${parameters?.directory ?? "none"}`);
+				return {
+					data: {
+						all: input.metadataAvailable === false
+							? []
+							: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }],
+						connected: input.metadataAvailable === false ? [] : ["anthropic"],
+					},
+				};
+			},
+			auth(parameters?: { directory?: string }) {
+				metadataCalls.push(`provider.auth:${parameters?.directory ?? "none"}`);
+				return { data: input.metadataAvailable === false ? {} : { anthropic: [{ type: "oauth" }] } };
+			},
+		},
+		session: input.promptAsync === false
+			? { prompt }
+			: { promptAsync: prompt, prompt() { throw new Error("prompt fallback should not run"); } },
+	};
+	return { client, metadataCalls, promptCalls };
+}
+
+async function executeProviderAcquisitionTool(input: {
+	root: string;
+	client: unknown;
+	promptBackedCheck: Record<string, unknown>;
+	request?: Record<string, unknown>;
+}) {
+	const hooks = await flowdeskOpenCodeServerPlugin.server({ client: input.client, directory: "/flowdesk-project" } as never, {
+		[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+			enabled: true,
+			durableStateRoot: input.root,
+			promptBackedCheck: input.promptBackedCheck,
+		},
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+	assert.ok(liveTool);
+	const raw = await liveTool.execute({
+		request: exactModelProviderAcquisitionToolRequest(input.request),
+	}, undefined as never);
+	return JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+}
+
 function writeSessionEvidence(root: string, workflowId: string, records: Record<string, unknown>[]) {
 	const intents = records.map((record, index) => {
 		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
@@ -562,6 +635,252 @@ test("exact-model provider acquisition metadata client fails closed for missing 
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
+	}
+});
+
+test("prompt-backed provider acquisition blocks unallowed exact model before prompt", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-allowlist-"));
+	const { client, metadataCalls, promptCalls } = promptBackedAcquisitionOpenCodeClient();
+	try {
+		const result = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				allowedProviderQualifiedModelIds: ["claude/other-model"],
+			},
+			request: {
+				workflowId: "workflow-provider-sdk-allowlist",
+				evidenceId: "provider-sdk-allowlist-evidence",
+				resultId: "provider-sdk-allowlist-result",
+			},
+		});
+		assert.equal(result.status, "provider_acquisition_blocked");
+		assert.equal(result.providerCallAttempted, false);
+		assert.deepEqual(result.blockedLabels, ["opencode_sdk_provider_model_not_allowed"]);
+		assert.deepEqual(metadataCalls, [
+			"config.providers:/flowdesk-project",
+			"provider.list:/flowdesk-project",
+			"provider.auth:/flowdesk-project",
+		]);
+		assert.equal(promptCalls.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("prompt-backed provider acquisition requires explicit provider-call allow flag", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-allow-flag-"));
+	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient();
+	try {
+		const result = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: false,
+				allowedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+			},
+			request: {
+				workflowId: "workflow-provider-sdk-allow-flag",
+				evidenceId: "provider-sdk-allow-flag-evidence",
+				resultId: "provider-sdk-allow-flag-result",
+			},
+		});
+		assert.equal(result.status, "provider_acquisition_blocked");
+		assert.equal(result.providerCallAttempted, false);
+		assert.deepEqual(result.blockedLabels, ["opencode_sdk_provider_call_not_allowed"]);
+		assert.equal(promptCalls.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("prompt-backed provider acquisition blocks metadata preflight failure before prompt", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-preflight-"));
+	const { client, metadataCalls, promptCalls } = promptBackedAcquisitionOpenCodeClient({ metadataAvailable: false });
+	try {
+		const result = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				allowedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+			},
+			request: {
+				workflowId: "workflow-provider-sdk-preflight",
+				evidenceId: "provider-sdk-preflight-evidence",
+				resultId: "provider-sdk-preflight-result",
+			},
+		});
+		assert.equal(result.status, "provider_acquisition_blocked");
+		assert.equal(result.providerCallAttempted, false);
+		assert.deepEqual(result.blockedLabels, ["opencode_provider_auth_missing"]);
+		assert.equal(metadataCalls.length, 3);
+		assert.equal(promptCalls.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("prompt-backed provider acquisition calls prompt once with exact runtime model and sanitizes success", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-success-"));
+	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient();
+	try {
+		const result = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				allowedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+				sessionId: "provider-sdk-session-1",
+				agent: "reviewer",
+			},
+			request: {
+				workflowId: "workflow-provider-sdk-success",
+				evidenceId: "provider-sdk-success-evidence",
+				resultId: "provider-sdk-success-result",
+			},
+		});
+		assert.equal(result.status, "provider_acquisition_recorded");
+		assert.equal(result.providerCallAttempted, true);
+		assert.equal(result.sanitizedProviderResultRef, "provider-result-anthropic-claude-opus-4-5-sdk-sentinel");
+		assert.equal(result.availabilityRef, "availability-anthropic-claude-opus-4-5-sdk-sentinel");
+		assert.equal(JSON.stringify(result).includes("RAW_MODEL_SECRET_RESPONSE"), false);
+		assert.equal(promptCalls.length, 1);
+		assert.deepEqual(promptCalls[0], {
+			path: { id: "provider-sdk-session-1" },
+			query: { directory: "/flowdesk-project" },
+			body: {
+				model: { providerID: "anthropic", modelID: "claude-opus-4-5" },
+				agent: "reviewer",
+				parts: [{ type: "text", text: "FlowDesk exact-model provider acquisition sentinel. Return a short acknowledgement only." }],
+			},
+		});
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-provider-sdk-success", rootDir: root });
+		const record = reloaded.entries.find((entry) => entry.evidenceId === "provider-sdk-success-evidence")?.record as Record<string, unknown> | undefined;
+		assert.ok(record);
+		assert.equal(record.providerCall, true);
+		assert.equal(record.sanitized_provider_result_ref, "provider-result-anthropic-claude-opus-4-5-sdk-sentinel");
+		assert.equal(JSON.stringify(record).includes("RAW_MODEL_SECRET_RESPONSE"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("prompt-backed provider acquisition blocks duplicate durable refs before second prompt", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-duplicate-"));
+	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient();
+	try {
+		const promptBackedCheck = {
+			enabled: true,
+			allowProviderCall: true,
+			allowedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+		};
+		const first = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck,
+			request: {
+				workflowId: "workflow-provider-sdk-duplicate",
+				evidenceId: "provider-sdk-duplicate-first-evidence",
+				resultId: "provider-sdk-duplicate-first-result",
+				liveTestRunRef: "live-test-run-sdk-duplicate",
+				idempotencyRef: "idempotency-sdk-duplicate",
+			},
+		});
+		assert.equal(first.status, "provider_acquisition_recorded");
+		assert.equal(first.providerCallAttempted, true);
+		assert.equal(promptCalls.length, 1);
+
+		const second = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck,
+			request: {
+				workflowId: "workflow-provider-sdk-duplicate",
+				evidenceId: "provider-sdk-duplicate-second-evidence",
+				resultId: "provider-sdk-duplicate-second-result",
+				liveTestRunRef: "live-test-run-sdk-duplicate",
+				idempotencyRef: "idempotency-sdk-duplicate-second",
+			},
+		});
+		assert.equal(second.status, "blocked_before_provider_acquisition");
+		assert.equal(second.providerCallAttempted, false);
+		assert.equal(second.writeAttempted, false);
+		assert.match(
+			String(second.redactedBlockReason),
+			/duplicate idempotency evidence blocks before any provider call/,
+		);
+		assert.equal(promptCalls.length, 1);
+
+		const third = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck,
+			request: {
+				workflowId: "workflow-provider-sdk-duplicate",
+				evidenceId: "provider-sdk-duplicate-third-evidence",
+				resultId: "provider-sdk-duplicate-third-result",
+				liveTestRunRef: "live-test-run-sdk-duplicate-third",
+				idempotencyRef: "idempotency-sdk-duplicate",
+			},
+		});
+		assert.equal(third.status, "blocked_before_provider_acquisition");
+		assert.equal(third.providerCallAttempted, false);
+		assert.equal(third.writeAttempted, false);
+		assert.match(
+			String(third.redactedBlockReason),
+			/duplicate idempotency evidence blocks before any provider call/,
+		);
+		assert.equal(promptCalls.length, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-provider-sdk-duplicate", rootDir: root });
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result",
+			).length,
+			1,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("prompt-backed provider acquisition records sanitized blocked evidence on prompt throw", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-throw-"));
+	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient({ promptThrows: true });
+	try {
+		const result = await executeProviderAcquisitionTool({
+			root,
+			client,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				allowedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+			},
+			request: {
+				workflowId: "workflow-provider-sdk-throw",
+				evidenceId: "provider-sdk-throw-evidence",
+				resultId: "provider-sdk-throw-result",
+			},
+		});
+		assert.equal(result.status, "provider_acquisition_blocked");
+		assert.equal(result.providerCallAttempted, true);
+		assert.deepEqual(result.blockedLabels, ["opencode_sdk_provider_call_failed"]);
+		assert.equal(JSON.stringify(result).includes("provider response token secret raw failure"), false);
+		assert.equal(promptCalls.length, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-provider-sdk-throw", rootDir: root });
+		const record = reloaded.entries.find((entry) => entry.evidenceId === "provider-sdk-throw-evidence")?.record as Record<string, unknown> | undefined;
+		assert.ok(record);
+		assert.equal(record.state, "blocked");
+		assert.equal(record.providerCall, true);
+		assert.ok((record.blocked_labels as unknown[]).includes("opencode_sdk_provider_call_failed"));
+		assert.equal(JSON.stringify(record).includes("provider response token secret raw failure"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 
