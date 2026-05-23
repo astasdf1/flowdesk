@@ -375,14 +375,31 @@ function geminiQuotaBucket(quota: Record<string, unknown>, observedAt: number): 
   const quotaBuckets = Array.isArray(quota.buckets) ? quota.buckets.filter(isRecord) : [];
   let selected: ProviderBucket | undefined;
   for (const quotaBucket of quotaBuckets) {
+    const tokenType = stringField(quotaBucket, "tokenType");
+    if (tokenType && tokenType !== "REQUESTS") continue;
+
     const modelId = stringField(quotaBucket, "modelId").toLowerCase();
-    const resetBucket = modelId.includes("flash-lite") || modelId.includes("flash_lite") ? "gemini-flash-lite-daily" : modelId.includes("flash") ? "gemini-flash-daily" : modelId.includes("pro") ? "gemini-pro-daily" : "";
+    let resetBucket = "";
+    if (modelId.includes("flash-lite") || modelId.includes("flash_lite")) {
+      resetBucket = "gemini-flash-lite-daily";
+    } else if (modelId.includes("flash")) {
+      resetBucket = "gemini-flash-daily";
+    } else if (modelId.includes("pro")) {
+      const resetTimeStr = stringField(quotaBucket, "resetTime");
+      const resetMs = resetTimeStr ? Date.parse(resetTimeStr) : NaN;
+      if (Number.isFinite(resetMs) && (resetMs - observedAt) > 24 * 60 * 60 * 1000) {
+        resetBucket = "gemini-pro-weekly";
+      } else {
+        resetBucket = "gemini-pro-5h";
+      }
+    }
+
     if (!resetBucket) continue;
-    const remainingPercent = calculateRemainingUsagePercent({ remainingFraction: numberField(quotaBucket, "remainingFraction"), remainingAmount: stringField(quotaBucket, "remainingAmount"), resetAt: stringField(quotaBucket, "resetTime"), observedAt, expiredResetBehavior: "stale" });
+    const remainingPercent = calculateRemainingUsagePercent({ remainingFraction: numberField(quotaBucket, "remainingFraction"), remainingAmount: stringField(quotaBucket, "remainingAmount"), resetAt: stringField(quotaBucket, "resetTime"), observedAt, expiredResetBehavior: "reset_to_full" });
     const candidate = bucket(resetBucket, "%", remainingPercent.remaining, remainingPercent.reset_at, remainingPercent.uncertainty);
     if (selected === undefined || selected.remaining === null || (candidate.remaining !== null && candidate.remaining < selected.remaining)) selected = candidate;
   }
-  return selected ?? bucket("gemini-unknown-daily", "%", null, undefined, "unknown");
+  return selected ?? bucket("gemini-unknown-5h", "%", null, undefined, "unknown");
 }
 
 function firstDispatchableBucket(buckets: ProviderBucket[]): ProviderBucket | undefined {

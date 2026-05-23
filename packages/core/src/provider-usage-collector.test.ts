@@ -104,7 +104,7 @@ test("Codex/OpenAI collector produces provider-native usage authority evidence",
   assert.equal(result.usageSnapshot.reset_bucket, "openai-gpt-5h");
 });
 
-test("Gemini Code Assist collector produces provider-native usage authority evidence", async () => {
+test("Gemini Code Assist collector classifies pro reset within 24h as 5-hour bucket", async () => {
   const filesystem = memoryFilesystem({
     "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })
   });
@@ -113,13 +113,67 @@ test("Gemini Code Assist collector produces provider-native usage authority evid
     if (url.endsWith(":loadCodeAssist")) return response({ cloudaicompanionProject: "project-123" });
     assert.ok(url.endsWith(":retrieveUserQuota"));
     assert.match(init.body ?? "", /project-123/);
-    return response({ buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0.5, resetTime: "2026-05-18T00:00:00.000Z" }] });
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-17T02:49:00.000Z" }] });
   };
 
   const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
 
   assertCollectorEvidenceValid(result);
-  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-daily");
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+});
+
+test("Gemini Code Assist collector classifies pro reset beyond 24h as weekly bucket", async () => {
+  const filesystem = memoryFilesystem({
+    "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })
+  });
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url) => {
+    if (url === "https://oauth2.googleapis.com/token") return response({ access_token: "access-token-123" });
+    if (url.endsWith(":loadCodeAssist")) return response({ cloudaicompanionProject: "project-123" });
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-23T00:00:00.000Z" }] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
+
+  assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-weekly");
+});
+
+test("Gemini Code Assist collector selects strictest bucket across pro 5h and pro weekly entries", async () => {
+  const filesystem = memoryFilesystem({
+    "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })
+  });
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url) => {
+    if (url === "https://oauth2.googleapis.com/token") return response({ access_token: "access-token-123" });
+    if (url.endsWith(":loadCodeAssist")) return response({ cloudaicompanionProject: "project-123" });
+    return response({ buckets: [
+      { modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.8, resetTime: "2026-05-17T02:49:00.000Z" },
+      { modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.2, resetTime: "2026-05-23T00:00:00.000Z" }
+    ] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
+
+  assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-weekly");
+});
+
+test("Gemini Code Assist collector skips non-REQUESTS token type buckets", async () => {
+  const filesystem = memoryFilesystem({
+    "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })
+  });
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url) => {
+    if (url === "https://oauth2.googleapis.com/token") return response({ access_token: "access-token-123" });
+    if (url.endsWith(":loadCodeAssist")) return response({ cloudaicompanionProject: "project-123" });
+    return response({ buckets: [
+      { modelId: "gemini-2.5-pro", tokenType: "TOKENS", remainingFraction: 0.05, resetTime: "2026-05-17T02:49:00.000Z" },
+      { modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-17T02:49:00.000Z" }
+    ] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
+
+  assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
 });
 
 test("provider usage collector fails closed when acquisition or auth evidence is unavailable", async () => {
