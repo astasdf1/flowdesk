@@ -93,6 +93,42 @@ export interface FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1 extends Va
 	runtimeExecution: false;
 }
 
+export interface FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1 extends ValidationResult {
+	schema_version: "flowdesk.exact_model_availability_cache_provider_acquisition_result.v1";
+	result_id: string;
+	state: "availability_acquired" | "blocked";
+	blocked_labels: string[];
+	acquisition_plan_ok: boolean;
+	acquisition_plan_state: "acquisition_not_needed" | "acquisition_planned" | "blocked" | "invalid";
+	local_date: string;
+	active_profile_ref: string;
+	opencode_version_ref: string;
+	flowdesk_package_version_ref: string;
+	registry_hash: string;
+	policy_pack_hash: string;
+	auth_account_boundary_ref: string;
+	provider_family: "claude" | "openai" | "gemini" | "opencode_go" | "z_ai";
+	provider_identity_ref: string;
+	provider_qualified_model_id: string;
+	model_family: string;
+	availability_ref: string;
+	pre_call_audit_ref: string;
+	idempotency_ref: string;
+	live_test_run_ref: string;
+	redaction_proof_ref: string;
+	sanitized_provider_result_ref?: string;
+	observed_at: string;
+	available: boolean;
+	highest_tier_eligible: boolean;
+	acquisition_attempted: boolean;
+	discovery_attempted: boolean;
+	refresh_attempted: false;
+	dispatch_authority_enabled: false;
+	providerCall: boolean;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskReviewerAssignmentPlanV1 extends ValidationResult {
 	schema_version: "flowdesk.reviewer_assignment_plan.v1";
 	cache_id: string;
@@ -188,6 +224,12 @@ function validateLocalDate(value: unknown, label: string): ValidationResult {
 	return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
 		? valid()
 		: invalid(`${label} must be YYYY-MM-DD`);
+}
+
+function validateTimestamp(value: unknown, label: string): ValidationResult {
+	return typeof value === "string" && Number.isFinite(Date.parse(value))
+		? valid()
+		: invalid(`${label} must be a parseable timestamp`);
 }
 
 function unique(values: string[]): string[] {
@@ -604,6 +646,238 @@ export function validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(val
 	)
 		errors.push("availability cache acquisition plan cannot attempt discovery, refresh, acquisition, launch, provider call, or runtime authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "exact_model_availability_cache_acquisition_plan").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(input: {
+	acquisitionPlan: FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1;
+	resultId: string;
+	localDate: string;
+	activeProfileRef: string;
+	opencodeVersionRef: string;
+	flowdeskPackageVersionRef: string;
+	registryHash: string;
+	policyPackHash: string;
+	authAccountBoundaryRef: string;
+	providerFamily: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1["provider_family"];
+	providerIdentityRef: string;
+	providerQualifiedModelId: string;
+	modelFamily: string;
+	availabilityRef: string;
+	preCallAuditRef: string;
+	idempotencyRef: string;
+	liveTestRunRef: string;
+	redactionProofRef: string;
+	sanitizedProviderResultRef?: string;
+	observedAt: string;
+	outcome: "available" | "unavailable" | "blocked";
+	highestTierEligible?: boolean;
+	blockedLabels?: string[];
+	providerCall?: boolean;
+}): FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1 {
+	const planResult = validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(input.acquisitionPlan);
+	const inputErrors: string[] = [];
+	inputErrors.push(...validateOpaqueId(input.resultId, "result_id").errors);
+	inputErrors.push(...validateLocalDate(input.localDate, "local_date").errors);
+	inputErrors.push(...validateOpaqueRef(input.activeProfileRef, "active_profile_ref").errors);
+	inputErrors.push(...validateOpaqueRef(input.opencodeVersionRef, "opencode_version_ref").errors);
+	inputErrors.push(...validateOpaqueRef(input.flowdeskPackageVersionRef, "flowdesk_package_version_ref").errors);
+	inputErrors.push(...validateHash(input.registryHash, "registry_hash").errors);
+	inputErrors.push(...validateHash(input.policyPackHash, "policy_pack_hash").errors);
+	inputErrors.push(...validateOpaqueRef(input.authAccountBoundaryRef, "auth_account_boundary_ref").errors);
+	inputErrors.push(...validateProviderFamily(input.providerFamily).errors);
+	if (!(FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES as readonly string[]).includes(input.providerFamily))
+		inputErrors.push("provider_family is not exact-model eligible");
+	inputErrors.push(...validateOpaqueRef(input.providerIdentityRef, "provider_identity_ref").errors);
+	inputErrors.push(...validateConcreteProviderQualifiedModelId(input.providerQualifiedModelId).errors);
+	if (input.providerQualifiedModelId.split("/")[0] !== input.providerFamily)
+		inputErrors.push("provider_family must match provider_qualified_model_id");
+	inputErrors.push(...validateOpaqueId(input.modelFamily, "model_family").errors);
+	inputErrors.push(...validateOpaqueRef(input.availabilityRef, "availability_ref").errors);
+	inputErrors.push(...validateOpaqueRef(input.preCallAuditRef, "pre_call_audit_ref").errors);
+	inputErrors.push(...validateOpaqueRef(input.idempotencyRef, "idempotency_ref").errors);
+	inputErrors.push(...validateOpaqueRef(input.liveTestRunRef, "live_test_run_ref").errors);
+	inputErrors.push(...validateOpaqueRef(input.redactionProofRef, "redaction_proof_ref").errors);
+	if (input.sanitizedProviderResultRef !== undefined)
+		inputErrors.push(...validateOpaqueRef(input.sanitizedProviderResultRef, "sanitized_provider_result_ref").errors);
+	inputErrors.push(...validateTimestamp(input.observedAt, "observed_at").errors);
+	if (input.blockedLabels !== undefined)
+		for (const [index, label] of input.blockedLabels.entries())
+			inputErrors.push(...validateOpaqueId(label, `blocked_labels[${index}]`).errors);
+
+	const blockedLabels = [...(input.blockedLabels ?? [])];
+	let acquisitionPlanState: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1["acquisition_plan_state"] = "invalid";
+	if (!planResult.ok) blockedLabels.push("acquisition_plan_invalid");
+	else {
+		acquisitionPlanState = input.acquisitionPlan.state;
+		if (input.acquisitionPlan.state !== "acquisition_planned") blockedLabels.push("acquisition_plan_not_planned");
+	}
+	if (inputErrors.length > 0) blockedLabels.push("provider_acquisition_context_invalid");
+	if (input.outcome === "blocked" && blockedLabels.length === 0) blockedLabels.push("provider_acquisition_blocked");
+
+	const planAllowsProviderCall = planResult.ok && input.acquisitionPlan.state === "acquisition_planned" && inputErrors.length === 0;
+	const providerCall = planAllowsProviderCall && input.outcome !== "blocked" ? true : input.providerCall === true && planAllowsProviderCall;
+	const state = planAllowsProviderCall && input.outcome !== "blocked" ? "availability_acquired" : "blocked";
+	const available = state === "availability_acquired" && input.outcome === "available";
+
+	const record: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1 = {
+		schema_version: "flowdesk.exact_model_availability_cache_provider_acquisition_result.v1",
+		ok: planResult.ok && inputErrors.length === 0 && blockedLabels.length === 0,
+		errors: [...planResult.errors.map((error) => `acquisition_plan: ${error}`), ...inputErrors],
+		result_id: input.resultId,
+		state,
+		blocked_labels: unique(blockedLabels),
+		acquisition_plan_ok: planResult.ok,
+		acquisition_plan_state: acquisitionPlanState,
+		local_date: input.localDate,
+		active_profile_ref: input.activeProfileRef,
+		opencode_version_ref: input.opencodeVersionRef,
+		flowdesk_package_version_ref: input.flowdeskPackageVersionRef,
+		registry_hash: input.registryHash,
+		policy_pack_hash: input.policyPackHash,
+		auth_account_boundary_ref: input.authAccountBoundaryRef,
+		provider_family: input.providerFamily,
+		provider_identity_ref: input.providerIdentityRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		model_family: input.modelFamily,
+		availability_ref: input.availabilityRef,
+		pre_call_audit_ref: input.preCallAuditRef,
+		idempotency_ref: input.idempotencyRef,
+		live_test_run_ref: input.liveTestRunRef,
+		redaction_proof_ref: input.redactionProofRef,
+		sanitized_provider_result_ref: input.sanitizedProviderResultRef,
+		observed_at: input.observedAt,
+		available,
+		highest_tier_eligible: available && input.highestTierEligible === true,
+		acquisition_attempted: providerCall,
+		discovery_attempted: providerCall,
+		refresh_attempted: false,
+		dispatch_authority_enabled: false,
+		providerCall,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+	const validation = validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(record);
+	return validation.ok ? record : { ...record, ok: false, errors: unique([...record.errors, ...validation.errors]) };
+}
+
+export function validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("exact model availability cache provider acquisition result must be an object");
+	const record = value as Partial<FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"ok",
+		"errors",
+		"result_id",
+		"state",
+		"blocked_labels",
+		"acquisition_plan_ok",
+		"acquisition_plan_state",
+		"local_date",
+		"active_profile_ref",
+		"opencode_version_ref",
+		"flowdesk_package_version_ref",
+		"registry_hash",
+		"policy_pack_hash",
+		"auth_account_boundary_ref",
+		"provider_family",
+		"provider_identity_ref",
+		"provider_qualified_model_id",
+		"model_family",
+		"availability_ref",
+		"pre_call_audit_ref",
+		"idempotency_ref",
+		"live_test_run_ref",
+		"redaction_proof_ref",
+		"sanitized_provider_result_ref",
+		"observed_at",
+		"available",
+		"highest_tier_eligible",
+		"acquisition_attempted",
+		"discovery_attempted",
+		"refresh_attempted",
+		"dispatch_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+	], "availability cache provider acquisition result").errors);
+	if (record.schema_version !== "flowdesk.exact_model_availability_cache_provider_acquisition_result.v1")
+		errors.push("availability cache provider acquisition result schema_version is invalid");
+	if (record.state !== "availability_acquired" && record.state !== "blocked")
+		errors.push("availability cache provider acquisition result state is invalid");
+	if (!Array.isArray(record.blocked_labels)) errors.push("blocked_labels must be an array");
+	else for (const [index, label] of record.blocked_labels.entries())
+		errors.push(...validateOpaqueId(label, `blocked_labels[${index}]`).errors);
+	if (typeof record.acquisition_plan_ok !== "boolean") errors.push("acquisition_plan_ok must be boolean");
+	if (
+		record.acquisition_plan_state !== "acquisition_not_needed" &&
+		record.acquisition_plan_state !== "acquisition_planned" &&
+		record.acquisition_plan_state !== "blocked" &&
+		record.acquisition_plan_state !== "invalid"
+	)
+		errors.push("acquisition_plan_state is invalid");
+	if (record.acquisition_plan_state === "invalid" && record.acquisition_plan_ok !== false)
+		errors.push("invalid acquisition plan state must report acquisition_plan_ok false");
+	if (record.acquisition_plan_state !== "invalid" && record.acquisition_plan_ok !== true)
+		errors.push("non-invalid acquisition plan state must report acquisition_plan_ok true");
+	for (const [value, label] of [
+		[record.result_id, "result_id"],
+		[record.model_family, "model_family"],
+	] as const)
+		errors.push(...validateOpaqueId(value, label).errors);
+	errors.push(...validateLocalDate(record.local_date, "local_date").errors);
+	for (const [value, label] of [
+		[record.active_profile_ref, "active_profile_ref"],
+		[record.opencode_version_ref, "opencode_version_ref"],
+		[record.flowdesk_package_version_ref, "flowdesk_package_version_ref"],
+		[record.auth_account_boundary_ref, "auth_account_boundary_ref"],
+		[record.provider_identity_ref, "provider_identity_ref"],
+		[record.availability_ref, "availability_ref"],
+		[record.pre_call_audit_ref, "pre_call_audit_ref"],
+		[record.idempotency_ref, "idempotency_ref"],
+		[record.live_test_run_ref, "live_test_run_ref"],
+		[record.redaction_proof_ref, "redaction_proof_ref"],
+		[record.sanitized_provider_result_ref, "sanitized_provider_result_ref"],
+	] as const)
+		if (value !== undefined) errors.push(...validateOpaqueRef(value, label).errors);
+	errors.push(...validateHash(record.registry_hash, "registry_hash").errors);
+	errors.push(...validateHash(record.policy_pack_hash, "policy_pack_hash").errors);
+	errors.push(...validateProviderFamily(record.provider_family).errors);
+	if (typeof record.provider_family === "string" && !(FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES as readonly string[]).includes(record.provider_family))
+		errors.push("provider_family is not exact-model eligible");
+	errors.push(...validateConcreteProviderQualifiedModelId(record.provider_qualified_model_id).errors);
+	if (typeof record.provider_qualified_model_id === "string" && typeof record.provider_family === "string") {
+		const provider = record.provider_qualified_model_id.split("/")[0];
+		if (provider !== record.provider_family) errors.push("provider_family must match provider_qualified_model_id");
+	}
+	errors.push(...validateTimestamp(record.observed_at, "observed_at").errors);
+	for (const key of ["available", "highest_tier_eligible", "acquisition_attempted", "discovery_attempted", "providerCall"] as const)
+		if (typeof record[key] !== "boolean") errors.push(`${key} must be boolean`);
+	if (record.state === "availability_acquired") {
+		if ((record.blocked_labels?.length ?? 0) > 0) errors.push("availability_acquired result cannot carry blockers");
+		if (record.acquisition_plan_state !== "acquisition_planned") errors.push("availability_acquired result requires acquisition_planned input");
+		if (record.acquisition_attempted !== true || record.discovery_attempted !== true || record.providerCall !== true)
+			errors.push("availability_acquired result must record provider acquisition attempt");
+		if (record.sanitized_provider_result_ref === undefined)
+			errors.push("availability_acquired result requires sanitized_provider_result_ref");
+	}
+	if (record.state === "blocked" && (record.blocked_labels?.length ?? 0) === 0)
+		errors.push("blocked provider acquisition result requires blocked labels");
+	if (record.providerCall === true && (record.acquisition_attempted !== true || record.discovery_attempted !== true))
+		errors.push("providerCall requires acquisition and discovery attempts");
+	if (record.providerCall === false && (record.acquisition_attempted !== false || record.discovery_attempted !== false))
+		errors.push("attempt flags cannot be true without providerCall");
+	if (record.highest_tier_eligible === true && record.available !== true)
+		errors.push("highest_tier_eligible requires available true");
+	if (
+		record.refresh_attempted !== false ||
+		record.dispatch_authority_enabled !== false ||
+		record.actualLaneLaunch !== false ||
+		record.runtimeExecution !== false
+	)
+		errors.push("provider acquisition result cannot refresh cache, launch lanes, authorize dispatch, or run runtime execution");
+	errors.push(...validateNoForbiddenRawPayloads(record, "exact_model_availability_cache_provider_acquisition_result").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 

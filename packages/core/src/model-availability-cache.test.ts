@@ -6,9 +6,11 @@ import {
 	planFlowDeskExactModelAvailabilityCacheRefreshV1,
 	planFlowDeskReviewerAssignmentsV1,
 	planFlowDeskReviewerFanoutV1,
+	recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
 	revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1,
 	revalidateFlowDeskReviewerAssignmentsV1,
 	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
+	validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
 	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	validateFlowDeskExactModelAvailabilityCacheV1,
 	validateFlowDeskReviewerAssignmentRevalidationV1,
@@ -404,6 +406,101 @@ test("availability cache acquisition plan blocks invalid refresh evidence and au
 	} as unknown);
 	assert.equal(unknown.ok, false);
 	assert.match(unknown.errors.join("|"), /unknown properties/);
+});
+
+function providerAcquisitionResult(
+	overrides: Partial<Parameters<typeof recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1>[0]> = {},
+) {
+	return recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1({
+		acquisitionPlan: planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+			refreshPlan: refreshRequiredPlan(),
+		}),
+		resultId: "provider-acquisition-result-1",
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+		providerFamily: "claude",
+		providerIdentityRef: "provider-claude-1",
+		providerQualifiedModelId: "claude/claude-opus-4-5",
+		modelFamily: "opus",
+		availabilityRef: "availability-live-1",
+		preCallAuditRef: "audit-provider-acquisition-1",
+		idempotencyRef: "idempotency-provider-acquisition-1",
+		liveTestRunRef: "live-test-run-1",
+		redactionProofRef: "redaction-proof-1",
+		sanitizedProviderResultRef: "provider-result-redacted-1",
+		observedAt: "2026-05-21T00:00:00.000Z",
+		outcome: "available",
+		highestTierEligible: true,
+		...overrides,
+	});
+}
+
+test("provider acquisition result records bounded live-test facts without dispatch authority", () => {
+	const acquired = providerAcquisitionResult();
+	assert.equal(acquired.state, "availability_acquired");
+	assert.equal(acquired.ok, true, acquired.errors.join("; "));
+	assert.equal(acquired.providerCall, true);
+	assert.equal(acquired.acquisition_attempted, true);
+	assert.equal(acquired.discovery_attempted, true);
+	assert.equal(acquired.refresh_attempted, false);
+	assert.equal(acquired.dispatch_authority_enabled, false);
+	assert.equal(acquired.actualLaneLaunch, false);
+	assert.equal(acquired.runtimeExecution, false);
+	assert.equal(acquired.available, true);
+	assert.equal(acquired.highest_tier_eligible, true);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(acquired).ok,
+		true,
+	);
+
+	const unavailable = providerAcquisitionResult({ outcome: "unavailable", highestTierEligible: false });
+	assert.equal(unavailable.state, "availability_acquired");
+	assert.equal(unavailable.available, false);
+	assert.equal(unavailable.highest_tier_eligible, false);
+	assert.equal(unavailable.providerCall, true);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(unavailable).ok,
+		true,
+	);
+});
+
+test("provider acquisition result blocks invalid plans and authority smuggling", () => {
+	const noOpPlan = providerAcquisitionResult({
+		acquisitionPlan: planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+			refreshPlan: cacheHitRefreshPlan(),
+		}),
+	});
+	assert.equal(noOpPlan.state, "blocked");
+	assert.equal(noOpPlan.providerCall, false);
+	assert.ok(noOpPlan.blocked_labels.includes("acquisition_plan_not_planned"));
+
+	const invalidProvider = providerAcquisitionResult({
+		providerQualifiedModelId: "openai/gpt-5.1",
+	});
+	assert.equal(invalidProvider.state, "blocked");
+	assert.ok(invalidProvider.blocked_labels.includes("provider_acquisition_context_invalid"));
+	assert.match(invalidProvider.errors.join("|"), /provider_family must match/);
+
+	const forgedRuntime = validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1({
+		...providerAcquisitionResult(),
+		runtimeExecution: true,
+	});
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(
+		forgedRuntime.errors.join("|"),
+		/cannot refresh cache, launch lanes, authorize dispatch, or run runtime execution/,
+	);
+
+	const rawPayload = validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1({
+		...providerAcquisitionResult(),
+		sanitized_provider_result_ref: "raw provider response token secret",
+	});
+	assert.equal(rawPayload.ok, false);
 });
 
 test("reviewer assignment revalidation blocks stale cache and context drift", () => {
