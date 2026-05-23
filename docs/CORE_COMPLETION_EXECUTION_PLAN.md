@@ -328,7 +328,24 @@ The implemented 2026-05-23 slice adds `flowdesk.exact_model_availability_cache_a
 
 The acquisition plan can be persisted and reloaded as `exact_model_availability_cache_acquisition_plan` session evidence. It records `acquisition_attempted=false`, `discovery_attempted=false`, `refresh_attempted=false`, `providerCall=false`, `actualLaneLaunch=false`, `runtimeExecution=false`, and `dispatch_authority_enabled=false`. Forged records that claim attempted discovery/acquisition/refresh or runtime authority fail closed during validation and reload.
 
-Next safe slice: product diagnostics can surface acquisition-plan blockers, or a later explicit acquisition adapter can be designed. Actual provider probing, cache discovery, cache refresh, reviewer lane launch, and verdict acceptance remain gated.
+Priority update from user direction: provider execution in a real working environment is now the next critical path. Diagnostic-only expansion should pause unless it directly supports that provider-first path.
+
+Next safe slice: design and implement an explicit opt-in provider acquisition/live-test track for exact-model availability. It should run against the real active environment under bounded approval, but still preserve the existing gate order: acquisition preflight, auth/account-boundary proof, redaction proof, durable pre-call audit, idempotency/run ref, provider call, sanitized acquisition result evidence, reload verification, and blocked/failure classification. Reviewer lane launch and verdict acceptance remain gated until live acquisition evidence proves exact provider-qualified model availability.
+
+## Provider-First Priority Update
+
+The immediate goal is no longer more acquisition-plan diagnostics. The next implementation work should prove real provider operation by testing in the actual working environment and fixing the product around observed failures.
+
+Provider-first does not mean default-open dispatch. It means an explicit, bounded, auditable live-test path that can call the relevant provider only after the preflight evidence is present and can persist sanitized results. A failed provider run should become durable blocked evidence and a concrete repair target, not an implicit fallback or silent substitution.
+
+Recommended provider-first sequence:
+
+1. Add an exact-model acquisition preflight contract that consumes `acquisition_planned` evidence and proves active profile, auth/account boundary, registry hash, Policy Pack hash, OpenCode version, package version, and redaction readiness.
+2. Add an opt-in acquisition adapter that can perform one bounded real provider discovery/check in the active environment and persist only sanitized availability evidence.
+3. Run the adapter against the real environment, then fix failures observed in auth binding, provider id mapping, model id normalization, redaction, or evidence reload.
+4. Only after successful reloadable cache evidence exists, resume reviewer fan-out productization.
+
+The first provider-first contract now exists as `flowdesk.exact_model_availability_cache_provider_acquisition_result.v1`. It records sanitized bounded live-test facts, including active profile, auth/account-boundary, registry, Policy Pack, pre-call audit, idempotency, live-test run, redaction proof, exact provider-qualified model, and availability refs. The plugin also exposes an explicit opt-in `flowdesk_exact_model_provider_acquisition_live_test` tool only when `exactModelProviderAcquisitionLiveTest.enabled=true`, an acquisition client is injected, and a durable state root is configured. This path may record that a provider call happened, but it still cannot refresh caches, launch reviewers, execute runtime work, authorize dispatch, accept verdicts, or enable fallback. The next implementation slice is binding the adapter to the real active-environment provider/auth surface and running one credentialed provider check.
 
 ## Review Questions
 
