@@ -496,6 +496,24 @@ export interface FlowDeskInjectedSdkRuntimeLaneLaunchResultV1 {
 	};
 }
 
+export interface FlowDeskRuntimeLaneLaunchLifecycleMaterializationResultV1 {
+	adapterProfile: "runtime_lane_launch_lifecycle_materializer";
+	status: "lane_lifecycle_recorded" | "blocked_before_lane_lifecycle";
+	writeAttempted: boolean;
+	evidenceReloaded: boolean;
+	workflowId?: string;
+	attemptId?: string;
+	laneId?: string;
+	evidenceId?: string;
+	lifecycleState?: FlowDeskLaneLifecycleRecordV1["state"];
+	redactedBlockReason?: string;
+	safeNextActions: ["/flowdesk-status"] | ["/flowdesk-status", "/flowdesk-export-debug"];
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		runtimeLaneLifecyclePersisted: boolean;
+		defaultRelease1ServerBehaviorUnchanged: true;
+	};
+}
+
 export interface FlowDeskManagedDispatchBetaOpenCodeClientV1 {
 	session: {
 		create?(options: {
@@ -682,6 +700,41 @@ function blockedRuntimeLaneLaunch(
 		redactedBlockReason,
 		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
 		authority: runtimeLaneLaunchAuthority(false),
+	};
+}
+
+function runtimeLaneLaunchLifecycleAuthority(
+	persisted: boolean,
+): FlowDeskRuntimeLaneLaunchLifecycleMaterializationResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		runtimeLaneLifecyclePersisted: persisted,
+		defaultRelease1ServerBehaviorUnchanged: true,
+	};
+}
+
+function blockRuntimeLaneLaunchLifecycle(input: {
+	plan?: Partial<FlowDeskRuntimeLaneLaunchPlanV1>;
+	evidenceId?: string;
+	reason: string;
+	evidenceReloaded?: boolean;
+}): FlowDeskRuntimeLaneLaunchLifecycleMaterializationResultV1 {
+	return {
+		adapterProfile: "runtime_lane_launch_lifecycle_materializer",
+		status: "blocked_before_lane_lifecycle",
+		writeAttempted: false,
+		evidenceReloaded: input.evidenceReloaded ?? false,
+		...(input.plan?.workflow_id === undefined
+			? {}
+			: { workflowId: input.plan.workflow_id }),
+		...(input.plan?.attempt_id === undefined
+			? {}
+			: { attemptId: input.plan.attempt_id }),
+		...(input.plan?.lane_id === undefined ? {} : { laneId: input.plan.lane_id }),
+		...(input.evidenceId === undefined ? {} : { evidenceId: input.evidenceId }),
+		redactedBlockReason: input.reason,
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+		authority: runtimeLaneLaunchLifecycleAuthority(false),
 	};
 }
 
@@ -2875,6 +2928,13 @@ function firstMessageRef(value: unknown): string | undefined {
 	return undefined;
 }
 
+function lifecycleMessageRefFrom(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	if (value.startsWith("msg-")) return value;
+	if (value.startsWith("message-")) return `msg-${value.slice("message-".length)}`;
+	return value;
+}
+
 function messageTextCandidates(value: unknown): string[] {
 	return arrayData(value).flatMap((message) => {
 		const record = asRecord(message);
@@ -3240,6 +3300,163 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 		dispatchMethod,
 		safeNextActions: ["/flowdesk-status"],
 		authority: runtimeLaneLaunchAuthority(true),
+	};
+}
+
+export function materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1(input: {
+	rootDir: string;
+	launchPlan: FlowDeskRuntimeLaneLaunchPlanV1;
+	launchResult: FlowDeskInjectedSdkRuntimeLaneLaunchResultV1;
+	evidenceId: string;
+	observedAt: string;
+	timeoutMs?: number;
+	orphanMaxAgeMs?: number;
+	retryCount?: number;
+}): FlowDeskRuntimeLaneLaunchLifecycleMaterializationResultV1 {
+	if (typeof input.rootDir !== "string" || input.rootDir.trim().length === 0)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: "rootDir is required",
+		});
+	const planValidation = validateFlowDeskRuntimeLaneLaunchPlanV1(input.launchPlan);
+	if (!planValidation.ok || input.launchPlan.state !== "launch_ready")
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason:
+				planValidation.errors.join(", ") ||
+				"runtime lane launch plan must be launch_ready",
+		});
+	if (
+		input.launchResult.status !== "lane_launch_started" &&
+		input.launchResult.status !== "lane_launch_failed"
+	)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: "runtime lane launch result must be started or failed",
+		});
+	if (
+		input.launchResult.workflowId !== input.launchPlan.workflow_id ||
+		input.launchResult.attemptId !== input.launchPlan.attempt_id ||
+		input.launchResult.laneId !== input.launchPlan.lane_id ||
+		input.launchResult.parentSessionRef !== input.launchPlan.parent_session_ref
+	)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: "runtime lane launch result does not match launch plan binding",
+		});
+	const state: FlowDeskLaneLifecycleRecordV1["state"] =
+		input.launchResult.status === "lane_launch_started"
+			? "running"
+			: "invocation_failed";
+	const record: FlowDeskLaneLifecycleRecordV1 = {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: input.launchPlan.lane_id ?? "lane-missing",
+		workflow_id: input.launchPlan.workflow_id ?? "workflow-missing",
+		attempt_id: input.launchPlan.attempt_id ?? "attempt-missing",
+		parent_session_ref: input.launchPlan.parent_session_ref ?? "ses-missing",
+		...(input.launchResult.childSessionRef === undefined
+			? {}
+			: { child_session_ref: input.launchResult.childSessionRef }),
+		...(lifecycleMessageRefFrom(input.launchResult.messageRef) === undefined
+			? {}
+			: { message_ref: lifecycleMessageRefFrom(input.launchResult.messageRef) }),
+		agent_ref: input.launchPlan.agent_ref ?? "agent-missing",
+		provider_qualified_model_id:
+			input.launchPlan.provider_qualified_model_id ?? "claude/missing",
+		state,
+		timeout_ms: input.timeoutMs ?? 0,
+		orphan_max_age_ms: input.orphanMaxAgeMs ?? 0,
+		retry_count: input.retryCount ?? 0,
+		created_at: input.observedAt,
+		updated_at: input.observedAt,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+	const preWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: record.workflow_id,
+		rootDir: input.rootDir,
+	});
+	if (!preWriteReload.ok || preWriteReload.blocked.length > 0)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: "lane lifecycle pre-write evidence reload failed",
+			evidenceReloaded: false,
+		});
+	if (
+		preWriteReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "lane_lifecycle" &&
+				entry.evidenceId === input.evidenceId,
+		)
+	)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: "lane lifecycle evidence already exists",
+			evidenceReloaded: true,
+		});
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId: input.evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	if (!prepared.ok || prepared.writeIntent === undefined)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason:
+				prepared.errors.join(", ") || "lane lifecycle evidence intent invalid",
+			evidenceReloaded: true,
+		});
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [
+		prepared.writeIntent,
+	]);
+	if (!applied.ok)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: applied.errors.join(", ") || "lane lifecycle evidence write failed",
+			evidenceReloaded: true,
+		});
+	const postWriteReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: record.workflow_id,
+		rootDir: input.rootDir,
+	});
+	const persisted =
+		postWriteReload.ok &&
+		postWriteReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "lane_lifecycle" &&
+				entry.evidenceId === input.evidenceId &&
+				entry.record.lane_id === record.lane_id &&
+				entry.record.state === record.state,
+		);
+	if (!persisted)
+		return blockRuntimeLaneLaunchLifecycle({
+			plan: input.launchPlan,
+			evidenceId: input.evidenceId,
+			reason: "lane lifecycle evidence reload verification failed",
+			evidenceReloaded: false,
+		});
+	return {
+		adapterProfile: "runtime_lane_launch_lifecycle_materializer",
+		status: "lane_lifecycle_recorded",
+		writeAttempted: true,
+		evidenceReloaded: true,
+		workflowId: record.workflow_id,
+		attemptId: record.attempt_id,
+		laneId: record.lane_id,
+		evidenceId: input.evidenceId,
+		lifecycleState: record.state,
+		safeNextActions: ["/flowdesk-status"],
+		authority: runtimeLaneLaunchLifecycleAuthority(true),
 	};
 }
 

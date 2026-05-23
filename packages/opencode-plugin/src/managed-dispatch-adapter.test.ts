@@ -52,6 +52,7 @@ import {
 	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
 	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
+	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
 	observeInjectedSdkLaneV1,
 	observeInjectedSdkReviewerVerdictV1,
 	orchestrateFlowDeskManagedFallbackRegateV1,
@@ -1159,6 +1160,139 @@ test("injected sdk runtime lane launch reports sanitized runtime and provider fa
 	assert.equal(failed.redactedErrorCategory, "provider_api");
 	assert.equal(failed.authority.actualLaneLaunch, false);
 	assert.equal(promptAsyncCalls.length, 1);
+});
+
+test("runtime lane launch lifecycle materializer records reloadable running lifecycle evidence", async () => {
+	await withTempRoot(async (rootDir) => {
+		const { client } = fakeRuntimeLaneClient();
+		const launchPlan = runtimeLaneLaunchPlan();
+		const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: true,
+				parentSessionId: "parent-123",
+				promptText: "review",
+				dispatchMethod: "prompt",
+			},
+		});
+		assert.equal(launchResult.status, "lane_launch_started");
+
+		const materialized = materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
+			rootDir,
+			launchPlan,
+			launchResult,
+			evidenceId: "lane-lifecycle-launch-1",
+			observedAt: now,
+			timeoutMs: 120_000,
+			orphanMaxAgeMs: 300_000,
+		});
+
+		assert.equal(materialized.status, "lane_lifecycle_recorded");
+		assert.equal(materialized.writeAttempted, true);
+		assert.equal(materialized.evidenceReloaded, true);
+		assert.equal(materialized.lifecycleState, "running");
+		assert.equal(materialized.authority.runtimeLaneLifecyclePersisted, true);
+		assert.equal(materialized.authority.actualLaneLaunch, false);
+		assert.equal(materialized.authority.runtimeExecution, false);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		const lifecycle = reloaded.entries.find(
+			(entry) => entry.evidenceClass === "lane_lifecycle",
+		);
+		assert.equal(lifecycle?.evidenceId, "lane-lifecycle-launch-1");
+		assert.equal(lifecycle?.record.state, "running");
+		assert.equal(lifecycle?.record.child_session_ref, "ses-child-123");
+		assert.equal(lifecycle?.record.message_ref, "msg-message-lane-123");
+		assert.equal(lifecycle?.record.actualLaneLaunch, false);
+	});
+});
+
+test("runtime lane launch lifecycle materializer blocks duplicate and non-launch results", async () => {
+	await withTempRoot(async (rootDir) => {
+		const launchPlan = runtimeLaneLaunchPlan();
+		const blockedLaunch = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client: fakeRuntimeLaneClient().client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: false,
+				parentSessionId: "parent-123",
+				promptText: "review",
+			},
+		});
+		const blockedMaterialization =
+			materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
+				rootDir,
+				launchPlan,
+				launchResult: blockedLaunch,
+				evidenceId: "lane-lifecycle-blocked-1",
+				observedAt: now,
+			});
+		assert.equal(
+			blockedMaterialization.status,
+			"blocked_before_lane_lifecycle",
+		);
+		assert.equal(blockedMaterialization.writeAttempted, false);
+		assert.match(
+			String(blockedMaterialization.redactedBlockReason),
+			/started or failed/,
+		);
+
+		const failedLaunch: Awaited<
+			ReturnType<typeof launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1>
+		> = {
+			adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
+			status: "lane_launch_failed",
+			createAttempted: true,
+			promptAttempted: true,
+			workflowId: "workflow-123",
+			attemptId: "attempt-123",
+			laneId: "lane-123",
+			parentSessionRef: "ses-parent-123",
+			childSessionRef: "ses-child-failed",
+			redactedErrorCategory: "provider_api",
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+			authority: {
+				realOpenCodeDispatch: false,
+				providerCall: false,
+				runtimeExecution: false,
+				actualLaneLaunch: false,
+				fallbackAuthority: false,
+				toolAuthority: false,
+				hardCancelOrNoReplyAuthority: false,
+				runtimeLaneLaunchAuthorized: false,
+				defaultRelease1ServerBehaviorUnchanged: true,
+			},
+		};
+		const failedMaterialization =
+			materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
+				rootDir,
+				launchPlan,
+				launchResult: failedLaunch,
+				evidenceId: "lane-lifecycle-failed-1",
+				observedAt: now,
+			});
+		assert.equal(failedMaterialization.status, "lane_lifecycle_recorded");
+		assert.equal(failedMaterialization.lifecycleState, "invocation_failed");
+
+		const duplicate = materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
+			rootDir,
+			launchPlan,
+			launchResult: failedLaunch,
+			evidenceId: "lane-lifecycle-failed-1",
+			observedAt: now,
+		});
+		assert.equal(duplicate.status, "blocked_before_lane_lifecycle");
+		assert.match(String(duplicate.redactedBlockReason), /already exists/);
+		assert.equal(
+			reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-123", rootDir })
+				.entries.filter((entry) => entry.evidenceClass === "lane_lifecycle")
+				.length,
+			1,
+		);
+	});
 });
 
 test("injected sdk reviewer verdict observation accepts only typed matching verdicts", async () => {
