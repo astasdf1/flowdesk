@@ -9,15 +9,20 @@ import {
 	type FlowDeskRelease1MinimumPortableCommandName,
 	type FlowDeskRelease1MinimumToolName,
 	type FlowDeskSanitizedAuthCaptureResultV1,
+	type FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
+	type FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
 	type FlowDeskToolRequestEnvelopeV1,
 	type ManagedDispatchBetaBoundaryInputV1,
 	type SafeNextAction,
+	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	createFlowDeskChatHookAuthorityProbeV1,
 	evaluateFlowDeskChatIntakeV1,
 	getFlowDeskPortableCommandToolName,
 	getRelease1SchemaArtifact,
 	materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
+	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
+	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
 	validateRunRequestV1,
@@ -89,6 +94,27 @@ interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	targetCacheRefreshPlanEvidenceId: string;
 	cacheId?: string;
 	entryId?: string;
+	reviewerFanoutPlanning?: FlowDeskProviderAcquisitionReviewerFanoutPlanningOptionsV1;
+}
+
+interface FlowDeskProviderAcquisitionReviewerFanoutPlanningOptionsV1
+	extends Omit<
+		FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
+		| "reloadedEvidence"
+		| "workflowId"
+		| "localDate"
+		| "activeProfileRef"
+		| "opencodeVersionRef"
+		| "flowdeskPackageVersionRef"
+		| "registryHash"
+		| "policyPackHash"
+		| "authAccountBoundaryRef"
+		| "requestedAt"
+	> {
+	enabled: true;
+	requestedAt?: string;
+	persistDerivedFanoutPlanEvidence?: boolean;
+	fanoutPlanEvidenceId?: string;
 }
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
@@ -716,6 +742,13 @@ function redactedExactModelProviderAcquisitionToolResult(
 		result: ReturnType<
 			typeof materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1
 		>;
+		fanout?: {
+			options: FlowDeskProviderAcquisitionReviewerFanoutPlanningOptionsV1;
+			result: FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1;
+			persistedEvidenceId?: string;
+			persisted: boolean;
+			persistErrors: string[];
+		};
 	},
 ): Record<string, unknown> {
 	return {
@@ -762,8 +795,98 @@ function redactedExactModelProviderAcquisitionToolResult(
 					selectionState: cacheMaterialization.result.selection?.state,
 					pairSelectionReady:
 						cacheMaterialization.result.selection?.state === "pair_ready",
+					...(cacheMaterialization.fanout === undefined
+						? {}
+						: {
+							reviewerFanoutPlanning: {
+								state: cacheMaterialization.fanout.result.state,
+								blockedLabels:
+									cacheMaterialization.fanout.result.blocked_labels,
+								fanoutPlanState:
+									cacheMaterialization.fanout.result.fanoutPlan.state,
+								plannedPerspectives:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.planned_perspectives,
+								runtimeLaneLaunchRequests:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.runtime_lane_launch_requests.length,
+								launchAttempted:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.launch_attempted,
+								approvalInferred:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.approval_inferred,
+								actualLaneLaunch:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.actualLaneLaunch,
+								providerCall:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.providerCall,
+								runtimeExecution:
+									cacheMaterialization.fanout.result.fanoutPlan
+										.runtimeExecution,
+								persisted: cacheMaterialization.fanout.persisted,
+								persistedEvidenceId:
+									cacheMaterialization.fanout.persistedEvidenceId,
+								persistErrors: cacheMaterialization.fanout.persistErrors,
+							},
+						}),
 				},
 			}),
+	};
+}
+
+function providerAcquisitionReviewerFanoutPlanningFromValue(
+	value: unknown,
+): FlowDeskProviderAcquisitionReviewerFanoutPlanningOptionsV1 | undefined {
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	if (
+		typeof value.attemptId !== "string" ||
+		value.attemptId.trim().length === 0 ||
+		typeof value.parentSessionRef !== "string" ||
+		value.parentSessionRef.trim().length === 0 ||
+		typeof value.agentRef !== "string" ||
+		value.agentRef.trim().length === 0
+	)
+		return undefined;
+	return {
+		enabled: true,
+		attemptId: value.attemptId,
+		parentSessionRef: value.parentSessionRef,
+		agentRef: value.agentRef,
+		...(typeof value.requestedAt === "string" && value.requestedAt.trim().length > 0
+			? { requestedAt: value.requestedAt }
+			: {}),
+		...(Array.isArray(value.requestedPerspectives) &&
+		value.requestedPerspectives.every((entry) => typeof entry === "string")
+			? {
+					requestedPerspectives:
+						value.requestedPerspectives as FlowDeskProviderAcquisitionReviewerFanoutPlanningOptionsV1["requestedPerspectives"],
+				}
+			: {}),
+		...(typeof value.maxConcurrentLaneCount === "number"
+			? { maxConcurrentLaneCount: value.maxConcurrentLaneCount }
+			: {}),
+		...(typeof value.timeoutMs === "number" ? { timeoutMs: value.timeoutMs } : {}),
+		...(typeof value.orphanMaxAgeMs === "number"
+			? { orphanMaxAgeMs: value.orphanMaxAgeMs }
+			: {}),
+		...(typeof value.retryBudget === "number"
+			? { retryBudget: value.retryBudget }
+			: {}),
+		...(typeof value.preLaunchAuditRef === "string"
+			? { preLaunchAuditRef: value.preLaunchAuditRef }
+			: {}),
+		...(typeof value.laneLaunchApprovalRef === "string"
+			? { laneLaunchApprovalRef: value.laneLaunchApprovalRef }
+			: {}),
+		...(value.persistDerivedFanoutPlanEvidence === true
+			? { persistDerivedFanoutPlanEvidence: true }
+			: {}),
+		...(typeof value.fanoutPlanEvidenceId === "string" &&
+		value.fanoutPlanEvidenceId.trim().length > 0
+			? { fanoutPlanEvidenceId: value.fanoutPlanEvidenceId }
+			: {}),
 	};
 }
 
@@ -781,6 +904,9 @@ function exactModelProviderAcquisitionCacheMaterializationFromOptions(
 		cacheMaterialization.targetCacheRefreshPlanEvidenceId.trim().length === 0
 	)
 		return undefined;
+	const reviewerFanoutPlanning = providerAcquisitionReviewerFanoutPlanningFromValue(
+		cacheMaterialization.reviewerFanoutPlanning,
+	);
 	return {
 		enabled: true,
 		targetCacheEvidenceId: cacheMaterialization.targetCacheEvidenceId,
@@ -794,7 +920,41 @@ function exactModelProviderAcquisitionCacheMaterializationFromOptions(
 		cacheMaterialization.entryId.trim().length > 0
 			? { entryId: cacheMaterialization.entryId }
 			: {}),
+		...(reviewerFanoutPlanning === undefined
+			? {}
+			: { reviewerFanoutPlanning }),
 	};
+}
+
+function providerAcquisitionFanoutPlanEvidenceId(
+	workflowId: string,
+	plan: FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
+): string {
+	return safeToken(
+		`reviewer-fanout-plan-${workflowId}-${plan.fanoutPlan.attempt_id}-${plan.fanoutPlan.cache_id ?? "cache"}`,
+		"reviewer-fanout-plan",
+	);
+}
+
+function persistProviderAcquisitionReviewerFanoutPlanEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	evidenceId: string;
+	plan: FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1;
+}): { persisted: boolean; errors: string[] } {
+	if (input.plan.state !== "fanout_ready" || !input.plan.ok)
+		return { persisted: false, errors: ["reviewer fanout plan is not ready"] };
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
+		evidenceId: input.evidenceId,
+		record: input.plan.fanoutPlan as unknown as Record<string, unknown>,
+	});
+	if (!prepared.ok || prepared.writeIntent === undefined)
+		return { persisted: false, errors: prepared.errors };
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [
+		prepared.writeIntent,
+	]);
+	return { persisted: applied.ok, errors: applied.errors };
 }
 
 function blockedManagedDispatchRunRoute(
@@ -1045,11 +1205,125 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 								},
 							)
 						: undefined;
+				const fanoutResult =
+					cacheMaterialization?.reviewerFanoutPlanning !== undefined &&
+					materializationResult?.state === "materialized" &&
+					materializationResult.reloadedEvidence !== undefined
+						? planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1({
+								reloadedEvidence: materializationResult.reloadedEvidence,
+								workflowId: request.workflowId,
+								localDate: request.localDate,
+								activeProfileRef: request.activeProfileRef,
+								opencodeVersionRef: request.opencodeVersionRef,
+								flowdeskPackageVersionRef:
+									request.flowdeskPackageVersionRef,
+								registryHash: request.registryHash,
+								policyPackHash: request.policyPackHash,
+								authAccountBoundaryRef:
+									request.authAccountBoundaryRef,
+								attemptId:
+									cacheMaterialization.reviewerFanoutPlanning.attemptId,
+								parentSessionRef:
+									cacheMaterialization.reviewerFanoutPlanning
+										.parentSessionRef,
+								agentRef:
+									cacheMaterialization.reviewerFanoutPlanning.agentRef,
+								requestedAt:
+									cacheMaterialization.reviewerFanoutPlanning.requestedAt ??
+									request.observedAt,
+								...(cacheMaterialization.reviewerFanoutPlanning
+									.requestedPerspectives === undefined
+									? {}
+									: {
+											requestedPerspectives:
+												cacheMaterialization.reviewerFanoutPlanning
+													.requestedPerspectives,
+										}),
+								...(cacheMaterialization.reviewerFanoutPlanning
+									.maxConcurrentLaneCount === undefined
+									? {}
+									: {
+											maxConcurrentLaneCount:
+												cacheMaterialization.reviewerFanoutPlanning
+													.maxConcurrentLaneCount,
+										}),
+								...(cacheMaterialization.reviewerFanoutPlanning.timeoutMs ===
+								undefined
+									? {}
+									: {
+											timeoutMs:
+												cacheMaterialization.reviewerFanoutPlanning.timeoutMs,
+										}),
+								...(cacheMaterialization.reviewerFanoutPlanning.orphanMaxAgeMs ===
+								undefined
+									? {}
+									: {
+											orphanMaxAgeMs:
+												cacheMaterialization.reviewerFanoutPlanning.orphanMaxAgeMs,
+										}),
+								...(cacheMaterialization.reviewerFanoutPlanning.retryBudget ===
+								undefined
+									? {}
+									: {
+											retryBudget:
+												cacheMaterialization.reviewerFanoutPlanning.retryBudget,
+										}),
+								...(cacheMaterialization.reviewerFanoutPlanning
+									.preLaunchAuditRef === undefined
+									? {}
+									: {
+											preLaunchAuditRef:
+												cacheMaterialization.reviewerFanoutPlanning
+													.preLaunchAuditRef,
+										}),
+								...(cacheMaterialization.reviewerFanoutPlanning
+									.laneLaunchApprovalRef === undefined
+									? {}
+									: {
+											laneLaunchApprovalRef:
+												cacheMaterialization.reviewerFanoutPlanning
+													.laneLaunchApprovalRef,
+										}),
+							})
+						: undefined;
+				const fanoutPersistedEvidenceId =
+					fanoutResult !== undefined &&
+					cacheMaterialization?.reviewerFanoutPlanning
+						?.persistDerivedFanoutPlanEvidence === true
+						? (cacheMaterialization.reviewerFanoutPlanning.fanoutPlanEvidenceId ??
+							providerAcquisitionFanoutPlanEvidenceId(
+								request.workflowId,
+								fanoutResult,
+							))
+						: undefined;
+				const fanoutPersistence =
+					fanoutResult !== undefined && fanoutPersistedEvidenceId !== undefined
+						? persistProviderAcquisitionReviewerFanoutPlanEvidence({
+								rootDir,
+								workflowId: request.workflowId,
+								evidenceId: fanoutPersistedEvidenceId,
+								plan: fanoutResult,
+							})
+						: { persisted: false, errors: [] };
 				const redactedMaterialization =
 					cacheMaterialization !== undefined && materializationResult !== undefined
 						? {
 								options: cacheMaterialization,
 								result: materializationResult,
+								...(cacheMaterialization.reviewerFanoutPlanning !== undefined &&
+								fanoutResult !== undefined
+									? {
+											fanout: {
+												options:
+													cacheMaterialization.reviewerFanoutPlanning,
+												result: fanoutResult,
+												persistedEvidenceId:
+													fanoutPersistedEvidenceId,
+												persisted: fanoutPersistence.persisted,
+												persistErrors: fanoutPersistence.errors,
+											},
+										}
+									: {}),
 							}
 						: undefined;
 				return JSON.stringify(

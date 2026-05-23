@@ -528,6 +528,11 @@ test("exact-model provider acquisition cache materialization is explicit opt-in 
 			selectionState: "pair_ready",
 			pairSelectionReady: true,
 		});
+		assert.equal(
+			"reviewerFanoutPlanning" in
+				(result.cacheMaterialization as Record<string, unknown>),
+			false,
+		);
 
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
 			workflowId: "workflow-provider-acquisition-cache-1",
@@ -556,6 +561,101 @@ test("exact-model provider acquisition cache materialization is explicit opt-in 
 			).length,
 			1,
 		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition cache materialization can derive and persist reviewer fanout planning without lane launch", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-from-provider-live-fanout",
+					targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-fanout",
+					cacheId: "cache-from-provider-live-fanout",
+					entryId: "entry-from-provider-live-fanout",
+					reviewerFanoutPlanning: {
+						enabled: true,
+						attemptId: "attempt-provider-live-fanout",
+						parentSessionRef: "ses-provider-live-fanout-parent",
+						agentRef: "agent-reviewer-provider-live-fanout",
+						requestedAt: "2026-05-19T00:02:00.000Z",
+						persistDerivedFanoutPlanEvidence: true,
+						fanoutPlanEvidenceId: "fanout-from-provider-live-1",
+					},
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-fanout-1",
+							availability_ref: "availability-live-fanout-1",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-acquisition-cache-fanout",
+				evidenceId: "provider-acquisition-cache-fanout-evidence-1",
+				resultId: "provider-acquisition-cache-fanout-result-1",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "provider_acquisition_recorded");
+		const materialization = result.cacheMaterialization as Record<string, unknown>;
+		assert.equal(materialization.state, "materialized");
+		assert.equal(materialization.pairSelectionReady, true);
+		assert.deepEqual(materialization.reviewerFanoutPlanning, {
+			state: "fanout_ready",
+			blockedLabels: [],
+			fanoutPlanState: "fanout_ready",
+			plannedPerspectives: [
+				"policy_security",
+				"architecture",
+				"verification_implementation",
+			],
+			runtimeLaneLaunchRequests: 3,
+			launchAttempted: false,
+			approvalInferred: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+			persisted: true,
+			persistedEvidenceId: "fanout-from-provider-live-1",
+			persistErrors: [],
+		});
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-acquisition-cache-fanout",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "reviewer_fanout_plan",
+			).length,
+			1,
+		);
+		const fanoutPlan = reloaded.entries.find(
+			(entry) => entry.evidenceClass === "reviewer_fanout_plan",
+		);
+		assert.equal(fanoutPlan?.evidenceId, "fanout-from-provider-live-1");
+		assert.equal(fanoutPlan?.record.state, "fanout_ready");
+		assert.equal(fanoutPlan?.record.actualLaneLaunch, false);
+		assert.equal(fanoutPlan?.record.providerCall, false);
+		assert.equal(fanoutPlan?.record.runtimeExecution, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
