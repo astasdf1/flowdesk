@@ -74,6 +74,25 @@ export interface FlowDeskExactModelAvailabilityCacheRefreshPlanV1 extends Valida
 	runtimeExecution: false;
 }
 
+export interface FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1 extends ValidationResult {
+	schema_version: "flowdesk.exact_model_availability_cache_acquisition_plan.v1";
+	state: "acquisition_not_needed" | "acquisition_planned" | "blocked";
+	blocked_labels: string[];
+	acquisition_reason_labels: string[];
+	refresh_plan_ok: boolean;
+	refresh_plan_state: "cache_hit" | "refresh_required" | "blocked" | "invalid";
+	refresh_plan_cache_id?: string;
+	acquisition_required: boolean;
+	cache_usable_for_assignment: boolean;
+	acquisition_attempted: false;
+	discovery_attempted: false;
+	refresh_attempted: false;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskReviewerAssignmentPlanV1 extends ValidationResult {
 	schema_version: "flowdesk.reviewer_assignment_plan.v1";
 	cache_id: string;
@@ -460,6 +479,131 @@ export function validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(value: 
 	)
 		errors.push("availability cache refresh plan cannot attempt discovery, refresh, launch, provider call, or runtime authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "exact_model_availability_cache_refresh_plan").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function planFlowDeskExactModelAvailabilityCacheAcquisitionV1(input: {
+	refreshPlan: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
+}): FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1 {
+	const refreshResult = validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(input.refreshPlan);
+	const errors = refreshResult.errors.map((error) => `refresh_plan: ${error}`);
+	const blockedLabels: string[] = [];
+	const acquisitionReasonLabels: string[] = [];
+	let refreshPlanState: FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1["refresh_plan_state"] = "invalid";
+	if (!refreshResult.ok) blockedLabels.push("refresh_plan_invalid");
+	else {
+		refreshPlanState = input.refreshPlan.state;
+		if (input.refreshPlan.state === "blocked") blockedLabels.push("refresh_plan_blocked");
+		if (input.refreshPlan.state === "refresh_required") acquisitionReasonLabels.push(...input.refreshPlan.refresh_reason_labels);
+	}
+	const state = !refreshResult.ok || blockedLabels.length > 0
+		? "blocked"
+		: input.refreshPlan.state === "cache_hit"
+			? "acquisition_not_needed"
+			: "acquisition_planned";
+	return {
+		schema_version: "flowdesk.exact_model_availability_cache_acquisition_plan.v1",
+		ok: errors.length === 0,
+		errors,
+		state,
+		blocked_labels: unique(blockedLabels),
+		acquisition_reason_labels: state === "acquisition_planned" ? unique(acquisitionReasonLabels) : [],
+		refresh_plan_ok: refreshResult.ok,
+		refresh_plan_state: refreshPlanState,
+		refresh_plan_cache_id: refreshResult.ok ? input.refreshPlan.cache_id : undefined,
+		acquisition_required: state === "acquisition_planned",
+		cache_usable_for_assignment: state === "acquisition_not_needed",
+		acquisition_attempted: false,
+		discovery_attempted: false,
+		refresh_attempted: false,
+		...disabledReviewerRuntimeAuthority,
+	};
+}
+
+export function validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("exact model availability cache acquisition plan must be an object");
+	const record = value as Partial<FlowDeskExactModelAvailabilityCacheAcquisitionPlanV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"ok",
+		"errors",
+		"state",
+		"blocked_labels",
+		"acquisition_reason_labels",
+		"refresh_plan_ok",
+		"refresh_plan_state",
+		"refresh_plan_cache_id",
+		"acquisition_required",
+		"cache_usable_for_assignment",
+		"acquisition_attempted",
+		"discovery_attempted",
+		"refresh_attempted",
+		"dispatch_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+	], "availability cache acquisition plan").errors);
+	if (record.schema_version !== "flowdesk.exact_model_availability_cache_acquisition_plan.v1")
+		errors.push("availability cache acquisition plan schema_version is invalid");
+	if (record.state !== "acquisition_not_needed" && record.state !== "acquisition_planned" && record.state !== "blocked")
+		errors.push("availability cache acquisition plan state is invalid");
+	for (const [value, label] of [[record.blocked_labels, "blocked_labels"], [record.acquisition_reason_labels, "acquisition_reason_labels"]] as const) {
+		if (!Array.isArray(value)) errors.push(`${label} must be an array`);
+		else for (const [index, item] of value.entries()) errors.push(...validateOpaqueId(item, `${label}[${index}]`).errors);
+	}
+	if (typeof record.refresh_plan_ok !== "boolean") errors.push("refresh_plan_ok must be boolean");
+	if (
+		record.refresh_plan_state !== "cache_hit" &&
+		record.refresh_plan_state !== "refresh_required" &&
+		record.refresh_plan_state !== "blocked" &&
+		record.refresh_plan_state !== "invalid"
+	)
+		errors.push("refresh_plan_state is invalid");
+	if (record.refresh_plan_cache_id !== undefined)
+		errors.push(...validateOpaqueId(record.refresh_plan_cache_id, "refresh_plan_cache_id").errors);
+	if (record.refresh_plan_state === "invalid" && record.refresh_plan_ok !== false)
+		errors.push("invalid refresh plan state must report refresh_plan_ok false");
+	if (record.refresh_plan_state !== "invalid" && record.refresh_plan_ok !== true)
+		errors.push("non-invalid refresh plan state must report refresh_plan_ok true");
+	if (
+		record.state === "acquisition_not_needed" &&
+		((record.blocked_labels?.length ?? 0) > 0 || (record.acquisition_reason_labels?.length ?? 0) > 0)
+	)
+		errors.push("acquisition_not_needed plan cannot carry blockers or acquisition reasons");
+	if (record.state === "acquisition_not_needed" && record.refresh_plan_state !== "cache_hit")
+		errors.push("acquisition_not_needed plan requires cache_hit refresh plan state");
+	if (record.state === "acquisition_planned" && (record.acquisition_reason_labels?.length ?? 0) === 0)
+		errors.push("acquisition_planned plan requires acquisition reasons");
+	if (record.state === "acquisition_planned" && (record.blocked_labels?.length ?? 0) > 0)
+		errors.push("acquisition_planned plan cannot carry blockers");
+	if (record.state === "acquisition_planned" && record.refresh_plan_state !== "refresh_required")
+		errors.push("acquisition_planned plan requires refresh_required refresh plan state");
+	if (record.state === "blocked" && (record.blocked_labels?.length ?? 0) === 0)
+		errors.push("blocked acquisition plan requires blocked labels");
+	if (record.state === "blocked" && (record.acquisition_reason_labels?.length ?? 0) > 0)
+		errors.push("blocked acquisition plan cannot carry acquisition reasons");
+	if (
+		record.state === "blocked" &&
+		record.refresh_plan_state !== "blocked" &&
+		record.refresh_plan_state !== "invalid"
+	)
+		errors.push("blocked acquisition plan requires blocked or invalid refresh plan state");
+	if (record.acquisition_required !== (record.state === "acquisition_planned"))
+		errors.push("acquisition_required must match acquisition_planned state");
+	if (record.cache_usable_for_assignment !== (record.state === "acquisition_not_needed"))
+		errors.push("cache_usable_for_assignment must match acquisition_not_needed state");
+	if (
+		record.acquisition_attempted !== false ||
+		record.discovery_attempted !== false ||
+		record.refresh_attempted !== false ||
+		record.dispatch_authority_enabled !== false ||
+		record.providerCall !== false ||
+		record.actualLaneLaunch !== false ||
+		record.runtimeExecution !== false
+	)
+		errors.push("availability cache acquisition plan cannot attempt discovery, refresh, acquisition, launch, provider call, or runtime authority");
+	errors.push(...validateNoForbiddenRawPayloads(record, "exact_model_availability_cache_acquisition_plan").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 

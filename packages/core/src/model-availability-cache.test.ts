@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	type FlowDeskExactModelAvailabilityCacheV1,
+	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
 	planFlowDeskExactModelAvailabilityCacheRefreshV1,
 	planFlowDeskReviewerAssignmentsV1,
 	planFlowDeskReviewerFanoutV1,
 	revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1,
 	revalidateFlowDeskReviewerAssignmentsV1,
-	validateFlowDeskExactModelAvailabilityCacheV1,
+	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
 	validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+	validateFlowDeskExactModelAvailabilityCacheV1,
 	validateFlowDeskReviewerAssignmentRevalidationV1,
 	validateFlowDeskReviewerFanoutPlanV1,
-	type FlowDeskExactModelAvailabilityCacheV1,
 } from "./index.js";
 
-function cache(overrides: Partial<FlowDeskExactModelAvailabilityCacheV1> = {}): FlowDeskExactModelAvailabilityCacheV1 {
+function cache(
+	overrides: Partial<FlowDeskExactModelAvailabilityCacheV1> = {},
+): FlowDeskExactModelAvailabilityCacheV1 {
 	return {
 		schema_version: "flowdesk.exact_model_availability_cache.v1",
 		cache_id: "cache-1",
@@ -24,17 +28,19 @@ function cache(overrides: Partial<FlowDeskExactModelAvailabilityCacheV1> = {}): 
 		registry_hash: "hash-registry-1",
 		policy_pack_hash: "hash-policy-1",
 		auth_account_boundary_ref: "account-1",
-		entries: [{
-			entry_id: "entry-claude-1",
-			provider_family: "claude",
-			provider_identity_ref: "provider-claude-1",
-			provider_qualified_model_id: "claude/claude-opus-4-5",
-			model_family: "opus",
-			registered: true,
-			available: true,
-			highest_tier_eligible: true,
-			availability_ref: "availability-1",
-		}],
+		entries: [
+			{
+				entry_id: "entry-claude-1",
+				provider_family: "claude",
+				provider_identity_ref: "provider-claude-1",
+				provider_qualified_model_id: "claude/claude-opus-4-5",
+				model_family: "opus",
+				registered: true,
+				available: true,
+				highest_tier_eligible: true,
+				availability_ref: "availability-1",
+			},
+		],
 		dispatch_authority_enabled: false,
 		providerCall: false,
 		actualLaneLaunch: false,
@@ -43,7 +49,11 @@ function cache(overrides: Partial<FlowDeskExactModelAvailabilityCacheV1> = {}): 
 	};
 }
 
-function revalidation(overrides: Partial<Parameters<typeof revalidateFlowDeskReviewerAssignmentsV1>[0]> = {}) {
+function revalidation(
+	overrides: Partial<
+		Parameters<typeof revalidateFlowDeskReviewerAssignmentsV1>[0]
+	> = {},
+) {
 	return revalidateFlowDeskReviewerAssignmentsV1({
 		cache: cache(),
 		localDate: "2026-05-21",
@@ -57,7 +67,9 @@ function revalidation(overrides: Partial<Parameters<typeof revalidateFlowDeskRev
 	});
 }
 
-function cacheHitRefreshPlan(overrides: Record<string, unknown> = {}): ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1> {
+function cacheHitRefreshPlan(
+	overrides: Record<string, unknown> = {},
+): ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1> {
 	return {
 		...planFlowDeskExactModelAvailabilityCacheRefreshV1({
 			cache: cache(),
@@ -73,42 +85,96 @@ function cacheHitRefreshPlan(overrides: Record<string, unknown> = {}): ReturnTyp
 	} as ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1>;
 }
 
+function refreshRequiredPlan(
+	overrides: Record<string, unknown> = {},
+): ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1> {
+	return {
+		...planFlowDeskExactModelAvailabilityCacheRefreshV1({
+			localDate: "2026-05-21",
+			activeProfileRef: "profile-1",
+			opencodeVersionRef: "opencode-1.15.6",
+			flowdeskPackageVersionRef: "flowdesk-0.1.1",
+			registryHash: "hash-registry-1",
+			policyPackHash: "hash-policy-1",
+			authAccountBoundaryRef: "account-1",
+		}),
+		...overrides,
+	} as ReturnType<typeof planFlowDeskExactModelAvailabilityCacheRefreshV1>;
+}
+
 test("exact-model availability cache validates same-day concrete model entries", () => {
 	assert.equal(validateFlowDeskExactModelAvailabilityCacheV1(cache()).ok, true);
-	const plan = planFlowDeskReviewerAssignmentsV1({ cache: cache(), localDate: "2026-05-21" });
+	const plan = planFlowDeskReviewerAssignmentsV1({
+		cache: cache(),
+		localDate: "2026-05-21",
+	});
 	assert.equal(plan.state, "ready");
 	assert.equal(plan.lane_bindings.length, 3);
-	assert.equal(new Set(plan.lane_bindings.map((lane) => lane.provider_qualified_model_id)).size, 1);
+	assert.equal(
+		new Set(plan.lane_bindings.map((lane) => lane.provider_qualified_model_id))
+			.size,
+		1,
+	);
 	assert.equal(plan.providerCall, false);
 });
 
 test("availability cache blocks stale date, aliases, and lower-tier substitution", () => {
-	const stale = planFlowDeskReviewerAssignmentsV1({ cache: cache(), localDate: "2026-05-22" });
+	const stale = planFlowDeskReviewerAssignmentsV1({
+		cache: cache(),
+		localDate: "2026-05-22",
+	});
 	assert.equal(stale.state, "blocked");
 	assert.ok(stale.blocked_labels.includes("cache_not_same_day"));
 	assert.deepEqual(stale.lane_bindings, []);
-	const invalid = validateFlowDeskExactModelAvailabilityCacheV1(cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest", highest_tier_eligible: false }] }));
+	const invalid = validateFlowDeskExactModelAvailabilityCacheV1(
+		cache({
+			entries: [
+				{
+					...cache().entries[0],
+					provider_qualified_model_id: "claude/latest",
+					highest_tier_eligible: false,
+				},
+			],
+		}),
+	);
 	assert.equal(invalid.ok, false);
-	const invalidPlan = planFlowDeskReviewerAssignmentsV1({ cache: cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" }] }), localDate: "2026-05-21" });
+	const invalidPlan = planFlowDeskReviewerAssignmentsV1({
+		cache: cache({
+			entries: [
+				{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" },
+			],
+		}),
+		localDate: "2026-05-21",
+	});
 	assert.equal(invalidPlan.state, "blocked");
 	assert.ok(invalidPlan.blocked_labels.includes("cache_invalid"));
 	assert.deepEqual(invalidPlan.lane_bindings, []);
 });
 
 test("availability cache rejects unknown properties and provider drift", () => {
-	const unknown = validateFlowDeskExactModelAvailabilityCacheV1({ ...cache(), providerCallAuthority: true });
+	const unknown = validateFlowDeskExactModelAvailabilityCacheV1({
+		...cache(),
+		providerCallAuthority: true,
+	});
 	assert.equal(unknown.ok, false);
 	assert.match(unknown.errors.join("|"), /unknown properties/);
 
-	const drift = validateFlowDeskExactModelAvailabilityCacheV1(cache({
-		entries: [{
-			...cache().entries[0],
-			provider_family: "openai",
-			provider_qualified_model_id: "claude/claude-opus-4-5",
-		}],
-	}));
+	const drift = validateFlowDeskExactModelAvailabilityCacheV1(
+		cache({
+			entries: [
+				{
+					...cache().entries[0],
+					provider_family: "openai",
+					provider_qualified_model_id: "claude/claude-opus-4-5",
+				},
+			],
+		}),
+	);
 	assert.equal(drift.ok, false);
-	assert.match(drift.errors.join("|"), /must match provider_qualified_model_id/);
+	assert.match(
+		drift.errors.join("|"),
+		/must match provider_qualified_model_id/,
+	);
 });
 
 test("availability cache refresh plan distinguishes cache hit, missing, and drift", () => {
@@ -126,7 +192,10 @@ test("availability cache refresh plan distinguishes cache hit, missing, and drif
 	assert.equal(hit.cache_usable_for_assignment, true);
 	assert.equal(hit.discovery_required, false);
 	assert.equal(hit.providerCall, false);
-	assert.equal(validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(hit).ok, true);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(hit).ok,
+		true,
+	);
 
 	const missing = planFlowDeskExactModelAvailabilityCacheRefreshV1({
 		localDate: "2026-05-21",
@@ -164,7 +233,11 @@ test("availability cache refresh plan distinguishes cache hit, missing, and drif
 
 test("availability cache refresh plan blocks invalid cache and authority smuggling", () => {
 	const invalidCache = planFlowDeskExactModelAvailabilityCacheRefreshV1({
-		cache: cache({ entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" }] }),
+		cache: cache({
+			entries: [
+				{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" },
+			],
+		}),
 		localDate: "2026-05-21",
 		activeProfileRef: "profile-1",
 		opencodeVersionRef: "opencode-1.15.6",
@@ -191,14 +264,156 @@ test("availability cache refresh plan blocks invalid cache and authority smuggli
 		providerCall: true,
 	});
 	assert.equal(forged.ok, false);
-	assert.match(forged.errors.join("|"), /cannot attempt discovery, refresh, launch, provider call, or runtime authority/);
+	assert.match(
+		forged.errors.join("|"),
+		/cannot attempt discovery, refresh, launch, provider call, or runtime authority/,
+	);
+});
+
+test("availability cache acquisition plan distinguishes no-op, planned, and blocked states", () => {
+	const noOp = planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+		refreshPlan: cacheHitRefreshPlan(),
+	});
+	assert.equal(noOp.state, "acquisition_not_needed");
+	assert.equal(noOp.acquisition_required, false);
+	assert.equal(noOp.cache_usable_for_assignment, true);
+	assert.equal(noOp.refresh_plan_state, "cache_hit");
+	assert.deepEqual(noOp.blocked_labels, []);
+	assert.deepEqual(noOp.acquisition_reason_labels, []);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(noOp).ok,
+		true,
+	);
+
+	const planned = planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+		refreshPlan: refreshRequiredPlan(),
+	});
+	assert.equal(planned.state, "acquisition_planned");
+	assert.equal(planned.acquisition_required, true);
+	assert.equal(planned.cache_usable_for_assignment, false);
+	assert.equal(planned.refresh_plan_state, "refresh_required");
+	assert.ok(planned.acquisition_reason_labels.includes("cache_missing"));
+	assert.deepEqual(planned.blocked_labels, []);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(planned).ok,
+		true,
+	);
+
+	const blocked = planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+		refreshPlan: {
+			...refreshRequiredPlan(),
+			state: "blocked",
+			blocked_labels: ["cache_invalid"],
+			refresh_reason_labels: [],
+			discovery_required: true,
+			refresh_required: false,
+			cache_usable_for_assignment: false,
+		},
+	});
+	assert.equal(blocked.state, "blocked");
+	assert.ok(blocked.blocked_labels.includes("refresh_plan_blocked"));
+	assert.deepEqual(blocked.acquisition_reason_labels, []);
+	assert.equal(blocked.acquisition_required, false);
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(blocked).ok,
+		true,
+	);
+});
+
+test("availability cache acquisition plan blocks invalid refresh evidence and authority smuggling", () => {
+	const invalidRefreshPlan =
+		planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+			refreshPlan: {
+				...cacheHitRefreshPlan(),
+				providerCall: true,
+			} as unknown as ReturnType<
+				typeof planFlowDeskExactModelAvailabilityCacheRefreshV1
+			>,
+		});
+	assert.equal(invalidRefreshPlan.state, "blocked");
+	assert.ok(invalidRefreshPlan.blocked_labels.includes("refresh_plan_invalid"));
+	assert.equal(invalidRefreshPlan.refresh_plan_state, "invalid");
+	assert.match(
+		invalidRefreshPlan.errors.join("|"),
+		/refresh_plan: .*provider call/,
+	);
+
+	const blockedRefreshPlan =
+		planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+			refreshPlan: planFlowDeskExactModelAvailabilityCacheRefreshV1({
+				cache: cache({
+					entries: [
+						{
+							...cache().entries[0],
+							provider_qualified_model_id: "claude/latest",
+						},
+					],
+				}),
+				localDate: "2026-05-21",
+				activeProfileRef: "profile-1",
+				opencodeVersionRef: "opencode-1.15.6",
+				flowdeskPackageVersionRef: "flowdesk-0.1.1",
+				registryHash: "hash-registry-1",
+				policyPackHash: "hash-policy-1",
+				authAccountBoundaryRef: "account-1",
+			}),
+		});
+	assert.equal(blockedRefreshPlan.state, "blocked");
+	assert.ok(blockedRefreshPlan.blocked_labels.includes("refresh_plan_blocked"));
+	assert.equal(blockedRefreshPlan.refresh_plan_state, "blocked");
+	assert.equal(
+		validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1(
+			blockedRefreshPlan,
+		).ok,
+		true,
+	);
+
+	const forgedProviderCall =
+		validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1({
+			...planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+				refreshPlan: refreshRequiredPlan(),
+			}),
+			providerCall: true,
+		} as unknown);
+	assert.equal(forgedProviderCall.ok, false);
+	assert.match(
+		forgedProviderCall.errors.join("|"),
+		/cannot attempt discovery, refresh, acquisition, launch, provider call, or runtime authority/,
+	);
+
+	const forgedAttempts =
+		validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1({
+			...planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+				refreshPlan: refreshRequiredPlan(),
+			}),
+			discovery_attempted: true,
+			refresh_attempted: true,
+			acquisition_attempted: true,
+		} as unknown);
+	assert.equal(forgedAttempts.ok, false);
+	assert.match(
+		forgedAttempts.errors.join("|"),
+		/cannot attempt discovery, refresh, acquisition, launch, provider call, or runtime authority/,
+	);
+
+	const unknown = validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1({
+		...planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+			refreshPlan: refreshRequiredPlan(),
+		}),
+		fallback_authority_enabled: true,
+	} as unknown);
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("|"), /unknown properties/);
 });
 
 test("reviewer assignment revalidation blocks stale cache and context drift", () => {
 	const ready = revalidation();
 	assert.equal(ready.state, "revalidated");
 	assert.equal(ready.eligible_bindings.length, 1);
-	assert.equal(validateFlowDeskReviewerAssignmentRevalidationV1(ready).ok, true);
+	assert.equal(
+		validateFlowDeskReviewerAssignmentRevalidationV1(ready).ok,
+		true,
+	);
 
 	const drift = revalidation({
 		localDate: "2026-05-22",
@@ -217,7 +432,9 @@ test("reviewer assignment revalidation blocks stale cache and context drift", ()
 test("reviewer assignment revalidation rejects alias and lower-tier substitution", () => {
 	const alias = revalidation({
 		cache: cache({
-			entries: [{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" }],
+			entries: [
+				{ ...cache().entries[0], provider_qualified_model_id: "claude/latest" },
+			],
 		}),
 	});
 	assert.equal(alias.state, "blocked");
@@ -229,7 +446,9 @@ test("reviewer assignment revalidation rejects alias and lower-tier substitution
 		}),
 	});
 	assert.equal(lowerTier.state, "blocked");
-	assert.ok(lowerTier.blocked_labels.includes("registered_available_lower_tier_only"));
+	assert.ok(
+		lowerTier.blocked_labels.includes("registered_available_lower_tier_only"),
+	);
 	assert.deepEqual(lowerTier.eligible_bindings, []);
 });
 
@@ -247,28 +466,38 @@ test("reviewer assignment revalidation requires paired cache-hit refresh evidenc
 	});
 	assert.equal(ready.state, "revalidated", ready.errors.join("; "));
 	assert.equal(ready.eligible_bindings.length, 1);
-	assert.equal(validateFlowDeskReviewerAssignmentRevalidationV1(ready).ok, true);
+	assert.equal(
+		validateFlowDeskReviewerAssignmentRevalidationV1(ready).ok,
+		true,
+	);
 
-	const refreshRequired = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
-		cache: cache(),
-		cacheRefreshPlan: cacheHitRefreshPlan({
-			state: "refresh_required",
-			refresh_reason_labels: ["cache_not_same_day"],
-			discovery_required: true,
-			refresh_required: true,
-			cache_usable_for_assignment: false,
-		}),
-		localDate: "2026-05-21",
-		activeProfileRef: "profile-1",
-		opencodeVersionRef: "opencode-1.15.6",
-		flowdeskPackageVersionRef: "flowdesk-0.1.1",
-		registryHash: "hash-registry-1",
-		policyPackHash: "hash-policy-1",
-		authAccountBoundaryRef: "account-1",
-	});
+	const refreshRequired =
+		revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+			cache: cache(),
+			cacheRefreshPlan: cacheHitRefreshPlan({
+				state: "refresh_required",
+				refresh_reason_labels: ["cache_not_same_day"],
+				discovery_required: true,
+				refresh_required: true,
+				cache_usable_for_assignment: false,
+			}),
+			localDate: "2026-05-21",
+			activeProfileRef: "profile-1",
+			opencodeVersionRef: "opencode-1.15.6",
+			flowdeskPackageVersionRef: "flowdesk-0.1.1",
+			registryHash: "hash-registry-1",
+			policyPackHash: "hash-policy-1",
+			authAccountBoundaryRef: "account-1",
+		});
 	assert.equal(refreshRequired.state, "blocked");
-	assert.ok(refreshRequired.blocked_labels.includes("cache_refresh_not_cache_hit"));
-	assert.ok(refreshRequired.blocked_labels.includes("cache_refresh_not_usable_for_assignment"));
+	assert.ok(
+		refreshRequired.blocked_labels.includes("cache_refresh_not_cache_hit"),
+	);
+	assert.ok(
+		refreshRequired.blocked_labels.includes(
+			"cache_refresh_not_usable_for_assignment",
+		),
+	);
 	assert.deepEqual(refreshRequired.eligible_bindings, []);
 });
 
@@ -290,7 +519,9 @@ test("reviewer assignment revalidation blocks cache refresh evidence drift", () 
 	});
 	assert.equal(drift.state, "blocked");
 	assert.ok(drift.blocked_labels.includes("cache_refresh_cache_id_mismatch"));
-	assert.ok(drift.blocked_labels.includes("cache_refresh_expected_context_drift"));
+	assert.ok(
+		drift.blocked_labels.includes("cache_refresh_expected_context_drift"),
+	);
 	assert.ok(drift.blocked_labels.includes("cache_refresh_cache_context_drift"));
 	assert.deepEqual(drift.eligible_bindings, []);
 
@@ -323,8 +554,19 @@ test("reviewer fanout plan deterministically materializes launch requests withou
 	});
 	assert.equal(plan.state, "fanout_ready", plan.errors.join("; "));
 	assert.equal(plan.runtime_lane_launch_requests.length, 3);
-	assert.deepEqual(plan.planned_perspectives, ["policy_security", "architecture", "verification_implementation"]);
-	assert.equal(new Set(plan.runtime_lane_launch_requests.map((request) => request.provider_qualified_model_id)).size, 1);
+	assert.deepEqual(plan.planned_perspectives, [
+		"policy_security",
+		"architecture",
+		"verification_implementation",
+	]);
+	assert.equal(
+		new Set(
+			plan.runtime_lane_launch_requests.map(
+				(request) => request.provider_qualified_model_id,
+			),
+		).size,
+		1,
+	);
 	assert.equal(plan.launch_attempted, false);
 	assert.equal(plan.approval_inferred, false);
 	assert.equal(plan.providerCall, false);
@@ -357,7 +599,10 @@ test("reviewer fanout plan blocks missing perspectives and authority smuggling",
 		planned_perspectives: ["policy_security", "architecture"],
 	});
 	assert.equal(missingPerspective.ok, false);
-	assert.match(missingPerspective.errors.join("|"), /cover every required perspective/);
+	assert.match(
+		missingPerspective.errors.join("|"),
+		/cover every required perspective/,
+	);
 
 	const forged = validateFlowDeskReviewerFanoutPlanV1({
 		...planFlowDeskReviewerFanoutV1({
