@@ -52,6 +52,7 @@ import {
 	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
 	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
+	materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1,
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
 	observeInjectedSdkLaneV1,
 	observeInjectedSdkReviewerVerdictV1,
@@ -1292,6 +1293,147 @@ test("runtime lane launch lifecycle materializer blocks duplicate and non-launch
 				.length,
 			1,
 		);
+	});
+});
+
+test("runtime lane complete lifecycle materializer records verdict-linked complete evidence", async () => {
+	await withTempRoot(async (rootDir) => {
+		const launchPlan = runtimeLaneLaunchPlan();
+		const { client } = fakeRuntimeLaneClient();
+		const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: true,
+				parentSessionId: "parent-123",
+				promptText: "review",
+				dispatchMethod: "prompt",
+			},
+		});
+		assert.equal(launchResult.status, "lane_launch_started");
+		const verdict = typedReviewerVerdict();
+		const observation = await observeInjectedSdkReviewerVerdictV1({
+			client: observingClient(
+				[],
+				[{ info: { id: "message-verdict-123" }, parts: [{ type: "text", text: JSON.stringify(verdict) }] }],
+			).client,
+			request: {
+				sessionId: "child-123",
+				workflowId: "workflow-123",
+				lanePlanRef: "lane-plan-123",
+				bindingRef: "binding-reviewer-123",
+				perspective: "policy_security",
+			},
+		});
+		assert.equal(observation.status, "verdict_observed");
+
+		const materialized = materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1({
+			rootDir,
+			launchPlan,
+			launchResult,
+			verdictObservation: observation,
+			evidenceId: "lane-lifecycle-complete-1",
+			observedAt: now,
+			outputRef: "output-reviewer-1",
+			runtimeEchoRef: "runtime-echo-reviewer-1",
+			telemetryRef: "telemetry-reviewer-1",
+			timeoutMs: 120_000,
+			orphanMaxAgeMs: 300_000,
+		});
+
+		assert.equal(materialized.status, "lane_lifecycle_recorded");
+		assert.equal(materialized.lifecycleState, "complete");
+		assert.equal(materialized.authority.runtimeLaneLifecyclePersisted, true);
+		assert.equal(materialized.authority.actualLaneLaunch, false);
+		const lifecycle = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		}).entries.find((entry) => entry.evidenceClass === "lane_lifecycle");
+		assert.equal(lifecycle?.evidenceId, "lane-lifecycle-complete-1");
+		assert.equal(lifecycle?.record.state, "complete");
+		assert.equal(lifecycle?.record.verdict_ref, "verdict-policy-security");
+		assert.equal(lifecycle?.record.child_session_ref, "ses-child-123");
+		assert.equal(lifecycle?.record.message_ref, "msg-message-lane-123");
+		assert.equal(lifecycle?.record.output_ref, "output-reviewer-1");
+	});
+});
+
+test("runtime lane complete lifecycle materializer blocks non-verdict observations and duplicates", async () => {
+	await withTempRoot(async (rootDir) => {
+		const launchPlan = runtimeLaneLaunchPlan();
+		const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client: fakeRuntimeLaneClient().client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: true,
+				parentSessionId: "parent-123",
+				promptText: "review",
+				dispatchMethod: "prompt",
+			},
+		});
+		const missingObservation = await observeInjectedSdkReviewerVerdictV1({
+			client: observingClient([], [{ parts: [{ type: "text", text: "ordinary prose" }] }]).client,
+			request: {
+				sessionId: "child-123",
+				workflowId: "workflow-123",
+				lanePlanRef: "lane-plan-123",
+				bindingRef: "binding-reviewer-123",
+				perspective: "policy_security",
+			},
+		});
+		const blocked = materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1({
+			rootDir,
+			launchPlan,
+			launchResult,
+			verdictObservation: missingObservation,
+			evidenceId: "lane-lifecycle-complete-blocked",
+			observedAt: now,
+			outputRef: "output-reviewer-1",
+			runtimeEchoRef: "runtime-echo-reviewer-1",
+			telemetryRef: "telemetry-reviewer-1",
+		});
+		assert.equal(blocked.status, "blocked_before_lane_lifecycle");
+		assert.equal(blocked.writeAttempted, false);
+		assert.match(String(blocked.redactedBlockReason), /verdict_observed/);
+
+		const observation = await observeInjectedSdkReviewerVerdictV1({
+			client: observingClient(
+				[],
+				[{ parts: [{ type: "text", text: JSON.stringify(typedReviewerVerdict()) }] }],
+			).client,
+			request: {
+				sessionId: "child-123",
+				workflowId: "workflow-123",
+				lanePlanRef: "lane-plan-123",
+				bindingRef: "binding-reviewer-123",
+				perspective: "policy_security",
+			},
+		});
+		const first = materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1({
+			rootDir,
+			launchPlan,
+			launchResult,
+			verdictObservation: observation,
+			evidenceId: "lane-lifecycle-complete-dup",
+			observedAt: now,
+			outputRef: "output-reviewer-1",
+			runtimeEchoRef: "runtime-echo-reviewer-1",
+			telemetryRef: "telemetry-reviewer-1",
+		});
+		assert.equal(first.status, "lane_lifecycle_recorded");
+		const duplicate = materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1({
+			rootDir,
+			launchPlan,
+			launchResult,
+			verdictObservation: observation,
+			evidenceId: "lane-lifecycle-complete-dup",
+			observedAt: now,
+			outputRef: "output-reviewer-1",
+			runtimeEchoRef: "runtime-echo-reviewer-1",
+			telemetryRef: "telemetry-reviewer-1",
+		});
+		assert.equal(duplicate.status, "blocked_before_lane_lifecycle");
+		assert.match(String(duplicate.redactedBlockReason), /already exists/);
 	});
 });
 
