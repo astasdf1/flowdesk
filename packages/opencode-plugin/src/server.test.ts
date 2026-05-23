@@ -203,6 +203,33 @@ function exactModelAvailabilityCacheAcquisitionPlanRecord() {
 	});
 }
 
+function exactModelProviderAcquisitionToolRequest(overrides: Record<string, unknown> = {}) {
+	return {
+		workflowId: "workflow-provider-acquisition-1",
+		evidenceId: "provider-acquisition-evidence-1",
+		acquisitionPlan: exactModelAvailabilityCacheAcquisitionPlanRecord(),
+		resultId: "provider-acquisition-result-1",
+		localDate: "2026-05-19",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+		providerFamily: "claude",
+		providerIdentityRef: "provider-claude-1",
+		providerQualifiedModelId: "claude/claude-opus-4-5",
+		modelFamily: "opus",
+		availabilityRef: "availability-planned-1",
+		preCallAuditRef: "audit-provider-acquisition-1",
+		idempotencyRef: "idempotency-provider-acquisition-1",
+		liveTestRunRef: "live-test-run-1",
+		redactionProofRef: "redaction-proof-1",
+		observedAt: "2026-05-19T00:00:00.000Z",
+		...overrides,
+	};
+}
+
 function writeSessionEvidence(root: string, workflowId: string, records: Record<string, unknown>[]) {
 	const intents = records.map((record, index) => {
 		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
@@ -329,29 +356,7 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
 		const raw = await liveTool.execute({
-			request: {
-				workflowId: "workflow-provider-acquisition-1",
-				evidenceId: "provider-acquisition-evidence-1",
-				acquisitionPlan: exactModelAvailabilityCacheAcquisitionPlanRecord(),
-				resultId: "provider-acquisition-result-1",
-				localDate: "2026-05-19",
-				activeProfileRef: "profile-1",
-				opencodeVersionRef: "opencode-1.15.6",
-				flowdeskPackageVersionRef: "flowdesk-0.1.1",
-				registryHash: "hash-registry-1",
-				policyPackHash: "hash-policy-1",
-				authAccountBoundaryRef: "account-1",
-				providerFamily: "claude",
-				providerIdentityRef: "provider-claude-1",
-				providerQualifiedModelId: "claude/claude-opus-4-5",
-				modelFamily: "opus",
-				availabilityRef: "availability-planned-1",
-				preCallAuditRef: "audit-provider-acquisition-1",
-				idempotencyRef: "idempotency-provider-acquisition-1",
-				liveTestRunRef: "live-test-run-1",
-				redactionProofRef: "redaction-proof-1",
-				observedAt: "2026-05-19T00:00:00.000Z",
-			},
+			request: exactModelProviderAcquisitionToolRequest(),
 		}, undefined as never);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_recorded");
@@ -374,6 +379,238 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 			),
 			true,
 		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition can use OpenCode metadata client without prompt dispatch", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-metadata-"));
+	const calls: string[] = [];
+	try {
+		const opencodeClient = {
+			config: {
+				providers(parameters?: { directory?: string }) {
+					calls.push(`config.providers:${parameters?.directory ?? "none"}`);
+					return {
+						data: {
+							providers: [{
+								id: "anthropic",
+								models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+							}],
+							default: { anthropic: "claude-opus-4-5" },
+						},
+					};
+				},
+			},
+			provider: {
+				list(parameters?: { directory?: string }) {
+					calls.push(`provider.list:${parameters?.directory ?? "none"}`);
+					return {
+						data: {
+							all: [{
+								id: "anthropic",
+								models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+							}],
+							default: { anthropic: "claude-opus-4-5" },
+							connected: ["anthropic"],
+						},
+					};
+				},
+				auth(parameters?: { directory?: string }) {
+					calls.push(`provider.auth:${parameters?.directory ?? "none"}`);
+					return { data: { anthropic: [{ type: "oauth" }] } };
+				},
+			},
+			session: {
+				prompt() {
+					throw new Error("metadata acquisition must not dispatch prompts");
+				},
+				promptAsync() {
+					throw new Error("metadata acquisition must not dispatch prompts");
+				},
+			},
+		};
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server({ client: opencodeClient, directory: "/flowdesk-project" } as never);
+		assert.equal(
+			Object.keys(defaultHooks.tool ?? {}).includes(
+				flowdeskExactModelProviderAcquisitionLiveTestToolName,
+			),
+			false,
+		);
+
+		const hooks = await flowdeskOpenCodeServerPlugin.server({ client: opencodeClient, directory: "/flowdesk-project" } as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-metadata-1",
+				evidenceId: "provider-metadata-evidence-1",
+				resultId: "provider-metadata-result-1",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "provider_acquisition_recorded");
+		assert.equal(result.providerCallAttempted, false);
+		assert.equal(result.writeAttempted, true);
+		assert.equal(result.evidenceReloaded, true);
+		assert.equal(result.sanitizedProviderResultRef, "provider-result-anthropic-claude-opus-4-5-metadata");
+		assert.deepEqual(calls, [
+			"config.providers:/flowdesk-project",
+			"provider.list:/flowdesk-project",
+			"provider.auth:/flowdesk-project",
+		]);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-metadata-1",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		const record = reloaded.entries.find(
+			(entry) => entry.evidenceId === "provider-metadata-evidence-1",
+		)?.record as Record<string, unknown> | undefined;
+		assert.ok(record);
+		assert.equal(record.state, "availability_acquired");
+		assert.equal(record.providerCall, false);
+		assert.equal(record.acquisition_attempted, true);
+		assert.equal(record.discovery_attempted, true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition metadata client fails closed for missing provider model and auth", async () => {
+	const cases = [
+		{
+			name: "provider",
+			client: {
+				config: { providers: () => ({ data: { providers: [], default: {} } }) },
+				provider: {
+					list: () => ({ data: { all: [], default: {}, connected: [] } }),
+					auth: () => ({ data: { anthropic: [{ type: "oauth" }] } }),
+				},
+			},
+			blockedLabel: "opencode_provider_metadata_missing",
+		},
+		{
+			name: "model",
+			client: {
+				config: { providers: () => ({ data: { providers: [{ id: "anthropic", models: {} }], default: {} } }) },
+				provider: {
+					list: () => ({ data: { all: [{ id: "anthropic", models: {} }], default: {}, connected: ["anthropic"] } }),
+					auth: () => ({ data: { anthropic: [{ type: "oauth" }] } }),
+				},
+			},
+			blockedLabel: "opencode_provider_model_missing",
+		},
+		{
+			name: "auth",
+			client: {
+				config: { providers: () => ({ data: { providers: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }], default: {} } }) },
+				provider: {
+					list: () => ({ data: { all: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }], default: {}, connected: [] } }),
+					auth: () => ({ data: {} }),
+				},
+			},
+			blockedLabel: "opencode_provider_auth_missing",
+		},
+	];
+
+	for (const entry of cases) {
+		const root = mkdtempSync(join(tmpdir(), `flowdesk-provider-${entry.name}-missing-`));
+		try {
+			const hooks = await flowdeskOpenCodeServerPlugin.server({ client: entry.client, directory: "/flowdesk-project" } as never, {
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+					enabled: true,
+					durableStateRoot: root,
+				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			});
+			const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+			assert.ok(liveTool);
+			const workflowId = `workflow-provider-${entry.name}-missing`;
+			const evidenceId = `provider-${entry.name}-missing-evidence`;
+			const raw = await liveTool.execute({
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId,
+					evidenceId,
+					resultId: `provider-${entry.name}-missing-result`,
+				}),
+			}, undefined as never);
+			const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+			assert.equal(result.status, "provider_acquisition_blocked");
+			assert.equal(result.providerCallAttempted, false);
+			assert.equal(result.writeAttempted, true);
+			assert.equal(result.resultState, "blocked");
+			const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+			assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+			const record = reloaded.entries.find(
+				(item) => item.evidenceId === evidenceId,
+			)?.record as Record<string, unknown> | undefined;
+			assert.ok(record);
+			assert.equal(record.providerCall, false);
+			assert.equal(record.acquisition_attempted, false);
+			assert.ok((record.blocked_labels as unknown[]).includes(entry.blockedLabel));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+});
+
+test("exact-model provider acquisition live-test rejects unsanitized client payloads", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-raw-reject-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-raw-test",
+							availability_ref: "availability-live-raw-test",
+							highest_tier_eligible: true,
+							raw_provider_payload: "provider response token secret",
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const workflowId = "workflow-provider-raw-reject";
+		const evidenceId = "provider-raw-reject-evidence";
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId,
+				evidenceId,
+				resultId: "provider-raw-reject-result",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "provider_acquisition_blocked");
+		assert.equal(result.providerCallAttempted, true);
+		assert.equal("raw_provider_payload" in result, false);
+		assert.equal("result" in result, false);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		const record = reloaded.entries.find(
+			(item) => item.evidenceId === evidenceId,
+		)?.record as Record<string, unknown> | undefined;
+		assert.ok(record);
+		assert.equal(record.state, "blocked");
+		assert.ok((record.blocked_labels as unknown[]).includes("provider_acquisition_result_not_sanitized"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -154,12 +154,29 @@ export interface FlowDeskExactModelProviderAcquisitionClientResultV1 {
 	availability_ref?: string;
 	highest_tier_eligible?: boolean;
 	blocked_labels?: string[];
+	provider_call_confirmed?: boolean;
 }
 
 export interface FlowDeskExactModelProviderAcquisitionClientV1 {
 	checkExactModelAvailability(
 		request: FlowDeskExactModelProviderAcquisitionClientRequestV1,
 	): Promise<FlowDeskExactModelProviderAcquisitionClientResultV1> | FlowDeskExactModelProviderAcquisitionClientResultV1;
+}
+
+export interface FlowDeskOpenCodeMetadataProviderAcquisitionClientOptionsV1 {
+	client: unknown;
+	directory?: string;
+	workspace?: string;
+}
+
+interface FlowDeskOpenCodeMetadataProviderSurfaceV1 {
+	config?: {
+		providers?(parameters?: { directory?: string; workspace?: string }): unknown;
+	};
+	provider?: {
+		list?(parameters?: { directory?: string; workspace?: string }): unknown;
+		auth?(parameters?: { directory?: string; workspace?: string }): unknown;
+	};
 }
 
 export interface FlowDeskExactModelProviderAcquisitionLiveTestRequestV1 {
@@ -601,6 +618,197 @@ function blockedExactModelProviderAcquisition(
 	};
 }
 
+function opencodeMetadataCallParameters(input: {
+	directory?: string;
+	workspace?: string;
+}): { directory?: string; workspace?: string } | undefined {
+	const parameters = {
+		...(typeof input.directory === "string" && input.directory.trim().length > 0
+			? { directory: input.directory }
+			: {}),
+		...(typeof input.workspace === "string" && input.workspace.trim().length > 0
+			? { workspace: input.workspace }
+			: {}),
+	};
+	return Object.keys(parameters).length > 0 ? parameters : undefined;
+}
+
+function opencodeProvidersFromConfig(value: unknown): unknown[] | undefined {
+	const record = asRecord(responseData(value));
+	return Array.isArray(record?.providers) ? record.providers : undefined;
+}
+
+function opencodeProvidersFromList(value: unknown): unknown[] | undefined {
+	const record = asRecord(responseData(value));
+	return Array.isArray(record?.all) ? record.all : undefined;
+}
+
+function opencodeConnectedProviderIds(value: unknown): string[] | undefined {
+	const record = asRecord(responseData(value));
+	if (!Array.isArray(record?.connected)) return undefined;
+	return record.connected.every((item) => typeof item === "string")
+		? record.connected
+		: undefined;
+}
+
+function opencodeProviderAuthMethodTypes(
+	value: unknown,
+	providerID: string,
+): string[] | undefined {
+	const methods = asRecord(responseData(value))?.[providerID];
+	if (!Array.isArray(methods) || methods.length === 0) return undefined;
+	const types = methods.map((method) => asRecord(method)?.type);
+	return types.every((type) => type === "api" || type === "oauth")
+		? (types as string[])
+		: undefined;
+}
+
+function opencodeProviderById(
+	providers: readonly unknown[],
+	providerID: string,
+): Record<string, unknown> | undefined {
+	return providers
+		.map(asRecord)
+		.find((provider) => provider?.id === providerID);
+}
+
+function opencodeProviderHasModel(
+	provider: Record<string, unknown> | undefined,
+	modelID: string,
+): boolean {
+	const models = asRecord(provider?.models);
+	return models !== undefined && asRecord(models[modelID]) !== undefined;
+}
+
+function unavailableMetadataResult(
+	labels: string[],
+): FlowDeskExactModelProviderAcquisitionClientResultV1 {
+	return {
+		outcome: "blocked",
+		blocked_labels: labels,
+		provider_call_confirmed: false,
+	};
+}
+
+export function createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(
+	options: FlowDeskOpenCodeMetadataProviderAcquisitionClientOptionsV1,
+): FlowDeskExactModelProviderAcquisitionClientV1 | undefined {
+	const client = asRecord(options.client) as
+		| FlowDeskOpenCodeMetadataProviderSurfaceV1
+		| undefined;
+	if (client === undefined) return undefined;
+	return {
+		async checkExactModelAvailability(request) {
+			const model = parseProviderQualifiedModelId(
+				request.provider_qualified_model_id,
+			);
+			const providerID = opencodeRuntimeProviderIDForFlowDeskProviderFamily(
+				request.provider_family,
+			);
+			if (
+				model === undefined ||
+				providerID === undefined ||
+				model.providerID !== request.provider_family
+			) {
+				return unavailableMetadataResult([
+					"opencode_provider_mapping_missing",
+				]);
+			}
+			if (
+				typeof client.config?.providers !== "function" ||
+				typeof client.provider?.list !== "function" ||
+				typeof client.provider?.auth !== "function"
+			) {
+				return unavailableMetadataResult([
+					"opencode_metadata_surface_missing",
+				]);
+			}
+
+			const callParameters = opencodeMetadataCallParameters(options);
+			let configProvidersResponse: unknown;
+			let providerListResponse: unknown;
+			let providerAuthResponse: unknown;
+			try {
+				[configProvidersResponse, providerListResponse, providerAuthResponse] = await Promise.all([
+					client.config.providers.call(client.config, callParameters),
+					client.provider.list.call(client.provider, callParameters),
+					client.provider.auth.call(client.provider, callParameters),
+				]);
+			} catch {
+				return unavailableMetadataResult([
+					"opencode_metadata_query_failed",
+				]);
+			}
+			const configProviders = opencodeProvidersFromConfig(configProvidersResponse);
+			const listedProviders = opencodeProvidersFromList(providerListResponse);
+			const connectedProviderIds = opencodeConnectedProviderIds(providerListResponse);
+			const authMethodTypes = opencodeProviderAuthMethodTypes(
+				providerAuthResponse,
+				providerID,
+			);
+			if (configProviders === undefined)
+				return unavailableMetadataResult([
+					"opencode_config_providers_missing",
+				]);
+			if (listedProviders === undefined)
+				return unavailableMetadataResult([
+					"opencode_provider_list_missing",
+				]);
+			if (connectedProviderIds === undefined || authMethodTypes === undefined)
+				return unavailableMetadataResult([
+					"opencode_provider_auth_missing",
+				]);
+
+			const configProvider = opencodeProviderById(configProviders, providerID);
+			const listedProvider = opencodeProviderById(listedProviders, providerID);
+			if (configProvider === undefined || listedProvider === undefined)
+				return unavailableMetadataResult([
+					"opencode_provider_metadata_missing",
+				]);
+			if (
+				!opencodeProviderHasModel(configProvider, model.modelID) ||
+				!opencodeProviderHasModel(listedProvider, model.modelID)
+			) {
+				return unavailableMetadataResult([
+					"opencode_provider_model_missing",
+				]);
+			}
+			if (!connectedProviderIds.includes(providerID))
+				return unavailableMetadataResult([
+					"opencode_provider_auth_missing",
+				]);
+
+			const sanitizedFacts = {
+				providerID,
+				modelID: model.modelID,
+				authMethodTypes,
+			};
+			const sanitized = validateNoForbiddenRawPayloads(
+				sanitizedFacts,
+				"opencode_metadata_provider_acquisition_facts",
+			);
+			if (!sanitized.ok)
+				return unavailableMetadataResult([
+					"opencode_provider_metadata_not_sanitized",
+				]);
+
+			return {
+				outcome: "available",
+				sanitized_provider_result_ref: refFrom(
+					"provider-result",
+					`${providerID}-${model.modelID}-metadata`,
+				),
+				availability_ref: refFrom(
+					"availability",
+					`${providerID}-${model.modelID}-metadata`,
+				),
+				highest_tier_eligible: true,
+				provider_call_confirmed: false,
+			};
+		},
+	};
+}
+
 export async function runFlowDeskExactModelProviderAcquisitionLiveTestV1(input: {
 	client: FlowDeskExactModelProviderAcquisitionClientV1;
 	request: FlowDeskExactModelProviderAcquisitionLiveTestRequestV1;
@@ -622,7 +830,6 @@ export async function runFlowDeskExactModelProviderAcquisitionLiveTestV1(input: 
 	let clientResult: FlowDeskExactModelProviderAcquisitionClientResultV1;
 	let providerCallAttempted = false;
 	try {
-		providerCallAttempted = true;
 		clientResult = await input.client.checkExactModelAvailability({
 			provider_family: input.request.providerFamily,
 			provider_identity_ref: input.request.providerIdentityRef,
@@ -633,10 +840,13 @@ export async function runFlowDeskExactModelProviderAcquisitionLiveTestV1(input: 
 			live_test_run_ref: input.request.liveTestRunRef,
 			redaction_proof_ref: input.request.redactionProofRef,
 		});
+		providerCallAttempted = clientResult.provider_call_confirmed !== false;
 	} catch {
+		providerCallAttempted = true;
 		clientResult = {
 			outcome: "blocked",
 			blocked_labels: ["provider_acquisition_client_error"],
+			provider_call_confirmed: true,
 		};
 	}
 

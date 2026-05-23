@@ -49,6 +49,7 @@ import type {
 } from "./managed-dispatch-adapter.js";
 import {
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
+	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
 	dispatchManagedDispatchBetaPromptV1,
 	runFlowDeskExactModelProviderAcquisitionLiveTestV1,
 } from "./managed-dispatch-adapter.js";
@@ -1150,8 +1151,13 @@ function exactModelProviderAcquisitionClientFrom(
 	const option = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
 	if (isRecord(option) && isExactModelProviderAcquisitionClient(option.client))
 		return option.client;
-	return isRecord(input) && isExactModelProviderAcquisitionClient(input.exactModelProviderAcquisitionClient)
-		? input.exactModelProviderAcquisitionClient
+	if (isRecord(input) && isExactModelProviderAcquisitionClient(input.exactModelProviderAcquisitionClient))
+		return input.exactModelProviderAcquisitionClient;
+	return isRecord(input)
+		? createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1({
+				client: input.client,
+				...(typeof input.directory === "string" ? { directory: input.directory } : {}),
+			})
 		: undefined;
 }
 
