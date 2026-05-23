@@ -201,6 +201,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.exact_model_availability_cache_provider_acquisition_result.v1", "exact-model-availability-cache-provider-acquisition-result", "FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1", "later_release"),
   artifactEntry("flowdesk.reviewer_assignment_revalidation.v1", "reviewer-assignment-revalidation", "FlowDeskReviewerAssignmentRevalidationV1", "later_release"),
   artifactEntry("flowdesk.reviewer_fanout_plan.v1", "reviewer-fanout-plan", "FlowDeskReviewerFanoutPlanV1", "later_release"),
+  artifactEntry("flowdesk.fallback_regate_plan.v1", "fallback-regate-plan", "FlowDeskFallbackRegatePlanV1", "later_release"),
   artifactEntry("flowdesk.advisory_output_firewall.v1", "advisory-output-firewall", "FlowDeskAdvisoryOutputFirewallV1", "later_release"),
   artifactEntry("flowdesk.federated_registry_state.v1", "federated-registry-state", "FlowDeskFederatedRegistryStateV1", "later_release"),
   {

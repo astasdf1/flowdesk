@@ -11,6 +11,7 @@ import { dirname, resolve, sep } from "node:path";
 import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
 import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
+import { validateFlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
 import {
 	type FlowDeskExactModelAvailabilityCacheMaterializationContextV1,
@@ -84,6 +85,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.controlled_conformance_doc_write.v1",
 	controlled_redacted_audit_export_write:
 		"flowdesk.controlled_redacted_audit_export_write.v1",
+	fallback_regate_plan: "flowdesk.fallback_regate_plan.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -764,6 +766,8 @@ function validateEvidenceShape(
 		return validateFlowDeskControlledConformanceDocWriteRecordV1(record);
 	if (evidenceClass === "controlled_redacted_audit_export_write")
 		return validateFlowDeskControlledRedactedAuditExportWriteRecordV1(record);
+	if (evidenceClass === "fallback_regate_plan")
+		return validateFlowDeskFallbackRegatePlanV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))

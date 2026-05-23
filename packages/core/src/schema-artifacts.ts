@@ -118,7 +118,8 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.reviewer_fanout_plan.v1": ["schema_version", "workflow_id", "attempt_id", "state", "blocked_labels", "required_perspectives", "planned_perspectives", "runtime_lane_launch_requests", "max_concurrent_lane_count", "runtime_launch_plan_required", "lane_launch_approval_required", "launch_attempted", "approval_inferred", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
   "flowdesk.advisory_output_firewall.v1": ["schema_version", "advisory_ref", "workflow_id", "source_schema_version", "allowed_consumer_refs", "forbidden_consumers", "advisory_only", "guard_authority_enabled", "approval_authority_enabled", "dispatch_authority_enabled", "verification_authority_enabled", "external_write_authority_enabled"],
   "flowdesk.federated_registry_state.v1": ["schema_version", "registry_state_id", "workflow_id", "state", "policy_ref", "remote_upload_enabled", "remote_download_enabled", "planning_influence_enabled", "ranking_influence_enabled", "guard_influence_enabled", "approval_influence_enabled", "dispatch_influence_enabled", "external_write_authority_enabled"],
-  "flowdesk.reference_search.request.v1": ["schema_version"]
+  "flowdesk.reference_search.request.v1": ["schema_version"],
+  "flowdesk.fallback_regate_plan.v1": ["schema_version", "state", "required_fresh_evidence_refs", "safe_next_actions", "automatic_fallback_authorized", "provider_switch_attempted", "dispatch_authority_enabled", "realOpenCodeDispatch", "providerCall", "actualLaneLaunch", "runtimeExecution"]
 } satisfies Record<string, readonly string[]>;
 
 const optionalFields: Record<string, readonly string[]> = {
@@ -171,7 +172,8 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.exact_model_availability_cache_acquisition_plan.v1": ["ok", "errors", "refresh_plan_cache_id"],
   "flowdesk.exact_model_availability_cache_provider_acquisition_result.v1": ["ok", "errors", "sanitized_provider_result_ref"],
   "flowdesk.reviewer_assignment_revalidation.v1": ["ok", "errors", "cache_id", "cache_local_date", "cache_active_profile_ref", "cache_opencode_version_ref", "cache_flowdesk_package_version_ref", "cache_registry_hash", "cache_policy_pack_hash", "cache_auth_account_boundary_ref"],
-  "flowdesk.reviewer_fanout_plan.v1": ["ok", "errors", "cache_id"]
+  "flowdesk.reviewer_fanout_plan.v1": ["ok", "errors", "cache_id"],
+  "flowdesk.fallback_regate_plan.v1": ["ok", "errors", "workflow_id", "parent_attempt_id", "new_attempt_id", "decision_ref", "from_provider_qualified_model_id", "to_provider_qualified_model_id", "required_guard_decision_ref", "required_approval_ref", "required_pre_dispatch_audit_ref", "policy_eligibility_ref", "runtime_compatibility_ref", "consumed_fallback_approval_ref"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {

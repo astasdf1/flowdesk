@@ -112,6 +112,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"reviewer_lane_conformance",
 	"controlled_conformance_doc_write",
 	"controlled_redacted_audit_export_write",
+	"fallback_regate_plan",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -142,6 +143,7 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	controlled_conformance_doc_write: "controlled-conformance-doc-write",
 	controlled_redacted_audit_export_write:
 		"controlled-redacted-audit-export-write",
+	fallback_regate_plan: "fallback-regate-plan",
 };
 
 export function sessionEvidenceDirectoryPath(
