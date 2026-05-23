@@ -28,6 +28,7 @@ import {
 	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskPromptNoReplyDecisionV1,
 	type FlowDeskProviderHealthSnapshotV1,
+	type FlowDeskRuntimeLaneLaunchPlanV1,
 	type FlowDeskSessionAbortDecisionV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
 	type FlowDeskTopTierReviewVerdictV1,
@@ -47,6 +48,7 @@ import {
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
+	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
 	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
 	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
@@ -733,6 +735,61 @@ function fakeClient() {
 	return { client, promptCalls, promptAsyncCalls, abortCalls };
 }
 
+function runtimeLaneLaunchPlan(
+	overrides: Partial<FlowDeskRuntimeLaneLaunchPlanV1> = {},
+): FlowDeskRuntimeLaneLaunchPlanV1 {
+	return {
+		schema_version: "flowdesk.runtime_lane_launch_plan.v1",
+		ok: true,
+		errors: [],
+		launch_request_id: "launch-request-123",
+		workflow_id: "workflow-123",
+		attempt_id: "attempt-123",
+		lane_id: "lane-123",
+		state: "launch_ready",
+		blocked_labels: [],
+		parent_session_ref: "ses-parent-123",
+		agent_ref: "agent-reviewer",
+		provider_qualified_model_id: "claude/sonnet-4",
+		launch_reason: "reviewer_fanout",
+		pre_launch_audit_ref: "audit-pre-launch-123",
+		lane_launch_approval_ref: "approval-lane-launch-123",
+		durable_evidence_root_ref: "evidence-root-workflow-123",
+		lifecycle_evidence_class: "lane_lifecycle",
+		exact_binding_confirmed: true,
+		sdk_client_required: true,
+		launch_attempted: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function fakeRuntimeLaneClient() {
+	const createCalls: Array<{ body: { parentID: string; title?: string } }> = [];
+	const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
+	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
+	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
+		session: {
+			create(options) {
+				createCalls.push(options);
+				return Promise.resolve({ id: "child-123" });
+			},
+			prompt(options) {
+				promptCalls.push(options);
+				return Promise.resolve({ info: { id: "message-lane-123" }, parts: [] });
+			},
+			promptAsync(options) {
+				promptAsyncCalls.push(options);
+				return Promise.resolve(undefined);
+			},
+		},
+	};
+	return { client, createCalls, promptCalls, promptAsyncCalls };
+}
+
 function permissionAskDecision(
 	overrides: Partial<FlowDeskPermissionAskDecisionV1> = {},
 ): FlowDeskPermissionAskDecisionV1 {
@@ -963,6 +1020,145 @@ test("injected sdk lane observation degrades when child data or APIs are missing
 	assert.equal(partial.status, "partial");
 	assert.ok(partial.missingLabels.includes("child_session_missing"));
 	assert.equal(partial.authority.hardCancelOrNoReplyAuthority, false);
+});
+
+test("injected sdk runtime lane launch creates child session and prompts exact reviewer binding", async () => {
+	const { client, createCalls, promptCalls, promptAsyncCalls } = fakeRuntimeLaneClient();
+	const result = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client,
+		launchPlan: runtimeLaneLaunchPlan(),
+		request: {
+			allowActualLaneLaunch: true,
+			parentSessionId: "parent-123",
+			promptText: "Return a typed FlowDesk reviewer verdict.",
+			dispatchMethod: "prompt",
+			title: "FlowDesk reviewer lane",
+		},
+	});
+
+	assert.equal(result.status, "lane_launch_started");
+	assert.equal(result.createAttempted, true);
+	assert.equal(result.promptAttempted, true);
+	assert.equal(result.parentSessionRef, "ses-parent-123");
+	assert.equal(result.childSessionRef, "ses-child-123");
+	assert.equal(result.messageRef, "message-message-lane-123");
+	assert.equal(result.agent, "reviewer");
+	assert.deepEqual(result.model, { providerID: "anthropic", modelID: "sonnet-4" });
+	assert.equal(result.authority.actualLaneLaunch, true);
+	assert.equal(result.authority.providerCall, true);
+	assert.equal(result.authority.runtimeExecution, true);
+	assert.equal(result.authority.realOpenCodeDispatch, false);
+	assert.equal(result.authority.defaultRelease1ServerBehaviorUnchanged, true);
+	assert.deepEqual(createCalls, [
+		{ body: { parentID: "parent-123", title: "FlowDesk reviewer lane" } },
+	]);
+	assert.equal(promptAsyncCalls.length, 0);
+	assert.deepEqual(promptCalls, [
+		{
+			path: { id: "child-123" },
+			body: {
+				model: { providerID: "anthropic", modelID: "sonnet-4" },
+				agent: "reviewer",
+				parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
+			},
+		},
+	]);
+});
+
+test("injected sdk runtime lane launch blocks before SDK calls without opt-in or plan binding", async () => {
+	const noOptIn = fakeRuntimeLaneClient();
+	const blockedOptIn = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client: noOptIn.client,
+		launchPlan: runtimeLaneLaunchPlan(),
+		request: {
+			allowActualLaneLaunch: false,
+			parentSessionId: "parent-123",
+			promptText: "review",
+		},
+	});
+	assert.equal(blockedOptIn.status, "blocked_before_lane_launch");
+	assert.equal(blockedOptIn.createAttempted, false);
+	assert.equal(blockedOptIn.promptAttempted, false);
+	assert.match(String(blockedOptIn.redactedBlockReason), /Explicit actual/);
+	assert.equal(noOptIn.createCalls.length, 0);
+	assert.equal(noOptIn.promptAsyncCalls.length, 0);
+
+	const parentDrift = fakeRuntimeLaneClient();
+	const blockedParent = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client: parentDrift.client,
+		launchPlan: runtimeLaneLaunchPlan(),
+		request: {
+			allowActualLaneLaunch: true,
+			parentSessionId: "other-parent",
+			promptText: "review",
+		},
+	});
+	assert.equal(blockedParent.status, "blocked_before_lane_launch");
+	assert.match(String(blockedParent.redactedBlockReason), /parent session/);
+	assert.equal(parentDrift.createCalls.length, 0);
+	assert.equal(parentDrift.promptAsyncCalls.length, 0);
+
+	const blockedPlan = fakeRuntimeLaneClient();
+	const blockedNotReady = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client: blockedPlan.client,
+		launchPlan: runtimeLaneLaunchPlan({
+			ok: false,
+			state: "blocked",
+			blocked_labels: ["sdk_client_unavailable"],
+			exact_binding_confirmed: false,
+		}),
+		request: {
+			allowActualLaneLaunch: true,
+			parentSessionId: "parent-123",
+			promptText: "review",
+		},
+	});
+	assert.equal(blockedNotReady.status, "blocked_before_lane_launch");
+	assert.equal(blockedPlan.createCalls.length, 0);
+	assert.equal(blockedPlan.promptAsyncCalls.length, 0);
+});
+
+test("injected sdk runtime lane launch reports sanitized runtime and provider failures", async () => {
+	const missingCreate = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client: { session: {} },
+		launchPlan: runtimeLaneLaunchPlan(),
+		request: {
+			allowActualLaneLaunch: true,
+			parentSessionId: "parent-123",
+			promptText: "review",
+		},
+	});
+	assert.equal(missingCreate.status, "blocked_before_lane_launch");
+	assert.match(String(missingCreate.redactedBlockReason), /session.create/);
+
+	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
+	const failingPromptClient: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
+		session: {
+			create() {
+				return Promise.resolve({ data: { id: "child-failed" } });
+			},
+			promptAsync(options) {
+				promptAsyncCalls.push(options);
+				return Promise.reject(new Error("raw provider failure"));
+			},
+		},
+	};
+	const failed = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client: failingPromptClient,
+		launchPlan: runtimeLaneLaunchPlan(),
+		request: {
+			allowActualLaneLaunch: true,
+			parentSessionId: "parent-123",
+			promptText: "review",
+		},
+	});
+	assert.equal(failed.status, "lane_launch_failed");
+	assert.equal(failed.createAttempted, true);
+	assert.equal(failed.promptAttempted, true);
+	assert.equal(failed.childSessionRef, "ses-child-failed");
+	assert.equal(failed.redactedErrorCategory, "provider_api");
+	assert.equal(failed.authority.actualLaneLaunch, false);
+	assert.equal(promptAsyncCalls.length, 1);
 });
 
 test("injected sdk reviewer verdict observation accepts only typed matching verdicts", async () => {

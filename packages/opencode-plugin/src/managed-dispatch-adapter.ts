@@ -23,6 +23,7 @@ import type {
 	FlowDeskPermissionAskDecisionV1,
 	FlowDeskProductionApprovalSourceV1,
 	FlowDeskPromptNoReplyDecisionV1,
+	FlowDeskRuntimeLaneLaunchPlanV1,
 	FlowDeskSessionAbortDecisionV1,
 	FlowDeskSessionEvidenceReloadResultV1,
 	FlowDeskTopTierReviewPerspective,
@@ -47,6 +48,7 @@ import {
 	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
+	validateFlowDeskRuntimeLaneLaunchPlanV1,
 	validateFlowDeskSessionAbortDecisionV1,
 	validateNoForbiddenRawPayloads,
 	validateTopTierReviewVerdictV1,
@@ -457,8 +459,48 @@ export interface FlowDeskManagedDispatchBetaPromptOptionsV1 {
 	};
 }
 
+export type FlowDeskRuntimeLaneLaunchDispatchMethodV1 = "promptAsync" | "prompt";
+
+export interface FlowDeskInjectedSdkRuntimeLaneLaunchRequestV1 {
+	allowActualLaneLaunch: boolean;
+	parentSessionId: string;
+	promptText: string;
+	directory?: string;
+	dispatchMethod?: FlowDeskRuntimeLaneLaunchDispatchMethodV1;
+	title?: string;
+}
+
+export interface FlowDeskInjectedSdkRuntimeLaneLaunchResultV1 {
+	adapterProfile: "injected_sdk_runtime_lane_launch_adapter";
+	status:
+		| "lane_launch_started"
+		| "blocked_before_lane_launch"
+		| "lane_launch_failed";
+	createAttempted: boolean;
+	promptAttempted: boolean;
+	workflowId?: string;
+	attemptId?: string;
+	laneId?: string;
+	parentSessionRef?: string;
+	childSessionRef?: string;
+	messageRef?: string;
+	agent?: string;
+	model?: { providerID: string; modelID: string };
+	dispatchMethod?: FlowDeskRuntimeLaneLaunchDispatchMethodV1;
+	redactedBlockReason?: string;
+	redactedErrorCategory?: "runtime" | "provider_api" | "unknown";
+	safeNextActions: ["/flowdesk-status"] | ["/flowdesk-status", "/flowdesk-export-debug"];
+	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
+		runtimeLaneLaunchAuthorized: boolean;
+		defaultRelease1ServerBehaviorUnchanged: true;
+	};
+}
+
 export interface FlowDeskManagedDispatchBetaOpenCodeClientV1 {
 	session: {
+		create?(options: {
+			body: { parentID: string; title?: string };
+		}): unknown | Promise<unknown>;
 		prompt?(
 			options: FlowDeskManagedDispatchBetaPromptOptionsV1,
 		): unknown | Promise<unknown>;
@@ -606,6 +648,40 @@ function exactModelProviderAcquisitionAuthority(
 		exactModelProviderAcquisitionRecorded: recorded,
 		reviewerLaunchAuthorized: false,
 		dispatchAuthorityEnabled: false,
+	};
+}
+
+function runtimeLaneLaunchAuthority(
+	authorized: boolean,
+): FlowDeskInjectedSdkRuntimeLaneLaunchResultV1["authority"] {
+	return {
+		...disabledAuthority(),
+		providerCall: authorized,
+		runtimeExecution: authorized,
+		actualLaneLaunch: authorized,
+		runtimeLaneLaunchAuthorized: authorized,
+		defaultRelease1ServerBehaviorUnchanged: true,
+	};
+}
+
+function blockedRuntimeLaneLaunch(
+	redactedBlockReason: string,
+	plan?: Partial<FlowDeskRuntimeLaneLaunchPlanV1>,
+): FlowDeskInjectedSdkRuntimeLaneLaunchResultV1 {
+	return {
+		adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
+		status: "blocked_before_lane_launch",
+		createAttempted: false,
+		promptAttempted: false,
+		...(plan?.workflow_id === undefined ? {} : { workflowId: plan.workflow_id }),
+		...(plan?.attempt_id === undefined ? {} : { attemptId: plan.attempt_id }),
+		...(plan?.lane_id === undefined ? {} : { laneId: plan.lane_id }),
+		...(plan?.parent_session_ref === undefined
+			? {}
+			: { parentSessionRef: plan.parent_session_ref }),
+		redactedBlockReason,
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+		authority: runtimeLaneLaunchAuthority(false),
 	};
 }
 
@@ -2772,7 +2848,24 @@ function modelRef(value: unknown): string | undefined {
 		: undefined;
 }
 
+function sessionIdFromResponse(value: unknown): string | undefined {
+	const data = responseData(value);
+	const record = asRecord(data);
+	return typeof record?.id === "string" && record.id.trim().length > 0
+		? record.id
+		: undefined;
+}
+
+function agentIdFromRef(value: string | undefined): string | undefined {
+	if (value === undefined || !value.startsWith("agent-")) return undefined;
+	const agent = value.slice("agent-".length).trim();
+	return agent.length > 0 ? agent : undefined;
+}
+
 function firstMessageRef(value: unknown): string | undefined {
+	const direct = asRecord(responseData(value));
+	const directInfo = asRecord(direct?.info) ?? direct;
+	if (typeof directInfo?.id === "string") return refFrom("message", directInfo.id);
 	const messages = arrayData(value);
 	for (const message of messages) {
 		const record = asRecord(message);
@@ -2995,6 +3088,159 @@ export async function observeInjectedSdkLaneV1(input: {
 			missingLabels: ["session_observation_failed"],
 		};
 	}
+}
+
+export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	launchPlan: FlowDeskRuntimeLaneLaunchPlanV1;
+	request: FlowDeskInjectedSdkRuntimeLaneLaunchRequestV1;
+}): Promise<FlowDeskInjectedSdkRuntimeLaneLaunchResultV1> {
+	const plan = input.launchPlan;
+	const planValidation = validateFlowDeskRuntimeLaneLaunchPlanV1(plan);
+	if (!planValidation.ok)
+		return blockedRuntimeLaneLaunch(
+			`Runtime lane launch plan invalid: ${planValidation.errors.join(",") || "unknown"}.`,
+			plan,
+		);
+	if (plan.state !== "launch_ready")
+		return blockedRuntimeLaneLaunch(
+			`Runtime lane launch plan is not ready: ${plan.blocked_labels.join(",") || "blocked"}.`,
+			plan,
+		);
+	if (input.request.allowActualLaneLaunch !== true)
+		return blockedRuntimeLaneLaunch(
+			"Explicit actual runtime lane launch opt-in is required.",
+			plan,
+		);
+	const parentSessionRef = refFrom("ses", input.request.parentSessionId);
+	if (plan.parent_session_ref !== parentSessionRef)
+		return blockedRuntimeLaneLaunch(
+			"Runtime lane launch parent session does not match the launch plan binding.",
+			plan,
+		);
+	const agent = agentIdFromRef(plan.agent_ref);
+	const model = plan.provider_qualified_model_id === undefined
+		? undefined
+		: parseProviderQualifiedModelId(plan.provider_qualified_model_id);
+	const runtimeModel = model === undefined
+		? undefined
+		: opencodeRuntimeModelForFlowDeskModel(model);
+	const text = input.request.promptText.trim();
+	if (agent === undefined || runtimeModel === undefined || text.length === 0)
+		return blockedRuntimeLaneLaunch(
+			"Runtime lane launch is missing an agent, runtime model, or bounded prompt text.",
+			plan,
+		);
+	if (text.length > 20_000)
+		return blockedRuntimeLaneLaunch(
+			"Runtime lane launch prompt text exceeds the bounded prompt limit.",
+			plan,
+		);
+	const create = input.client.session.create;
+	if (create === undefined)
+		return blockedRuntimeLaneLaunch(
+			"Injected OpenCode client is missing session.create for child lane launch.",
+			plan,
+		);
+	const dispatchMethod = input.request.dispatchMethod ?? "promptAsync";
+	const dispatch = input.client.session[dispatchMethod];
+	if (dispatch === undefined)
+		return blockedRuntimeLaneLaunch(
+			"Injected OpenCode client is missing the requested session prompt method.",
+			plan,
+		);
+	let childSessionId: string | undefined;
+	try {
+		childSessionId = sessionIdFromResponse(
+			await create.call(input.client.session, {
+				body: {
+					parentID: input.request.parentSessionId,
+					...(input.request.title === undefined
+						? {}
+						: { title: input.request.title.slice(0, 120) }),
+				},
+			}),
+		);
+	} catch {
+		return {
+			adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
+			status: "lane_launch_failed",
+			createAttempted: true,
+			promptAttempted: false,
+			workflowId: plan.workflow_id,
+			attemptId: plan.attempt_id,
+			laneId: plan.lane_id,
+			parentSessionRef: plan.parent_session_ref,
+			redactedErrorCategory: "runtime",
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+			authority: runtimeLaneLaunchAuthority(false),
+		};
+	}
+	if (childSessionId === undefined)
+		return {
+			adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
+			status: "lane_launch_failed",
+			createAttempted: true,
+			promptAttempted: false,
+			workflowId: plan.workflow_id,
+			attemptId: plan.attempt_id,
+			laneId: plan.lane_id,
+			parentSessionRef: plan.parent_session_ref,
+			redactedErrorCategory: "runtime",
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+			authority: runtimeLaneLaunchAuthority(false),
+		};
+	let response: unknown;
+	try {
+		response = await dispatch.call(input.client.session, {
+			path: { id: childSessionId },
+			...(input.request.directory === undefined
+				? {}
+				: { query: { directory: input.request.directory } }),
+			body: {
+				model: runtimeModel,
+				agent,
+				parts: [{ type: "text", text }],
+			},
+		});
+	} catch {
+		return {
+			adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
+			status: "lane_launch_failed",
+			createAttempted: true,
+			promptAttempted: true,
+			workflowId: plan.workflow_id,
+			attemptId: plan.attempt_id,
+			laneId: plan.lane_id,
+			parentSessionRef: plan.parent_session_ref,
+			childSessionRef: refFrom("ses", childSessionId),
+			agent,
+			model: runtimeModel,
+			dispatchMethod,
+			redactedErrorCategory: "provider_api",
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+			authority: runtimeLaneLaunchAuthority(false),
+		};
+	}
+	return {
+		adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
+		status: "lane_launch_started",
+		createAttempted: true,
+		promptAttempted: true,
+		workflowId: plan.workflow_id,
+		attemptId: plan.attempt_id,
+		laneId: plan.lane_id,
+		parentSessionRef: plan.parent_session_ref,
+		childSessionRef: refFrom("ses", childSessionId),
+		...(firstMessageRef(response) === undefined
+			? {}
+			: { messageRef: firstMessageRef(response) }),
+		agent,
+		model: runtimeModel,
+		dispatchMethod,
+		safeNextActions: ["/flowdesk-status"],
+		authority: runtimeLaneLaunchAuthority(true),
+	};
 }
 
 function promptTextFrom(
