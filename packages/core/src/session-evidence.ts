@@ -33,6 +33,11 @@ import { validateFlowDeskProductionApprovalSourceV1 } from "./production-approva
 import type { FlowDeskTopTierReviewPerspective } from "./release1-contracts.js";
 import { validateFlowDeskReviewerLaneConformanceObservationV1 } from "./reviewer-lane-conformance.js";
 import {
+	type FlowDeskRuntimeLaneLaunchPlanV1,
+	planFlowDeskRuntimeLaneLaunchV1,
+	validateFlowDeskRuntimeLaneLaunchPlanV1,
+} from "./runtime-lane-productization.js";
+import {
 	FLOWDESK_SESSION_EVIDENCE_CLASSES,
 	type FlowDeskSessionEvidenceClass,
 	sessionEvidenceDirectoryPath,
@@ -71,6 +76,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.exact_model_availability_cache_provider_acquisition_result.v1",
 	reviewer_verdict: "flowdesk.top_tier_review_verdict.v1",
 	reviewer_fanout_plan: "flowdesk.reviewer_fanout_plan.v1",
+	runtime_lane_launch_plan: "flowdesk.runtime_lane_launch_plan.v1",
 	lane_lifecycle: "flowdesk.lane_lifecycle_record.v1",
 	reviewer_lane_conformance:
 		"flowdesk.top_tier_reviewer_lane_conformance_observation.v1",
@@ -193,6 +199,30 @@ export interface FlowDeskExactModelCacheMaterializationFromAcquisitionEvidenceRe
 	applyResult?: FlowDeskSessionEvidenceApplyResultV1;
 	reloadedEvidence?: FlowDeskSessionEvidenceReloadResultV1;
 	selection?: FlowDeskExactModelCacheEvidencePairSelectionV1;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+}
+
+export interface FlowDeskRuntimeLaneLaunchPlanMaterializationFromFanoutEvidenceInputV1 {
+	reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+	workflowId: string;
+	reviewerFanoutEvidenceId?: string;
+	targetLaunchPlanEvidenceIds: string[];
+	sdkClientAvailable?: boolean;
+	durableEvidenceRootRef?: string;
+	rootDir?: string;
+}
+
+export interface FlowDeskRuntimeLaneLaunchPlanMaterializationFromFanoutEvidenceResultV1 extends ValidationResult {
+	state: "materialized" | "blocked";
+	blocked_labels: string[];
+	fanoutPlan?: FlowDeskReviewerFanoutPlanV1;
+	launchPlans: FlowDeskRuntimeLaneLaunchPlanV1[];
+	writeIntents: FlowDeskSessionEvidenceWriteIntentV1[];
+	applyResult?: FlowDeskSessionEvidenceApplyResultV1;
+	reloadedEvidence?: FlowDeskSessionEvidenceReloadResultV1;
 	realOpenCodeDispatch: false;
 	actualLaneLaunch: false;
 	providerCall: false;
@@ -572,6 +602,126 @@ export function materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitio
 	};
 }
 
+export function materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1(
+	input: FlowDeskRuntimeLaneLaunchPlanMaterializationFromFanoutEvidenceInputV1,
+): FlowDeskRuntimeLaneLaunchPlanMaterializationFromFanoutEvidenceResultV1 {
+	const errors = [...input.reloadedEvidence.errors];
+	const blockedLabels: string[] = [];
+	if (!input.reloadedEvidence.ok) blockedLabels.push("session_evidence_reload_invalid");
+	const targetIds = input.targetLaunchPlanEvidenceIds;
+	if (targetIds.length === 0) blockedLabels.push("target_launch_plan_ids_missing");
+	if (new Set(targetIds).size !== targetIds.length)
+		blockedLabels.push("target_launch_plan_ids_duplicate");
+	for (const targetId of targetIds) {
+		if (sessionEvidenceAlreadyContainsId(input.reloadedEvidence, "runtime_lane_launch_plan", targetId))
+			blockedLabels.push("target_runtime_launch_plan_evidence_duplicate");
+	}
+	const fanoutEntries = input.reloadedEvidence.entries
+		.filter((entry) => entry.evidenceClass === "reviewer_fanout_plan")
+		.filter((entry) => input.reviewerFanoutEvidenceId === undefined || entry.evidenceId === input.reviewerFanoutEvidenceId)
+		.map((entry) => ({ ...entry, validation: validateFlowDeskReviewerFanoutPlanV1(entry.record) }))
+		.filter((entry) => entry.validation.ok)
+		.map((entry) => ({ ...entry, record: entry.record as unknown as FlowDeskReviewerFanoutPlanV1 }))
+		.filter((entry) => entry.record.workflow_id === input.workflowId);
+	if (fanoutEntries.length === 0) blockedLabels.push("reviewer_fanout_evidence_missing");
+	if (fanoutEntries.length > 1) blockedLabels.push("reviewer_fanout_evidence_ambiguous");
+	const fanoutPlan = fanoutEntries.length === 1 ? fanoutEntries[0].record : undefined;
+	if (fanoutPlan !== undefined && (fanoutPlan.state !== "fanout_ready" || !fanoutPlan.ok))
+		blockedLabels.push("reviewer_fanout_not_ready");
+	const launchRequests = fanoutPlan?.runtime_lane_launch_requests ?? [];
+	if (fanoutPlan !== undefined && targetIds.length !== launchRequests.length)
+		blockedLabels.push("target_launch_plan_count_mismatch");
+	const launchPlans = launchRequests.map((request) =>
+		planFlowDeskRuntimeLaneLaunchV1({
+			request,
+			sdkClientAvailable: input.sdkClientAvailable,
+			durableEvidenceRootRef: input.durableEvidenceRootRef,
+		}),
+	);
+	for (const [index, plan] of launchPlans.entries()) {
+		errors.push(...plan.errors.map((error) => `launch_plans[${index}]: ${error}`));
+		if (plan.state !== "launch_ready")
+			blockedLabels.push(...(plan.blocked_labels.length > 0 ? plan.blocked_labels : ["runtime_launch_plan_blocked"]));
+	}
+	if (blockedLabels.length > 0 || fanoutPlan === undefined || launchPlans.length === 0)
+		return {
+			ok: false,
+			errors,
+			state: "blocked",
+			blocked_labels: [...new Set(blockedLabels)],
+			...(fanoutPlan === undefined ? {} : { fanoutPlan }),
+			launchPlans,
+			writeIntents: [],
+			...disabledEvidenceAuthority,
+		};
+	const prepared = launchPlans.map((plan, index) =>
+		prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId,
+			evidenceId: targetIds[index],
+			record: plan as unknown as Record<string, unknown>,
+		}),
+	);
+	const prepareErrors = prepared.flatMap((result) => result.errors);
+	const writeIntents = prepared
+		.map((result) => result.writeIntent)
+		.filter((intent): intent is FlowDeskSessionEvidenceWriteIntentV1 => intent !== undefined);
+	if (prepareErrors.length > 0 || writeIntents.length !== launchPlans.length)
+		return {
+			ok: false,
+			errors: [...errors, ...prepareErrors],
+			state: "blocked",
+			blocked_labels: ["runtime_launch_plan_write_intent_invalid"],
+			fanoutPlan,
+			launchPlans,
+			writeIntents: [],
+			...disabledEvidenceAuthority,
+		};
+	if (input.rootDir === undefined)
+		return {
+			ok: true,
+			errors,
+			state: "materialized",
+			blocked_labels: [],
+			fanoutPlan,
+			launchPlans,
+			writeIntents,
+			...disabledEvidenceAuthority,
+		};
+	const applyResult = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, writeIntents);
+	if (!applyResult.ok)
+		return {
+			ok: false,
+			errors: [...errors, ...applyResult.errors],
+			state: "blocked",
+			blocked_labels: ["runtime_launch_plan_apply_failed"],
+			fanoutPlan,
+			launchPlans,
+			writeIntents,
+			applyResult,
+			...disabledEvidenceAuthority,
+		};
+	const reloadedEvidence = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
+	const reloadedIds = new Set(
+		reloadedEvidence.entries
+			.filter((entry) => entry.evidenceClass === "runtime_lane_launch_plan")
+			.map((entry) => entry.evidenceId),
+	);
+	const allReloaded = targetIds.every((targetId) => reloadedIds.has(targetId));
+	const ready = reloadedEvidence.ok && allReloaded;
+	return {
+		ok: ready,
+		errors: [...errors, ...reloadedEvidence.errors],
+		state: ready ? "materialized" : "blocked",
+		blocked_labels: ready ? [] : ["runtime_launch_plan_reload_verification_failed"],
+		fanoutPlan,
+		launchPlans,
+		writeIntents,
+		applyResult,
+		reloadedEvidence,
+		...disabledEvidenceAuthority,
+	};
+}
+
 function validateSchemaVersionForClass(
 	record: Record<string, unknown>,
 	evidenceClass: FlowDeskSessionEvidenceClass,
@@ -604,6 +754,8 @@ function validateEvidenceShape(
 		return validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(record);
 	if (evidenceClass === "reviewer_fanout_plan")
 		return validateFlowDeskReviewerFanoutPlanV1(record);
+	if (evidenceClass === "runtime_lane_launch_plan")
+		return validateFlowDeskRuntimeLaneLaunchPlanV1(record);
 	if (evidenceClass === "lane_lifecycle")
 		return validateFlowDeskLaneLifecycleRecordV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")

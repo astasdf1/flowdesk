@@ -8,8 +8,10 @@ import {
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
   type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
   materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
+  materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1,
   planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
   planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
+  planFlowDeskRuntimeLaneLaunchV1,
   prepareFlowDeskDispatchIdempotencyReservationV1,
   prepareFlowDeskSessionEvidenceWriteIntentV1,
   recordFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
@@ -200,6 +202,17 @@ function reviewerFanoutPlanRecord(overrides: Record<string, unknown> = {}) {
     providerCall: false,
     actualLaneLaunch: false,
     runtimeExecution: false,
+    ...overrides
+  };
+}
+
+function runtimeLaneLaunchPlanRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    ...planFlowDeskRuntimeLaneLaunchV1({
+      request: reviewerFanoutPlanRecord().runtime_lane_launch_requests[0] as Parameters<typeof planFlowDeskRuntimeLaneLaunchV1>[0]["request"],
+      sdkClientAvailable: true,
+      durableEvidenceRootRef: "evidence-root-workflow-1"
+    }),
     ...overrides
   };
 }
@@ -533,7 +546,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -543,14 +556,14 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 16);
+    assert.equal(applied.writtenPaths.length, 17);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 16);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
+    assert.equal(reloaded.entries.length, 17);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
   });
 });
 
@@ -830,6 +843,76 @@ test("session evidence blocks reviewer fanout when selected cache evidence is mi
   });
 });
 
+test("session evidence materializes runtime launch plans from reviewer fanout evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_fanout_plan", "fanout-ready"), JSON.stringify(reviewerFanoutPlanRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const result = materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1({
+      reloadedEvidence: reloaded,
+      workflowId,
+      reviewerFanoutEvidenceId: "fanout-ready",
+      targetLaunchPlanEvidenceIds: ["launch-plan-policy", "launch-plan-architecture", "launch-plan-verification"],
+      sdkClientAvailable: true,
+      durableEvidenceRootRef: "evidence-root-workflow-1",
+      rootDir
+    });
+    assert.equal(result.state, "materialized", result.errors.join("; "));
+    assert.equal(result.launchPlans.length, 3);
+    assert.equal(result.launchPlans.every((plan) => plan.state === "launch_ready"), true);
+    assert.equal(result.launchPlans.every((plan) => plan.launch_attempted === false), true);
+    assert.equal(result.launchPlans.every((plan) => plan.providerCall === false), true);
+    assert.equal(result.launchPlans.every((plan) => plan.actualLaneLaunch === false), true);
+    assert.equal(result.launchPlans.every((plan) => plan.runtimeExecution === false), true);
+
+    const after = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(after.ok, true, after.errors.join("; "));
+    const launchPlans = after.entries.filter((entry) => entry.evidenceClass === "runtime_lane_launch_plan");
+    assert.equal(launchPlans.length, 3);
+    assert.deepEqual(new Set(launchPlans.map((entry) => entry.evidenceId)), new Set(["launch-plan-policy", "launch-plan-architecture", "launch-plan-verification"]));
+  });
+});
+
+test("session evidence blocks runtime launch plan materialization before launch preconditions or duplicate targets", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_fanout_plan", "fanout-ready"), JSON.stringify(reviewerFanoutPlanRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const missingSdk = materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1({
+      reloadedEvidence: reloaded,
+      workflowId,
+      reviewerFanoutEvidenceId: "fanout-ready",
+      targetLaunchPlanEvidenceIds: ["launch-plan-policy", "launch-plan-architecture", "launch-plan-verification"],
+      durableEvidenceRootRef: "evidence-root-workflow-1",
+      rootDir
+    });
+    assert.equal(missingSdk.state, "blocked");
+    assert.ok(missingSdk.blocked_labels.includes("sdk_client_unavailable"));
+    assert.equal(reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir }).entries.filter((entry) => entry.evidenceClass === "runtime_lane_launch_plan").length, 0);
+
+    const first = materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1({
+      reloadedEvidence: reloaded,
+      workflowId,
+      reviewerFanoutEvidenceId: "fanout-ready",
+      targetLaunchPlanEvidenceIds: ["launch-plan-policy", "launch-plan-architecture", "launch-plan-verification"],
+      sdkClientAvailable: true,
+      durableEvidenceRootRef: "evidence-root-workflow-1",
+      rootDir
+    });
+    assert.equal(first.state, "materialized", first.errors.join("; "));
+    const duplicate = materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1({
+      reloadedEvidence: reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir }),
+      workflowId,
+      reviewerFanoutEvidenceId: "fanout-ready",
+      targetLaunchPlanEvidenceIds: ["launch-plan-policy", "launch-plan-architecture", "launch-plan-verification"],
+      sdkClientAvailable: true,
+      durableEvidenceRootRef: "evidence-root-workflow-1",
+      rootDir
+    });
+    assert.equal(duplicate.state, "blocked");
+    assert.ok(duplicate.blocked_labels.includes("target_runtime_launch_plan_evidence_duplicate"));
+    assert.equal(reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir }).entries.filter((entry) => entry.evidenceClass === "runtime_lane_launch_plan").length, 3);
+  });
+});
+
 test("session evidence reload validates controlled conformance doc write evidence", () => {
   withEvidenceTree((rootDir) => {
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_conformance_doc_write", "controlled-doc-write-good"), JSON.stringify(controlledConformanceDocWriteRecord()));
@@ -864,15 +947,17 @@ test("session evidence reload validates reviewer verdict and lifecycle evidence"
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_verdict", "verdict-forged"), JSON.stringify(reviewerVerdictRecord({ dispatch_authority_enabled: true })));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_fanout_plan", "fanout-good"), JSON.stringify(reviewerFanoutPlanRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_fanout_plan", "fanout-forged"), JSON.stringify(reviewerFanoutPlanRecord({ actualLaneLaunch: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "runtime_lane_launch_plan", "launch-plan-good"), JSON.stringify(runtimeLaneLaunchPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "runtime_lane_launch_plan", "launch-plan-forged"), JSON.stringify(runtimeLaneLaunchPlanRecord({ launch_attempted: true })));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "lane_lifecycle", "lane-good"), JSON.stringify(laneLifecycleRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "lane_lifecycle", "lane-no-output-forged"), JSON.stringify(laneLifecycleRecord({ state: "no_output", output_ref: undefined })));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_lane_conformance", "conformance-good"), JSON.stringify(reviewerLaneConformanceRecord()));
     writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "reviewer_lane_conformance", "conformance-forged"), JSON.stringify(reviewerLaneConformanceRecord({ hard_chat_authority_claimed: true })));
     const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
-    assert.equal(result.entries.length, 4);
-    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["reviewer_verdict", "reviewer_fanout_plan", "lane_lifecycle", "reviewer_lane_conformance"]));
-    assert.equal(result.blocked.length, 4);
-    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /dispatch_authority_enabled|cannot launch lanes|no-output lane lifecycle records cannot carry|hard chat authority/);
+    assert.equal(result.entries.length, 5);
+    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance"]));
+    assert.equal(result.blocked.length, 5);
+    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /dispatch_authority_enabled|cannot launch lanes|cannot attempt launch|no-output lane lifecycle records cannot carry|hard chat authority/);
   });
 });
 
