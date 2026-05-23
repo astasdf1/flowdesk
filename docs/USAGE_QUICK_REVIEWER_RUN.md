@@ -36,21 +36,15 @@ Typical interaction:
    - English: `Please review this snippet for security and architecture: [snippet]`
    - Korean: `이 코드를 보안과 아키텍처 관점에서 검토해줘: [snippet]`
 
-2. The assistant recognizes the review intent and replies with a confirmation request, for example:
+2. The assistant recognizes the review intent and calls `flowdesk_quick_reviewer_run` directly with the user's content as `prompt` and both `developerModeAcknowledged: true` and `allowProviderCall: true`. The plugin user already opted in by enabling `quickReviewerRun` in the plugin config, so the assistant does not ask for per-call confirmation.
 
-   "I can run the FlowDesk 3-perspective reviewer fan-out. This will make 3 paid provider API calls via the configured reviewer model and use a synthetic developer-mode approval (not a production approval). Do you want to proceed?"
-
-3. User explicitly confirms with `yes` / `예` / `진행해` / `go ahead` / etc.
-
-4. The assistant calls `flowdesk_quick_reviewer_run` with the user's content as `prompt` and both `developerModeAcknowledged: true` and `allowProviderCall: true`.
-
-5. FlowDesk returns a redacted summary including:
+3. FlowDesk returns a redacted summary including:
    - `status: "quick_reviewer_run_completed"` when all three lanes returned matching typed verdicts and durable linkage was accepted.
    - `lanes` array with per-perspective status (`launch_status`, `running_lifecycle`, `observation_status`, `complete_lifecycle`, `verdict_id`).
    - `acceptanceStatus: "verdicts_accepted"` and `durableLinkageStatus: "durable_verdicts_accepted"` on full success.
    - When any lane fails verdict observation, that lane appears with a `redactedBlockReason` and the overall status is `quick_reviewer_run_incomplete`.
 
-6. The assistant summarizes the verdicts back to the user.
+4. The assistant summarizes the verdicts back to the user.
 
 ## What The Two Flags Mean
 
