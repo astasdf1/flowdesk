@@ -81,6 +81,11 @@ import {
 	executeFlowDeskQuickReviewerRunV1,
 } from "./quick-reviewer-run.js";
 import {
+	type FlowDeskProviderUsageLiveConfigV1,
+	type FlowDeskProviderUsageLiveProviderFamilyV1,
+	executeFlowDeskProviderUsageLiveV1,
+} from "./provider-usage-live-tool.js";
+import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
 	getFlowDeskRelease1HandlerReadinessSummary,
 	getFlowDeskRelease1ProductionReadinessSummary,
@@ -111,6 +116,7 @@ export const flowdeskRuntimeReviewerExecutionOption =
 export const flowdeskManagedFallbackRegateOption =
 	"managedFallbackRegate" as const;
 export const flowdeskQuickReviewerRunOption = "quickReviewerRun" as const;
+export const flowdeskProviderUsageLiveOption = "providerUsageLive" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
@@ -123,6 +129,8 @@ export const flowdeskManagedFallbackRegateToolName =
 	"flowdesk_managed_fallback_regate" as const;
 export const flowdeskQuickReviewerRunToolName =
 	"flowdesk_quick_reviewer_run" as const;
+export const flowdeskProviderUsageLiveToolName =
+	"flowdesk_provider_usage_live" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -2300,6 +2308,84 @@ function isQuickReviewerRunEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
+function isProviderUsageLiveEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskProviderUsageLiveOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
+function providerUsageLiveConfigFromOptions(
+	options?: PluginOptions,
+): FlowDeskProviderUsageLiveConfigV1 | undefined {
+	const value = options?.[flowdeskProviderUsageLiveOption];
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	const config: FlowDeskProviderUsageLiveConfigV1 = {};
+	if (typeof value.homeDir === "string" && value.homeDir.trim().length > 0)
+		config.homeDir = value.homeDir;
+	if (Array.isArray(value.providers)) {
+		const allowed = value.providers.filter(
+			(family): family is FlowDeskProviderUsageLiveProviderFamilyV1 =>
+				family === "claude" || family === "openai" || family === "gemini",
+		);
+		config.providers = allowed;
+	}
+	if (typeof value.claudeOAuthUsage === "boolean")
+		config.claudeOAuthUsage = value.claudeOAuthUsage;
+	if (typeof value.codexLiveUsage === "boolean")
+		config.codexLiveUsage = value.codexLiveUsage;
+	if (typeof value.geminiQuota === "boolean")
+		config.geminiQuota = value.geminiQuota;
+	if (
+		typeof value.geminiOAuthClientId === "string" &&
+		value.geminiOAuthClientId.trim().length > 0
+	)
+		config.geminiOAuthClientId = value.geminiOAuthClientId;
+	if (
+		typeof value.geminiOAuthClientSecret === "string" &&
+		value.geminiOAuthClientSecret.trim().length > 0
+	)
+		config.geminiOAuthClientSecret = value.geminiOAuthClientSecret;
+	if (
+		typeof value.geminiProjectId === "string" &&
+		value.geminiProjectId.trim().length > 0
+	)
+		config.geminiProjectId = value.geminiProjectId;
+	return config;
+}
+
+export function createFlowDeskProviderUsageLiveOptInTools(
+	config: FlowDeskProviderUsageLiveConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskProviderUsageLiveToolName]: tool({
+			description: [
+				"Return live FlowDesk provider usage availability for Claude, OpenAI/Codex, and Gemini Code Assist using provider-native usage collectors. No estimation; reads OAuth credentials and provider rate-limit/quota APIs.",
+				"WHEN TO USE: the user asks how much usage, quota, credit, limit, or budget they have left, when their quota resets, or whether a provider is available right now. Trigger on English phrases such as 'usage', 'quota', 'remaining', 'how much left', 'rate limit', 'reset', 'budget left', and on Korean phrases such as '사용량', '잔량', '남은 사용량', '얼마 남았어', '쿼터', '한도', '리셋', '남은거 얼마야', '남은 토큰', '사용 가능량'.",
+				"WHEN NOT TO USE: general chat, status of an in-progress workflow (use status instead), or any non-usage question.",
+				"INVOKE WITH: optional providerFamily ('claude', 'openai', 'gemini', or 'all'; default 'all'). The plugin user has already opted in to provider-native usage collection at configuration time, so this tool can be called automatically without per-call confirmation.",
+				"AFTER CALLING: summarize per-provider availability for the user in plain language. For each provider include the bucket label (claude-5h, claude-weekly, openai-gpt-5h, gemini-pro-5h, gemini-pro-weekly, gemini-flash-daily, gemini-flash-lite-daily), remaining %, reset time, and whether dispatch is currently possible. If any provider returned non_dispatchable or unknown, note it explicitly. Never echo raw tokens or raw payloads.",
+			].join(" "),
+			args: {
+				providerFamily: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Provider to query: 'claude', 'openai', 'gemini', or 'all' (default).",
+					),
+			},
+			async execute(input) {
+				const request = isRecord(input)
+					? { providerFamily: typeof input.providerFamily === "string" ? input.providerFamily : undefined }
+					: {};
+				const result = await executeFlowDeskProviderUsageLiveV1({
+					config,
+					request,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 function quickReviewerRunClientFrom(
 	input: unknown,
 	options?: PluginOptions,
@@ -2494,6 +2580,14 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				quickReviewerRunClient,
 				quickReviewerRunDefaultsFromOptions(options),
 			),
+		);
+	const providerUsageLiveConfig = isProviderUsageLiveEnabled(options)
+		? providerUsageLiveConfigFromOptions(options)
+		: undefined;
+	if (providerUsageLiveConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskProviderUsageLiveOptInTools(providerUsageLiveConfig),
 		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
 	return {

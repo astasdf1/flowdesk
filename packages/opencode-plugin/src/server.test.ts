@@ -45,6 +45,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskManagedFallbackRegateToolName,
 	flowdeskQuickReviewerRunOption,
 	flowdeskQuickReviewerRunToolName,
+	flowdeskProviderUsageLiveOption,
+	flowdeskProviderUsageLiveToolName,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -4062,4 +4064,78 @@ test("FDS-1 probe records OpenCode provider-facing closed-schema caveat", () => 
 		);
 	}
 	assert.equal(hasPassingFds1SchemaConversionSpike(), true);
+});
+
+test("provider usage live tool is absent by default and registers only with explicit opt-in", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(defaultHooks.tool?.[flowdeskProviderUsageLiveToolName], undefined);
+
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskProviderUsageLiveOption]: {
+			enabled: true,
+			providers: ["claude", "openai", "gemini"],
+			homeDir: "/home/test",
+			geminiOAuthClientId: "client-id-test",
+			geminiOAuthClientSecret: "client-secret-test",
+		},
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const usageTool = enabledHooks.tool?.[flowdeskProviderUsageLiveToolName];
+	assert.ok(usageTool, "provider usage live tool should be registered when enabled");
+	const description = String(usageTool.description ?? "");
+	assert.match(description, /WHEN TO USE/);
+	assert.match(description, /WHEN NOT TO USE/);
+	assert.match(description, /사용량/);
+	assert.match(description, /잔량/);
+	assert.match(description, /리셋/);
+	assert.match(description, /얼마 남았어/);
+	assert.match(description, /claude-5h/);
+	assert.match(description, /claude-weekly/);
+	assert.match(description, /openai-gpt-5h/);
+	assert.match(description, /gemini-pro-5h/);
+	assert.match(description, /gemini-pro-weekly/);
+	assert.match(description, /gemini-flash-daily/);
+	assert.doesNotMatch(description, /paid provider/);
+});
+
+test("provider usage live tool blocks when no provider family is enabled in configuration", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskProviderUsageLiveOption]: { enabled: true, providers: [] },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const usageTool = hooks.tool?.[flowdeskProviderUsageLiveToolName];
+	assert.ok(usageTool);
+	const result = JSON.parse(
+		toolOutput(await usageTool.execute({ providerFamily: "gemini" }, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_provider_usage_live");
+	const authority = result.authority as Record<string, unknown>;
+	assert.equal(authority.providerCall, false);
+	assert.equal(authority.runtimeExecution, false);
+	assert.equal(authority.actualLaneLaunch, false);
+	assert.equal(authority.realOpenCodeDispatch, false);
+	assert.equal(authority.providerUsageAcquired, false);
+});
+
+test("provider usage live tool blocks when requested family is not configured", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskProviderUsageLiveOption]: { enabled: true, providers: ["claude"] },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const usageTool = hooks.tool?.[flowdeskProviderUsageLiveToolName];
+	assert.ok(usageTool);
+	const result = JSON.parse(
+		toolOutput(await usageTool.execute({ providerFamily: "openai" }, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_provider_usage_live");
+	assert.match(
+		String(result.redactedBlockReason),
+		/openai is not enabled in providerUsageLive configuration/,
+	);
 });
