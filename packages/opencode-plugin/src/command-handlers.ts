@@ -1,4 +1,4 @@
-import type {
+import type { FlowDeskFallbackRegatePlanV1,
   DebugSectionV1,
   DoctorFailureCategoryV1,
   DoctorSectionResultV1,
@@ -65,6 +65,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
     reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
+    fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
   };
 }
 
@@ -249,15 +250,27 @@ function reviewerFanoutRefs(context: FlowDeskCommandBackedHandlerContextV1): str
   ];
 }
 
+
+function fallbackRegateRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const plan = context.diagnostic?.fallbackRegatePlan;
+  if (plan === undefined) return [];
+  return [
+    `fallback_regate_plan_state=${plan.state}`,
+    `fallback_regate_plan_decision_ref=${plan.decision_ref}`,
+    `fallback_regate_plan_consumed_approval_ref=${plan.consumed_fallback_approval_ref}`
+  ];
+}
+
 function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
   const promotionRefs = defaultManagedDispatchPromotionRefs(context);
   const exactModelCacheRefs = exactModelAvailabilityCacheRefreshRefs(context);
   const fanoutRefs = reviewerFanoutRefs(context);
+  const fallbackRefs = fallbackRegateRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion, exact-model cache refresh, and reviewer fan-out planning are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion, exact-model cache refresh, and reviewer fan-out planning are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
   ];

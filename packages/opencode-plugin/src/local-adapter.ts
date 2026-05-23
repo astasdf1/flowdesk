@@ -42,6 +42,7 @@ import {
 } from "@flowdesk/core";
 import type { FlowDeskCommandBackedHandlerContextV1, FlowDeskCommandBackedHandlerResultV1 } from "./command-handlers.js";
 import { evaluateFlowDeskCommandBackedHandlerV1 } from "./command-handlers.js";
+import type { FlowDeskFallbackRegatePlanV1 } from "@flowdesk/core";
 
 export const flowdeskLocalNonDispatchAdapterProfile = "local_non_dispatch_command_adapter" as const;
 
@@ -635,7 +636,16 @@ function recordRunState(state: LocalAdapterState, request: Record<string, unknow
   return true;
 }
 
-function statusContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): NonNullable<FlowDeskCommandBackedHandlerContextV1["status"]> {
+
+function fallbackRegatePlanContext(state: LocalAdapterState, request: Record<string, unknown>): FlowDeskFallbackRegatePlanV1 | undefined {
+  if (state.durableStateRootDir === undefined) return undefined;
+  const workflowId = workflowIdFrom(request);
+  const evidenceReload = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: state.durableStateRootDir });
+  const entry = evidenceReload.entries.find(e => e.evidenceClass === "fallback_regate_plan");
+  return entry?.record as FlowDeskFallbackRegatePlanV1 | undefined;
+}
+
+function statusContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1): NonNullable<FlowDeskCommandBackedHandlerContextV1["status"]> {
   const requestedWorkflowId = workflowIdFrom(request);
   if (state.durableStateRootDir !== undefined && (state.workflow === undefined || state.workflow.workflow_id !== requestedWorkflowId)) {
     const loaded = loadFlowDeskDurableWorkflowState(state.durableStateRootDir, { workflowId: requestedWorkflowId, sessionId: "session-local", now: parts.nowMs });
@@ -723,7 +733,8 @@ function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown,
   const record = isRecord(request) ? request : {};
   if (toolName === "flowdesk_plan") return { plan: makePlanContext(record, parts) };
   if (toolName === "flowdesk_run") return { run: makeRunContext(record, parts, permissionProvider) };
-  if (toolName === "flowdesk_status") return { status: statusContext(state, record, parts) };
+  const fallbackRegatePlan = fallbackRegatePlanContext(state, record);
+  if (toolName === "flowdesk_status") return { status: statusContext(state, record, parts, fallbackRegatePlan) };
   if (toolName === "flowdesk_retry") {
     const retry: NonNullable<FlowDeskRetryPlanningInputV1> = { request: record as unknown as FlowDeskRetryPlanningInputV1["request"], providerHealthSnapshot: providerHealth(parts), newAttemptId: id("attempt-retry", record), auditRef: "audit-local", debugRef: "debug-local" };
     return { retry };
@@ -735,7 +746,8 @@ function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown,
     providerHealthSnapshotRef: "health-local",
     productionEnablement: productionEnablementContext(state, record),
     ...(fanoutDiagnostics?.selection.cacheRefreshPlan === undefined ? {} : { exactModelAvailabilityCacheRefreshPlan: fanoutDiagnostics.selection.cacheRefreshPlan }),
-    ...(fanoutDiagnostics === undefined ? {} : { reviewerFanoutPlan: fanoutDiagnostics.fanoutPlan })
+    ...(fanoutDiagnostics === undefined ? {} : { reviewerFanoutPlan: fanoutDiagnostics.fanoutPlan }),
+    fallbackRegatePlan
   } };
 }
 

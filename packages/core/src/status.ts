@@ -1,3 +1,4 @@
+import type { FlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
 import { validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1, validateFlowDeskReviewerFanoutPlanV1, type FlowDeskExactModelAvailabilityCacheRefreshPlanV1, type FlowDeskReviewerFanoutPlanV1 } from "./model-availability-cache.js";
 import { validateFlowDeskDefaultManagedDispatchPromotionReadinessV1, type FlowDeskDefaultManagedDispatchPromotionReadinessV1 } from "./production-enablement.js";
 import { mapProviderFailureClassToDiagnosticOutcomeV1 } from "./provider-failures.js";
@@ -55,6 +56,7 @@ export interface FlowDeskStatusCommandInputV1 {
   providerHealthSnapshot?: FlowDeskProviderHealthSnapshotV1;
   providerHealthSummary?: ProviderHealthSummaryV1;
   exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
+  fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
   defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
   reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
   statusSummaryArtifact?: FlowDeskStatusSummaryArtifactV1;
@@ -212,6 +214,25 @@ function reviewerFanoutBlockerSummary(plan: FlowDeskReviewerFanoutPlanV1): Block
       ...plan.blocked_labels.map((label) => `reviewer_fanout_blocker=${label}`),
     ].slice(0, 20),
   };
+}
+
+
+function fallbackRegateBlockerSummary(plan: FlowDeskFallbackRegatePlanV1): BlockerSummaryV1 | undefined {
+  if (plan.state === "full_regate_required") {
+    return {
+      category: "policy",
+      summary: "FlowDesk fallback reselection requires a full fresh re-gate; real provider execution remains blocked until all required evidence is refreshed.",
+      safe_remediation: "Run /flowdesk-doctor and refresh durable managed-dispatch evidence before retrying the fallback attempt.",
+      refs: [
+        `fallback_regate_plan_state=${plan.state}`,
+        `fallback_regate_plan_required_refs_count=${plan.required_fresh_evidence_refs.length}`,
+        `fallback_regate_plan_decision_ref=${plan.decision_ref}`,
+        `fallback_regate_plan_consumed_approval_ref=${plan.consumed_fallback_approval_ref}`,
+        ...plan.required_fresh_evidence_refs.map(ref => `required_ref=${ref}`)
+      ].slice(0, 20)
+    };
+  }
+  return undefined;
 }
 
 function exactModelAvailabilityCacheRefreshBlockerSummary(plan: FlowDeskExactModelAvailabilityCacheRefreshPlanV1): BlockerSummaryV1 | undefined {
