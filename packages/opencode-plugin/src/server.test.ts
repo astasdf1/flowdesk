@@ -284,6 +284,7 @@ async function executeProviderAcquisitionTool(input: {
 	root: string;
 	client: unknown;
 	promptBackedCheck: Record<string, unknown>;
+	cacheMaterialization?: Record<string, unknown>;
 	request?: Record<string, unknown>;
 }) {
 	const hooks = await flowdeskOpenCodeServerPlugin.server({ client: input.client, directory: "/flowdesk-project" } as never, {
@@ -291,6 +292,9 @@ async function executeProviderAcquisitionTool(input: {
 			enabled: true,
 			durableStateRoot: input.root,
 			promptBackedCheck: input.promptBackedCheck,
+			...(input.cacheMaterialization === undefined
+				? {}
+				: { cacheMaterialization: input.cacheMaterialization }),
 		},
 		localNonDispatchAdapter: false,
 		naturalLanguageRouting: false,
@@ -439,6 +443,7 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 		assert.equal((result.authority as Record<string, unknown>).providerCall, false);
 		assert.equal((result.authority as Record<string, unknown>).dispatchAuthorityEnabled, false);
 		assert.equal(result.sanitizedProviderResultRef, "provider-result-redacted-1");
+		assert.equal("cacheMaterialization" in result, false);
 		assert.equal("result" in result, false);
 		assert.equal(calls.length, 1);
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
@@ -451,6 +456,234 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 				entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result"
 			),
 			true,
+		);
+		assert.equal(
+			reloaded.entries.some((entry) =>
+				entry.evidenceClass === "exact_model_availability_cache"
+			),
+			false,
+		);
+		assert.equal(
+			reloaded.entries.some((entry) =>
+				entry.evidenceClass === "exact_model_availability_cache_refresh_plan"
+			),
+			false,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition cache materialization is explicit opt-in and writes selected-pair evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-materialization-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-from-provider-live-1",
+					targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-1",
+					cacheId: "cache-from-provider-live-1",
+					entryId: "entry-from-provider-live-1",
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-cache-1",
+							availability_ref: "availability-live-cache-1",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-acquisition-cache-1",
+				evidenceId: "provider-acquisition-cache-evidence-1",
+				resultId: "provider-acquisition-cache-result-1",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "provider_acquisition_recorded");
+		assert.equal(result.providerCallAttempted, true);
+		assert.equal(result.writeAttempted, true);
+		assert.equal(result.evidenceReloaded, true);
+		assert.deepEqual(result.cacheMaterialization, {
+			state: "materialized",
+			blockedLabels: [],
+			targetCacheEvidenceId: "cache-from-provider-live-1",
+			targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-1",
+			cacheId: "cache-from-provider-live-1",
+			entryId: "entry-from-provider-live-1",
+			availabilityRef: "availability-live-cache-1",
+			sanitizedProviderResultRef: "provider-result-redacted-cache-1",
+			selectionState: "pair_ready",
+			pairSelectionReady: true,
+		});
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-acquisition-cache-1",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) =>
+					entry.evidenceClass ===
+					"exact_model_availability_cache_provider_acquisition_result",
+			).length,
+			1,
+		);
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "exact_model_availability_cache",
+			).length,
+			1,
+		);
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) =>
+					entry.evidenceClass ===
+					"exact_model_availability_cache_refresh_plan",
+			).length,
+			1,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition cache materialization blocks duplicate target evidence before extra cache-refresh writes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-duplicate-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-from-provider-live-dup",
+					targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-dup",
+					cacheId: "cache-from-provider-live-dup",
+					entryId: "entry-from-provider-live-dup",
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-cache-dup",
+							availability_ref: "availability-live-cache-dup",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+
+		const firstRaw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-acquisition-cache-duplicate",
+				evidenceId: "provider-acquisition-cache-duplicate-1",
+				resultId: "provider-acquisition-cache-duplicate-result-1",
+				idempotencyRef: "provider-acquisition-cache-duplicate-idempotency-1",
+				liveTestRunRef: "provider-acquisition-cache-duplicate-run-1",
+			}),
+		}, undefined as never);
+		const first = JSON.parse(toolOutput(firstRaw)) as Record<string, unknown>;
+		assert.equal(first.status, "provider_acquisition_recorded");
+		assert.equal(
+			(first.cacheMaterialization as Record<string, unknown>).state,
+			"materialized",
+		);
+
+		const secondRaw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-acquisition-cache-duplicate",
+				evidenceId: "provider-acquisition-cache-duplicate-2",
+				resultId: "provider-acquisition-cache-duplicate-result-2",
+				idempotencyRef: "provider-acquisition-cache-duplicate-idempotency-2",
+				liveTestRunRef: "provider-acquisition-cache-duplicate-run-2",
+			}),
+		}, undefined as never);
+		const second = JSON.parse(toolOutput(secondRaw)) as Record<string, unknown>;
+		assert.equal(second.status, "provider_acquisition_recorded");
+		const secondMaterialization = second.cacheMaterialization as
+			| Record<string, unknown>
+			| undefined;
+		assert.ok(secondMaterialization);
+		assert.equal(secondMaterialization.state, "blocked");
+		assert.equal(
+			secondMaterialization.targetCacheEvidenceId,
+			"cache-from-provider-live-dup",
+		);
+		assert.equal(
+			secondMaterialization.targetCacheRefreshPlanEvidenceId,
+			"cache-refresh-from-provider-live-dup",
+		);
+		assert.equal(secondMaterialization.cacheId, "cache-from-provider-live-dup");
+		assert.equal(secondMaterialization.entryId, "entry-from-provider-live-dup");
+		assert.equal(
+			secondMaterialization.availabilityRef,
+			"availability-live-cache-dup",
+		);
+		assert.equal(
+			secondMaterialization.sanitizedProviderResultRef,
+			"provider-result-redacted-cache-dup",
+		);
+		assert.equal(secondMaterialization.pairSelectionReady, false);
+		assert.equal(
+			Array.isArray(secondMaterialization.blockedLabels),
+			true,
+		);
+		assert.ok(
+			(secondMaterialization.blockedLabels as unknown[]).includes(
+				"target_cache_evidence_duplicate",
+			),
+		);
+		assert.ok(
+			(secondMaterialization.blockedLabels as unknown[]).includes(
+				"target_cache_refresh_evidence_duplicate",
+			),
+		);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-acquisition-cache-duplicate",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) =>
+					entry.evidenceClass ===
+					"exact_model_availability_cache_provider_acquisition_result",
+			).length,
+			2,
+		);
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "exact_model_availability_cache",
+			).length,
+			1,
+		);
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) =>
+					entry.evidenceClass ===
+					"exact_model_availability_cache_refresh_plan",
+			).length,
+			1,
 		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

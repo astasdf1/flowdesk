@@ -1,30 +1,28 @@
-import type {
-	FlowDeskChatHookAuthorityProbeV1,
-	FlowDeskChatIntakeRequestV1,
-	FlowDeskConfiguredVerificationResultV1,
-	FlowDeskDispatchAttemptManifestV1,
-	FlowDeskDefaultManagedDispatchAuthorizationV1,
-	FlowDeskExternalAuthProviderPolicyResultV1,
-	FlowDeskProductionApprovalDecisionV1,
-	FlowDeskRelease1MinimumPortableCommandName,
-	FlowDeskRelease1MinimumToolName,
-	FlowDeskSanitizedAuthCaptureResultV1,
-	FlowDeskSessionEvidenceReloadResultV1,
-	FlowDeskToolRequestEnvelopeV1,
-	ManagedDispatchBetaBoundaryInputV1,
-	SafeNextAction,
-} from "@flowdesk/core";
 import {
+	type FlowDeskChatHookAuthorityProbeV1,
+	type FlowDeskChatIntakeRequestV1,
+	type FlowDeskConfiguredVerificationResultV1,
+	type FlowDeskDispatchAttemptManifestV1,
+	type FlowDeskDefaultManagedDispatchAuthorizationV1,
+	type FlowDeskExternalAuthProviderPolicyResultV1,
+	type FlowDeskProductionApprovalDecisionV1,
+	type FlowDeskRelease1MinimumPortableCommandName,
+	type FlowDeskRelease1MinimumToolName,
+	type FlowDeskSanitizedAuthCaptureResultV1,
+	type FlowDeskSessionEvidenceReloadResultV1,
+	type FlowDeskToolRequestEnvelopeV1,
+	type ManagedDispatchBetaBoundaryInputV1,
+	type SafeNextAction,
 	createFlowDeskChatHookAuthorityProbeV1,
 	evaluateFlowDeskChatIntakeV1,
 	getFlowDeskPortableCommandToolName,
 	getRelease1SchemaArtifact,
+	materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
 	reloadFlowDeskSessionEvidenceV1,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
 	validateRunRequestV1,
 } from "@flowdesk/core";
-import type { Plugin, PluginModule, PluginOptions } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
+import { type Plugin, type PluginModule, type PluginOptions, tool } from "@opencode-ai/plugin";
 import type { z } from "zod";
 import {
 	flowdeskPluginId,
@@ -39,15 +37,13 @@ import {
 	type FlowDeskLocalProductionEnablementOptionsV1,
 	type FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1,
 } from "./local-adapter.js";
-import type {
-	FlowDeskExactModelProviderAcquisitionClientV1,
-	FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
-	FlowDeskManagedDispatchBetaAdapterResultV1,
-	FlowDeskManagedDispatchBetaDispatchRequestV1,
-	FlowDeskManagedDispatchBetaOpenCodeClientV1,
-	FlowDeskManagedDispatchBetaReservationStoreV1,
-} from "./managed-dispatch-adapter.js";
 import {
+	type FlowDeskExactModelProviderAcquisitionClientV1,
+	type FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
+	type FlowDeskManagedDispatchBetaAdapterResultV1,
+	type FlowDeskManagedDispatchBetaDispatchRequestV1,
+	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	type FlowDeskManagedDispatchBetaReservationStoreV1,
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
 	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
 	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
@@ -86,6 +82,14 @@ export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
 export const flowdeskExactModelProviderAcquisitionLiveTestToolName =
 	"flowdesk_exact_model_provider_acquisition_live_test" as const;
+
+interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
+	enabled: true;
+	targetCacheEvidenceId: string;
+	targetCacheRefreshPlanEvidenceId: string;
+	cacheId?: string;
+	entryId?: string;
+}
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
@@ -707,6 +711,12 @@ function redactedManagedDispatchBetaToolResult(
 
 function redactedExactModelProviderAcquisitionToolResult(
 	result: Awaited<ReturnType<typeof runFlowDeskExactModelProviderAcquisitionLiveTestV1>>,
+	cacheMaterialization?: {
+		options: FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1;
+		result: ReturnType<
+			typeof materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1
+		>;
+	},
 ): Record<string, unknown> {
 	return {
 		adapterProfile: result.adapterProfile,
@@ -726,6 +736,64 @@ function redactedExactModelProviderAcquisitionToolResult(
 		sanitizedProviderResultRef: result.result?.sanitized_provider_result_ref,
 		availabilityRef: result.result?.availability_ref,
 		blockedLabels: result.result?.blocked_labels,
+		...(cacheMaterialization === undefined
+			? {}
+			: {
+				cacheMaterialization: {
+					state: cacheMaterialization.result.state,
+					blockedLabels: cacheMaterialization.result.blocked_labels,
+					targetCacheEvidenceId:
+						cacheMaterialization.options.targetCacheEvidenceId,
+					targetCacheRefreshPlanEvidenceId:
+						cacheMaterialization.options.targetCacheRefreshPlanEvidenceId,
+					cacheId:
+						cacheMaterialization.result.cache?.cache_id ??
+						cacheMaterialization.options.cacheId,
+					entryId:
+						cacheMaterialization.result.cache?.entries[0]?.entry_id ??
+						cacheMaterialization.options.entryId,
+					availabilityRef:
+						cacheMaterialization.result.cache?.entries[0]?.availability_ref,
+					sanitizedProviderResultRef:
+						cacheMaterialization.result.cache?.entries[0]
+							?.availability_ref === undefined
+							? undefined
+							: result.result?.sanitized_provider_result_ref,
+					selectionState: cacheMaterialization.result.selection?.state,
+					pairSelectionReady:
+						cacheMaterialization.result.selection?.state === "pair_ready",
+				},
+			}),
+	};
+}
+
+function exactModelProviderAcquisitionCacheMaterializationFromOptions(
+	options?: PluginOptions,
+): FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 | undefined {
+	const value = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
+	if (!isRecord(value) || !isRecord(value.cacheMaterialization)) return undefined;
+	const cacheMaterialization = value.cacheMaterialization;
+	if (
+		cacheMaterialization.enabled !== true ||
+		typeof cacheMaterialization.targetCacheEvidenceId !== "string" ||
+		cacheMaterialization.targetCacheEvidenceId.trim().length === 0 ||
+		typeof cacheMaterialization.targetCacheRefreshPlanEvidenceId !== "string" ||
+		cacheMaterialization.targetCacheRefreshPlanEvidenceId.trim().length === 0
+	)
+		return undefined;
+	return {
+		enabled: true,
+		targetCacheEvidenceId: cacheMaterialization.targetCacheEvidenceId,
+		targetCacheRefreshPlanEvidenceId:
+			cacheMaterialization.targetCacheRefreshPlanEvidenceId,
+		...(typeof cacheMaterialization.cacheId === "string" &&
+		cacheMaterialization.cacheId.trim().length > 0
+			? { cacheId: cacheMaterialization.cacheId }
+			: {}),
+		...(typeof cacheMaterialization.entryId === "string" &&
+		cacheMaterialization.entryId.trim().length > 0
+			? { entryId: cacheMaterialization.entryId }
+			: {}),
 	};
 }
 
@@ -909,6 +977,7 @@ export function createFlowDeskManagedDispatchBetaOptInTools(
 export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 	client: FlowDeskExactModelProviderAcquisitionClientV1,
 	rootDir: string,
+	cacheMaterialization?: FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1,
 ): Record<string, FlowDeskOpenCodeTool> {
 	return {
 		[flowdeskExactModelProviderAcquisitionLiveTestToolName]: tool({
@@ -935,12 +1004,60 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 						authority: { ...disabledAuthority, toolAuthority: false },
 					});
 				}
+				const request =
+					record.request as unknown as FlowDeskExactModelProviderAcquisitionLiveTestRequestV1;
 				const result = await runFlowDeskExactModelProviderAcquisitionLiveTestV1({
 					client,
 					rootDir,
-					request: record.request as unknown as FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
+					request,
 				});
-				return JSON.stringify(redactedExactModelProviderAcquisitionToolResult(result));
+				const materializationResult =
+					cacheMaterialization !== undefined &&
+					result.evidenceReloaded === true
+						? materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1(
+								{
+									reloadedEvidence: reloadFlowDeskSessionEvidenceV1({
+										workflowId: request.workflowId,
+										rootDir,
+									}),
+									workflowId: request.workflowId,
+									providerAcquisitionEvidenceId: request.evidenceId,
+									targetCacheEvidenceId:
+										cacheMaterialization.targetCacheEvidenceId,
+									targetCacheRefreshPlanEvidenceId:
+										cacheMaterialization.targetCacheRefreshPlanEvidenceId,
+									...(cacheMaterialization.cacheId === undefined
+										? {}
+										: { cacheId: cacheMaterialization.cacheId }),
+									...(cacheMaterialization.entryId === undefined
+										? {}
+										: { entryId: cacheMaterialization.entryId }),
+									rootDir,
+									localDate: request.localDate,
+									activeProfileRef: request.activeProfileRef,
+									opencodeVersionRef: request.opencodeVersionRef,
+									flowdeskPackageVersionRef:
+										request.flowdeskPackageVersionRef,
+									registryHash: request.registryHash,
+									policyPackHash: request.policyPackHash,
+									authAccountBoundaryRef:
+										request.authAccountBoundaryRef,
+								},
+							)
+						: undefined;
+				const redactedMaterialization =
+					cacheMaterialization !== undefined && materializationResult !== undefined
+						? {
+								options: cacheMaterialization,
+								result: materializationResult,
+							}
+						: undefined;
+				return JSON.stringify(
+					redactedExactModelProviderAcquisitionToolResult(
+						result,
+						redactedMaterialization,
+					),
+				);
 			},
 		}),
 	};
@@ -1218,6 +1335,8 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		? exactModelProviderAcquisitionClientFrom(input, options)
 		: undefined;
 	const exactModelProviderAcquisitionRoot = exactModelProviderAcquisitionRootFrom(options);
+	const exactModelProviderAcquisitionCacheMaterialization =
+		exactModelProviderAcquisitionCacheMaterializationFromOptions(options);
 	const tools: Record<string, FlowDeskOpenCodeTool> = {
 		[flowdeskPreSpikeDoctorToolName]: tool({
 			description:
@@ -1306,6 +1425,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 				exactModelProviderAcquisitionClient,
 				exactModelProviderAcquisitionRoot,
+				exactModelProviderAcquisitionCacheMaterialization,
 			),
 		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
