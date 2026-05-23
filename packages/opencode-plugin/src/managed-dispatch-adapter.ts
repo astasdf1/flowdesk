@@ -2878,6 +2878,23 @@ function responseData(value: unknown): unknown {
 	return record !== undefined && "data" in record ? record.data : value;
 }
 
+function isSdkErrorResponse(value: unknown): boolean {
+	const record = asRecord(value);
+	const data = asRecord(responseData(value));
+	return record?.error !== undefined || data?.error !== undefined;
+}
+
+async function callSdkWithLegacyFallback(
+	method: (options: unknown) => unknown | Promise<unknown>,
+	thisArg: unknown,
+	currentOptions: unknown,
+	legacyOptions: unknown,
+): Promise<unknown> {
+	const current = await method.call(thisArg, currentOptions);
+	if (!isSdkErrorResponse(current)) return current;
+	return method.call(thisArg, legacyOptions);
+}
+
 function arrayData(value: unknown): unknown[] {
 	const data = responseData(value);
 	if (Array.isArray(data)) return data;
@@ -3017,12 +3034,22 @@ export async function observeInjectedSdkReviewerVerdictV1(input: {
 		};
 	}
 	try {
-		const messagesResponse = await messages.call(input.client.session, {
-			path: { id: input.request.sessionId },
-			...(input.request.directory === undefined
-				? {}
-				: { query: { directory: input.request.directory } }),
-		});
+		const messagesResponse = await callSdkWithLegacyFallback(
+			messages as (options: unknown) => unknown | Promise<unknown>,
+			input.client.session,
+			{
+				sessionID: input.request.sessionId,
+				...(input.request.directory === undefined
+					? {}
+					: { directory: input.request.directory }),
+			},
+			{
+				path: { id: input.request.sessionId },
+				...(input.request.directory === undefined
+					? {}
+					: { query: { directory: input.request.directory } }),
+			},
+		);
 		const errors: string[] = [];
 		for (const candidate of topTierVerdictCandidates(messagesResponse)) {
 			const validation = validateTopTierReviewVerdictV1(candidate);
@@ -3086,12 +3113,22 @@ export async function observeInjectedSdkLaneV1(input: {
 		};
 	}
 	try {
-		const childrenResponse = await children.call(input.client.session, {
-			path: { id: input.request.parentSessionId },
-			...(input.request.directory === undefined
-				? {}
-				: { query: { directory: input.request.directory } }),
-		});
+		const childrenResponse = await callSdkWithLegacyFallback(
+			children as (options: unknown) => unknown | Promise<unknown>,
+			input.client.session,
+			{
+				sessionID: input.request.parentSessionId,
+				...(input.request.directory === undefined
+					? {}
+					: { directory: input.request.directory }),
+			},
+			{
+				path: { id: input.request.parentSessionId },
+				...(input.request.directory === undefined
+					? {}
+					: { query: { directory: input.request.directory } }),
+			},
+		);
 		const childRecord = arrayData(childrenResponse)
 			.map(asRecord)
 			.find(
@@ -3113,8 +3150,17 @@ export async function observeInjectedSdkLaneV1(input: {
 			childSessionId !== undefined &&
 			input.client.session.messages !== undefined
 		) {
-			const messagesResponse = await input.client.session.messages.call(
+			const messagesResponse = await callSdkWithLegacyFallback(
+				input.client.session.messages as (
+					options: unknown,
+				) => unknown | Promise<unknown>,
 				input.client.session,
+				{
+					sessionID: childSessionId,
+					...(input.request.directory === undefined
+						? {}
+						: { directory: input.request.directory }),
+				},
 				{
 					path: { id: childSessionId },
 					...(input.request.directory === undefined
@@ -3212,14 +3258,24 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 	let childSessionId: string | undefined;
 	try {
 		childSessionId = sessionIdFromResponse(
-			await create.call(input.client.session, {
-				body: {
+			await callSdkWithLegacyFallback(
+				create as (options: unknown) => unknown | Promise<unknown>,
+				input.client.session,
+				{
 					parentID: input.request.parentSessionId,
 					...(input.request.title === undefined
 						? {}
 						: { title: input.request.title.slice(0, 120) }),
 				},
-			}),
+				{
+					body: {
+						parentID: input.request.parentSessionId,
+						...(input.request.title === undefined
+							? {}
+							: { title: input.request.title.slice(0, 120) }),
+					},
+				},
+			),
 		);
 	} catch {
 		return {
@@ -3252,17 +3308,31 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 		};
 	let response: unknown;
 	try {
-		response = await dispatch.call(input.client.session, {
-			path: { id: childSessionId },
-			...(input.request.directory === undefined
-				? {}
-				: { query: { directory: input.request.directory } }),
-			body: {
+		response = await callSdkWithLegacyFallback(
+			dispatch as (options: unknown) => unknown | Promise<unknown>,
+			input.client.session,
+			{
+				sessionID: childSessionId,
+				...(input.request.directory === undefined
+					? {}
+					: { directory: input.request.directory }),
 				model: runtimeModel,
 				agent,
 				parts: [{ type: "text", text }],
 			},
-		});
+			{
+				path: { id: childSessionId },
+				...(input.request.directory === undefined
+					? {}
+					: { query: { directory: input.request.directory } }),
+				body: {
+					model: runtimeModel,
+					agent,
+					parts: [{ type: "text", text }],
+				},
+			},
+		);
+		if (isSdkErrorResponse(response)) throw new Error("sdk prompt failed");
 	} catch {
 		return {
 			adapterProfile: "injected_sdk_runtime_lane_launch_adapter",

@@ -770,9 +770,9 @@ function runtimeLaneLaunchPlan(
 }
 
 function fakeRuntimeLaneClient() {
-	const createCalls: Array<{ body: { parentID: string; title?: string } }> = [];
-	const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
-	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
+	const createCalls: unknown[] = [];
+	const promptCalls: unknown[] = [];
+	const promptAsyncCalls: unknown[] = [];
 	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
 		session: {
 			create(options) {
@@ -992,7 +992,15 @@ test("injected sdk lane observation reads child session refs without dispatch au
 	assert.equal(result.authority.runtimeExecution, false);
 	assert.equal(result.authority.actualLaneLaunch, false);
 	assert.equal(childrenCalls.length, 1);
+	assert.deepEqual(childrenCalls[0], {
+		sessionID: "session-123",
+		directory: "/tmp/flowdesk-project",
+	});
 	assert.equal(messageCalls.length, 1);
+	assert.deepEqual(messageCalls[0], {
+		sessionID: "child-session-123",
+		directory: "/tmp/flowdesk-project",
+	});
 });
 
 test("injected sdk lane observation degrades when child data or APIs are missing", async () => {
@@ -1052,17 +1060,15 @@ test("injected sdk runtime lane launch creates child session and prompts exact r
 	assert.equal(result.authority.realOpenCodeDispatch, false);
 	assert.equal(result.authority.defaultRelease1ServerBehaviorUnchanged, true);
 	assert.deepEqual(createCalls, [
-		{ body: { parentID: "parent-123", title: "FlowDesk reviewer lane" } },
+		{ parentID: "parent-123", title: "FlowDesk reviewer lane" },
 	]);
 	assert.equal(promptAsyncCalls.length, 0);
 	assert.deepEqual(promptCalls, [
 		{
-			path: { id: "child-123" },
-			body: {
-				model: { providerID: "anthropic", modelID: "sonnet-4" },
-				agent: "reviewer",
-				parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
-			},
+			sessionID: "child-123",
+			model: { providerID: "anthropic", modelID: "sonnet-4" },
+			agent: "reviewer",
+			parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
 		},
 	]);
 });
@@ -1468,6 +1474,7 @@ test("injected sdk reviewer verdict observation accepts only typed matching verd
 	assert.equal(result.authority.providerCall, false);
 	assert.equal(result.authority.actualLaneLaunch, false);
 	assert.equal(messageCalls.length, 1);
+	assert.deepEqual(messageCalls[0], { sessionID: "child-session-123" });
 });
 
 test("injected sdk reviewer verdict observation separates missing and invalid verdicts from approvals", async () => {
