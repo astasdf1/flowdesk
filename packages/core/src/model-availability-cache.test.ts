@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	type FlowDeskExactModelAvailabilityCacheV1,
+	materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1,
 	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
 	planFlowDeskExactModelAvailabilityCacheRefreshV1,
 	planFlowDeskReviewerAssignmentsV1,
@@ -511,6 +512,96 @@ test("provider acquisition result blocks invalid plans and authority smuggling",
 		sanitized_provider_result_ref: "raw provider response token secret",
 	});
 	assert.equal(rawPayload.ok, false);
+});
+
+test("provider acquisition materializes same-day exact-model cache only from prompt-backed success", () => {
+	const materialized = materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1({
+		providerAcquisitionResult: providerAcquisitionResult(),
+		cacheId: "cache-live-1",
+		entryId: "entry-live-1",
+		expectedContext: {
+			localDate: "2026-05-21",
+			activeProfileRef: "profile-1",
+			opencodeVersionRef: "opencode-1.15.6",
+			flowdeskPackageVersionRef: "flowdesk-0.1.1",
+			registryHash: "hash-registry-1",
+			policyPackHash: "hash-policy-1",
+			authAccountBoundaryRef: "account-1",
+		},
+	});
+	assert.equal(materialized.state, "cache_materialized", materialized.errors.join("; "));
+	assert.ok(materialized.cache);
+	assert.equal(validateFlowDeskExactModelAvailabilityCacheV1(materialized.cache).ok, true);
+	assert.equal(materialized.cache.providerCall, false);
+	assert.equal(materialized.cache.dispatch_authority_enabled, false);
+	assert.equal(materialized.cache.entries[0].provider_family, "claude");
+	assert.equal(materialized.cache.entries[0].provider_identity_ref, "provider-claude-1");
+	assert.equal(materialized.cache.entries[0].provider_qualified_model_id, "claude/claude-opus-4-5");
+	assert.equal(materialized.cache.entries[0].model_family, "opus");
+	assert.equal(materialized.cache.entries[0].availability_ref, "availability-live-1");
+
+	const refreshPlan = planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		cache: materialized.cache,
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(refreshPlan.state, "cache_hit");
+	assert.equal(refreshPlan.providerCall, false);
+	assert.equal(validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(refreshPlan).ok, true);
+});
+
+test("provider acquisition cache materialization blocks metadata-only unavailable lower-tier drift and forged authority", () => {
+	const metadataOnly = materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1({
+		providerAcquisitionResult: providerAcquisitionResult({ providerCall: false }),
+		expectedContext: { localDate: "2026-05-21" },
+	});
+	assert.equal(metadataOnly.state, "blocked");
+	assert.ok(metadataOnly.blocked_labels.includes("provider_acquisition_metadata_only"));
+	assert.equal(metadataOnly.cache, undefined);
+
+	for (const [result, label] of [
+		[providerAcquisitionResult({ outcome: "blocked" }), "provider_acquisition_not_acquired"],
+		[providerAcquisitionResult({ outcome: "unavailable", highestTierEligible: false }), "provider_model_unavailable"],
+		[providerAcquisitionResult({ highestTierEligible: false }), "provider_model_not_highest_tier_eligible"],
+	] as const) {
+		const blocked = materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1({
+			providerAcquisitionResult: result,
+			expectedContext: { localDate: "2026-05-21" },
+		});
+		assert.equal(blocked.state, "blocked");
+		assert.ok(blocked.blocked_labels.includes(label), `${label}: ${blocked.blocked_labels.join(",")}`);
+		assert.equal(blocked.cache, undefined);
+	}
+
+	const drift = materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1({
+		providerAcquisitionResult: providerAcquisitionResult(),
+		expectedContext: {
+			localDate: "2026-05-22",
+			activeProfileRef: "profile-2",
+			opencodeVersionRef: "opencode-1.15.7",
+			flowdeskPackageVersionRef: "flowdesk-0.1.2",
+			registryHash: "hash-registry-2",
+			policyPackHash: "hash-policy-2",
+			authAccountBoundaryRef: "account-2",
+		},
+	});
+	assert.equal(drift.state, "blocked");
+	assert.ok(drift.blocked_labels.includes("local_date_drift"));
+	assert.ok(drift.blocked_labels.includes("active_profile_ref_drift"));
+	assert.ok(drift.blocked_labels.includes("registry_hash_drift"));
+
+	const forged = materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1({
+		providerAcquisitionResult: { ...providerAcquisitionResult(), dispatch_authority_enabled: true },
+		expectedContext: { localDate: "2026-05-21" },
+	});
+	assert.equal(forged.state, "blocked");
+	assert.ok(forged.blocked_labels.includes("provider_acquisition_result_invalid"));
+	assert.match(forged.errors.join("|"), /authorize dispatch/);
 });
 
 test("reviewer assignment revalidation blocks stale cache and context drift", () => {

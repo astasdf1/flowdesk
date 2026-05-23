@@ -129,6 +129,26 @@ export interface FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1 
 	runtimeExecution: false;
 }
 
+export interface FlowDeskExactModelAvailabilityCacheMaterializationContextV1 {
+	localDate?: string;
+	activeProfileRef?: string;
+	opencodeVersionRef?: string;
+	flowdeskPackageVersionRef?: string;
+	registryHash?: string;
+	policyPackHash?: string;
+	authAccountBoundaryRef?: string;
+}
+
+export interface FlowDeskExactModelAvailabilityCacheMaterializationResultV1 extends ValidationResult {
+	state: "cache_materialized" | "blocked";
+	blocked_labels: string[];
+	cache?: FlowDeskExactModelAvailabilityCacheV1;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
 export interface FlowDeskReviewerAssignmentPlanV1 extends ValidationResult {
 	schema_version: "flowdesk.reviewer_assignment_plan.v1";
 	cache_id: string;
@@ -880,6 +900,95 @@ export function validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionRe
 		errors.push("provider acquisition result cannot refresh cache, launch lanes, authorize dispatch, or run runtime execution");
 	errors.push(...validateNoForbiddenRawPayloads(record, "exact_model_availability_cache_provider_acquisition_result").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1(input: {
+	providerAcquisitionResult: unknown;
+	cacheId?: string;
+	entryId?: string;
+	expectedContext?: FlowDeskExactModelAvailabilityCacheMaterializationContextV1;
+}): FlowDeskExactModelAvailabilityCacheMaterializationResultV1 {
+	const errors: string[] = [];
+	const blockedLabels: string[] = [];
+	const validation = validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(input.providerAcquisitionResult);
+	if (!validation.ok) {
+		errors.push(...validation.errors.map((error) => `provider_acquisition_result: ${error}`));
+		blockedLabels.push("provider_acquisition_result_invalid");
+	}
+	const record = validation.ok
+		? input.providerAcquisitionResult as FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1
+		: undefined;
+	if (record !== undefined) {
+		if (record.ok !== true) blockedLabels.push("provider_acquisition_result_not_ok");
+		if (record.state !== "availability_acquired") blockedLabels.push("provider_acquisition_not_acquired");
+		if (record.available !== true) blockedLabels.push("provider_model_unavailable");
+		if (record.highest_tier_eligible !== true) blockedLabels.push("provider_model_not_highest_tier_eligible");
+		if (record.providerCall !== true) blockedLabels.push("provider_acquisition_metadata_only");
+		if (record.acquisition_attempted !== true) blockedLabels.push("provider_acquisition_not_attempted");
+		if (record.discovery_attempted !== true) blockedLabels.push("provider_discovery_not_attempted");
+		if (record.sanitized_provider_result_ref === undefined) blockedLabels.push("sanitized_provider_result_ref_missing");
+		for (const [actual, expected, label] of [
+			[record.local_date, input.expectedContext?.localDate, "local_date"],
+			[record.active_profile_ref, input.expectedContext?.activeProfileRef, "active_profile_ref"],
+			[record.opencode_version_ref, input.expectedContext?.opencodeVersionRef, "opencode_version_ref"],
+			[record.flowdesk_package_version_ref, input.expectedContext?.flowdeskPackageVersionRef, "flowdesk_package_version_ref"],
+			[record.registry_hash, input.expectedContext?.registryHash, "registry_hash"],
+			[record.policy_pack_hash, input.expectedContext?.policyPackHash, "policy_pack_hash"],
+			[record.auth_account_boundary_ref, input.expectedContext?.authAccountBoundaryRef, "auth_account_boundary_ref"],
+		] as const)
+			if (expected !== undefined && actual !== expected) blockedLabels.push(`${label}_drift`);
+	}
+	const cacheId = input.cacheId ?? (record === undefined ? undefined : `cache-${record.result_id}`);
+	const entryId = input.entryId ?? (record === undefined ? undefined : `entry-${record.result_id}`);
+	if (record !== undefined && cacheId !== undefined) errors.push(...validateOpaqueId(cacheId, "cache_id").errors);
+	if (record !== undefined && entryId !== undefined) errors.push(...validateOpaqueId(entryId, "entry_id").errors);
+	if (errors.length > 0 && !blockedLabels.includes("provider_acquisition_result_invalid"))
+		blockedLabels.push("cache_materialization_context_invalid");
+	const canMaterialize = record !== undefined && errors.length === 0 && blockedLabels.length === 0 && cacheId !== undefined && entryId !== undefined;
+	const cache: FlowDeskExactModelAvailabilityCacheV1 | undefined = canMaterialize
+		? {
+			schema_version: "flowdesk.exact_model_availability_cache.v1",
+			cache_id: cacheId,
+			local_date: record.local_date,
+			active_profile_ref: record.active_profile_ref,
+			opencode_version_ref: record.opencode_version_ref,
+			flowdesk_package_version_ref: record.flowdesk_package_version_ref,
+			registry_hash: record.registry_hash,
+			policy_pack_hash: record.policy_pack_hash,
+			auth_account_boundary_ref: record.auth_account_boundary_ref,
+			entries: [{
+				entry_id: entryId,
+				provider_family: record.provider_family,
+				provider_identity_ref: record.provider_identity_ref,
+				provider_qualified_model_id: record.provider_qualified_model_id,
+				model_family: record.model_family,
+				registered: true,
+				available: true,
+				highest_tier_eligible: true,
+				availability_ref: record.availability_ref,
+			}],
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		}
+		: undefined;
+	if (cache !== undefined) {
+		const cacheValidation = validateFlowDeskExactModelAvailabilityCacheV1(cache);
+		if (!cacheValidation.ok) {
+			errors.push(...cacheValidation.errors.map((error) => `materialized_cache: ${error}`));
+			blockedLabels.push("materialized_cache_invalid");
+		}
+	}
+	const ready = cache !== undefined && errors.length === 0 && blockedLabels.length === 0;
+	return {
+		ok: ready,
+		errors,
+		state: ready ? "cache_materialized" : "blocked",
+		blocked_labels: unique(blockedLabels),
+		...(ready ? { cache } : {}),
+		...disabledReviewerRuntimeAuthority,
+	};
 }
 
 export function revalidateFlowDeskReviewerAssignmentsV1(input: {
