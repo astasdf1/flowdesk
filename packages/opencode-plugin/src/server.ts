@@ -5,6 +5,7 @@ import {
 	type FlowDeskDispatchAttemptManifestV1,
 	type FlowDeskDefaultManagedDispatchAuthorizationV1,
 	type FlowDeskExternalAuthProviderPolicyResultV1,
+	type FlowDeskFallbackDecisionV1,
 	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskProductionApprovalDecisionV1,
 	type FlowDeskRelease1MinimumPortableCommandName,
@@ -63,6 +64,7 @@ import {
 	materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1,
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
 	observeInjectedSdkReviewerVerdictV1,
+	orchestrateFlowDeskManagedFallbackRegateV1,
 	prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1,
 	prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1,
 	runFlowDeskExactModelProviderAcquisitionLiveTestV1,
@@ -95,6 +97,8 @@ export const flowdeskExactModelProviderAcquisitionLiveTestOption =
 	"exactModelProviderAcquisitionLiveTest" as const;
 export const flowdeskRuntimeReviewerExecutionOption =
 	"runtimeReviewerExecution" as const;
+export const flowdeskManagedFallbackRegateOption =
+	"managedFallbackRegate" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
@@ -103,6 +107,8 @@ export const flowdeskExactModelProviderAcquisitionLiveTestToolName =
 	"flowdesk_exact_model_provider_acquisition_live_test" as const;
 export const flowdeskRuntimeReviewerExecutionToolName =
 	"flowdesk_runtime_reviewer_execution" as const;
+export const flowdeskManagedFallbackRegateToolName =
+	"flowdesk_managed_fallback_regate" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -2275,6 +2281,109 @@ export function createFlowDeskRuntimeReviewerExecutionOptInTools(
 	};
 }
 
+function redactedManagedFallbackRegateBlocked(reason: string) {
+	return {
+		adapterProfile: "managed_fallback_regate_orchestrator",
+		status: "blocked_before_regate_plan",
+		dispatchAttempted: false,
+		providerSwitchAttempted: false,
+		sdkCallAttempted: false,
+		redactedBlockReason: reason,
+		safeNextActions: ["/flowdesk-status"],
+		authority: {
+			...disabledAuthority,
+			toolAuthority: false,
+			automaticFallbackAuthorized: false,
+			freshRegatePlanPrepared: false,
+		},
+	};
+}
+
+function redactedManagedFallbackRegateToolResult(
+	result: ReturnType<typeof orchestrateFlowDeskManagedFallbackRegateV1>,
+): Record<string, unknown> {
+	return {
+		adapterProfile: result.adapterProfile,
+		status: result.status,
+		dispatchAttempted: result.dispatchAttempted,
+		providerSwitchAttempted: result.providerSwitchAttempted,
+		sdkCallAttempted: result.sdkCallAttempted,
+		workflowId: result.workflowId,
+		parentAttemptId: result.parentAttemptId,
+		newAttemptId: result.newAttemptId,
+		fromProviderQualifiedModelId: result.fromProviderQualifiedModelId,
+		toProviderQualifiedModelId: result.toProviderQualifiedModelId,
+		regatePlanState: result.regatePlan?.state,
+		regatePlanOk: result.regatePlan?.ok,
+		regatePlanErrors: result.regatePlan?.errors,
+		requiredFreshEvidenceRefCount: Array.isArray(
+			result.regatePlan?.required_fresh_evidence_refs,
+		)
+			? result.regatePlan.required_fresh_evidence_refs.length
+			: undefined,
+		requiredGuardDecisionRef: result.regatePlan?.required_guard_decision_ref,
+		requiredApprovalRef: result.regatePlan?.required_approval_ref,
+		requiredPreDispatchAuditRef:
+			result.regatePlan?.required_pre_dispatch_audit_ref,
+		policyEligibilityRef: result.regatePlan?.policy_eligibility_ref,
+		runtimeCompatibilityRef: result.regatePlan?.runtime_compatibility_ref,
+		consumedFallbackApprovalRef:
+			result.regatePlan?.consumed_fallback_approval_ref,
+		safeNextActions: result.safeNextActions,
+		redactedBlockReason: result.redactedBlockReason,
+		authority: { ...result.authority, toolAuthority: false },
+	};
+}
+
+export function createFlowDeskManagedFallbackRegateOptInTools(): Record<
+	string,
+	FlowDeskOpenCodeTool
+> {
+	return {
+		[flowdeskManagedFallbackRegateToolName]: tool({
+			description:
+				"FlowDesk explicit opt-in managed fallback regate planning tool; converts a valid fallback decision plus consumed reviewer fallback approval into a fresh full re-gate plan without dispatch, provider switching, SDK calls, or runtime authority.",
+			args: {
+				decision: tool.schema
+					.record(tool.schema.string(), tool.schema.unknown())
+					.describe(
+						"Complete FlowDeskFallbackDecisionV1 with new attempt id, fresh evidence refs, fresh guard/approval/audit/policy/runtime-compatibility refs, and explicit automatic_fallback_authorized=false.",
+					),
+				consumedApproval: tool.schema
+					.record(tool.schema.string(), tool.schema.unknown())
+					.describe(
+						"Consumed FlowDeskProductionApprovalSourceV1 with action_type=fallback_reselection bound to the new attempt id.",
+					),
+			},
+			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				if (
+					!isRecord(record.decision) ||
+					!isRecord(record.consumedApproval)
+				) {
+					return JSON.stringify(
+						redactedManagedFallbackRegateBlocked(
+							"Managed fallback regate requires both decision and consumedApproval records.",
+						),
+					);
+				}
+				const result = orchestrateFlowDeskManagedFallbackRegateV1({
+					decision:
+						record.decision as unknown as FlowDeskFallbackDecisionV1,
+					consumedApproval:
+						record.consumedApproval as unknown as FlowDeskProductionApprovalSourceV1,
+				});
+				return JSON.stringify(redactedManagedFallbackRegateToolResult(result));
+			},
+		}),
+	};
+}
+
+function isManagedFallbackRegateEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskManagedFallbackRegateOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
 const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const localSession =
 		isLocalNonDispatchAdapterEnabled(options) ||
@@ -2412,6 +2521,8 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				runtimeReviewerExecutionRoot,
 			),
 		);
+	if (isManagedFallbackRegateEnabled(options))
+		Object.assign(tools, createFlowDeskManagedFallbackRegateOptInTools());
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
 	return {
 		tool: tools,

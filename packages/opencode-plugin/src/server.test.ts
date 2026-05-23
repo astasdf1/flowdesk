@@ -41,6 +41,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskReviewerFanoutDiagnosticsOption,
 	flowdeskRuntimeReviewerExecutionOption,
 	flowdeskRuntimeReviewerExecutionToolName,
+	flowdeskManagedFallbackRegateOption,
+	flowdeskManagedFallbackRegateToolName,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -1341,6 +1343,149 @@ test("exact-model provider acquisition chained reviewer execution requires expli
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+function fallbackDecisionRecord(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.fallback_decision.v1",
+		decision_id: "fallback-decision-server-1",
+		workflow_id: "workflow-fallback-1",
+		parent_attempt_id: "attempt-parent-1",
+		new_attempt_id: "attempt-fallback-1",
+		from_provider_qualified_model_id: "claude/sonnet-4",
+		to_provider_qualified_model_id: "openai/gpt-5.5",
+		reason_label: "provider_unhealthy",
+		depth: 1,
+		max_depth: 2,
+		fresh_evidence_refs: [
+			"usage-fresh-server-1",
+			"health-fresh-server-1",
+			"runtime-fresh-server-1",
+		],
+		fresh_guard_decision_ref: "guard-fresh-server-1",
+		fresh_approval_ref: "approval-fresh-server-1",
+		fresh_pre_dispatch_audit_ref: "audit-fresh-server-1",
+		policy_eligibility_ref: "policy-fresh-server-1",
+		runtime_compatibility_ref: "runtime-compatibility-fresh-server-1",
+		state: "requires_full_regate",
+		automatic_fallback_authorized: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function consumedFallbackApprovalRecord() {
+	const result = consumeFlowDeskProductionApprovalSourceV1({
+		approval: {
+			schema_version: "flowdesk.production_approval_source.v1",
+			approval_id: "approval-fresh-server-1",
+			workflow_id: "workflow-fallback-1",
+			attempt_id: "attempt-fallback-1",
+			action_type: "fallback_reselection",
+			issuer_boundary: "external_user_confirmation",
+			approval_method: "typed_phrase",
+			actor_ref: "actor-server",
+			profile_ref: "profile-server",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			provider_binding_hash: "hash-provider-server",
+			evidence_bundle_hash: "hash-evidence-server",
+			guard_decision_ref: "guard-fresh-server-1",
+			issuance_audit_ref: "audit-issuance-server",
+			nonce_ref: "nonce-server",
+			issued_at: "2026-05-17T00:00:00.000Z",
+			expires_at: "2026-05-17T00:10:00.000Z",
+			revoked: false,
+			consume_strategy: "atomic_compare_and_swap_required",
+			dispatch_authority_enabled: false,
+		},
+		workflowId: "workflow-fallback-1",
+		attemptId: "attempt-fallback-1",
+		actionType: "fallback_reselection",
+		actorRef: "actor-server",
+		profileRef: "profile-server",
+		providerQualifiedModelId: "openai/gpt-5.5",
+		providerBindingHash: "hash-provider-server",
+		evidenceBundleHash: "hash-evidence-server",
+		guardDecisionRef: "guard-fresh-server-1",
+		consumptionAuditRef: "audit-consumption-server",
+		consumedAt: "2026-05-17T00:05:00.000Z",
+	});
+	assert.ok(result.consumed_approval, result.errors.join("; "));
+	return result.consumed_approval;
+}
+
+test("managed fallback regate tool is explicit opt-in and returns a fresh regate plan only after orchestrator success", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(
+		defaultHooks.tool?.[flowdeskManagedFallbackRegateToolName],
+		undefined,
+	);
+
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskManagedFallbackRegateOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const regateTool = hooks.tool?.[flowdeskManagedFallbackRegateToolName];
+	assert.ok(regateTool);
+
+	const raw = await regateTool.execute({
+		decision: fallbackDecisionRecord(),
+		consumedApproval: consumedFallbackApprovalRecord(),
+	}, undefined as never);
+	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+	assert.equal(
+		result.status,
+		"regate_plan_ready",
+		`unexpected status: ${JSON.stringify(result)}`,
+	);
+	assert.equal(result.dispatchAttempted, false);
+	assert.equal(result.providerSwitchAttempted, false);
+	assert.equal(result.sdkCallAttempted, false);
+	assert.equal(result.regatePlanState, "full_regate_required");
+	assert.equal(result.regatePlanOk, true);
+	assert.equal(result.requiredFreshEvidenceRefCount, 3);
+	const authority = result.authority as Record<string, unknown>;
+	assert.equal(authority.automaticFallbackAuthorized, false);
+	assert.equal(authority.providerCall, false);
+	assert.equal(authority.runtimeExecution, false);
+	assert.equal(authority.actualLaneLaunch, false);
+	assert.equal(authority.realOpenCodeDispatch, false);
+});
+
+test("managed fallback regate tool blocks before plan when decision or approval is missing or mismatched", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskManagedFallbackRegateOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const regateTool = hooks.tool?.[flowdeskManagedFallbackRegateToolName];
+	assert.ok(regateTool);
+
+	const missing = JSON.parse(
+		toolOutput(await regateTool.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(missing.status, "blocked_before_regate_plan");
+	assert.match(String(missing.redactedBlockReason), /decision/);
+
+	const terminal = JSON.parse(
+		toolOutput(
+			await regateTool.execute({
+				decision: fallbackDecisionRecord({ depth: 2, state: "terminal_max_depth" }),
+				consumedApproval: consumedFallbackApprovalRecord(),
+			}, undefined as never),
+		),
+	) as Record<string, unknown>;
+	assert.equal(terminal.status, "blocked_before_regate_plan");
+	const terminalAuthority = terminal.authority as Record<string, unknown>;
+	assert.equal(terminalAuthority.providerCall, false);
+	assert.equal(terminalAuthority.runtimeExecution, false);
 });
 
 test("exact-model provider acquisition cache materialization blocks duplicate target evidence before extra cache-refresh writes", async () => {
