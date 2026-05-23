@@ -21,6 +21,7 @@ import {
 	getFlowDeskPortableCommandToolName,
 	getRelease1SchemaArtifact,
 	materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
+	materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1,
 	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
@@ -115,6 +116,14 @@ interface FlowDeskProviderAcquisitionReviewerFanoutPlanningOptionsV1
 	requestedAt?: string;
 	persistDerivedFanoutPlanEvidence?: boolean;
 	fanoutPlanEvidenceId?: string;
+	runtimeLaunchPlanMaterialization?: FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1;
+}
+
+interface FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 {
+	enabled: true;
+	targetLaunchPlanEvidenceIds: string[];
+	sdkClientAvailable?: boolean;
+	durableEvidenceRootRef?: string;
 }
 
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
@@ -748,6 +757,12 @@ function redactedExactModelProviderAcquisitionToolResult(
 			persistedEvidenceId?: string;
 			persisted: boolean;
 			persistErrors: string[];
+			runtimeLaunchPlans?: {
+				options: FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1;
+				result: ReturnType<
+					typeof materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1
+				>;
+			};
 		};
 	},
 ): Record<string, unknown> {
@@ -829,10 +844,75 @@ function redactedExactModelProviderAcquisitionToolResult(
 								persistedEvidenceId:
 									cacheMaterialization.fanout.persistedEvidenceId,
 								persistErrors: cacheMaterialization.fanout.persistErrors,
+								...(cacheMaterialization.fanout.runtimeLaunchPlans === undefined
+									? {}
+									: {
+											runtimeLaunchPlanMaterialization: {
+												state:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.state,
+												blockedLabels:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.blocked_labels,
+												targetLaunchPlanEvidenceIds:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.options.targetLaunchPlanEvidenceIds,
+												launchPlanStates:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.launchPlans.map(
+															(plan) => plan.state,
+														),
+												launchPlanCount:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.launchPlans.length,
+												writeIntentCount:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.writeIntents.length,
+												launchAttempted:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.launchPlans.some(
+															(plan) => plan.launch_attempted,
+														),
+												actualLaneLaunch:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.actualLaneLaunch,
+												providerCall:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.providerCall,
+												runtimeExecution:
+													cacheMaterialization.fanout.runtimeLaunchPlans
+														.result.runtimeExecution,
+											},
+										}),
 							},
 						}),
 				},
 			}),
+	};
+}
+
+function providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
+	value: unknown,
+): FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 | undefined {
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	if (
+		!Array.isArray(value.targetLaunchPlanEvidenceIds) ||
+		value.targetLaunchPlanEvidenceIds.length === 0 ||
+		!value.targetLaunchPlanEvidenceIds.every(
+			(entry) => typeof entry === "string" && entry.trim().length > 0,
+		)
+	)
+		return undefined;
+	return {
+		enabled: true,
+		targetLaunchPlanEvidenceIds: value.targetLaunchPlanEvidenceIds,
+		...(typeof value.sdkClientAvailable === "boolean"
+			? { sdkClientAvailable: value.sdkClientAvailable }
+			: {}),
+		...(typeof value.durableEvidenceRootRef === "string" &&
+		value.durableEvidenceRootRef.trim().length > 0
+			? { durableEvidenceRootRef: value.durableEvidenceRootRef }
+			: {}),
 	};
 }
 
@@ -849,6 +929,10 @@ function providerAcquisitionReviewerFanoutPlanningFromValue(
 		value.agentRef.trim().length === 0
 	)
 		return undefined;
+	const runtimeLaunchPlanMaterialization =
+		providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
+			value.runtimeLaunchPlanMaterialization,
+		);
 	return {
 		enabled: true,
 		attemptId: value.attemptId,
@@ -887,6 +971,9 @@ function providerAcquisitionReviewerFanoutPlanningFromValue(
 		value.fanoutPlanEvidenceId.trim().length > 0
 			? { fanoutPlanEvidenceId: value.fanoutPlanEvidenceId }
 			: {}),
+		...(runtimeLaunchPlanMaterialization === undefined
+			? {}
+			: { runtimeLaunchPlanMaterialization }),
 	};
 }
 
@@ -1305,6 +1392,39 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 								plan: fanoutResult,
 							})
 						: { persisted: false, errors: [] };
+				const runtimeLaunchPlanOptions =
+					cacheMaterialization?.reviewerFanoutPlanning
+						?.runtimeLaunchPlanMaterialization;
+				const runtimeLaunchPlanResult =
+					runtimeLaunchPlanOptions !== undefined &&
+					fanoutPersistedEvidenceId !== undefined &&
+					fanoutPersistence.persisted === true
+						? materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1(
+								{
+									reloadedEvidence: reloadFlowDeskSessionEvidenceV1({
+										workflowId: request.workflowId,
+										rootDir,
+									}),
+									workflowId: request.workflowId,
+									reviewerFanoutEvidenceId: fanoutPersistedEvidenceId,
+									targetLaunchPlanEvidenceIds:
+										runtimeLaunchPlanOptions.targetLaunchPlanEvidenceIds,
+									...(runtimeLaunchPlanOptions.sdkClientAvailable === undefined
+										? {}
+										: {
+												sdkClientAvailable:
+													runtimeLaunchPlanOptions.sdkClientAvailable,
+											}),
+									...(runtimeLaunchPlanOptions.durableEvidenceRootRef === undefined
+										? {}
+										: {
+												durableEvidenceRootRef:
+													runtimeLaunchPlanOptions.durableEvidenceRootRef,
+											}),
+									rootDir,
+								},
+							)
+						: undefined;
 				const redactedMaterialization =
 					cacheMaterialization !== undefined && materializationResult !== undefined
 						? {
@@ -1321,6 +1441,15 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 													fanoutPersistedEvidenceId,
 												persisted: fanoutPersistence.persisted,
 												persistErrors: fanoutPersistence.errors,
+												...(runtimeLaunchPlanOptions !== undefined &&
+												runtimeLaunchPlanResult !== undefined
+													? {
+															runtimeLaunchPlans: {
+																options: runtimeLaunchPlanOptions,
+																result: runtimeLaunchPlanResult,
+															},
+														}
+													: {}),
 											},
 										}
 									: {}),

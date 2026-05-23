@@ -566,7 +566,7 @@ test("exact-model provider acquisition cache materialization is explicit opt-in 
 	}
 });
 
-test("exact-model provider acquisition cache materialization can derive and persist reviewer fanout planning without lane launch", async () => {
+test("exact-model provider acquisition cache materialization can derive reviewer fanout and runtime launch-plan evidence without lane launch", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-"));
 	try {
 		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
@@ -585,8 +585,20 @@ test("exact-model provider acquisition cache materialization can derive and pers
 						parentSessionRef: "ses-provider-live-fanout-parent",
 						agentRef: "agent-reviewer-provider-live-fanout",
 						requestedAt: "2026-05-19T00:02:00.000Z",
+						preLaunchAuditRef: "audit-provider-live-fanout-1",
+						laneLaunchApprovalRef: "approval-provider-live-fanout-1",
 						persistDerivedFanoutPlanEvidence: true,
 						fanoutPlanEvidenceId: "fanout-from-provider-live-1",
+						runtimeLaunchPlanMaterialization: {
+							enabled: true,
+							targetLaunchPlanEvidenceIds: [
+								"launch-plan-from-provider-policy",
+								"launch-plan-from-provider-architecture",
+								"launch-plan-from-provider-verification",
+							],
+							sdkClientAvailable: true,
+							durableEvidenceRootRef: "evidence-root-provider-live-fanout",
+						},
 					},
 				},
 				client: {
@@ -635,6 +647,22 @@ test("exact-model provider acquisition cache materialization can derive and pers
 			persisted: true,
 			persistedEvidenceId: "fanout-from-provider-live-1",
 			persistErrors: [],
+			runtimeLaunchPlanMaterialization: {
+				state: "materialized",
+				blockedLabels: [],
+				targetLaunchPlanEvidenceIds: [
+					"launch-plan-from-provider-policy",
+					"launch-plan-from-provider-architecture",
+					"launch-plan-from-provider-verification",
+				],
+				launchPlanStates: ["launch_ready", "launch_ready", "launch_ready"],
+				launchPlanCount: 3,
+				writeIntentCount: 3,
+				launchAttempted: false,
+				actualLaneLaunch: false,
+				providerCall: false,
+				runtimeExecution: false,
+			},
 		});
 
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
@@ -656,8 +684,187 @@ test("exact-model provider acquisition cache materialization can derive and pers
 		assert.equal(fanoutPlan?.record.actualLaneLaunch, false);
 		assert.equal(fanoutPlan?.record.providerCall, false);
 		assert.equal(fanoutPlan?.record.runtimeExecution, false);
+		const launchPlans = reloaded.entries.filter(
+			(entry) => entry.evidenceClass === "runtime_lane_launch_plan",
+		);
+		assert.equal(launchPlans.length, 3);
+		assert.deepEqual(
+			new Set(launchPlans.map((entry) => entry.evidenceId)),
+			new Set([
+				"launch-plan-from-provider-policy",
+				"launch-plan-from-provider-architecture",
+				"launch-plan-from-provider-verification",
+			]),
+		);
+		assert.equal(
+			launchPlans.every((entry) => entry.record.state === "launch_ready"),
+			true,
+		);
+		assert.equal(
+			launchPlans.every((entry) => entry.record.launch_attempted === false),
+			true,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition runtime launch-plan materialization requires explicit nested opt-in and launch prerequisites", async () => {
+	const noRuntimeRoot = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-no-runtime-"),
+	);
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: noRuntimeRoot,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-from-provider-live-no-runtime",
+					targetCacheRefreshPlanEvidenceId:
+						"cache-refresh-from-provider-live-no-runtime",
+					cacheId: "cache-from-provider-live-no-runtime",
+					entryId: "entry-from-provider-live-no-runtime",
+					reviewerFanoutPlanning: {
+						enabled: true,
+						attemptId: "attempt-provider-live-no-runtime",
+						parentSessionRef: "ses-provider-live-no-runtime-parent",
+						agentRef: "agent-reviewer-provider-live-no-runtime",
+						requestedAt: "2026-05-19T00:03:00.000Z",
+						preLaunchAuditRef: "audit-provider-live-no-runtime-1",
+						laneLaunchApprovalRef: "approval-provider-live-no-runtime-1",
+						persistDerivedFanoutPlanEvidence: true,
+						fanoutPlanEvidenceId: "fanout-from-provider-live-no-runtime-1",
+					},
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref:
+								"provider-result-redacted-no-runtime-1",
+							availability_ref: "availability-live-no-runtime-1",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-acquisition-no-runtime",
+				evidenceId: "provider-acquisition-no-runtime-evidence-1",
+				resultId: "provider-acquisition-no-runtime-result-1",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		const reviewerFanoutPlanning = (
+			result.cacheMaterialization as Record<string, unknown>
+		).reviewerFanoutPlanning as Record<string, unknown>;
+		assert.equal(reviewerFanoutPlanning.runtimeLaunchPlanMaterialization, undefined);
+		assert.equal(
+			reloadFlowDeskSessionEvidenceV1({
+				workflowId: "workflow-provider-acquisition-no-runtime",
+				rootDir: noRuntimeRoot,
+			}).entries.filter(
+				(entry) => entry.evidenceClass === "runtime_lane_launch_plan",
+			).length,
+			0,
+		);
+	} finally {
+		rmSync(noRuntimeRoot, { recursive: true, force: true });
+	}
+
+	const blockedRoot = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-blocked-runtime-"),
+	);
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: blockedRoot,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-from-provider-live-blocked-runtime",
+					targetCacheRefreshPlanEvidenceId:
+						"cache-refresh-from-provider-live-blocked-runtime",
+					cacheId: "cache-from-provider-live-blocked-runtime",
+					entryId: "entry-from-provider-live-blocked-runtime",
+					reviewerFanoutPlanning: {
+						enabled: true,
+						attemptId: "attempt-provider-live-blocked-runtime",
+						parentSessionRef: "ses-provider-live-blocked-runtime-parent",
+						agentRef: "agent-reviewer-provider-live-blocked-runtime",
+						requestedAt: "2026-05-19T00:04:00.000Z",
+						preLaunchAuditRef: "audit-provider-live-blocked-runtime-1",
+						laneLaunchApprovalRef:
+							"approval-provider-live-blocked-runtime-1",
+						persistDerivedFanoutPlanEvidence: true,
+						fanoutPlanEvidenceId: "fanout-from-provider-live-blocked-runtime-1",
+						runtimeLaunchPlanMaterialization: {
+							enabled: true,
+							targetLaunchPlanEvidenceIds: [
+								"launch-plan-blocked-provider-policy",
+								"launch-plan-blocked-provider-architecture",
+								"launch-plan-blocked-provider-verification",
+							],
+							sdkClientAvailable: true,
+						},
+					},
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref:
+								"provider-result-redacted-blocked-runtime-1",
+							availability_ref: "availability-live-blocked-runtime-1",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-provider-acquisition-blocked-runtime",
+				evidenceId: "provider-acquisition-blocked-runtime-evidence-1",
+				resultId: "provider-acquisition-blocked-runtime-result-1",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		const materialization = (
+			(result.cacheMaterialization as Record<string, unknown>)
+				.reviewerFanoutPlanning as Record<string, unknown>
+		).runtimeLaunchPlanMaterialization as Record<string, unknown>;
+		assert.equal(materialization.state, "blocked");
+		assert.ok(
+			(materialization.blockedLabels as string[]).includes(
+				"durable_evidence_root_missing",
+			),
+		);
+		assert.equal(materialization.writeIntentCount, 0);
+		assert.equal(materialization.actualLaneLaunch, false);
+		assert.equal(materialization.runtimeExecution, false);
+		assert.equal(
+			reloadFlowDeskSessionEvidenceV1({
+				workflowId: "workflow-provider-acquisition-blocked-runtime",
+				rootDir: blockedRoot,
+			}).entries.filter(
+				(entry) => entry.evidenceClass === "runtime_lane_launch_plan",
+			).length,
+			0,
+		);
+	} finally {
+		rmSync(blockedRoot, { recursive: true, force: true });
 	}
 });
 
