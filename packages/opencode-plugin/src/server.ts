@@ -139,6 +139,16 @@ interface FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 {
 	targetLaunchPlanEvidenceIds: string[];
 	sdkClientAvailable?: boolean;
 	durableEvidenceRootRef?: string;
+	runtimeReviewerExecution?: FlowDeskProviderAcquisitionRuntimeReviewerExecutionOptionsV1;
+}
+
+interface FlowDeskProviderAcquisitionRuntimeReviewerExecutionOptionsV1 {
+	enabled: true;
+	attemptId: string;
+	parentSessionId: string;
+	observedAt?: string;
+	consumedReviewerFanoutApproval: FlowDeskProductionApprovalSourceV1;
+	verdictExpectations: FlowDeskRuntimeReviewerExecutionExpectationV1[];
 }
 
 interface FlowDeskRuntimeReviewerExecutionOptionsV1 {
@@ -798,6 +808,10 @@ function redactedExactModelProviderAcquisitionToolResult(
 				result: ReturnType<
 					typeof materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1
 				>;
+				runtimeReviewerExecution?: {
+					options: FlowDeskProviderAcquisitionRuntimeReviewerExecutionOptionsV1;
+					result: Record<string, unknown>;
+				};
 			};
 		};
 	},
@@ -918,6 +932,53 @@ function redactedExactModelProviderAcquisitionToolResult(
 												runtimeExecution:
 													cacheMaterialization.fanout.runtimeLaunchPlans
 														.result.runtimeExecution,
+												...(cacheMaterialization.fanout.runtimeLaunchPlans
+													.runtimeReviewerExecution === undefined
+													? {}
+													: {
+															runtimeReviewerExecution: {
+																status:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.status,
+																laneCount:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.laneCount,
+																acceptanceStatus:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.acceptanceStatus,
+																acceptedPerspectives:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.acceptedPerspectives,
+																durableLinkageStatus:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.durableLinkageStatus,
+																linkedVerdictCount:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.linkedVerdictCount,
+																linkedLifecycleCount:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.linkedLifecycleCount,
+																redactedBlockReason:
+																	cacheMaterialization.fanout
+																		.runtimeLaunchPlans
+																		.runtimeReviewerExecution.result
+																		.redactedBlockReason,
+															},
+														}),
 											},
 										}),
 							},
@@ -1222,6 +1283,35 @@ async function executeFlowDeskRuntimeReviewerExecutionBridge(input: {
 	};
 }
 
+function providerAcquisitionRuntimeReviewerExecutionFromValue(
+	value: unknown,
+): FlowDeskProviderAcquisitionRuntimeReviewerExecutionOptionsV1 | undefined {
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	if (
+		typeof value.attemptId !== "string" ||
+		value.attemptId.trim().length === 0 ||
+		typeof value.parentSessionId !== "string" ||
+		value.parentSessionId.trim().length === 0 ||
+		!isRecord(value.consumedReviewerFanoutApproval)
+	)
+		return undefined;
+	const expectations = runtimeReviewerExecutionExpectationsFromValue(
+		value.verdictExpectations,
+	);
+	if (expectations === undefined || expectations.length === 0) return undefined;
+	return {
+		enabled: true,
+		attemptId: value.attemptId,
+		parentSessionId: value.parentSessionId,
+		...(typeof value.observedAt === "string" && value.observedAt.trim().length > 0
+			? { observedAt: value.observedAt }
+			: {}),
+		consumedReviewerFanoutApproval:
+			value.consumedReviewerFanoutApproval as unknown as FlowDeskProductionApprovalSourceV1,
+		verdictExpectations: expectations,
+	};
+}
+
 function providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
 	value: unknown,
 ): FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 | undefined {
@@ -1234,6 +1324,10 @@ function providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
 		)
 	)
 		return undefined;
+	const runtimeReviewerExecution =
+		providerAcquisitionRuntimeReviewerExecutionFromValue(
+			value.runtimeReviewerExecution,
+		);
 	return {
 		enabled: true,
 		targetLaunchPlanEvidenceIds: value.targetLaunchPlanEvidenceIds,
@@ -1244,6 +1338,9 @@ function providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
 		value.durableEvidenceRootRef.trim().length > 0
 			? { durableEvidenceRootRef: value.durableEvidenceRootRef }
 			: {}),
+		...(runtimeReviewerExecution === undefined
+			? {}
+			: { runtimeReviewerExecution }),
 	};
 }
 
@@ -1556,6 +1653,7 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 	client: FlowDeskExactModelProviderAcquisitionClientV1,
 	rootDir: string,
 	cacheMaterialization?: FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1,
+	runtimeReviewerExecutionClient?: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 ): Record<string, FlowDeskOpenCodeTool> {
 	return {
 		[flowdeskExactModelProviderAcquisitionLiveTestToolName]: tool({
@@ -1756,6 +1854,34 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 								},
 							)
 						: undefined;
+				const runtimeReviewerExecutionOptions =
+					runtimeLaunchPlanOptions?.runtimeReviewerExecution;
+				const runtimeReviewerExecutionResult =
+					runtimeReviewerExecutionOptions !== undefined &&
+					runtimeLaunchPlanResult?.state === "materialized" &&
+					runtimeReviewerExecutionClient !== undefined
+						? await executeFlowDeskRuntimeReviewerExecutionBridge({
+								client: runtimeReviewerExecutionClient,
+								rootDir,
+								request: {
+									workflowId: request.workflowId,
+									attemptId: runtimeReviewerExecutionOptions.attemptId,
+									parentSessionId:
+										runtimeReviewerExecutionOptions.parentSessionId,
+									allowActualLaneLaunch: true,
+									observedAt:
+										runtimeReviewerExecutionOptions.observedAt ??
+										request.observedAt,
+									consumedReviewerFanoutApproval:
+										runtimeReviewerExecutionOptions.consumedReviewerFanoutApproval as unknown as Record<
+											string,
+											unknown
+										>,
+									verdictExpectations:
+										runtimeReviewerExecutionOptions.verdictExpectations,
+								},
+							})
+						: undefined;
 				const redactedMaterialization =
 					cacheMaterialization !== undefined && materializationResult !== undefined
 						? {
@@ -1778,6 +1904,19 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 															runtimeLaunchPlans: {
 																options: runtimeLaunchPlanOptions,
 																result: runtimeLaunchPlanResult,
+																...(runtimeReviewerExecutionOptions !==
+																	undefined &&
+																runtimeReviewerExecutionResult !==
+																	undefined
+																	? {
+																			runtimeReviewerExecution: {
+																				options:
+																					runtimeReviewerExecutionOptions,
+																				result:
+																					runtimeReviewerExecutionResult,
+																			},
+																		}
+																	: {}),
 															},
 														}
 													: {}),
@@ -2050,6 +2189,26 @@ function exactModelProviderAcquisitionRootFrom(options?: PluginOptions): string 
 	return optionRoot ?? durableStateRootFromOptions(options);
 }
 
+function exactModelProviderAcquisitionRuntimeReviewerExecutionClientFrom(
+	input: unknown,
+	options?: PluginOptions,
+): FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined {
+	const option = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
+	if (
+		isRecord(option) &&
+		isManagedDispatchBetaClient(option.runtimeReviewerExecutionClient)
+	)
+		return option.runtimeReviewerExecutionClient;
+	if (
+		isRecord(option) &&
+		isManagedDispatchBetaClient(option.sdkClient)
+	)
+		return option.sdkClient;
+	return isRecord(input) && isManagedDispatchBetaClient(input.client)
+		? input.client
+		: undefined;
+}
+
 function runtimeReviewerExecutionOptionsFrom(
 	options?: PluginOptions,
 ): FlowDeskRuntimeReviewerExecutionOptionsV1 | undefined {
@@ -2235,6 +2394,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				exactModelProviderAcquisitionClient,
 				exactModelProviderAcquisitionRoot,
 				exactModelProviderAcquisitionCacheMaterialization,
+				runtimeReviewerExecutionClient ??
+					exactModelProviderAcquisitionRuntimeReviewerExecutionClientFrom(
+						input,
+						options,
+					),
 			),
 		);
 	if (

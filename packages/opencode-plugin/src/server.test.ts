@@ -1144,6 +1144,205 @@ test("runtime reviewer execution bridge is explicit opt-in and blocks before SDK
 	}
 });
 
+test("exact-model provider acquisition can chain cache, fanout, launch plans, and runtime reviewer execution in one pipeline", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-pipeline-e2e-"));
+	try {
+		const perspectives = [
+			"policy_security",
+			"architecture",
+			"verification_implementation",
+		];
+		const launchPlanEvidenceIds = perspectives.map(
+			(perspective) => `launch-plan-pipeline-${perspective}`,
+		);
+		const verdictExpectations = perspectives.map((perspective) => ({
+			launchPlanEvidenceId: `launch-plan-pipeline-${perspective}`,
+			lanePlanRef: `lane-plan-${perspective}-runtime-reviewer`,
+			bindingRef: `binding-${perspective}-runtime-reviewer`,
+			perspective,
+			promptText: `Return typed FlowDesk reviewer verdict for ${perspective}.`,
+			runningLifecycleEvidenceId: `lifecycle-running-pipeline-${perspective}`,
+			completeLifecycleEvidenceId: `lifecycle-complete-pipeline-${perspective}`,
+			reviewerVerdictEvidenceId: `reviewer-verdict-pipeline-${perspective}`,
+			outputRef: `output-pipeline-${perspective}`,
+			runtimeEchoRef: `runtime-echo-pipeline-${perspective}`,
+			telemetryRef: `telemetry-pipeline-${perspective}`,
+		}));
+		const sdkFake = fakeRuntimeReviewerExecutionClient();
+		const acquisitionRequest = exactModelProviderAcquisitionToolRequest({
+			workflowId: "workflow-runtime-reviewer-execution",
+			evidenceId: "provider-acquisition-pipeline-evidence-1",
+			resultId: "provider-acquisition-pipeline-result-1",
+		});
+		const consumedApproval = consumedReviewerFanoutApprovalRecord();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-pipeline-1",
+					targetCacheRefreshPlanEvidenceId: "cache-refresh-pipeline-1",
+					cacheId: "cache-pipeline-1",
+					entryId: "entry-pipeline-1",
+					reviewerFanoutPlanning: {
+						enabled: true,
+						attemptId: "attempt-runtime-reviewer-execution",
+						parentSessionRef: "ses-pipeline-parent",
+						agentRef: "agent-reviewer-gpt-frontier",
+						requestedAt: now,
+						preLaunchAuditRef: "audit-pipeline-1",
+						laneLaunchApprovalRef: "approval-pipeline-1",
+						persistDerivedFanoutPlanEvidence: true,
+						fanoutPlanEvidenceId: "fanout-pipeline-1",
+						runtimeLaunchPlanMaterialization: {
+							enabled: true,
+							targetLaunchPlanEvidenceIds: launchPlanEvidenceIds,
+							sdkClientAvailable: true,
+							durableEvidenceRootRef: "evidence-root-pipeline",
+							runtimeReviewerExecution: {
+								enabled: true,
+								attemptId: "attempt-runtime-reviewer-execution",
+								parentSessionId: "pipeline-parent",
+								observedAt: now,
+								consumedReviewerFanoutApproval: consumedApproval,
+								verdictExpectations,
+							},
+						},
+					},
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-pipeline-1",
+							availability_ref: "availability-live-pipeline-1",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+				runtimeReviewerExecutionClient: sdkFake.client,
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({ request: acquisitionRequest }, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(result.status, "provider_acquisition_recorded");
+		const materialization = result.cacheMaterialization as Record<string, unknown>;
+		const fanoutPlanning = materialization.reviewerFanoutPlanning as Record<string, unknown>;
+		const launchPlanMaterialization =
+			fanoutPlanning.runtimeLaunchPlanMaterialization as Record<string, unknown>;
+		assert.equal(launchPlanMaterialization.state, "materialized");
+		const runtimeReviewerExecution =
+			launchPlanMaterialization.runtimeReviewerExecution as Record<string, unknown>;
+		assert.equal(runtimeReviewerExecution.status, "runtime_reviewer_execution_completed");
+		assert.equal(runtimeReviewerExecution.laneCount, 3);
+		assert.equal(runtimeReviewerExecution.acceptanceStatus, "verdicts_accepted");
+		assert.equal(runtimeReviewerExecution.durableLinkageStatus, "durable_verdicts_accepted");
+		assert.equal(runtimeReviewerExecution.linkedVerdictCount, 3);
+		assert.equal(runtimeReviewerExecution.linkedLifecycleCount, 3);
+		assert.equal(sdkFake.createCalls.length, 3);
+		assert.equal(sdkFake.promptCalls.length, 3);
+		assert.equal(sdkFake.messageCalls.length, 3);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-runtime-reviewer-execution",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.filter((entry) => entry.evidenceClass === "reviewer_verdict").length,
+			3,
+		);
+		assert.equal(
+			reloaded.entries.filter((entry) => entry.evidenceClass === "lane_lifecycle").length,
+			6,
+		);
+		assert.equal(
+			reloaded.entries.filter((entry) => entry.evidenceClass === "runtime_lane_launch_plan").length,
+			3,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exact-model provider acquisition chained reviewer execution requires explicit nested opt-in and approval", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-pipeline-blocked-"));
+	try {
+		const sdkFake = fakeRuntimeReviewerExecutionClient();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: root,
+				cacheMaterialization: {
+					enabled: true,
+					targetCacheEvidenceId: "cache-pipeline-blocked",
+					targetCacheRefreshPlanEvidenceId: "cache-refresh-pipeline-blocked",
+					cacheId: "cache-pipeline-blocked",
+					entryId: "entry-pipeline-blocked",
+					reviewerFanoutPlanning: {
+						enabled: true,
+						attemptId: "attempt-pipeline-blocked",
+						parentSessionRef: "ses-pipeline-blocked-parent",
+						agentRef: "agent-reviewer-blocked",
+						requestedAt: now,
+						preLaunchAuditRef: "audit-pipeline-blocked",
+						laneLaunchApprovalRef: "approval-pipeline-blocked",
+						persistDerivedFanoutPlanEvidence: true,
+						fanoutPlanEvidenceId: "fanout-pipeline-blocked",
+						runtimeLaunchPlanMaterialization: {
+							enabled: true,
+							targetLaunchPlanEvidenceIds: [
+								"launch-plan-pipeline-blocked-policy",
+								"launch-plan-pipeline-blocked-architecture",
+								"launch-plan-pipeline-blocked-verification",
+							],
+							sdkClientAvailable: true,
+							durableEvidenceRootRef: "evidence-root-pipeline-blocked",
+						},
+					},
+				},
+				client: {
+					checkExactModelAvailability() {
+						return {
+							outcome: "available",
+							sanitized_provider_result_ref: "provider-result-redacted-blocked",
+							availability_ref: "availability-live-blocked",
+							highest_tier_eligible: true,
+						};
+					},
+				},
+				runtimeReviewerExecutionClient: sdkFake.client,
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		assert.ok(liveTool);
+		const raw = await liveTool.execute({
+			request: exactModelProviderAcquisitionToolRequest({
+				workflowId: "workflow-pipeline-blocked",
+				evidenceId: "provider-acquisition-pipeline-blocked-evidence-1",
+				resultId: "provider-acquisition-pipeline-blocked-result-1",
+			}),
+		}, undefined as never);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		const materialization = result.cacheMaterialization as Record<string, unknown>;
+		const fanoutPlanning = materialization.reviewerFanoutPlanning as Record<string, unknown>;
+		const launchPlanMaterialization =
+			fanoutPlanning.runtimeLaunchPlanMaterialization as Record<string, unknown>;
+		assert.equal(launchPlanMaterialization.runtimeReviewerExecution, undefined);
+		assert.equal(sdkFake.createCalls.length, 0);
+		assert.equal(sdkFake.promptCalls.length, 0);
+		assert.equal(sdkFake.messageCalls.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("exact-model provider acquisition cache materialization blocks duplicate target evidence before extra cache-refresh writes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-duplicate-"));
 	try {
