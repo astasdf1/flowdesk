@@ -7,6 +7,7 @@ import {
   applyFlowDeskSessionEvidenceWriteIntentsV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
   type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
+  materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
   planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
   planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
   prepareFlowDeskDispatchIdempotencyReservationV1,
@@ -591,6 +592,108 @@ test("session evidence selector returns paired exact-model cache evidence", () =
     assert.equal(selection.cacheRefreshPlan?.state, "cache_hit");
     assert.equal(selection.providerCall, false);
     assert.equal(selection.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence materializes provider acquisition into cache and cache-hit refresh evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_provider_acquisition_result", "provider-acquisition-good"), JSON.stringify(exactModelAvailabilityCacheProviderAcquisitionResultRecord()));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const materialized = materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1({
+      reloadedEvidence: reloaded,
+      workflowId,
+      providerAcquisitionEvidenceId: "provider-acquisition-good",
+      targetCacheEvidenceId: "cache-from-acquisition-1",
+      targetCacheRefreshPlanEvidenceId: "cache-refresh-from-acquisition-1",
+      cacheId: "cache-from-acquisition-1",
+      entryId: "entry-from-acquisition-1",
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1",
+      rootDir
+    });
+    assert.equal(materialized.state, "materialized", materialized.errors.join("; "));
+    assert.equal(materialized.writeIntents.length, 2);
+    assert.equal(materialized.applyResult?.writtenPaths.length, 2);
+    assert.equal(materialized.cache?.providerCall, false);
+    assert.equal(materialized.cache?.actualLaneLaunch, false);
+    assert.equal(materialized.cacheRefreshPlan?.state, "cache_hit");
+    assert.equal(materialized.cacheRefreshPlan?.providerCall, false);
+    assert.equal(materialized.selection?.state, "pair_ready");
+
+    const selected = selectFlowDeskExactModelCacheEvidencePairV1({
+      reloadedEvidence: materialized.reloadedEvidence ?? reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir }),
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1"
+    });
+    assert.equal(selected.state, "pair_ready", selected.errors.join("; "));
+    assert.equal(selected.cache?.entries[0].provider_qualified_model_id, "claude/claude-opus-4-5");
+    assert.equal(selected.cache?.entries[0].availability_ref, "availability-live-1");
+    assert.equal(selected.cacheRefreshPlan?.cache_id, "cache-from-acquisition-1");
+  });
+});
+
+test("session evidence cache materialization blocks ambiguous acquisition and duplicate targets before writes", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_provider_acquisition_result", "provider-acquisition-one"), JSON.stringify(exactModelAvailabilityCacheProviderAcquisitionResultRecord({ result_id: "provider-acquisition-result-1" })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_provider_acquisition_result", "provider-acquisition-two"), JSON.stringify(exactModelAvailabilityCacheProviderAcquisitionResultRecord({ result_id: "provider-acquisition-result-2", availability_ref: "availability-live-2" })));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const ambiguous = materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1({
+      reloadedEvidence: reloaded,
+      workflowId,
+      targetCacheEvidenceId: "cache-from-acquisition-1",
+      targetCacheRefreshPlanEvidenceId: "cache-refresh-from-acquisition-1",
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1",
+      rootDir
+    });
+    assert.equal(ambiguous.state, "blocked");
+    assert.ok(ambiguous.blocked_labels.includes("provider_acquisition_evidence_ambiguous"));
+    assert.equal(ambiguous.writeIntents.length, 0);
+    assert.equal(reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir }).entries.length, 2);
+  });
+
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache_provider_acquisition_result", "provider-acquisition-good"), JSON.stringify(exactModelAvailabilityCacheProviderAcquisitionResultRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "exact_model_availability_cache", "cache-from-acquisition-1"), JSON.stringify(exactModelAvailabilityCacheRecord({ cache_id: "cache-from-acquisition-1" })));
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const duplicate = materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1({
+      reloadedEvidence: reloaded,
+      workflowId,
+      providerAcquisitionEvidenceId: "provider-acquisition-good",
+      targetCacheEvidenceId: "cache-from-acquisition-1",
+      targetCacheRefreshPlanEvidenceId: "cache-refresh-from-acquisition-1",
+      cacheId: "cache-from-acquisition-1",
+      entryId: "entry-from-acquisition-1",
+      localDate: "2026-05-19",
+      activeProfileRef: "profile-1",
+      opencodeVersionRef: "opencode-1.15.6",
+      flowdeskPackageVersionRef: "flowdesk-0.1.1",
+      registryHash: "hash-registry-1",
+      policyPackHash: "hash-policy-1",
+      authAccountBoundaryRef: "account-1",
+      rootDir
+    });
+    assert.equal(duplicate.state, "blocked");
+    assert.ok(duplicate.blocked_labels.includes("target_cache_evidence_duplicate"));
+    assert.equal(duplicate.writeIntents.length, 0);
+    const after = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(after.entries.length, 2);
+    assert.equal(after.entries.filter((entry) => entry.evidenceClass === "exact_model_availability_cache_refresh_plan").length, 0);
   });
 });
 

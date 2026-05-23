@@ -13,10 +13,14 @@ import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./co
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
 import {
+	type FlowDeskExactModelAvailabilityCacheMaterializationContextV1,
+	type FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
 	type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
 	type FlowDeskExactModelAvailabilityCacheV1,
 	type FlowDeskReviewerAssignmentRevalidationV1,
 	type FlowDeskReviewerFanoutPlanV1,
+	materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1,
+	planFlowDeskExactModelAvailabilityCacheRefreshV1,
 	planFlowDeskReviewerFanoutV1,
 	revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1,
 	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
@@ -164,6 +168,31 @@ export interface FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1 extends V
 	revalidation: FlowDeskReviewerAssignmentRevalidationV1;
 	fanoutPlan: FlowDeskReviewerFanoutPlanV1;
 	dispatch_authority_enabled: false;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+}
+
+export interface FlowDeskExactModelCacheMaterializationFromAcquisitionEvidenceInputV1 extends FlowDeskExactModelCacheEvidencePairSelectionInputV1 {
+	workflowId: string;
+	providerAcquisitionEvidenceId?: string;
+	targetCacheEvidenceId: string;
+	targetCacheRefreshPlanEvidenceId: string;
+	cacheId?: string;
+	entryId?: string;
+	rootDir?: string;
+}
+
+export interface FlowDeskExactModelCacheMaterializationFromAcquisitionEvidenceResultV1 extends ValidationResult {
+	state: "materialized" | "blocked";
+	blocked_labels: string[];
+	cache?: FlowDeskExactModelAvailabilityCacheV1;
+	cacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
+	writeIntents: FlowDeskSessionEvidenceWriteIntentV1[];
+	applyResult?: FlowDeskSessionEvidenceApplyResultV1;
+	reloadedEvidence?: FlowDeskSessionEvidenceReloadResultV1;
+	selection?: FlowDeskExactModelCacheEvidencePairSelectionV1;
 	realOpenCodeDispatch: false;
 	actualLaneLaunch: false;
 	providerCall: false;
@@ -348,6 +377,197 @@ export function planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1(
 		revalidation,
 		fanoutPlan,
 		dispatch_authority_enabled: false,
+		...disabledEvidenceAuthority,
+	};
+}
+
+function sessionEvidenceAlreadyContainsId(
+	reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1,
+	evidenceClass: FlowDeskSessionEvidenceClass,
+	evidenceId: string,
+): boolean {
+	return reloadedEvidence.entries.some((entry) => entry.evidenceClass === evidenceClass && entry.evidenceId === evidenceId) ||
+		reloadedEvidence.blocked.some((entry) => entry.evidenceClass === evidenceClass && entry.evidenceId === evidenceId);
+}
+
+function providerAcquisitionResultMatchesStrictContext(
+	result: FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
+	input: FlowDeskExactModelCacheEvidencePairSelectionInputV1,
+): boolean {
+	return result.local_date === input.localDate &&
+		result.active_profile_ref === input.activeProfileRef &&
+		result.opencode_version_ref === input.opencodeVersionRef &&
+		result.flowdesk_package_version_ref === input.flowdeskPackageVersionRef &&
+		result.registry_hash === input.registryHash &&
+		result.policy_pack_hash === input.policyPackHash &&
+		result.auth_account_boundary_ref === input.authAccountBoundaryRef;
+}
+
+function exactModelMaterializationExpectedContext(
+	input: FlowDeskExactModelCacheEvidencePairSelectionInputV1,
+): FlowDeskExactModelAvailabilityCacheMaterializationContextV1 {
+	return {
+		localDate: input.localDate,
+		activeProfileRef: input.activeProfileRef,
+		opencodeVersionRef: input.opencodeVersionRef,
+		flowdeskPackageVersionRef: input.flowdeskPackageVersionRef,
+		registryHash: input.registryHash,
+		policyPackHash: input.policyPackHash,
+		authAccountBoundaryRef: input.authAccountBoundaryRef,
+	};
+}
+
+export function materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1(
+	input: FlowDeskExactModelCacheMaterializationFromAcquisitionEvidenceInputV1,
+): FlowDeskExactModelCacheMaterializationFromAcquisitionEvidenceResultV1 {
+	const errors = [...input.reloadedEvidence.errors];
+	const blockedLabels: string[] = [];
+	if (!input.reloadedEvidence.ok) blockedLabels.push("session_evidence_reload_invalid");
+	if (sessionEvidenceAlreadyContainsId(input.reloadedEvidence, "exact_model_availability_cache", input.targetCacheEvidenceId))
+		blockedLabels.push("target_cache_evidence_duplicate");
+	if (sessionEvidenceAlreadyContainsId(input.reloadedEvidence, "exact_model_availability_cache_refresh_plan", input.targetCacheRefreshPlanEvidenceId))
+		blockedLabels.push("target_cache_refresh_evidence_duplicate");
+	const acquisitionEntries = input.reloadedEvidence.entries
+		.filter((entry) => entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result")
+		.filter((entry) => input.providerAcquisitionEvidenceId === undefined || entry.evidenceId === input.providerAcquisitionEvidenceId)
+		.map((entry) => ({
+			...entry,
+			validation: validateFlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1(entry.record),
+		}))
+		.filter((entry) => entry.validation.ok)
+		.map((entry) => ({
+			...entry,
+			record: entry.record as unknown as FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
+		}))
+		.filter((entry) => input.providerAcquisitionEvidenceId !== undefined || providerAcquisitionResultMatchesStrictContext(entry.record, input));
+	if (acquisitionEntries.length === 0) blockedLabels.push("provider_acquisition_evidence_missing");
+	if (acquisitionEntries.length > 1) blockedLabels.push("provider_acquisition_evidence_ambiguous");
+	const acquisition = acquisitionEntries.length === 1 ? acquisitionEntries[0].record : undefined;
+	const materialized = materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1({
+		providerAcquisitionResult: acquisition,
+		cacheId: input.cacheId,
+		entryId: input.entryId,
+		expectedContext: exactModelMaterializationExpectedContext(input),
+	});
+	if (!materialized.ok) {
+		errors.push(...materialized.errors);
+		blockedLabels.push(...materialized.blocked_labels);
+	}
+	const cache = materialized.cache;
+	const cacheRefreshPlan = cache === undefined ? undefined : planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		cache,
+		localDate: input.localDate,
+		activeProfileRef: input.activeProfileRef,
+		opencodeVersionRef: input.opencodeVersionRef,
+		flowdeskPackageVersionRef: input.flowdeskPackageVersionRef,
+		registryHash: input.registryHash,
+		policyPackHash: input.policyPackHash,
+		authAccountBoundaryRef: input.authAccountBoundaryRef,
+	});
+	if (cacheRefreshPlan !== undefined) {
+		const refreshValidation = validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(cacheRefreshPlan);
+		if (!refreshValidation.ok) {
+			errors.push(...refreshValidation.errors.map((error) => `cache_refresh_plan: ${error}`));
+			blockedLabels.push("materialized_cache_refresh_plan_invalid");
+		}
+		if (cacheRefreshPlan.state !== "cache_hit") blockedLabels.push("materialized_cache_refresh_not_cache_hit");
+	}
+	if (cache !== undefined) {
+		const existingRefreshPlans = input.reloadedEvidence.entries
+			.filter((entry) => entry.evidenceClass === "exact_model_availability_cache_refresh_plan")
+			.map((entry) => entry.record)
+			.filter((record) => validateFlowDeskExactModelAvailabilityCacheRefreshPlanV1(record).ok)
+			.map((record) => record as unknown as FlowDeskExactModelAvailabilityCacheRefreshPlanV1)
+			.filter((plan) => exactModelCacheRefreshPlanMatchesContext(plan, input));
+		if (existingRefreshPlans.length > 0) blockedLabels.push("cache_refresh_context_already_exists");
+		const existingCachesForPlannedRefresh = cacheRefreshPlan === undefined ? [] : input.reloadedEvidence.entries
+			.filter((entry) => entry.evidenceClass === "exact_model_availability_cache")
+			.map((entry) => entry.record)
+			.filter((record) => validateFlowDeskExactModelAvailabilityCacheV1(record).ok)
+			.map((record) => record as unknown as FlowDeskExactModelAvailabilityCacheV1)
+			.filter((existingCache) => exactModelCacheMatchesRefreshPlan(existingCache, cacheRefreshPlan));
+		if (existingCachesForPlannedRefresh.length > 0) blockedLabels.push("cache_context_already_exists");
+	}
+	if (blockedLabels.length > 0 || cache === undefined || cacheRefreshPlan === undefined)
+		return {
+			ok: false,
+			errors,
+			state: "blocked",
+			blocked_labels: [...new Set(blockedLabels)],
+			...(cache === undefined ? {} : { cache }),
+			...(cacheRefreshPlan === undefined ? {} : { cacheRefreshPlan }),
+			writeIntents: [],
+			...disabledEvidenceAuthority,
+		};
+	const cacheIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
+		evidenceId: input.targetCacheEvidenceId,
+		record: cache,
+	});
+	const refreshIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
+		evidenceId: input.targetCacheRefreshPlanEvidenceId,
+		record: cacheRefreshPlan,
+	});
+	if (!cacheIntent.ok || cacheIntent.writeIntent === undefined || !refreshIntent.ok || refreshIntent.writeIntent === undefined)
+		return {
+			ok: false,
+			errors: [...errors, ...cacheIntent.errors, ...refreshIntent.errors],
+			state: "blocked",
+			blocked_labels: [...new Set([...blockedLabels, "cache_materialization_write_intent_invalid"])],
+			cache,
+			cacheRefreshPlan,
+			writeIntents: [],
+			...disabledEvidenceAuthority,
+		};
+	const writeIntents = [cacheIntent.writeIntent, refreshIntent.writeIntent];
+	if (input.rootDir === undefined)
+		return {
+			ok: true,
+			errors,
+			state: "materialized",
+			blocked_labels: [],
+			cache,
+			cacheRefreshPlan,
+			writeIntents,
+			...disabledEvidenceAuthority,
+		};
+	const applyResult = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, writeIntents);
+	if (!applyResult.ok)
+		return {
+			ok: false,
+			errors: [...errors, ...applyResult.errors],
+			state: "blocked",
+			blocked_labels: [...new Set([...blockedLabels, "cache_materialization_apply_failed"])],
+			cache,
+			cacheRefreshPlan,
+			writeIntents,
+			applyResult,
+			...disabledEvidenceAuthority,
+		};
+	const reloadedEvidence = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
+	const selection = selectFlowDeskExactModelCacheEvidencePairV1({
+		reloadedEvidence,
+		localDate: input.localDate,
+		activeProfileRef: input.activeProfileRef,
+		opencodeVersionRef: input.opencodeVersionRef,
+		flowdeskPackageVersionRef: input.flowdeskPackageVersionRef,
+		registryHash: input.registryHash,
+		policyPackHash: input.policyPackHash,
+		authAccountBoundaryRef: input.authAccountBoundaryRef,
+	});
+	const ready = reloadedEvidence.ok && selection.state === "pair_ready";
+	return {
+		ok: ready,
+		errors: [...errors, ...reloadedEvidence.errors, ...selection.errors],
+		state: ready ? "materialized" : "blocked",
+		blocked_labels: ready ? [] : [...new Set([...blockedLabels, "cache_materialization_reload_verification_failed", ...selection.blocked_labels])],
+		cache,
+		cacheRefreshPlan,
+		writeIntents,
+		applyResult,
+		reloadedEvidence,
+		selection,
 		...disabledEvidenceAuthority,
 	};
 }
