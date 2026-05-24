@@ -66,12 +66,20 @@ export interface FlowDeskProviderUsageFetchRequestV1 {
 export type FlowDeskProviderUsageFetchV1 = (url: string, init: FlowDeskProviderUsageFetchRequestV1) => Promise<FlowDeskProviderUsageFetchResponseV1>;
 export type FlowDeskProviderUsageExecFileV1 = (file: string, args: string[]) => string;
 
+export interface FlowDeskProviderUsageCollectorBucketSnapshotV1 {
+  resetBucket: string;
+  remainingPercent: number | null;
+  resetAt?: string;
+  uncertainty: "available" | "insufficient" | "unknown" | "stale" | "provider_refused";
+}
+
 export interface FlowDeskProviderUsageCollectorResultV1 {
   ok: boolean;
   source_kind: "provider_native";
   usageSnapshot: FlowDeskUsageSnapshotV1;
   providerHealthSnapshot: FlowDeskProviderHealthSnapshotV1;
   usageAuthorityEvidence?: FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1;
+  bucketSnapshot?: FlowDeskProviderUsageCollectorBucketSnapshotV1;
   redacted_reason?: string;
 }
 
@@ -177,8 +185,24 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
     safe_remediation: usageOk ? "Usage collector acquired fresh auth-bound usage evidence." : "Refresh provider auth and usage evidence before managed dispatch."
   };
 
+  const bucketSnapshot: FlowDeskProviderUsageCollectorBucketSnapshotV1 | undefined = bucket !== undefined
+    ? {
+      resetBucket: bucket.resetBucket,
+      remainingPercent: bucket.remaining,
+      ...(bucket.resetAt !== undefined ? { resetAt: bucket.resetAt } : {}),
+      uncertainty: bucket.uncertainty
+    }
+    : undefined;
+
   if (!usageOk || collection.authProfileRef === undefined || collection.authEvidenceRef === undefined || collection.credentialScopeRef === undefined || collection.accountBoundaryRef === undefined || collection.quotaEvidenceRef === undefined) {
-    return { ok: false, source_kind: "provider_native", usageSnapshot, providerHealthSnapshot, redacted_reason: collection.redactedReason ?? "usage evidence is unavailable" };
+    return {
+      ok: false,
+      source_kind: "provider_native",
+      usageSnapshot,
+      providerHealthSnapshot,
+      ...(bucketSnapshot !== undefined ? { bucketSnapshot } : {}),
+      redacted_reason: collection.redactedReason ?? "usage evidence is unavailable"
+    };
   }
 
   return {
@@ -186,6 +210,7 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
     source_kind: "provider_native",
     usageSnapshot,
     providerHealthSnapshot,
+    ...(bucketSnapshot !== undefined ? { bucketSnapshot } : {}),
     usageAuthorityEvidence: {
       schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
       authority_ref: target.authorityRef,

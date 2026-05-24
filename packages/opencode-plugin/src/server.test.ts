@@ -4283,3 +4283,23 @@ test("status live tool surfaces durable evidence counts for the requested workfl
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("provider usage live tool description exposes proactive usage guidance and alert vocabulary", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskProviderUsageLiveOption]: {
+			enabled: true,
+			providers: ["claude", "openai", "gemini"],
+		},
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const usageTool = hooks.tool?.[flowdeskProviderUsageLiveToolName];
+	assert.ok(usageTool);
+	const description = String(usageTool.description ?? "");
+	assert.match(description, /ALSO PROACTIVELY USE/);
+	assert.match(description, /worstAlertLevel/);
+	assert.match(description, /alertLevel/);
+	assert.match(description, /recommendation/);
+	assert.match(description, /critical/);
+	assert.match(description, /exhausted/);
+});

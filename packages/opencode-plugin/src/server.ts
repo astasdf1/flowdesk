@@ -2433,11 +2433,12 @@ export function createFlowDeskProviderUsageLiveOptInTools(
 	return {
 		[flowdeskProviderUsageLiveToolName]: tool({
 			description: [
-				"Return live FlowDesk provider usage availability for Claude, OpenAI/Codex, and Gemini Code Assist using provider-native usage collectors. No estimation; reads OAuth credentials and provider rate-limit/quota APIs.",
+				"Return live FlowDesk provider usage availability for Claude, OpenAI/Codex, and Gemini Code Assist using provider-native usage collectors. No estimation; reads OAuth credentials and provider rate-limit/quota APIs. Each provider row carries remainingPercent, alertLevel (ok/warning/critical/exhausted/stale/unknown), and a short recommendation. The top-level worstAlertLevel and overallRecommendation summarize the riskiest provider.",
 				"WHEN TO USE: the user asks how much usage, quota, credit, limit, or budget they have left, when their quota resets, or whether a provider is available right now. Trigger on English phrases such as 'usage', 'quota', 'remaining', 'how much left', 'rate limit', 'reset', 'budget left', and on Korean phrases such as '사용량', '잔량', '남은 사용량', '얼마 남았어', '쿼터', '한도', '리셋', '남은거 얼마야', '남은 토큰', '사용 가능량'.",
+				"ALSO PROACTIVELY USE: before starting a large multi-step task that depends on a specific provider (e.g. extensive refactor, long agentic loop, multi-perspective review), call this tool first to check whether the chosen provider has enough headroom; if worstAlertLevel is critical or exhausted, warn the user and suggest switching providers or waiting for reset.",
 				"WHEN NOT TO USE: general chat, status of an in-progress workflow (use status instead), or any non-usage question.",
 				"INVOKE WITH: optional providerFamily ('claude', 'openai', 'gemini', or 'all'; default 'all'). The plugin user has already opted in to provider-native usage collection at configuration time, so this tool can be called automatically without per-call confirmation.",
-				"AFTER CALLING: summarize per-provider availability for the user in plain language. For each provider include the bucket label (claude-5h, claude-weekly, openai-gpt-5h, gemini-pro-5h, gemini-pro-weekly, gemini-flash-daily, gemini-flash-lite-daily), remaining %, reset time, and whether dispatch is currently possible. If any provider returned non_dispatchable or unknown, note it explicitly. Never echo raw tokens or raw payloads.",
+				"AFTER CALLING: summarize per-provider availability for the user in plain language. For each provider include the bucket label (claude-5h, claude-weekly, openai-gpt-5h, gemini-pro-5h, gemini-pro-weekly, gemini-flash-daily, gemini-flash-lite-daily), remainingPercent, reset time, alertLevel, and recommendation. If any provider returned non_dispatchable, exhausted, critical, stale, or unknown, note it explicitly and surface the overallRecommendation. Never echo raw tokens or raw payloads.",
 			].join(" "),
 			args: {
 				providerFamily: tool.schema

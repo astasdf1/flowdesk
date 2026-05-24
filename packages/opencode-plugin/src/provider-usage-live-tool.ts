@@ -25,6 +25,14 @@ export interface FlowDeskProviderUsageLiveRequestV1 {
 	providerFamily?: string;
 }
 
+export type FlowDeskProviderUsageLiveAlertLevelV1 =
+	| "ok"
+	| "warning"
+	| "critical"
+	| "exhausted"
+	| "stale"
+	| "unknown";
+
 export interface FlowDeskProviderUsageLiveProviderRowV1 {
 	providerFamily: FlowDeskProviderUsageLiveProviderFamilyV1;
 	ok: boolean;
@@ -32,6 +40,9 @@ export interface FlowDeskProviderUsageLiveProviderRowV1 {
 	freshness: "fresh" | "stale" | "unknown";
 	resetBucket?: string;
 	resetTime?: string;
+	remainingPercent: number | null;
+	alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	recommendation: string;
 	uncertaintyFlags: readonly string[];
 	modelFamily?: string;
 	redactedReason?: string;
@@ -48,6 +59,8 @@ export interface FlowDeskProviderUsageLiveResultV1 {
 	requestedProviderFamily: string;
 	resolvedProviderFamilies: readonly FlowDeskProviderUsageLiveProviderFamilyV1[];
 	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[];
+	worstAlertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	overallRecommendation: string;
 	redactedBlockReason?: string;
 	safeNextActions: readonly ("/flowdesk-doctor" | "/flowdesk-status")[];
 	authority: {
@@ -143,16 +156,82 @@ function acquisitionConfigFromLive(
 	return acquisition;
 }
 
+function classifyAlert(
+	family: FlowDeskProviderUsageLiveProviderFamilyV1,
+	result: FlowDeskProviderUsageCollectorResultV1 | undefined,
+): {
+	remainingPercent: number | null;
+	alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	recommendation: string;
+} {
+	if (result === undefined) {
+		return {
+			remainingPercent: null,
+			alertLevel: "unknown",
+			recommendation:
+				"Provider usage collector did not return data; refresh provider auth and retry before heavy work.",
+		};
+	}
+	if (!result.ok) {
+		return {
+			remainingPercent: null,
+			alertLevel: result.usageSnapshot.freshness === "stale" ? "stale" : "unknown",
+			recommendation:
+				result.redacted_reason ??
+				"Provider usage is currently unavailable; refresh auth or pick another provider.",
+		};
+	}
+	const remaining = result.bucketSnapshot?.remainingPercent ?? null;
+	if (remaining === null) {
+		return {
+			remainingPercent: null,
+			alertLevel: "unknown",
+			recommendation:
+				"Provider usage returned without a remaining percentage; treat as unknown and proceed with caution.",
+		};
+	}
+	if (remaining <= 0) {
+		return {
+			remainingPercent: remaining,
+			alertLevel: "exhausted",
+			recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} is exhausted; wait for reset at ${result.usageSnapshot.reset_time} or switch providers.`,
+		};
+	}
+	if (remaining <= 10) {
+		return {
+			remainingPercent: remaining,
+			alertLevel: "critical",
+			recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} is critically low (~${remaining.toFixed(1)}%). Avoid starting large work until reset at ${result.usageSnapshot.reset_time}, or switch to another provider for big tasks.`,
+		};
+	}
+	if (remaining <= 30) {
+		return {
+			remainingPercent: remaining,
+			alertLevel: "warning",
+			recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} is around ${remaining.toFixed(1)}%; keep heavier tasks short or stage them around the reset at ${result.usageSnapshot.reset_time}.`,
+		};
+	}
+	return {
+		remainingPercent: remaining,
+		alertLevel: "ok",
+		recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} has ${remaining.toFixed(1)}% remaining until reset at ${result.usageSnapshot.reset_time}; safe to proceed with regular tasks.`,
+	};
+}
+
 function rowFromCollectorResult(
 	family: FlowDeskProviderUsageLiveProviderFamilyV1,
 	result: FlowDeskProviderUsageCollectorResultV1 | undefined,
 ): FlowDeskProviderUsageLiveProviderRowV1 {
+	const alert = classifyAlert(family, result);
 	if (result === undefined) {
 		return {
 			providerFamily: family,
 			ok: false,
 			dispatchability: "non_dispatchable",
 			freshness: "unknown",
+			remainingPercent: alert.remainingPercent,
+			alertLevel: alert.alertLevel,
+			recommendation: alert.recommendation,
 			uncertaintyFlags: ["unknown"],
 			usageAuthorityAcquired: false,
 		};
@@ -164,6 +243,9 @@ function rowFromCollectorResult(
 		freshness: result.usageSnapshot.freshness,
 		resetBucket: result.usageSnapshot.reset_bucket,
 		resetTime: result.usageSnapshot.reset_time,
+		remainingPercent: alert.remainingPercent,
+		alertLevel: alert.alertLevel,
+		recommendation: alert.recommendation,
 		uncertaintyFlags: [...result.usageSnapshot.uncertainty_flags],
 		modelFamily: result.usageSnapshot.model_family,
 		redactedReason: result.redacted_reason,
@@ -201,6 +283,9 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 			requestedProviderFamily,
 			resolvedProviderFamilies: [],
 			providers: [],
+			worstAlertLevel: "unknown",
+			overallRecommendation:
+				"Provider usage live tool is opted in but no provider family is configured; enable at least one of claude/openai/gemini in providerUsageLive.providers.",
 			redactedBlockReason:
 				requestedProviderFamily === "all"
 					? "no provider family is enabled in providerUsageLive configuration"
@@ -232,6 +317,11 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		rowFromCollectorResult(family, result),
 	);
 	const anyAcquired = providers.some((row) => row.usageAuthorityAcquired);
+	const worstAlertLevel = computeWorstAlertLevel(providers);
+	const overallRecommendation = composeOverallRecommendation(
+		providers,
+		worstAlertLevel,
+	);
 
 	return {
 		status: "provider_usage_live_collected",
@@ -239,6 +329,8 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		requestedProviderFamily,
 		resolvedProviderFamilies: families,
 		providers,
+		worstAlertLevel,
+		overallRecommendation,
 		safeNextActions: safeNextActions(),
 		authority: {
 			realOpenCodeDispatch: false,
@@ -251,4 +343,47 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 			providerUsageAcquired: anyAcquired,
 		},
 	};
+}
+
+const alertSeverityRank: Record<FlowDeskProviderUsageLiveAlertLevelV1, number> = {
+	ok: 0,
+	stale: 1,
+	unknown: 2,
+	warning: 3,
+	critical: 4,
+	exhausted: 5,
+};
+
+function computeWorstAlertLevel(
+	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[],
+): FlowDeskProviderUsageLiveAlertLevelV1 {
+	let worst: FlowDeskProviderUsageLiveAlertLevelV1 = "ok";
+	for (const row of providers) {
+		if (alertSeverityRank[row.alertLevel] > alertSeverityRank[worst])
+			worst = row.alertLevel;
+	}
+	return worst;
+}
+
+function composeOverallRecommendation(
+	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[],
+	worst: FlowDeskProviderUsageLiveAlertLevelV1,
+): string {
+	if (providers.length === 0)
+		return "No provider rows were returned; nothing to recommend.";
+	if (worst === "ok")
+		return "All collected providers are dispatchable with healthy headroom; safe to proceed with regular tasks.";
+	const families = providers
+		.filter((row) => row.alertLevel === worst)
+		.map((row) => row.providerFamily)
+		.join(", ");
+	if (worst === "exhausted")
+		return `Critical: provider quota exhausted on ${families}. Wait for reset or switch providers before heavy work.`;
+	if (worst === "critical")
+		return `Critical low quota on ${families}; avoid starting large multi-step work until reset, or switch providers.`;
+	if (worst === "warning")
+		return `Quota tight on ${families}; keep heavier tasks short or stage them around the reset window.`;
+	if (worst === "stale")
+		return `Provider usage data is stale on ${families}; refresh provider auth and retry before relying on these numbers.`;
+	return `Provider usage data is unknown on ${families}; refresh auth and retry, or pick a different provider.`;
 }
