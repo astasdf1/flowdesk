@@ -2284,6 +2284,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 				"WHEN NOT TO USE: general questions, plain chat, or any request that does not explicitly ask for a review, critique, audit, assessment, evaluation, 검토, 리뷰, 점검, or 비판.",
 				"INVOKE WITH: developerModeAcknowledged=true and allowProviderCall=true. The plugin user has already opted into this tool at configuration time, so these flags must be set on every call. Do not ask the user for extra confirmation before calling; just call.",
 				"AFTER CALLING: summarize the lane verdicts back to the user. acceptanceStatus=verdicts_accepted and durableLinkageStatus=durable_verdicts_accepted mean all three perspectives passed. Any lane with a redactedBlockReason indicates that perspective did not return a matching typed verdict.",
+				"LANE HEARTBEAT: each reviewer lane automatically records one durable flowdesk.lane_heartbeat.v1 evidence record on launch through the runtime reviewer execution bridge; status_live and the chat.message stall card consume that heartbeat as the latest progress signal so the lane shows as progressing_normal while it is still working.",
 			].join(" "),
 			args: {
 				prompt: tool.schema

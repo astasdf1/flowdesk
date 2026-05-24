@@ -252,7 +252,9 @@ When `statusLive.enabled=true` and `chatMessageStallAlert.enabled=true` are both
 3. The explicit line `FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.`
 4. The safe next action allowlist (`/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`).
 
-The same in-memory duplicate suppression that keeps natural-language steering cards from spamming the user also suppresses repeated stall cards with identical per-workflow counts inside a single session.
+The same in-memory duplicate suppression that keeps natural-language steering cards from spamming the user also suppresses repeated stall cards with identical per-workflow counts inside a single session. The dedup key includes per-workflow stalled count, per-workflow last-signal age bucketed by minute, and the projection's worst classification, so longer stalls re-alert the user as the age climbs.
+
+Set `chatMessageStallAlert.includeProgressingLate=true` if you also want a softer card titled `Late-progressing lanes detected:` to appear once a FlowDesk-owned lane crosses the 2-minute soft threshold but has not yet reached the 5-minute stall threshold. The default is false, so out of the box only fully stalled lanes trigger a card.
 
 ### Required plugin config
 
@@ -304,7 +306,8 @@ The same in-memory duplicate suppression that keeps natural-language steering ca
           "enabled": true
         },
         "chatMessageStallAlert": {
-          "enabled": true
+          "enabled": true,
+          "includeProgressingLate": false
         },
         "durableStateRoot": "/Users/<you>/.flowdesk"
       }
