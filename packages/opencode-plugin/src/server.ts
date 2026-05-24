@@ -2538,6 +2538,57 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				"Report FlowDesk plugin load status without enabling real dispatch, provider calls, or runtime execution.",
 			args: {},
 			async execute() {
+				const providerUsageLiveConfigForDoctor = isProviderUsageLiveEnabled(
+					options,
+				)
+					? providerUsageLiveConfigFromOptions(options)
+					: undefined;
+				const statusLiveConfigForDoctor = isStatusLiveEnabled(options)
+					? statusLiveConfigFromOptions(options)
+					: undefined;
+				const quickReviewerRunRegistered =
+					isQuickReviewerRunEnabled(options) &&
+					quickReviewerRunClientFrom(input, options) !== undefined;
+				const naturalLanguageTools = {
+					quickReviewerRun: {
+						enabled: isQuickReviewerRunEnabled(options),
+						registered: quickReviewerRunRegistered,
+						missingClient:
+							isQuickReviewerRunEnabled(options) && !quickReviewerRunRegistered
+								? "injected OpenCode SDK client (input.client) is missing"
+								: undefined,
+					},
+					providerUsageLive: {
+						enabled: isProviderUsageLiveEnabled(options),
+						registered: providerUsageLiveConfigForDoctor !== undefined,
+						providers: providerUsageLiveConfigForDoctor?.providers,
+						geminiOAuthConfigured:
+							providerUsageLiveConfigForDoctor !== undefined &&
+							((providerUsageLiveConfigForDoctor.geminiOAuthClientId !==
+								undefined &&
+								providerUsageLiveConfigForDoctor.geminiOAuthClientSecret !==
+									undefined) ||
+								typeof process.env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID ===
+									"string" ||
+								typeof process.env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET ===
+									"string"),
+						hint:
+							isProviderUsageLiveEnabled(options) &&
+							providerUsageLiveConfigForDoctor === undefined
+								? "providerUsageLive.enabled=true but no provider family configured; set providers=['claude','openai','gemini']"
+								: undefined,
+					},
+					statusLive: {
+						enabled: isStatusLiveEnabled(options),
+						registered: statusLiveConfigForDoctor !== undefined,
+						rootDir: statusLiveConfigForDoctor?.rootDir,
+						hint:
+							isStatusLiveEnabled(options) &&
+							statusLiveConfigForDoctor === undefined
+								? "statusLive.enabled=true but no durable state root resolved; set statusLive.rootDir or top-level durableStateRoot"
+								: undefined,
+					},
+				};
 				return JSON.stringify({
 					pluginId: flowdeskPluginId,
 					loaded: true,
@@ -2554,6 +2605,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					)
 						? "chat_steering_command_backed_non_dispatch"
 						: "disabled",
+					naturalLanguageTools,
 					productionPromotionGate:
 						defaultAuthorization === undefined
 							? "release1_non_dispatch_command_registration_ready"

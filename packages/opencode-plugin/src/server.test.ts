@@ -4303,3 +4303,67 @@ test("provider usage live tool description exposes proactive usage guidance and 
 	assert.match(description, /critical/);
 	assert.match(description, /exhausted/);
 });
+
+test("pre-spike doctor exposes natural-language tool registration status and hints", async () => {
+	const baseline = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const doctorTool = baseline.tool?.[flowdeskPreSpikeDoctorToolName];
+	assert.ok(doctorTool);
+	const baselineResult = JSON.parse(
+		toolOutput(await doctorTool.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	const baselineNl = baselineResult.naturalLanguageTools as Record<string, Record<string, unknown>>;
+	assert.equal(baselineNl.quickReviewerRun.enabled, false);
+	assert.equal(baselineNl.quickReviewerRun.registered, false);
+	assert.equal(baselineNl.providerUsageLive.enabled, false);
+	assert.equal(baselineNl.providerUsageLive.registered, false);
+	assert.equal(baselineNl.statusLive.enabled, false);
+	assert.equal(baselineNl.statusLive.registered, false);
+
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-doctor-nl-"));
+	try {
+		const dummyClient = {
+			session: {
+				create: async () => ({ id: "p" }),
+				prompt: async () => ({ info: { id: "m" } }),
+				messages: async () => [],
+			},
+		};
+		const enabled = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskQuickReviewerRunOption]: {
+					enabled: true,
+					providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+					runtimeAgent: "reviewer-gpt-frontier",
+				},
+				[flowdeskProviderUsageLiveOption]: {
+					enabled: true,
+					providers: ["openai"],
+				},
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const doctor = enabled.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(doctor);
+		const result = JSON.parse(
+			toolOutput(await doctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		const nl = result.naturalLanguageTools as Record<string, Record<string, unknown>>;
+		assert.equal(nl.quickReviewerRun.enabled, true);
+		assert.equal(nl.quickReviewerRun.registered, true);
+		assert.equal(nl.providerUsageLive.enabled, true);
+		assert.equal(nl.providerUsageLive.registered, true);
+		assert.deepEqual(nl.providerUsageLive.providers, ["openai"]);
+		assert.equal(nl.statusLive.enabled, true);
+		assert.equal(nl.statusLive.registered, true);
+		assert.equal(nl.statusLive.rootDir, root);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
