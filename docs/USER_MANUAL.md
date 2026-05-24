@@ -81,6 +81,22 @@ If you say “run”, “execute”, “진행”, or “실행” in chat, Flow
 
 If chat routing is unavailable, the same flow remains available through portable commands: doctor, plan, run, status, resume, retry, abort, usage, and export-debug.
 
+### Natural-Language Tools
+
+When FlowDesk is loaded in the active OpenCode profile and the natural-language tools are opted in, the assistant LLM picks up five description-driven FlowDesk tools without you typing a portable command:
+
+1. `flowdesk_quick_reviewer_run` for explicit multi-perspective code review, audit, or critique requests in Korean (`다관점 리뷰 해줘`, `보안 리뷰`, `심층 리뷰`, `비판적 검토`) or English (`multi-perspective review`, `audit this`, `critique this`).
+2. `flowdesk_provider_usage_live` for usage, quota, remaining, reset, or rate-limit questions in Korean (`사용량 보여줘`, `잔량`, `리셋 언제`) or English (`how much usage do I have left`, `quota`, `rate limit`).
+3. `flowdesk_status_live` for workflow status, recent activity, lane heartbeat, or "is it stuck" questions in Korean (`상태`, `어디까지`, `멈췄어`, `하트비트 알려줘`) or English (`status`, `where are we`, `is it stuck`, `lane heartbeat status`).
+4. `flowdesk_quick_fallback_run` for explicit provider fallback intent in Korean (`Claude 막혔어 OpenAI 로 다시`, `fallback 해줘`) or English (`fallback to`, `switch to`, `retry with`). Plans only; the actual provider switch stays behind managed-dispatch promotion.
+5. `flowdesk_lane_heartbeat_record` for explicit heartbeat requests in Korean (`하트비트 남겨줘`, `심박 남겨줘`, `진행 신호 남겨줘`) or English (`record heartbeat`, `emit heartbeat`, `mark progress`).
+
+None of these promote real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. They only read or write redacted diagnostic evidence.
+
+### Stalled Lane Alerts
+
+When `statusLive.enabled=true` and `chatMessageStallAlert.enabled=true` are both configured (with a resolvable `durableStateRoot`), FlowDesk passively appends a redacted stall card to your chat whenever durable session evidence shows a FlowDesk-owned lane that has not produced a heartbeat or lifecycle update for more than five minutes. The card lists how many lanes are stalled, the top workflow ids with the last-signal age in minutes, the explicit `FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.` line, and the safe next action allowlist (`/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`). Set `chatMessageStallAlert.includeProgressingLate=true` to also surface lanes that crossed the 2-minute soft threshold but are not yet stalled, using the same safe action allowlist and tone.
+
 Installer bootstrap is narrower than normal FlowDesk operation. It backs up the selected OpenCode profile, writes portable command files, writes a redacted bootstrap report, and hands evidence to `/flowdesk-doctor`. Rollback should touch only the selected profile/config entries covered by the backup and must preserve provider authentication. Do not paste raw OpenCode profile contents, credentials, provider auth entries, or filesystem paths into chat or debug requests. Bootstrap does not launch lanes, call providers, enable real dispatch, switch providers/models, or grant hard chat cancellation/no-reply authority; Release 1 registration remains non-dispatch command-backed only.
 
 ## When Claude, an API, or a Model Is Unavailable
