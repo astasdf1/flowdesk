@@ -1,5 +1,7 @@
 node_modules/
 .omc/
+.tools/
+.symgraph/
 dist/
 packages/*/dist/
 *.tsbuildinfo
