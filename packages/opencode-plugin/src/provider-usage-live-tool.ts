@@ -1,9 +1,17 @@
+import { execFileSync } from "node:child_process";
 import {
 	type FlowDeskProviderUsageAcquisitionConfigV1,
+	type FlowDeskProviderUsageCollectorOptionsV1,
 	type FlowDeskProviderUsageCollectorResultV1,
 	type FlowDeskProviderUsageCollectorTargetV1,
 	collectManagedDispatchBetaUsageEvidenceV1,
 } from "@flowdesk/core";
+
+const defaultExecFile = (file: string, args: string[]): string =>
+	execFileSync(file, args, {
+		encoding: "utf-8",
+		stdio: ["ignore", "pipe", "ignore"],
+	});
 
 export type FlowDeskProviderUsageLiveProviderFamilyV1 =
 	| "claude"
@@ -296,12 +304,16 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 	}
 
 	const acquisition = acquisitionConfigFromLive(input.config, families);
+	const collectorOptions: FlowDeskProviderUsageCollectorOptionsV1 = {
+		execFile: defaultExecFile,
+	};
 	const collectorResults = await Promise.all(
 		families.map(async (family) => {
 			try {
 				const result = await collectManagedDispatchBetaUsageEvidenceV1(
 					targetFor(family, observedAt),
 					acquisition,
+					collectorOptions,
 				);
 				return { family, result };
 			} catch {
