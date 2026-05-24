@@ -20,6 +20,8 @@ Project config loading update, 2026-05-25: Release 1 plugin profiles can opt in 
 
 Debug export materialization update, 2026-05-25: `/flowdesk-export-debug` now writes a validated `flowdesk.debug_export_manifest.v1` through the local non-dispatch adapter when durable state is configured. The materialized manifest is redacted-only and stores section summaries/refs/counts/retention state, not raw logs or payloads.
 
+Optional code graph tooling update, 2026-05-25: repository-local `symgraph` may be configured as an OpenCode MCP for developer code exploration when installed. It is optional tooling only, not a FlowDesk runtime dependency, connector execution feature, evidence authority, or dispatch gate. If `.symgraph/index.db` is missing, assistants must ask before running `symgraph index` so the user explicitly approves local project analysis.
+
 Included:
 
 1. Project workspace and packages.
@@ -40,6 +42,7 @@ Included:
 16. Short-lived durable suggestion preferences for duplicate-card suppression across plugin restarts when a durable root is configured.
 17. Opt-in real `.flowdesk/config.json` loading with fail-closed natural-language routing when the config is missing, invalid, or disables chat steering.
 18. Redacted debug export manifest materialization for `/flowdesk-export-debug` through the durable state path.
+19. Optional repository-local `symgraph` MCP setup for developer code exploration, with ask-before-index behavior when project analysis has not been created.
 
 Excluded:
 

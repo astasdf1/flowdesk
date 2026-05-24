@@ -26,6 +26,8 @@ Release 1 project config loading is opt-in in the OpenCode plugin profile throug
 
 Release 1 debug export materialization writes a redacted `flowdesk.debug_export_manifest.v1` manifest through the same validated durable state path when `/flowdesk-export-debug` runs through the local non-dispatch adapter. The manifest may list section summaries, opaque refs, retention/deletion state, counts, and warnings only. It must not include raw logs, prompts, transcripts, provider payloads, command payloads, tool results, runtime echoes, stack traces, raw config, raw file contents, or filesystem paths.
 
+Development-only code exploration may use an optional local code graph MCP such as `symgraph` when it is installed for the repository. This tooling is not a FlowDesk runtime dependency, connector authority, dispatch gate, evidence source, or Release 1 registered FlowDesk tool. If the tool is installed and an index already exists, assistants may use it to explore symbols, callers, callees, and impact radius before editing. If the tool is installed but the project has not been analyzed yet, the assistant must ask the user before running an indexing command such as `symgraph index`, because that creates local `.symgraph/` state. The `.symgraph/` graph remains local, ignored, and outside FlowDesk audit/debug/session artifacts unless a later spec defines a redacted contract.
+
 ## 2. Status and Scope
 
 This document is a pre-implementation development specification. It defines the first implementation contract before code is written in the new project folder.

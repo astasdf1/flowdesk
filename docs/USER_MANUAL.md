@@ -20,6 +20,8 @@ FlowDesk project configuration lives under `.flowdesk/config.json` when implemen
 
 When the plugin profile opts into `projectConfig.enabled=true`, FlowDesk reads `.flowdesk/config.json` from the configured root and validates it before enabling natural-language routing. If the config is missing, malformed, invalid, or explicitly disables chat steering, FlowDesk leaves chat steering off and reports the redacted status from the doctor tool.
 
+Optional developer tooling: this repository may include a project-local `symgraph` MCP setup for code exploration. When installed and already indexed, assistants can use it to inspect symbols, callers, callees, references, and impact radius while working on FlowDesk. It is not required to use FlowDesk and does not enable dispatch, provider calls, automatic fallback, or FlowDesk evidence authority. If `symgraph status` says there is no `.symgraph/index.db`, the assistant should ask before running `symgraph index`, because indexing analyzes the project and creates local `.symgraph/` state.
+
 ## Normal Use
 
 Start with chat:
