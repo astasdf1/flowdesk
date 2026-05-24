@@ -305,13 +305,30 @@ async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionC
   if (!credsPath) return refusedCollection("gemini", "gemini", "gemini auth evidence is missing");
   try {
     const creds = JSON.parse(filesystem.readFile(credsPath)) as unknown;
-    const refreshToken = isRecord(creds) ? stringField(creds, "refresh_token") : "";
-    if (!refreshToken) return refusedCollection("gemini", "gemini", "gemini refresh token is missing");
+    const credsRecord = isRecord(creds) ? creds : {};
+    const refreshToken = stringField(credsRecord, "refresh_token");
+    const cachedAccessToken = stringField(credsRecord, "access_token");
+    const cachedExpiryRaw = credsRecord.expiry_date;
+    const cachedExpiryMs = typeof cachedExpiryRaw === "number" ? cachedExpiryRaw : typeof cachedExpiryRaw === "string" ? Number.parseInt(cachedExpiryRaw, 10) : NaN;
+    const cachedTokenStillValid = cachedAccessToken !== "" && Number.isFinite(cachedExpiryMs) && cachedExpiryMs > observedAt + 5 * 60_000;
     const env = options.env ?? {};
     const clientId = firstNonEmpty(acquisition.geminiOAuthClientId, env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID);
     const clientSecret = firstNonEmpty(acquisition.geminiOAuthClientSecret, env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET);
-    if (!clientId || !clientSecret) return refusedCollection("gemini", "gemini", "gemini oauth client evidence is missing");
-    const accessToken = await refreshGeminiAccessToken(refreshToken, clientId, clientSecret, fetcher);
+    let accessToken = "";
+    if (cachedTokenStillValid) {
+      accessToken = cachedAccessToken;
+    } else if (refreshToken && clientId && clientSecret) {
+      try {
+        accessToken = await refreshGeminiAccessToken(refreshToken, clientId, clientSecret, fetcher);
+      } catch {
+        accessToken = "";
+      }
+    }
+    if (!accessToken) {
+      if (!refreshToken) return refusedCollection("gemini", "gemini", "gemini refresh token is missing");
+      if (!clientId || !clientSecret) return refusedCollection("gemini", "gemini", "gemini oauth client evidence is missing and cached access token is expired");
+      return refusedCollection("gemini", "gemini", "gemini token refresh failed");
+    }
     let projectId = firstNonEmpty(env.GOOGLE_CLOUD_PROJECT, env.GOOGLE_CLOUD_PROJECT_ID, acquisition.geminiProjectId);
     const details = await codeAssistPost("loadCodeAssist", { cloudaicompanionProject: projectId, metadata: { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI", duetProject: projectId } }, accessToken, fetcher);
     projectId = firstNonEmpty(projectId, stringField(details, "cloudaicompanionProject"));

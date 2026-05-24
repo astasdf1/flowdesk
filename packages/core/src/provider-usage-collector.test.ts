@@ -190,3 +190,66 @@ test("provider usage collector fails closed when acquisition or auth evidence is
   assert.equal(missingAuth.usageSnapshot.dispatchability, "non_dispatchable");
   assert.equal(missingAuth.providerHealthSnapshot.failure_class, "auth_missing");
 });
+
+test("Gemini Code Assist collector uses cached access_token when not expired without requiring client id/secret", async () => {
+  const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
+  const futureExpiry = observedAtMs + 30 * 60_000;
+  const filesystem = memoryFilesystem({
+    "/home/test/.gemini/oauth_creds.json": JSON.stringify({
+      access_token: "cached-access-token-still-valid",
+      refresh_token: "refresh-token-test",
+      expiry_date: futureExpiry,
+      token_type: "Bearer",
+    }),
+  });
+  let tokenRefreshCalls = 0;
+  let firstAuthHeader = "";
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url, init: FlowDeskProviderUsageFetchRequestV1) => {
+    if (url === "https://oauth2.googleapis.com/token") {
+      tokenRefreshCalls += 1;
+      return response({ access_token: "new-access-token" });
+    }
+    if (url.endsWith(":loadCodeAssist")) {
+      firstAuthHeader = init.headers.Authorization ?? "";
+      return response({ cloudaicompanionProject: "project-cached" });
+    }
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-24T02:00:00.000Z" }] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(
+    target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
+    { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
+    { filesystem, fetch: fetcher, now: () => observedAtMs },
+  );
+
+  assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+  assert.equal(tokenRefreshCalls, 0, "no refresh call should be made when cached token is still valid");
+  assert.equal(firstAuthHeader, "Bearer cached-access-token-still-valid");
+});
+
+test("Gemini Code Assist collector falls closed when cached token is expired and no client id/secret is configured", async () => {
+  const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
+  const pastExpiry = observedAtMs - 60_000;
+  const filesystem = memoryFilesystem({
+    "/home/test/.gemini/oauth_creds.json": JSON.stringify({
+      access_token: "expired-access-token",
+      refresh_token: "refresh-token-test",
+      expiry_date: pastExpiry,
+      token_type: "Bearer",
+    }),
+  });
+  const fetcher: FlowDeskProviderUsageFetchV1 = async () => response({});
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(
+    target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
+    { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
+    { filesystem, fetch: fetcher, now: () => observedAtMs },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    String(result.redacted_reason),
+    /cached access token is expired/,
+  );
+});
