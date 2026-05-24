@@ -51,6 +51,9 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskStatusLiveToolName,
 	flowdeskQuickFallbackRunOption,
 	flowdeskQuickFallbackRunToolName,
+	flowdeskLaneHeartbeatWriterOption,
+	flowdeskLaneHeartbeatWriterToolName,
+	flowdeskChatMessageStallAlertOption,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -4606,6 +4609,161 @@ test("quick fallback run produces a fresh full re-gate plan and persists it when
 		assert.equal(authority.fallbackAuthority, false);
 		assert.equal(authority.automaticFallbackAuthorized, false);
 		assert.equal(authority.regatePlanPrepared, true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("lane heartbeat writer tool is absent by default and registers only with explicit opt-in plus a durable state root", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(defaultHooks.tool?.[flowdeskLaneHeartbeatWriterToolName], undefined);
+	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLaneHeartbeatWriterOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(
+		enabledWithoutRoot.tool?.[flowdeskLaneHeartbeatWriterToolName],
+		undefined,
+	);
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-lane-heartbeat-writer-"));
+	try {
+		const enabled = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskLaneHeartbeatWriterOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const tool = enabled.tool?.[flowdeskLaneHeartbeatWriterToolName];
+		assert.ok(tool);
+		const result = JSON.parse(
+			toolOutput(
+				await tool.execute(
+					{
+						workflowId: "workflow-heartbeat-tool",
+						attemptId: "attempt-heartbeat-tool",
+						laneId: "lane-heartbeat-tool",
+						parentSessionRef: "ses-heartbeat-tool-parent",
+						agentRef: "agent-heartbeat-tool",
+						providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+						state: "running",
+						progressSummaryLabel: "warming up reviewer lane",
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "lane_heartbeat_recorded");
+		assert.equal(result.workflowId, "workflow-heartbeat-tool");
+		assert.equal(result.laneId, "lane-heartbeat-tool");
+		assert.equal(typeof result.heartbeatId, "string");
+		assert.equal(result.heartbeatSeq, 1);
+		assert.equal(typeof result.expectedNextHeartbeatAt, "string");
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(authority.laneHeartbeatPersisted, true);
+		const second = JSON.parse(
+			toolOutput(
+				await tool.execute(
+					{
+						workflowId: "workflow-heartbeat-tool",
+						attemptId: "attempt-heartbeat-tool",
+						laneId: "lane-heartbeat-tool",
+						parentSessionRef: "ses-heartbeat-tool-parent",
+						agentRef: "agent-heartbeat-tool",
+						providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+						state: "running",
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(second.status, "lane_heartbeat_recorded");
+		assert.equal(second.heartbeatSeq, 2);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("chat.message stall alert card appends safe next actions when stalled lanes exist", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-stall-card-"));
+	try {
+		const workflowId = "workflow-chat-stall-card";
+		const observedAtMs = Date.now();
+		const stalledLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-stall-card",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-stall-card",
+			parent_session_ref: "ses-chat-stall-card-parent",
+			agent_ref: "agent-chat-stall-card",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+			updated_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-stall-card",
+			record: stalledLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			intent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskNaturalLanguageRoutingOption]: true,
+			[flowdeskDurableStateRootOption]: root,
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskChatMessageStallAlertOption]: { enabled: true },
+		})) as ChatMessageHooks;
+		assert.ok(hooks["chat.message"]);
+		const generalOutput = {
+			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{
+				messageID: "message-stall-card-general",
+				sessionID: "session-stall-card",
+			},
+			generalOutput,
+		);
+		const generalSerialized = JSON.stringify(generalOutput);
+		assert.match(generalSerialized, /Stalled lanes detected/);
+		assert.match(generalSerialized, /workflow-chat-stall-card/);
+		assert.match(generalSerialized, /- \/flowdesk-retry/);
+		assert.equal(/noReply|cancel|stop/.test(generalSerialized), false);
+
+		const planOutput = {
+			parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{
+				messageID: "message-stall-card-plan",
+				sessionID: "session-stall-card-second",
+			},
+			planOutput,
+		);
+		const planSerialized = JSON.stringify(planOutput);
+		assert.match(planSerialized, /Suggested next step:/);
+		assert.match(planSerialized, /Stalled lanes detected/);
+		assert.equal(/noReply|cancel|stop/.test(planSerialized), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -94,6 +94,10 @@ import {
 	executeFlowDeskQuickFallbackRunV1,
 } from "./quick-fallback-run.js";
 import {
+	type FlowDeskLaneHeartbeatWriteRequestV1,
+	recordFlowDeskLaneHeartbeatV1,
+} from "./lane-heartbeat-writer.js";
+import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
 	getFlowDeskRelease1HandlerReadinessSummary,
 	getFlowDeskRelease1ProductionReadinessSummary,
@@ -127,6 +131,8 @@ export const flowdeskQuickReviewerRunOption = "quickReviewerRun" as const;
 export const flowdeskProviderUsageLiveOption = "providerUsageLive" as const;
 export const flowdeskStatusLiveOption = "statusLive" as const;
 export const flowdeskQuickFallbackRunOption = "quickFallbackRun" as const;
+export const flowdeskLaneHeartbeatWriterOption =
+	"laneHeartbeatWriter" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
@@ -144,6 +150,8 @@ export const flowdeskProviderUsageLiveToolName =
 export const flowdeskStatusLiveToolName = "flowdesk_status_live" as const;
 export const flowdeskQuickFallbackRunToolName =
 	"flowdesk_quick_fallback_run" as const;
+export const flowdeskLaneHeartbeatWriterToolName =
+	"flowdesk_lane_heartbeat_record" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -1670,11 +1678,20 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 	};
 }
 
+export interface FlowDeskChatMessageStallAlertOptionsV1 {
+	rootDir: string;
+	maxWorkflows?: number;
+	laneHeartbeatLateThresholdMs?: number;
+	laneHeartbeatStallThresholdMs?: number;
+}
+
 export function createFlowDeskNaturalLanguageChatMessageHook(
 	now: FlowDeskLocalClockV1 = () => new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
+	stallAlert?: FlowDeskChatMessageStallAlertOptionsV1,
 ) {
 	const recentSuggestionCards = new Map<string, number>();
+	const recentStallAlerts = new Map<string, number>();
 	return async function message(
 		input: unknown,
 		output: FlowDeskChatMessageOutput,
@@ -1682,7 +1699,6 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		const inputRecord = isRecord(input) ? input : {};
 		const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
 		const preview = previewNaturalLanguageRouting(request);
-		if (preview.evaluation.response.route_decision === "continue_chat") return;
 		const nowMs = clockMs(now);
 		for (const [key, recordedAtMs] of recentSuggestionCards) {
 			if (
@@ -1690,6 +1706,38 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				nowMs < recordedAtMs
 			)
 				recentSuggestionCards.delete(key);
+		}
+		for (const [key, recordedAtMs] of recentStallAlerts) {
+			if (
+				nowMs - recordedAtMs > flowdeskChatSuggestionDuplicateWindowMs ||
+				nowMs < recordedAtMs
+			)
+				recentStallAlerts.delete(key);
+		}
+		const stallSummary = stallAlert
+			? await collectStallAlertSummary(stallAlert, now)
+			: undefined;
+		const shouldAppendStallCard =
+			stallSummary !== undefined &&
+			stallSummary.worstClassification === "stalled" &&
+			stallSummary.totalStalled > 0;
+		if (preview.evaluation.response.route_decision === "continue_chat") {
+			if (shouldAppendStallCard && stallSummary !== undefined) {
+				const key = stallAlertDuplicateKey(request, stallSummary);
+				const previous = recentStallAlerts.get(key);
+				recentStallAlerts.set(key, nowMs);
+				if (
+					previous === undefined ||
+					nowMs - previous > flowdeskChatSuggestionDuplicateWindowMs
+				) {
+					if (!Array.isArray(output.parts)) output.parts = [];
+					output.parts.push({
+						type: "text",
+						text: stallAlertText(stallSummary),
+					});
+				}
+			}
+			return;
 		}
 		if (!mayCreatePendingConfirmation(preview)) {
 			const duplicateKey = suggestionDuplicateKey(
@@ -1707,7 +1755,136 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		const result = evaluateNaturalLanguageRouting(request, session);
 		if (!Array.isArray(output.parts)) output.parts = [];
 		output.parts.push({ type: "text", text: steeringText(result) });
+		if (shouldAppendStallCard && stallSummary !== undefined) {
+			const key = stallAlertDuplicateKey(request, stallSummary);
+			const previous = recentStallAlerts.get(key);
+			recentStallAlerts.set(key, nowMs);
+			if (
+				previous === undefined ||
+				nowMs - previous > flowdeskChatSuggestionDuplicateWindowMs
+			)
+				output.parts.push({
+					type: "text",
+					text: stallAlertText(stallSummary),
+				});
+		}
 	};
+}
+
+interface FlowDeskChatMessageStallSummaryV1 {
+	worstClassification: string;
+	totalStalled: number;
+	totalLate: number;
+	workflowSummaries: Array<{
+		workflowId: string;
+		stalledLaneCount: number;
+		lateLaneCount: number;
+		secondsSinceLastSignal?: number;
+		laneId?: string;
+		failureHint?: string;
+	}>;
+}
+
+async function collectStallAlertSummary(
+	stallAlert: FlowDeskChatMessageStallAlertOptionsV1,
+	clock: FlowDeskLocalClockV1,
+): Promise<FlowDeskChatMessageStallSummaryV1 | undefined> {
+	try {
+		const observedAt = (typeof clock === "function" ? clock() : clock).toISOString();
+		const config: FlowDeskStatusLiveConfigV1 = {
+			rootDir: stallAlert.rootDir,
+			...(stallAlert.maxWorkflows === undefined
+				? {}
+				: { maxWorkflows: stallAlert.maxWorkflows }),
+			...(stallAlert.laneHeartbeatLateThresholdMs === undefined
+				? {}
+				: {
+						laneHeartbeatLateThresholdMs:
+							stallAlert.laneHeartbeatLateThresholdMs,
+					}),
+			...(stallAlert.laneHeartbeatStallThresholdMs === undefined
+				? {}
+				: {
+						laneHeartbeatStallThresholdMs:
+							stallAlert.laneHeartbeatStallThresholdMs,
+					}),
+		};
+		const result = await executeFlowDeskStatusLiveV1({
+			config,
+			now: () => new Date(observedAt),
+		});
+		if (result.status !== "status_live_collected") return undefined;
+		const workflowSummaries = result.workflows
+			.filter(
+				(workflow) => (workflow.stalledLaneCount ?? 0) > 0,
+			)
+			.slice(0, 3)
+			.map((workflow) => {
+				const stalledEntry = workflow.laneStallProjection?.entries.find(
+					(entry) => entry.classification === "stalled",
+				);
+				return {
+					workflowId: workflow.workflowId,
+					stalledLaneCount: workflow.stalledLaneCount ?? 0,
+					lateLaneCount: workflow.progressingLateLaneCount ?? 0,
+					...(stalledEntry?.secondsSinceLastSignal === undefined
+						? {}
+						: { secondsSinceLastSignal: stalledEntry.secondsSinceLastSignal }),
+					...(stalledEntry?.laneId === undefined
+						? {}
+						: { laneId: stalledEntry.laneId }),
+					...(stalledEntry?.failureHint === undefined
+						? {}
+						: { failureHint: stalledEntry.failureHint }),
+				};
+			});
+		return {
+			worstClassification: result.worstLaneStallClassification ?? "unknown",
+			totalStalled: result.totalStalledLaneCount ?? 0,
+			totalLate: result.totalProgressingLateLaneCount ?? 0,
+			workflowSummaries,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function stallAlertDuplicateKey(
+	request: FlowDeskChatIntakeRequestV1,
+	summary: FlowDeskChatMessageStallSummaryV1,
+): string {
+	const wf = summary.workflowSummaries
+		.map((entry) => `${entry.workflowId}:${entry.stalledLaneCount}`)
+		.join("|");
+	return `${safeToken(request.session_ref, "session")}|stall|${wf}`;
+}
+
+function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
+	const lines: string[] = [];
+	lines.push("FlowDesk");
+	lines.push(
+		`Stalled lanes detected: ${summary.totalStalled} stalled, ${summary.totalLate} progressing-late.`,
+	);
+	for (const workflow of summary.workflowSummaries.slice(0, 3)) {
+		const secs = workflow.secondsSinceLastSignal ?? 0;
+		const minutes = Math.floor(secs / 60);
+		const hint = workflow.failureHint ?? "no recent heartbeat";
+		lines.push(
+			`- workflow ${workflow.workflowId}: ${workflow.stalledLaneCount} stalled (last signal ~${minutes}m ago, ${hint}).`,
+		);
+	}
+	lines.push("FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.");
+	lines.push("Safe next actions:");
+	for (const action of [
+		"/flowdesk-status",
+		"/flowdesk-retry",
+		"/flowdesk-resume",
+		"/flowdesk-abort",
+		"/flowdesk-doctor",
+		"/flowdesk-export-debug",
+	])
+		lines.push(`- ${action}`);
+	return lines.join("\n");
 }
 
 function isFds1SchemaConversionProbeEnabled(options?: PluginOptions): boolean {
@@ -2485,6 +2662,163 @@ export function createFlowDeskQuickFallbackRunOptInTools(
 	};
 }
 
+function isLaneHeartbeatWriterEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskLaneHeartbeatWriterOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
+interface FlowDeskLaneHeartbeatWriterConfigV1 {
+	rootDir: string;
+	defaultExpectedIntervalMs?: number;
+}
+
+function laneHeartbeatWriterConfigFromOptions(
+	options?: PluginOptions,
+): FlowDeskLaneHeartbeatWriterConfigV1 | undefined {
+	const value = options?.[flowdeskLaneHeartbeatWriterOption];
+	const enabledFromBool = value === true;
+	const enabledFromRecord = isRecord(value) && value.enabled === true;
+	if (!enabledFromBool && !enabledFromRecord) return undefined;
+	const explicitRoot =
+		isRecord(value) &&
+		typeof value.rootDir === "string" &&
+		value.rootDir.trim().length > 0
+			? value.rootDir
+			: undefined;
+	const root = explicitRoot ?? durableStateRootFromOptions(options);
+	if (root === undefined) return undefined;
+	const config: FlowDeskLaneHeartbeatWriterConfigV1 = { rootDir: root };
+	if (
+		isRecord(value) &&
+		typeof value.defaultExpectedIntervalMs === "number" &&
+		value.defaultExpectedIntervalMs > 0
+	)
+		config.defaultExpectedIntervalMs = Math.floor(value.defaultExpectedIntervalMs);
+	return config;
+}
+
+export function createFlowDeskLaneHeartbeatWriterOptInTools(
+	config: FlowDeskLaneHeartbeatWriterConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskLaneHeartbeatWriterToolName]: tool({
+			description: [
+				"Record a durable FlowDesk lane heartbeat for a FlowDesk-owned lane (reviewer lane, runtime lane launch, provider acquisition lane, managed-dispatch attempt, fallback regate plan). Each call produces one validated flowdesk.lane_heartbeat.v1 record with a monotonically increasing heartbeat_seq per lane id, persisted as durable session evidence. Heartbeats are diagnostic evidence only and never approve dispatch, widen scope, or replace Guard.",
+				"WHEN TO USE: a FlowDesk coordinator that owns the lane needs to prove it is still active during a long-running step. Trigger when the assistant is coordinating a FlowDesk lane and the previous heartbeat or lifecycle update was emitted close to the soft heartbeat interval (about 2 minutes by default). Do not call this for arbitrary OpenCode user-driven work that FlowDesk does not own.",
+				"WHEN NOT TO USE: lifecycle transitions to terminal states (use lane_lifecycle materializers), reviewer verdict observations, provider-call evidence, dispatch authority changes, or any case where you do not have a stable FlowDesk lane id and parent session id.",
+				"INVOKE WITH: workflowId, attemptId, laneId, parentSessionRef (must start with 'ses-'), agentRef (must start with 'agent-'), providerQualifiedModelId (concrete provider/model id), state (one of 'created', 'running', 'awaiting_dependency', 'cooldown'), and optional progressSummaryLabel (<=120 chars), progressRef (starts with 'progress-' or 'heartbeat-progress-'), expectedIntervalMs, heartbeatSeq, observedAt. When heartbeatSeq is omitted the writer derives it from the latest heartbeat for the lane id.",
+				"AFTER CALLING: confirm status=lane_heartbeat_recorded with the heartbeat_seq, observed_at, and expected_next_heartbeat_at. On status=blocked_before_lane_heartbeat surface the redactedBlockReason. Never echo raw prompts, transcripts, provider payloads, runtime echo, or any other forbidden raw markers.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema
+					.string()
+					.describe("Stable opaque FlowDesk workflow id bound to this lane."),
+				attemptId: tool.schema
+					.string()
+					.describe("Stable opaque attempt id bound to this lane."),
+				laneId: tool.schema
+					.string()
+					.describe(
+						"Stable opaque FlowDesk lane id (e.g. 'lane-quick-policy_security-...').",
+					),
+				parentSessionRef: tool.schema
+					.string()
+					.describe(
+						"Opaque ses-* ref for the parent session that owns this lane.",
+					),
+				agentRef: tool.schema
+					.string()
+					.describe("Opaque agent-* ref for the FlowDesk agent profile."),
+				providerQualifiedModelId: tool.schema
+					.string()
+					.describe(
+						"Concrete provider-qualified model id (e.g. 'openai/gpt-5.4-mini-fast').",
+					),
+				state: tool.schema
+					.enum([
+						"created",
+						"running",
+						"awaiting_dependency",
+						"cooldown",
+					])
+					.describe("Active lane state at heartbeat time."),
+				progressSummaryLabel: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Bounded redacted progress label (<=120 chars). No raw prompts, tool args, or transcripts.",
+					),
+				progressRef: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Opaque progress reference starting with 'progress-' or 'heartbeat-progress-'.",
+					),
+				expectedIntervalMs: tool.schema
+					.number()
+					.optional()
+					.describe(
+						"Override for expected next heartbeat interval in milliseconds; clamped to >=10s and <=24h.",
+					),
+				heartbeatSeq: tool.schema
+					.number()
+					.optional()
+					.describe(
+						"Optional explicit heartbeat sequence. When omitted, the writer increments from the latest persisted heartbeat for this lane id.",
+					),
+				observedAt: tool.schema
+					.string()
+					.optional()
+					.describe("ISO timestamp; defaults to now."),
+			},
+			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				const request: FlowDeskLaneHeartbeatWriteRequestV1 = {
+					rootDir: config.rootDir,
+					workflowId: typeof record.workflowId === "string" ? record.workflowId : "",
+					attemptId: typeof record.attemptId === "string" ? record.attemptId : "",
+					laneId: typeof record.laneId === "string" ? record.laneId : "",
+					parentSessionRef:
+						typeof record.parentSessionRef === "string"
+							? record.parentSessionRef
+							: "",
+					agentRef: typeof record.agentRef === "string" ? record.agentRef : "",
+					providerQualifiedModelId:
+						typeof record.providerQualifiedModelId === "string"
+							? record.providerQualifiedModelId
+							: "",
+					state:
+						record.state === "created" ||
+						record.state === "running" ||
+						record.state === "awaiting_dependency" ||
+						record.state === "cooldown"
+							? record.state
+							: "running",
+					...(typeof record.progressSummaryLabel === "string"
+						? { progressSummaryLabel: record.progressSummaryLabel }
+						: {}),
+					...(typeof record.progressRef === "string"
+						? { progressRef: record.progressRef }
+						: {}),
+					...(typeof record.expectedIntervalMs === "number"
+						? { expectedIntervalMs: record.expectedIntervalMs }
+						: config.defaultExpectedIntervalMs === undefined
+							? {}
+							: { expectedIntervalMs: config.defaultExpectedIntervalMs }),
+					...(typeof record.heartbeatSeq === "number"
+						? { heartbeatSeq: record.heartbeatSeq }
+						: {}),
+					...(typeof record.observedAt === "string"
+						? { observedAt: record.observedAt }
+						: {}),
+				};
+				const result = recordFlowDeskLaneHeartbeatV1(request);
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 function isStatusLiveEnabled(options?: PluginOptions): boolean {
 	const value = options?.[flowdeskStatusLiveOption];
 	return value === true || (isRecord(value) && value.enabled === true);
@@ -2692,6 +3026,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				)
 					? quickFallbackRunConfigFromOptions(options)
 					: undefined;
+				const laneHeartbeatWriterConfigForDoctor = isLaneHeartbeatWriterEnabled(
+					options,
+				)
+					? laneHeartbeatWriterConfigFromOptions(options)
+					: undefined;
 				const quickReviewerRunRegistered =
 					isQuickReviewerRunEnabled(options) &&
 					quickReviewerRunClientFrom(input, options) !== undefined;
@@ -2743,6 +3082,18 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							quickFallbackRunConfigForDoctor?.defaultToProvider,
 						persistsRegatePlanEvidence:
 							quickFallbackRunConfigForDoctor?.rootDir !== undefined,
+					},
+					laneHeartbeatWriter: {
+						enabled: isLaneHeartbeatWriterEnabled(options),
+						registered: laneHeartbeatWriterConfigForDoctor !== undefined,
+						rootDir: laneHeartbeatWriterConfigForDoctor?.rootDir,
+						defaultExpectedIntervalMs:
+							laneHeartbeatWriterConfigForDoctor?.defaultExpectedIntervalMs,
+						hint:
+							isLaneHeartbeatWriterEnabled(options) &&
+							laneHeartbeatWriterConfigForDoctor === undefined
+								? "laneHeartbeatWriter.enabled=true but no durable state root resolved; set laneHeartbeatWriter.rootDir or top-level durableStateRoot"
+								: undefined,
 					},
 				};
 				return JSON.stringify({
@@ -2886,15 +3237,77 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskQuickFallbackRunOptInTools(quickFallbackRunConfig),
 		);
+	const laneHeartbeatWriterConfig = isLaneHeartbeatWriterEnabled(options)
+		? laneHeartbeatWriterConfigFromOptions(options)
+		: undefined;
+	if (laneHeartbeatWriterConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskLaneHeartbeatWriterOptInTools(laneHeartbeatWriterConfig),
+		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
+	const stallAlertOption = chatMessageStallAlertOptionsFrom(
+		options,
+		statusLiveConfig,
+	);
 	return {
 		tool: tools,
 		"chat.message": createFlowDeskNaturalLanguageChatMessageHook(
 			() => new Date(),
 			localSession,
+			stallAlertOption,
 		),
 	};
 };
+
+export const flowdeskChatMessageStallAlertOption =
+	"chatMessageStallAlert" as const;
+
+function chatMessageStallAlertOptionsFrom(
+	options: PluginOptions | undefined,
+	statusLiveConfig: FlowDeskStatusLiveConfigV1 | undefined,
+): FlowDeskChatMessageStallAlertOptionsV1 | undefined {
+	const raw = options?.[flowdeskChatMessageStallAlertOption];
+	if (raw === false) return undefined;
+	const recordRaw = isRecord(raw) ? raw : undefined;
+	const explicitEnabled = recordRaw?.enabled === true || raw === true;
+	const explicitDisabled = recordRaw?.enabled === false;
+	if (explicitDisabled) return undefined;
+	const explicitRoot =
+		recordRaw !== undefined &&
+		typeof recordRaw.rootDir === "string" &&
+		recordRaw.rootDir.trim().length > 0
+			? recordRaw.rootDir
+			: undefined;
+	const fallbackRoot = statusLiveConfig?.rootDir ?? durableStateRootFromOptions(options);
+	const rootDir = explicitRoot ?? fallbackRoot;
+	if (rootDir === undefined) return undefined;
+	if (!explicitEnabled && statusLiveConfig === undefined) return undefined;
+	const config: FlowDeskChatMessageStallAlertOptionsV1 = { rootDir };
+	if (
+		recordRaw !== undefined &&
+		typeof recordRaw.maxWorkflows === "number" &&
+		recordRaw.maxWorkflows > 0
+	)
+		config.maxWorkflows = Math.floor(recordRaw.maxWorkflows);
+	if (
+		recordRaw !== undefined &&
+		typeof recordRaw.laneHeartbeatLateThresholdMs === "number" &&
+		recordRaw.laneHeartbeatLateThresholdMs > 0
+	)
+		config.laneHeartbeatLateThresholdMs = Math.floor(
+			recordRaw.laneHeartbeatLateThresholdMs,
+		);
+	if (
+		recordRaw !== undefined &&
+		typeof recordRaw.laneHeartbeatStallThresholdMs === "number" &&
+		recordRaw.laneHeartbeatStallThresholdMs > 0
+	)
+		config.laneHeartbeatStallThresholdMs = Math.floor(
+			recordRaw.laneHeartbeatStallThresholdMs,
+		);
+	return config;
+}
 
 export const flowdeskOpenCodeServerPlugin = {
 	id: flowdeskPluginId,
