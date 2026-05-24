@@ -1683,6 +1683,7 @@ export interface FlowDeskChatMessageStallAlertOptionsV1 {
 	maxWorkflows?: number;
 	laneHeartbeatLateThresholdMs?: number;
 	laneHeartbeatStallThresholdMs?: number;
+	includeProgressingLate?: boolean;
 }
 
 export function createFlowDeskNaturalLanguageChatMessageHook(
@@ -1717,10 +1718,16 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		const stallSummary = stallAlert
 			? await collectStallAlertSummary(stallAlert, now)
 			: undefined;
-		const shouldAppendStallCard =
+		const stalledAlertReady =
 			stallSummary !== undefined &&
 			stallSummary.worstClassification === "stalled" &&
 			stallSummary.totalStalled > 0;
+		const lateAlertReady =
+			stallSummary !== undefined &&
+			stallAlert?.includeProgressingLate === true &&
+			stallSummary.worstClassification === "progressing_late" &&
+			stallSummary.totalLate > 0;
+		const shouldAppendStallCard = stalledAlertReady || lateAlertReady;
 		if (preview.evaluation.response.route_decision === "continue_chat") {
 			if (shouldAppendStallCard && stallSummary !== undefined) {
 				const key = stallAlertDuplicateKey(request, stallSummary);
@@ -1816,26 +1823,31 @@ async function collectStallAlertSummary(
 		if (result.status !== "status_live_collected") return undefined;
 		const workflowSummaries = result.workflows
 			.filter(
-				(workflow) => (workflow.stalledLaneCount ?? 0) > 0,
+				(workflow) =>
+					(workflow.stalledLaneCount ?? 0) > 0 ||
+					(stallAlert.includeProgressingLate === true &&
+						(workflow.progressingLateLaneCount ?? 0) > 0),
 			)
 			.slice(0, 3)
 			.map((workflow) => {
 				const stalledEntry = workflow.laneStallProjection?.entries.find(
 					(entry) => entry.classification === "stalled",
 				);
+				const lateEntry = workflow.laneStallProjection?.entries.find(
+					(entry) => entry.classification === "progressing_late",
+				);
+				const primary = stalledEntry ?? lateEntry;
 				return {
 					workflowId: workflow.workflowId,
 					stalledLaneCount: workflow.stalledLaneCount ?? 0,
 					lateLaneCount: workflow.progressingLateLaneCount ?? 0,
-					...(stalledEntry?.secondsSinceLastSignal === undefined
+					...(primary?.secondsSinceLastSignal === undefined
 						? {}
-						: { secondsSinceLastSignal: stalledEntry.secondsSinceLastSignal }),
-					...(stalledEntry?.laneId === undefined
+						: { secondsSinceLastSignal: primary.secondsSinceLastSignal }),
+					...(primary?.laneId === undefined ? {} : { laneId: primary.laneId }),
+					...(primary?.failureHint === undefined
 						? {}
-						: { laneId: stalledEntry.laneId }),
-					...(stalledEntry?.failureHint === undefined
-						? {}
-						: { failureHint: stalledEntry.failureHint }),
+						: { failureHint: primary.failureHint }),
 				};
 			});
 		return {
@@ -1868,15 +1880,29 @@ function stallAlertDuplicateKey(
 function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 	const lines: string[] = [];
 	lines.push("FlowDesk");
-	lines.push(
-		`Stalled lanes detected: ${summary.totalStalled} stalled, ${summary.totalLate} progressing-late.`,
-	);
+	if (summary.worstClassification === "stalled") {
+		lines.push(
+			`Stalled lanes detected: ${summary.totalStalled} stalled, ${summary.totalLate} progressing-late.`,
+		);
+	} else if (summary.worstClassification === "progressing_late") {
+		lines.push(
+			`Late-progressing lanes detected: ${summary.totalLate} late, ${summary.totalStalled} stalled.`,
+		);
+	} else {
+		lines.push(
+			`Lane progress check: ${summary.totalStalled} stalled, ${summary.totalLate} progressing-late.`,
+		);
+	}
 	for (const workflow of summary.workflowSummaries.slice(0, 3)) {
 		const secs = workflow.secondsSinceLastSignal ?? 0;
 		const minutes = Math.floor(secs / 60);
 		const hint = workflow.failureHint ?? "no recent heartbeat";
+		const counts =
+			workflow.stalledLaneCount > 0
+				? `${workflow.stalledLaneCount} stalled`
+				: `${workflow.lateLaneCount} progressing-late`;
 		lines.push(
-			`- workflow ${workflow.workflowId}: ${workflow.stalledLaneCount} stalled (last signal ~${minutes}m ago, ${hint}).`,
+			`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
 		);
 	}
 	lines.push("FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.");
@@ -3332,6 +3358,11 @@ function chatMessageStallAlertOptionsFrom(
 		config.laneHeartbeatStallThresholdMs = Math.floor(
 			recordRaw.laneHeartbeatStallThresholdMs,
 		);
+	if (
+		recordRaw !== undefined &&
+		typeof recordRaw.includeProgressingLate === "boolean"
+	)
+		config.includeProgressingLate = recordRaw.includeProgressingLate;
 	return config;
 }
 

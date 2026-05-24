@@ -4769,6 +4769,97 @@ test("chat.message stall alert card appends safe next actions when stalled lanes
 	}
 });
 
+test("chat.message stall alert surfaces progressing-late lanes only when includeProgressingLate is opted in", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-late-card-"));
+	try {
+		const workflowId = "workflow-chat-late-card";
+		const observedAtMs = Date.now();
+		const lateLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-late-card",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-late-card",
+			parent_session_ref: "ses-chat-late-card-parent",
+			agent_ref: "agent-chat-late-card",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 3 * 60_000).toISOString(),
+			updated_at: new Date(observedAtMs - 3 * 60_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-late-card",
+			record: lateLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			intent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+
+		const defaultHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskNaturalLanguageRoutingOption]: true,
+			[flowdeskDurableStateRootOption]: root,
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskChatMessageStallAlertOption]: { enabled: true },
+		})) as ChatMessageHooks;
+		assert.ok(defaultHooks["chat.message"]);
+		const noLateOutput = {
+			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
+		};
+		await defaultHooks["chat.message"](
+			{
+				messageID: "message-late-card-no-opt",
+				sessionID: "session-late-card-no-opt",
+			},
+			noLateOutput,
+		);
+		assert.equal(noLateOutput.parts.length, 1);
+		assert.equal(
+			/Stalled lanes detected|Late-progressing lanes detected/.test(
+				JSON.stringify(noLateOutput),
+			),
+			false,
+		);
+
+		const lateHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskNaturalLanguageRoutingOption]: true,
+			[flowdeskDurableStateRootOption]: root,
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskChatMessageStallAlertOption]: {
+				enabled: true,
+				includeProgressingLate: true,
+			},
+		})) as ChatMessageHooks;
+		assert.ok(lateHooks["chat.message"]);
+		const lateOutput = {
+			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
+		};
+		await lateHooks["chat.message"](
+			{
+				messageID: "message-late-card-opt-in",
+				sessionID: "session-late-card-opt-in",
+			},
+			lateOutput,
+		);
+		const serialized = JSON.stringify(lateOutput);
+		assert.match(serialized, /Late-progressing lanes detected/);
+		assert.match(serialized, /workflow-chat-late-card/);
+		assert.match(serialized, /1 progressing-late/);
+		assert.match(serialized, /- \/flowdesk-status/);
+		assert.equal(/noReply|cancel|stop/.test(serialized), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("quick fallback run blocks before plan when from and to providers are equal", async () => {
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskQuickFallbackRunOption]: { enabled: true },
