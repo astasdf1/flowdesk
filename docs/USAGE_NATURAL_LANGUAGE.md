@@ -1,6 +1,6 @@
 # FlowDesk Natural-Language Usage
 
-FlowDesk exposes four description-driven LLM tools that fire automatically when the assistant detects matching natural-language patterns in the OpenCode chat. No portable command typing required.
+FlowDesk exposes five description-driven LLM tools that fire automatically when the assistant detects matching natural-language patterns in the OpenCode chat. No portable command typing required.
 
 This document covers:
 
@@ -9,7 +9,7 @@ This document covers:
 3. The minimum plugin config + environment variables required for live data.
 4. How to verify the active OpenCode profile.
 
-All four tools keep `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` flags `false`. They are read-only/observation/planning tools; they do not promote default dispatch authority or switch providers in production.
+All five tools keep `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` flags `false`. They are read-only/observation/planning/diagnostic tools; they do not promote default dispatch authority or switch providers in production.
 
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
@@ -201,6 +201,76 @@ English: `fallback to`, `switch to`, `retry with`, `try with another provider`, 
 
 `fallbackAuthority`, `automaticFallbackAuthorized`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `realOpenCodeDispatch`, `toolAuthority`, and `hardCancelOrNoReplyAuthority` all remain `false`. Only the new diagnostic `regatePlanPrepared` flag turns true. Actual provider switching remains blocked behind managed-dispatch promotion.
 
+## Tool 5: `flowdesk_lane_heartbeat_record`
+
+Record a durable FlowDesk lane heartbeat for a FlowDesk-owned lane (reviewer lane, runtime lane launch, provider acquisition lane, managed-dispatch attempt, fallback regate plan). Each call writes exactly one validated `flowdesk.lane_heartbeat.v1` record with a monotonically increasing `heartbeat_seq` per lane id. Heartbeats are diagnostic evidence only; they never approve dispatch, widen scope, or replace Guard.
+
+### Trigger phrases
+
+Korean: `하트비트 남겨줘`, `하트비트 기록해줘`, `심박 남겨줘`, `심장박동 기록`, `레인 살아 있다고 표시`, `진행 신호 남겨줘`, `진행 표시 해줘`, `아직 살아 있다고 알려줘`.
+
+English: `heartbeat`, `record heartbeat`, `emit heartbeat`, `mark progress`, `I'm still alive`, `lane is still progressing`, `heartbeat for the lane`.
+
+The assistant should also call this tool autonomously, without per-call confirmation, when it is coordinating a FlowDesk-owned lane and the previous heartbeat or lifecycle update is older than about 2 minutes.
+
+### Required plugin config
+
+```json
+{
+  "plugin": [
+    [
+      "@flowdesk/opencode-plugin",
+      {
+        "laneHeartbeatWriter": {
+          "enabled": true
+        },
+        "durableStateRoot": "/Users/<you>/.flowdesk"
+      }
+    ]
+  ]
+}
+```
+
+`laneHeartbeatWriter.rootDir` overrides the durable state root for heartbeat writes; otherwise the top-level `durableStateRoot` is used. Either form must resolve to a writable directory or the tool will not register.
+
+### Result shape
+
+On success: `status: "lane_heartbeat_recorded"` with `heartbeatId`, `heartbeatSeq`, `observedAt`, and `expectedNextHeartbeatAt` set. The `authority.laneHeartbeatPersisted` diagnostic flag becomes `true`. All other authority flags stay `false`.
+
+On failure: `status: "blocked_before_lane_heartbeat"` with a sanitized `redactedBlockReason` such as `lane heartbeat evidence id already exists; pick a fresh sequence` or `session evidence reload failed before heartbeat write`.
+
+### Stall projection consumption
+
+`flowdesk_status_live` already reads `lane_heartbeat` records as the latest signal per lane id, ahead of any older `lane_lifecycle` record for that lane. The projection classifies each lane as `progressing_normal` (<=2 minutes since last signal), `progressing_late` (2-5 minutes), `stalled` (>5 minutes while still in `created`/`running`/`awaiting_dependency`/`cooldown`), `terminal`, or `unknown`. Stalled lanes get a bounded safe action allowlist limited to `/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`.
+
+## chat.message stall alert card
+
+When `statusLive.enabled=true` and `chatMessageStallAlert.enabled=true` are both set (with a resolvable `durableStateRoot`), FlowDesk also adds a passive `chat.message` card that appears whenever durable evidence shows a stalled FlowDesk-owned lane. The card never auto-retries, auto-aborts, auto-fallbacks, or claims hard chat cancellation; it shows:
+
+1. The total stalled and progressing-late lane counts.
+2. Up to three top stalled workflow ids with the last signal age in minutes and a failure hint when available.
+3. The explicit line `FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.`
+4. The safe next action allowlist (`/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`).
+
+The same in-memory duplicate suppression that keeps natural-language steering cards from spamming the user also suppresses repeated stall cards with identical per-workflow counts inside a single session.
+
+### Required plugin config
+
+```json
+{
+  "plugin": [
+    [
+      "@flowdesk/opencode-plugin",
+      {
+        "statusLive": { "enabled": true },
+        "chatMessageStallAlert": { "enabled": true },
+        "durableStateRoot": "/Users/<you>/.flowdesk"
+      }
+    ]
+  ]
+}
+```
+
 ## Complete example: full active OpenCode profile
 
 ```json
@@ -230,6 +300,12 @@ English: `fallback to`, `switch to`, `retry with`, `try with another provider`, 
         "quickFallbackRun": {
           "enabled": true
         },
+        "laneHeartbeatWriter": {
+          "enabled": true
+        },
+        "chatMessageStallAlert": {
+          "enabled": true
+        },
         "durableStateRoot": "/Users/<you>/.flowdesk"
       }
     ]
@@ -255,12 +331,15 @@ const hooks = await plugin.server(undefined, {
   quickReviewerRun: { enabled: true, providerQualifiedModelId: 'openai/gpt-5.4-mini-fast', runtimeAgent: 'reviewer-gpt-frontier' },
   providerUsageLive: { enabled: true, providers: ['claude', 'openai', 'gemini'], claudeOAuthUsage: true, codexLiveUsage: true, geminiQuota: true },
   statusLive: { enabled: true },
+  quickFallbackRun: { enabled: true },
+  laneHeartbeatWriter: { enabled: true },
+  chatMessageStallAlert: { enabled: true },
   durableStateRoot: process.env.HOME + '/.flowdesk',
   localNonDispatchAdapter: false,
-  naturalLanguageRouting: false
+  naturalLanguageRouting: true
 });
 const names = Object.keys(hooks.tool ?? {});
-console.log(names);
+console.log({ names, hasChatMessage: typeof hooks['chat.message'] === 'function' });
 "
 ```
 
@@ -271,6 +350,9 @@ Expected tools:
 - `flowdesk_provider_usage_live`
 - `flowdesk_status_live`
 - `flowdesk_quick_fallback_run`
+- `flowdesk_lane_heartbeat_record`
+
+`hasChatMessage` must be `true` once `naturalLanguageRouting` is enabled. The `chat.message` hook is also the surface that emits the passive stall alert card when `chatMessageStallAlert.enabled=true` and stalled lanes are present.
 
 ## Chat-routing fallback (when LLM tool discovery is unavailable)
 
@@ -281,4 +363,5 @@ If `localNonDispatchAdapter` and `naturalLanguageRouting` are enabled, FlowDesk 
 - No raw OAuth tokens are echoed in tool responses; only redacted refs and bucket-level data.
 - No managed dispatch or model lane launch authority is enabled by these tools.
 - All authority flags (`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`) remain `false`.
-- Only diagnostic flags (`providerUsageAcquired`, `statusEvidenceObserved`, `exactModelProviderAcquisitionRecorded`) become `true` to indicate that real data was read; they do not authorize dispatch.
+- Only diagnostic flags (`providerUsageAcquired`, `statusEvidenceObserved`, `exactModelProviderAcquisitionRecorded`, `regatePlanPrepared`, `laneHeartbeatPersisted`) become `true` to indicate that real data was read or written; they do not authorize dispatch.
+- The stall alert card and the lane heartbeat writer never contain raw prompts, transcripts, provider payloads, runtime echoes, tool args/results, stack traces, file contents, or absolute filesystem paths; only redacted opaque refs and bounded labels are stored.

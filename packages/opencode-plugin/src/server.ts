@@ -2703,11 +2703,11 @@ export function createFlowDeskLaneHeartbeatWriterOptInTools(
 	return {
 		[flowdeskLaneHeartbeatWriterToolName]: tool({
 			description: [
-				"Record a durable FlowDesk lane heartbeat for a FlowDesk-owned lane (reviewer lane, runtime lane launch, provider acquisition lane, managed-dispatch attempt, fallback regate plan). Each call produces one validated flowdesk.lane_heartbeat.v1 record with a monotonically increasing heartbeat_seq per lane id, persisted as durable session evidence. Heartbeats are diagnostic evidence only and never approve dispatch, widen scope, or replace Guard.",
-				"WHEN TO USE: a FlowDesk coordinator that owns the lane needs to prove it is still active during a long-running step. Trigger when the assistant is coordinating a FlowDesk lane and the previous heartbeat or lifecycle update was emitted close to the soft heartbeat interval (about 2 minutes by default). Do not call this for arbitrary OpenCode user-driven work that FlowDesk does not own.",
-				"WHEN NOT TO USE: lifecycle transitions to terminal states (use lane_lifecycle materializers), reviewer verdict observations, provider-call evidence, dispatch authority changes, or any case where you do not have a stable FlowDesk lane id and parent session id.",
-				"INVOKE WITH: workflowId, attemptId, laneId, parentSessionRef (must start with 'ses-'), agentRef (must start with 'agent-'), providerQualifiedModelId (concrete provider/model id), state (one of 'created', 'running', 'awaiting_dependency', 'cooldown'), and optional progressSummaryLabel (<=120 chars), progressRef (starts with 'progress-' or 'heartbeat-progress-'), expectedIntervalMs, heartbeatSeq, observedAt. When heartbeatSeq is omitted the writer derives it from the latest heartbeat for the lane id.",
-				"AFTER CALLING: confirm status=lane_heartbeat_recorded with the heartbeat_seq, observed_at, and expected_next_heartbeat_at. On status=blocked_before_lane_heartbeat surface the redactedBlockReason. Never echo raw prompts, transcripts, provider payloads, runtime echo, or any other forbidden raw markers.",
+				"Record a durable FlowDesk lane heartbeat for a FlowDesk-owned lane (reviewer lane, runtime lane launch, provider acquisition lane, managed-dispatch attempt, fallback regate plan). Each call produces one validated flowdesk.lane_heartbeat.v1 record with a monotonically increasing heartbeat_seq per lane id, persisted as durable session evidence. Heartbeats are diagnostic evidence only and never approve dispatch, widen scope, or replace Guard. Default soft heartbeat interval is about 2 minutes; the 5-minute stall threshold lives in the stall projection.",
+				"WHEN TO USE: a FlowDesk coordinator that owns the lane needs to prove it is still active during a long-running step. Trigger when the assistant is coordinating a FlowDesk lane and the previous heartbeat or lifecycle update was emitted close to the soft heartbeat interval (about 2 minutes by default), OR when the user explicitly asks to record/refresh a heartbeat. Also trigger on English phrases such as 'heartbeat', 'record heartbeat', 'emit heartbeat', 'mark progress', 'I'm still alive', 'lane is still progressing', 'heartbeat for the lane', and Korean phrases such as '하트비트 남겨줘', '하트비트 기록해줘', '심박 남겨줘', '심장박동 기록', '레인 살아 있다고 표시', '진행 신호 남겨줘', '진행 표시 해줘', '아직 살아 있다고 알려줘'.",
+				"WHEN NOT TO USE: lifecycle transitions to terminal states (use lane_lifecycle materializers), reviewer verdict observations, provider-call evidence, dispatch authority changes, arbitrary OpenCode user-driven tool calls that FlowDesk did not launch, or any case where you do not have a stable FlowDesk lane id and parent session id.",
+				"INVOKE WITH: workflowId, attemptId, laneId, parentSessionRef (must start with 'ses-'), agentRef (must start with 'agent-'), providerQualifiedModelId (concrete provider/model id), state (one of 'created', 'running', 'awaiting_dependency', 'cooldown'), and optional progressSummaryLabel (<=120 chars and redaction-safe), progressRef (starts with 'progress-' or 'heartbeat-progress-'), expectedIntervalMs, heartbeatSeq, observedAt. When heartbeatSeq is omitted the writer derives it from the latest heartbeat for the lane id. The plugin user already opted into this tool at configuration time, so do not ask the user for extra confirmation; just call.",
+				"AFTER CALLING: confirm status=lane_heartbeat_recorded with the heartbeat_seq, observed_at, and expected_next_heartbeat_at. On status=blocked_before_lane_heartbeat surface the redactedBlockReason and suggest /flowdesk-status or /flowdesk-doctor. Never echo raw prompts, transcripts, provider payloads, runtime echo, or any other forbidden raw markers.",
 			].join(" "),
 			args: {
 				workflowId: tool.schema
@@ -3067,6 +3067,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						enabled: isStatusLiveEnabled(options),
 						registered: statusLiveConfigForDoctor !== undefined,
 						rootDir: statusLiveConfigForDoctor?.rootDir,
+						laneHeartbeatLateThresholdMs:
+							statusLiveConfigForDoctor?.laneHeartbeatLateThresholdMs,
+						laneHeartbeatStallThresholdMs:
+							statusLiveConfigForDoctor?.laneHeartbeatStallThresholdMs,
+						exposesLaneStallProjection:
+							statusLiveConfigForDoctor !== undefined,
 						hint:
 							isStatusLiveEnabled(options) &&
 							statusLiveConfigForDoctor === undefined
@@ -3094,6 +3100,20 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							laneHeartbeatWriterConfigForDoctor === undefined
 								? "laneHeartbeatWriter.enabled=true but no durable state root resolved; set laneHeartbeatWriter.rootDir or top-level durableStateRoot"
 								: undefined,
+					},
+					chatMessageStallAlert: {
+						enabled:
+							options?.[flowdeskChatMessageStallAlertOption] === true ||
+							(isRecord(options?.[flowdeskChatMessageStallAlertOption]) &&
+								(options?.[flowdeskChatMessageStallAlertOption] as { enabled?: unknown })
+									.enabled === true),
+						registered:
+							chatMessageStallAlertOptionsFrom(options, statusLiveConfigForDoctor) !==
+							undefined,
+						requires:
+							"statusLive.enabled=true and durableStateRoot (top-level or chatMessageStallAlert.rootDir)",
+						note:
+							"chat.message hook appends a passive stall card listing stalled lanes and safe next actions; no auto-retry, auto-abort, or auto-fallback.",
 					},
 				};
 				return JSON.stringify({

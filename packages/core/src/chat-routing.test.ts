@@ -148,6 +148,25 @@ test("chat routing classifies Korean natural-language usage requests to /flowdes
   assert.deepEqual(englishRemaining.response.safe_next_actions.slice(0, 2), ["/flowdesk-usage", "/flowdesk-doctor"]);
 });
 
+test("chat routing classifies lane heartbeat and progress signal intents to portable status command", () => {
+  for (const summary of [
+    "레인이 살아 있어?",
+    "하트비트 확인해줘",
+    "심박 체크해줘",
+    "진행 신호 좀 봐줘",
+    "최근 heartbeat 알려줘",
+    "lane heartbeat status",
+    "check the last heartbeat",
+    "recent heartbeat for the workflow"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.deepEqual(result.response.safe_next_actions, ["/flowdesk-status"], summary);
+    assert.equal(result.response.classification, "fast_chat", summary);
+    assert.equal(result.response.route_decision, "use_command_fallback", summary);
+    assert.equal(validateChatIntakeResponseV1(result.response).ok, true, summary);
+  }
+});
+
 test("chat routing classifies stalled lane intents to portable status command", () => {
   for (const summary of [
     "이 작업 멈춘 것 같아",

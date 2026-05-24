@@ -91,6 +91,16 @@ Durable linkage proves three things:
 
 The `durableLinkageStatus: "durable_verdicts_accepted"` field in the tool result signals that all three checks passed.
 
+## Lane Heartbeat Integration
+
+Whenever a reviewer lane reaches `lane_launch_started` inside the runtime reviewer execution bridge, FlowDesk also writes one `lane_heartbeat` evidence record for that lane before observing the typed reviewer verdict. The heartbeat records:
+
+1. `workflow_id`, `attempt_id`, `lane_id`, monotonically increasing `heartbeat_seq` per lane.
+2. `state: "running"`, `observed_at`, and `expected_next_heartbeat_at` (default 2-minute soft interval).
+3. `parent_session_ref`, `agent_ref`, `provider_qualified_model_id`, plus a bounded `progress_summary_label` such as `reviewer lane policy_security launch heartbeat`.
+
+Heartbeat write failures stay diagnostic: they do not block lane execution or verdict acceptance. The `flowdesk_status_live` stall projection then consumes the heartbeat as the freshest signal for the lane id, ahead of any older `lane_lifecycle` record, so a busy reviewer lane shows up as `progressing_normal` instead of looking stalled while the model is still working. Long reviewer lanes can also be refreshed at any time by calling `flowdesk_lane_heartbeat_record` with the same workflow/attempt/lane ids.
+
 ## Privacy and Safety
 
 The tool never echoes raw token material, raw provider payloads, or raw prompts beyond the redacted summary fields the result schema documents. The user's prompt is forwarded once to each reviewer lane as instructed evidence; FlowDesk does not store the raw prompt outside the per-call OpenCode child session, which the user can clean up by removing the temp `.flowdesk` evidence root recorded in the tool result.
