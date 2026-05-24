@@ -64,6 +64,8 @@ Continuous work is bounded: it stops when the plan is exhausted, a requirement i
 
 If `durableStateRoot` is configured, FlowDesk remembers recently shown non-confirmation steering suggestions for a few seconds across plugin restarts so the chat is not flooded by repeated identical cards. The record is redacted and short-lived: it stores only safe labels and expiry timestamps, not your message text, prompts, transcripts, paths, commands, tool output, provider payloads, or credentials.
 
+When `/flowdesk-export-debug` runs with durable state enabled, FlowDesk writes a redacted debug manifest under the FlowDesk state root. This manifest contains section labels, opaque references, retention/deletion state, and counts only; it is not a raw log bundle and should not contain prompts, transcripts, file contents, paths, provider payloads, tool output, stack traces, or credentials.
+
 ### First Successful Flow
 
 1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:

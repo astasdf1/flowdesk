@@ -23,6 +23,8 @@ When `durableStateRoot` is configured, FlowDesk also remembers recently shown no
 
 If the plugin profile opts into `projectConfig.enabled=true`, natural-language routing also depends on `.flowdesk/config.json` loading and validating successfully from the configured root. Missing, malformed, invalid, or chat-disabled config fails closed: the `chat.message` steering hook is not registered, and `flowdesk_pre_spike_doctor` reports the redacted config status.
 
+Debug-export requests route to `/flowdesk-export-debug`. With a durable state root, the local non-dispatch adapter materializes a redacted debug manifest containing only section summaries, opaque refs, retention/deletion state, and counts. It is not a raw log export.
+
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
 3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model.

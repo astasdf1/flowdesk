@@ -1,6 +1,7 @@
 import type {
   FlowDeskAttemptRecordV1,
   FlowDeskConfiguredVerificationResultV1,
+  FlowDeskDebugExportManifestV1,
   FlowDeskEffectivePolicyV1,
   FlowDeskExternalAuthProviderPolicyResultV1,
   FlowDeskLaneRecordV1,
@@ -33,6 +34,7 @@ import {
   mergePolicyPacksV1,
   planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
   prepareAttemptRecordWriteIntent,
+  prepareDebugExportManifestWriteIntent,
   prepareFlowDeskSessionEvidenceWriteIntentV1,
   prepareLaneRecordWriteIntent,
   prepareWorkflowActiveWriteIntent,
@@ -671,6 +673,33 @@ function recordRunState(state: LocalAdapterState, request: Record<string, unknow
   return true;
 }
 
+function recordDebugExportManifestState(state: LocalAdapterState, request: Record<string, unknown>, response: unknown, parts: ReturnType<typeof nowParts>): boolean {
+  if (!isRecord(response)) return false;
+  const exportId = safeToken(response.export_manifest_ref, id("debug-export", request));
+  const includedSections = Array.isArray(response.included_sections) ? response.included_sections : [];
+  const manifest: FlowDeskDebugExportManifestV1 = {
+    schema_version: "flowdesk.debug_export_manifest.v1",
+    export_id: exportId,
+    manifest_ref: safeToken(response.export_manifest_ref, `manifest-${exportId}`),
+    ...(typeof request.workflow_id === "string" ? { workflow_id: request.workflow_id } : {}),
+    ...(typeof request.session_ref === "string" ? { session_ref: request.session_ref } : {}),
+    created_at: parts.nowIso,
+    delete_after: typeof response.delete_after === "string" ? response.delete_after : parts.expiresAtIso,
+    included_sections: includedSections as FlowDeskDebugExportManifestV1["included_sections"],
+    redaction_version: "redaction-v1",
+    source_refs: [safeToken(request.redacted_intake_ref, "debug-export-request")],
+    file_count: 0,
+    byte_count: 0,
+    warnings: [],
+    deletion_state: request.retention_hint === "delete_after_export" ? "deleted" : "retained_by_policy",
+    ...(request.retention_hint === "delete_after_export" ? { deletion_proof_ref: `deletion-${exportId}` } : {}),
+    audit_refs: ["audit-local"]
+  };
+  const intent = prepareDebugExportManifestWriteIntent("session-local", manifest).writeIntent;
+  if (intent === undefined) return false;
+  return applyAdapterWriteIntents(state, [intent], parts);
+}
+
 
 function fallbackRegatePlanContext(state: LocalAdapterState, request: Record<string, unknown>): FlowDeskFallbackRegatePlanV1 | undefined {
   if (state.durableStateRootDir === undefined) return undefined;
@@ -851,10 +880,11 @@ export function createFlowDeskLocalNonDispatchAdapterSession(now: FlowDeskLocalC
       let stateWriteApplied = false;
       if (handler.ok && toolName === "flowdesk_plan") stateWriteApplied = recordPlanningState(state, record, parts);
       if (handler.ok && toolName === "flowdesk_run") stateWriteApplied = recordRunState(state, record, parts, permissionProvider);
+      if (handler.ok && toolName === "flowdesk_export_debug") stateWriteApplied = recordDebugExportManifestState(state, record, handler.response, parts);
       if (handler.ok && toolName === "flowdesk_abort") cancelPendingConfirmation(state, record, parts);
       const adapterValidation = state.lastDurableStateReadErrors.length > 0
         ? invalid(...state.lastDurableStateReadErrors)
-        : handler.ok && (toolName === "flowdesk_plan" || toolName === "flowdesk_run") && !stateWriteApplied
+        : handler.ok && (toolName === "flowdesk_plan" || toolName === "flowdesk_run" || toolName === "flowdesk_export_debug") && !stateWriteApplied
           ? invalid("local adapter state write failed")
           : valid();
       return {

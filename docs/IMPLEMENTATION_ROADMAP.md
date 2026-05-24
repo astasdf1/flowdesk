@@ -18,6 +18,8 @@ Durable suggestion update, 2026-05-25: when `durableStateRoot` is configured, Re
 
 Project config loading update, 2026-05-25: Release 1 plugin profiles can opt in to real `.flowdesk/config.json` loading via `projectConfig.enabled=true` plus a schema-safe `rootDir`. The file is validated with the existing `flowdesk.project_config.v1` contract, doctor surfaces redacted load status, and missing/invalid/disabling config fails closed for natural-language routing rather than silently enabling chat steering.
 
+Debug export materialization update, 2026-05-25: `/flowdesk-export-debug` now writes a validated `flowdesk.debug_export_manifest.v1` through the local non-dispatch adapter when durable state is configured. The materialized manifest is redacted-only and stores section summaries/refs/counts/retention state, not raw logs or payloads.
+
 Included:
 
 1. Project workspace and packages.
@@ -37,6 +39,7 @@ Included:
 15. Plan-backed continuous-work routing that is bounded to existing plan/design evidence and stops at blockers or clarification needs.
 16. Short-lived durable suggestion preferences for duplicate-card suppression across plugin restarts when a durable root is configured.
 17. Opt-in real `.flowdesk/config.json` loading with fail-closed natural-language routing when the config is missing, invalid, or disables chat steering.
+18. Redacted debug export manifest materialization for `/flowdesk-export-debug` through the durable state path.
 
 Excluded:
 

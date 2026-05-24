@@ -24,6 +24,8 @@ FlowDesk is a new OpenCode-plugin-first project. It may reuse concepts and contr
 
 Release 1 project config loading is opt-in in the OpenCode plugin profile through the `projectConfig` option. When enabled, FlowDesk reads `.flowdesk/config.json` under the configured root, validates it as `flowdesk.project_config.v1`, and exposes only redacted config status in doctor output. Missing, unreadable, malformed, or invalid config fails closed for natural-language routing instead of silently falling back to permissive defaults. A loaded config may disable chat steering by setting `chat_intake_mode="off"` or `hook_harness_mode="off"` with the required `chat_routed` disabled mode. Config loading never enables real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat control.
 
+Release 1 debug export materialization writes a redacted `flowdesk.debug_export_manifest.v1` manifest through the same validated durable state path when `/flowdesk-export-debug` runs through the local non-dispatch adapter. The manifest may list section summaries, opaque refs, retention/deletion state, counts, and warnings only. It must not include raw logs, prompts, transcripts, provider payloads, command payloads, tool results, runtime echoes, stack traces, raw config, raw file contents, or filesystem paths.
+
 ## 2. Status and Scope
 
 This document is a pre-implementation development specification. It defines the first implementation contract before code is written in the new project folder.

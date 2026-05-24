@@ -10,6 +10,24 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.8 — 2026-05-25
+
+### Added
+
+- `/flowdesk-export-debug` now materializes a validated
+  `flowdesk.debug_export_manifest.v1` through the local non-dispatch adapter
+  when durable state is configured.
+- Regression coverage asserts the durable manifest contains only redacted
+  section labels/refs/counts/retention state and no raw logs, payload markers,
+  credentials, transcripts, or filesystem paths.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Debug export materialization is a
+redacted non-dispatch state write only.
+
 ## 0.1.7 — 2026-05-25
 
 ### Added

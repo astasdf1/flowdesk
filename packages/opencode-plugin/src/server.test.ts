@@ -2761,8 +2761,39 @@ test("chat intake tool evaluates routing and executes local command-backed resul
 	]);
 	assert.equal(exportDebug.routedToolName, "flowdesk_export_debug");
 	assert.equal(exportDebug.routedToolResult?.handler?.ok, true);
+	assert.equal(exportDebug.routedToolResult?.localState?.stateWriteApplied, true);
 	assert.equal(exportDebug.providerCall, false);
 	assert.equal(exportDebug.runtimeExecution, false);
+});
+
+test("export debug writes a redacted manifest when durable state root is configured", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-debug-export-"));
+	try {
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskDurableStateRootOption]: root,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		})) as ChatMessageHooks;
+		const exportDebugTool = hooks.tool?.flowdesk_export_debug;
+		assert.ok(exportDebugTool);
+		const result = JSON.parse(toolOutput(await exportDebugTool.execute({
+			schema_version: "flowdesk.export_debug.request.v1",
+			request_id: "request-export-debug-durable",
+			input_mode: "test_fixture",
+			include_sections: ["doctor", "redaction_summary"],
+			retention_hint: "keep_until_default_expiry",
+		}, undefined as never))) as LocalAdapterTestResult;
+		assert.equal(result.handler?.ok, true);
+		assert.equal(result.localState?.stateWriteApplied, true);
+		assert.equal(result.localState?.durableStateWriteApplied, true);
+		const manifestPath = join(root, ".flowdesk/sessions/session-local/redacted-debug/manifest.json");
+		assert.equal(existsSync(manifestPath), true);
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+		assert.equal(manifest.schema_version, "flowdesk.debug_export_manifest.v1");
+		assert.deepEqual(manifest.included_sections instanceof Array ? manifest.included_sections.map((section) => (section as { section?: unknown }).section) : [], ["doctor", "redaction_summary"]);
+		assert.equal(/raw|payload|transcript|credential|secret|token|\/Users/.test(JSON.stringify(manifest)), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("chat intake holds execution-like requests for confirmation before run", async () => {
