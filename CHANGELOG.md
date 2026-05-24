@@ -10,6 +10,30 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.7 — 2026-05-25
+
+### Added
+
+- Opt-in project config loading for `.flowdesk/config.json` via the plugin
+  `projectConfig` option. Loaded configs are validated with the existing
+  `flowdesk.project_config.v1` contract before they affect chat steering.
+- `flowdesk_pre_spike_doctor` now reports redacted project config load status
+  (`loaded`, `missing`, `blocked`, or `disabled`) without exposing raw config
+  values or filesystem paths.
+
+### Changed
+
+- When project config loading is enabled, natural-language routing fails
+  closed if the config is missing, unreadable, malformed, invalid, or disables
+  chat steering through `chat_intake_mode` / `hook_harness_mode`.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Config loading can only constrain
+Release 1 steering; it cannot promote later-gate authority.
+
 ## 0.1.6 — 2026-05-25
 
 ### Added

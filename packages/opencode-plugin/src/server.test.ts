@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -47,6 +48,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskQuickReviewerRunToolName,
 	flowdeskProviderUsageLiveOption,
 	flowdeskProviderUsageLiveToolName,
+	flowdeskProjectConfigOption,
 	flowdeskStatusLiveOption,
 	flowdeskStatusLiveToolName,
 	flowdeskQuickFallbackRunOption,
@@ -57,6 +59,51 @@ import flowdeskOpenCodeServerPlugin, {
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
+
+function release1ProjectConfig(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.project_config.v1",
+		config_id: "config-test",
+		created_at: now,
+		updated_at: now,
+		release_mode: "release1",
+		project_root_ref: "project-root-test",
+		config_hash: "config-hash-test",
+		policy_pack_refs: [],
+		policy_pack_hashes: [],
+		chat_intake_mode: "steering",
+		hook_harness_mode: "enforce",
+		retention: {
+			session_records_max_days: 14,
+			debug_staging_max_days: 7,
+			conformance_summary_max_days: 30,
+			allow_user_longer_retention: false,
+			deletion_behavior: "delete_after_expiry",
+		},
+		usage_policy: {
+			usage_freshness_ttl_minutes: 15,
+			unknown_usage_dispatchability: "non_dispatchable",
+			stale_usage_dispatchability: "non_dispatchable",
+			refused_usage_dispatchability: "non_dispatchable",
+			shared_limit_suspected_dispatchability: "non_dispatchable",
+			fallback_derived_dispatchability: "non_dispatchable",
+			allow_local_history_source: false,
+			allow_provider_console_scraping: false,
+		},
+		provider_health_policy: {
+			health_freshness_ttl_minutes: 15,
+			unavailable_dispatchability: "non_dispatchable",
+			degraded_dispatchability: "diagnostic_only",
+			opencode_go_usage_without_official_quota: "unknown",
+			z_ai_usage_without_official_quota: "unknown",
+			allow_automatic_provider_fallback: false,
+		},
+		disabled_modes: ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"],
+		extension_namespaces: ["flowdesk.core"],
+		audit_refs: ["audit-config-test"],
+		...overrides,
+	};
+}
 
 interface LocalAdapterTestResult {
 	adapterProfile?: unknown;
@@ -2389,6 +2436,60 @@ test("server plugin allows explicit opt-out of local tools and natural-language 
 	);
 	assert.equal(result.productionOpenCodeRegistration, true);
 	assert.equal(result.providerCall, false);
+});
+
+test("server plugin loads project config and fails closed for missing or disabling config", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-project-config-"));
+	try {
+		mkdirSync(join(root, ".flowdesk"), { recursive: true });
+		writeFileSync(
+			join(root, ".flowdesk", "config.json"),
+			`${JSON.stringify(release1ProjectConfig(), null, 2)}\n`,
+			"utf8",
+		);
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskNaturalLanguageRoutingOption]: true,
+			[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
+		})) as ChatMessageHooks;
+		assert.ok(hooks["chat.message"]);
+		const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(doctor);
+		const result = JSON.parse(toolOutput(await doctor.execute({}, undefined as never))) as Record<string, unknown>;
+		assert.equal((result.projectConfig as { status?: unknown }).status, "loaded");
+		assert.equal((result.projectConfig as { configRef?: unknown }).configRef, "config-test");
+
+		writeFileSync(
+			join(root, ".flowdesk", "config.json"),
+			`${JSON.stringify(release1ProjectConfig({ chat_intake_mode: "off", hook_harness_mode: "off", disabled_modes: ["chat_routed", "real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"] }), null, 2)}\n`,
+			"utf8",
+		);
+		const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskNaturalLanguageRoutingOption]: true,
+			[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
+		})) as ChatMessageHooks;
+		assert.equal(disabledHooks["chat.message"], undefined);
+		const disabledDoctor = disabledHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(disabledDoctor);
+		const disabledResult = JSON.parse(toolOutput(await disabledDoctor.execute({}, undefined as never))) as Record<string, unknown>;
+		assert.equal(disabledResult.naturalLanguageRoutingProfile, "disabled");
+
+		const missingRoot = mkdtempSync(join(tmpdir(), "flowdesk-project-config-missing-"));
+		try {
+			const missingHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskProjectConfigOption]: { enabled: true, rootDir: missingRoot },
+			})) as ChatMessageHooks;
+			assert.equal(missingHooks["chat.message"], undefined);
+			const missingDoctor = missingHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+			assert.ok(missingDoctor);
+			const missingResult = JSON.parse(toolOutput(await missingDoctor.execute({}, undefined as never))) as Record<string, unknown>;
+			assert.equal((missingResult.projectConfig as { status?: unknown }).status, "missing");
+		} finally {
+			rmSync(missingRoot, { recursive: true, force: true });
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("chat intake tool evaluates routing and executes local command-backed result safely", async () => {

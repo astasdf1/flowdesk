@@ -22,6 +22,8 @@ Initial OpenCode API research snapshot: `anomalyco/opencode` commit `c43edc5b71a
 
 FlowDesk is a new OpenCode-plugin-first project. It may reuse concepts and contracts from `dex-conductor`, but it is not an OMO compatibility layer and not a CLI-first subprocess wrapper.
 
+Release 1 project config loading is opt-in in the OpenCode plugin profile through the `projectConfig` option. When enabled, FlowDesk reads `.flowdesk/config.json` under the configured root, validates it as `flowdesk.project_config.v1`, and exposes only redacted config status in doctor output. Missing, unreadable, malformed, or invalid config fails closed for natural-language routing instead of silently falling back to permissive defaults. A loaded config may disable chat steering by setting `chat_intake_mode="off"` or `hook_harness_mode="off"` with the required `chat_routed` disabled mode. Config loading never enables real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat control.
+
 ## 2. Status and Scope
 
 This document is a pre-implementation development specification. It defines the first implementation contract before code is written in the new project folder.

@@ -37,6 +37,7 @@ import {
 	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
+	validateProjectConfigV1,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
 	validateRunRequestV1,
 } from "@flowdesk/core";
@@ -123,6 +124,7 @@ export const flowdeskLocalNonDispatchAdapterOption =
 export const flowdeskNaturalLanguageRoutingOption =
 	"naturalLanguageRouting" as const;
 export const flowdeskDurableStateRootOption = "durableStateRoot" as const;
+export const flowdeskProjectConfigOption = "projectConfig" as const;
 export const flowdeskProductionEnablementOption =
 	"productionEnablement" as const;
 export const flowdeskReviewerFanoutDiagnosticsOption =
@@ -2065,6 +2067,76 @@ function isNaturalLanguageRoutingEnabled(options?: PluginOptions): boolean {
 	return !isFds1SchemaConversionProbeEnabled(options);
 }
 
+interface FlowDeskProjectConfigLoadResultV1 {
+	enabled: boolean;
+	status: "disabled" | "loaded" | "missing" | "blocked";
+	configRef?: string;
+	releaseMode?: string;
+	chatIntakeMode?: string;
+	hookHarnessMode?: string;
+	disabledModes?: string[];
+	redactedBlockReason?: string;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+	fallbackAuthority: false;
+	hardCancelOrNoReplyAuthority: false;
+}
+
+function disabledProjectConfigLoad(): FlowDeskProjectConfigLoadResultV1 {
+	return { enabled: false, status: "disabled", ...disabledAuthority };
+}
+
+function projectConfigPathFromOptions(options?: PluginOptions): string | undefined {
+	const raw = options?.[flowdeskProjectConfigOption];
+	if (raw !== true && !(isRecord(raw) && raw.enabled === true)) return undefined;
+	const rootDir = isRecord(raw) && typeof raw.rootDir === "string" && raw.rootDir.trim().length > 0
+		? raw.rootDir
+		: undefined;
+	if (rootDir === undefined) return undefined;
+	const root = resolve(rootDir);
+	const configPath = resolve(root, ".flowdesk", "config.json");
+	if (configPath !== root && !configPath.startsWith(`${root}${sep}`)) return undefined;
+	return configPath;
+}
+
+function loadProjectConfigFromOptions(options?: PluginOptions): FlowDeskProjectConfigLoadResultV1 {
+	const raw = options?.[flowdeskProjectConfigOption];
+	if (raw !== true && !(isRecord(raw) && raw.enabled === true)) return disabledProjectConfigLoad();
+	const configPath = projectConfigPathFromOptions(options);
+	if (configPath === undefined) return { enabled: true, status: "blocked", redactedBlockReason: "projectConfig.enabled=true requires a schema-safe rootDir", ...disabledAuthority };
+	try {
+		const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+		const validation = validateProjectConfigV1(parsed);
+		if (!validation.ok) return { enabled: true, status: "blocked", redactedBlockReason: validation.errors.join("; ").slice(0, 500), ...disabledAuthority };
+		const record = parsed as Record<string, unknown>;
+		return {
+			enabled: true,
+			status: "loaded",
+			configRef: safeToken(record.config_id, "config-redacted"),
+			releaseMode: typeof record.release_mode === "string" ? record.release_mode : undefined,
+			chatIntakeMode: typeof record.chat_intake_mode === "string" ? record.chat_intake_mode : undefined,
+			hookHarnessMode: typeof record.hook_harness_mode === "string" ? record.hook_harness_mode : undefined,
+			disabledModes: Array.isArray(record.disabled_modes) ? record.disabled_modes.filter((mode): mode is string => typeof mode === "string") : undefined,
+			...disabledAuthority,
+		};
+	} catch (error) {
+		const code = error instanceof Error && "code" in error ? String((error as { code?: unknown }).code) : "read_failed";
+		return {
+			enabled: true,
+			status: code === "ENOENT" ? "missing" : "blocked",
+			redactedBlockReason: code === "ENOENT" ? "project config file is missing" : "project config file could not be parsed or read",
+			...disabledAuthority,
+		};
+	}
+}
+
+function isNaturalLanguageRoutingAllowedByProjectConfig(load: FlowDeskProjectConfigLoadResultV1): boolean {
+	if (!load.enabled || load.status === "loaded") return load.chatIntakeMode !== "off" && load.hookHarnessMode !== "off";
+	return false;
+}
+
 function durableStateRootFromOptions(
 	options?: PluginOptions,
 ): string | undefined {
@@ -3141,9 +3213,13 @@ function quickReviewerRunDefaultsFromOptions(options?: PluginOptions): {
 }
 
 const flowdeskServerPlugin: Plugin = async (input, options) => {
+	const projectConfigLoad = loadProjectConfigFromOptions(options);
+	const naturalLanguageRoutingEnabled =
+		isNaturalLanguageRoutingEnabled(options) &&
+		isNaturalLanguageRoutingAllowedByProjectConfig(projectConfigLoad);
 	const localSession =
 		isLocalNonDispatchAdapterEnabled(options) ||
-		isNaturalLanguageRoutingEnabled(options)
+		naturalLanguageRoutingEnabled
 			? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, {
 					durableStateRootDir: durableStateRootFromOptions(options),
 					productionEnablement: productionEnablementFromOptions(options),
@@ -3199,7 +3275,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					quickReviewerRunClientFrom(input, options) !== undefined;
 				const naturalLanguageTools = {
 					quickReviewerRun: {
-						enabled: isQuickReviewerRunEnabled(options),
+							enabled: isQuickReviewerRunEnabled(options),
 						registered: quickReviewerRunRegistered,
 						missingClient:
 							isQuickReviewerRunEnabled(options) && !quickReviewerRunRegistered
@@ -3292,9 +3368,8 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					)
 						? flowdeskLocalNonDispatchAdapterProfile
 						: "disabled",
-					naturalLanguageRoutingProfile: isNaturalLanguageRoutingEnabled(
-						options,
-					)
+					projectConfig: projectConfigLoad,
+					naturalLanguageRoutingProfile: naturalLanguageRoutingEnabled
 						? "chat_steering_command_backed_non_dispatch"
 						: "disabled",
 					naturalLanguageTools,
@@ -3430,7 +3505,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskLaneHeartbeatWriterOptInTools(laneHeartbeatWriterConfig),
 		);
-	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
+	if (!naturalLanguageRoutingEnabled) return { tool: tools };
 	const stallAlertOption = chatMessageStallAlertOptionsFrom(
 		options,
 		statusLiveConfig,

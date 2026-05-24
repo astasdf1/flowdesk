@@ -16,6 +16,8 @@ Continuous-work update, 2026-05-25: Release 1 may recognize explicit phrases suc
 
 Durable suggestion update, 2026-05-25: when `durableStateRoot` is configured, Release 1 may persist short-lived redacted suggestion-preference records so duplicate non-confirmation FlowDesk cards stay suppressed across plugin restarts. These records are UX preferences only, not audit/workflow/approval evidence, and failure to read or write them degrades to in-memory duplicate suppression.
 
+Project config loading update, 2026-05-25: Release 1 plugin profiles can opt in to real `.flowdesk/config.json` loading via `projectConfig.enabled=true` plus a schema-safe `rootDir`. The file is validated with the existing `flowdesk.project_config.v1` contract, doctor surfaces redacted load status, and missing/invalid/disabling config fails closed for natural-language routing rather than silently enabling chat steering.
+
 Included:
 
 1. Project workspace and packages.
@@ -34,6 +36,7 @@ Included:
 14. Intent detection and transparent workflow-suggestion UX that distinguishes no intervention, suggestion, explicit management, and later-gate unsafe requests without claiming hard chat takeover.
 15. Plan-backed continuous-work routing that is bounded to existing plan/design evidence and stops at blockers or clarification needs.
 16. Short-lived durable suggestion preferences for duplicate-card suppression across plugin restarts when a durable root is configured.
+17. Opt-in real `.flowdesk/config.json` loading with fail-closed natural-language routing when the config is missing, invalid, or disables chat steering.
 
 Excluded:
 

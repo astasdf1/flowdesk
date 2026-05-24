@@ -21,6 +21,8 @@ Continuous work always stops at the next blocker, ambiguous requirement, missing
 
 When `durableStateRoot` is configured, FlowDesk also remembers recently shown non-confirmation steering cards in a short-lived redacted preference cache. This prevents the same plan/status/usage suggestion from reappearing immediately after the plugin process restarts. The cache stores only schema-safe session/action labels and expiry timestamps; it does not store the chat text, prompts, transcripts, file paths, command payloads, tool results, provider payloads, or credentials. If the cache cannot be read or written, FlowDesk falls back to in-memory de-duplication.
 
+If the plugin profile opts into `projectConfig.enabled=true`, natural-language routing also depends on `.flowdesk/config.json` loading and validating successfully from the configured root. Missing, malformed, invalid, or chat-disabled config fails closed: the `chat.message` steering hook is not registered, and `flowdesk_pre_spike_doctor` reports the redacted config status.
+
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
 3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model.

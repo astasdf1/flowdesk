@@ -18,6 +18,8 @@ Local Release 1 retention defaults are short: session records expire after at mo
 
 FlowDesk project configuration lives under `.flowdesk/config.json` when implementation begins. In Release 1, config and Policy Packs can make FlowDesk stricter: disable modes, shorten retention, require approval, block unsafe providers, and keep usage checks separate from provider health checks. They cannot turn on real OpenCode dispatch, automatic provider/model fallback, hard chat cancellation/no-reply, or actual subtask/model/provider lane launch. Missing, malformed, stale, or hand-edited config fails closed to safe commands such as doctor, status, usage, abort, and export-debug.
 
+When the plugin profile opts into `projectConfig.enabled=true`, FlowDesk reads `.flowdesk/config.json` from the configured root and validates it before enabling natural-language routing. If the config is missing, malformed, invalid, or explicitly disables chat steering, FlowDesk leaves chat steering off and reports the redacted status from the doctor tool.
+
 ## Normal Use
 
 Start with chat:
