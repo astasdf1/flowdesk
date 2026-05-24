@@ -10,6 +10,27 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.5 — 2026-05-25
+
+### Added
+
+- Plan-backed continuous-work natural-language routing for explicit phrases
+  such as `계획 전체 진행`, `막히기전까지 계속 진행`, `전체 설계문서 기반으로 진행`,
+  `continue until blocked`, and `work through the whole plan`.
+- Continuous work now requires existing planning/design evidence for the
+  workflow or session before FlowDesk suggests `/flowdesk-resume`. Without
+  evidence, chat intake asks for clarification/status and does not auto-create
+  a plan or route to `/flowdesk-run`.
+- User-facing and normative docs now describe the bounded continuous-work
+  semantics and stop conditions.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Continuous-work routing is command-backed
+steering only and stays bounded to existing plan/design evidence.
+
 ## 0.1.4 — 2026-05-24
 
 ### Added

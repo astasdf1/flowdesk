@@ -11,6 +11,14 @@ This document covers:
 
 All five tools keep `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` flags `false`. They are read-only/observation/planning/diagnostic tools; they do not promote default dispatch authority or switch providers in production.
 
+## Plan-Backed Continuous Work Steering
+
+FlowDesk also recognizes continuous-work chat phrases such as Korean `계획 전체 진행`, `막히기전까지 진행`, `계속 진행`, `전체 설계문서 기반으로 진행` and English `continue until blocked`, `keep going`, `work through the whole plan`, `proceed with the entire design`.
+
+This route is deliberately gated. FlowDesk may suggest `/flowdesk-resume` only when existing plan/design evidence is already available for the workflow or session, such as a FlowDesk planning lane record or an equivalent design/plan document reference. If no such evidence exists, FlowDesk asks for clarification and points to `/flowdesk-status`; it must not auto-create a plan, auto-run, infer requirements from the latest chat alone, or bypass the Release 1 confirmation requirements for dry-run/fake-runtime execution.
+
+Continuous work always stops at the next blocker, ambiguous requirement, missing verification, Guard denial, stale or absent required evidence, unsupported later-gate capability, or user-facing clarification need. It does not enable real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat cancellation.
+
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
 3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model.

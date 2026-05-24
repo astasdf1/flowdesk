@@ -12,6 +12,8 @@ Release 1 is for ordinary OpenCode users. Natural-language chat is the primary U
 
 Critical review update, 2026-05-18: Release 1 must not implement broad OMO-style invisible prefix injection. `chat.message` steering is not a proven hard-interception boundary, so FlowDesk must not silently rewrite most user input or imply that the normal assistant/provider turn has been fully handled. Chat intake uses an internal intent detector with conservative outcomes: `general_chat` leaves the request alone, `flowdesk_suggest` presents a transparent FlowDesk card or guidance, `flowdesk_manage` is reserved for explicit or high-confidence FlowDesk requests, and `unsafe_later_gate` blocks only the FlowDesk route while showing safe fallback actions. User-facing UX should talk about “FlowDesk로 정리”, “계획 보기”, “실행 전 확인”, and “진단” rather than internal `manage`, `non-dispatch`, `adapter`, or `fake-runtime` terms. Execution-like natural language must stop at confirmation or plan readiness; no chat-routed path may immediately perform `/flowdesk-run` or fake-runtime state changes without explicit confirmation.
 
+Continuous-work update, 2026-05-25: Release 1 may recognize explicit phrases such as `계획 전체 진행`, `막히기전까지 계속 진행`, and `continue until blocked`, but only as plan-backed steering. The route requires existing FlowDesk plan/design evidence for the workflow or session before suggesting `/flowdesk-resume`; otherwise it must ask for clarification/status and must not auto-create a plan, auto-run, or infer missing requirements from chat alone.
+
 Included:
 
 1. Project workspace and packages.
@@ -28,6 +30,7 @@ Included:
 12. Hook harness `enforce`, `observe`, and `off` modes.
 13. User manual abnormal-use examples and safe alternatives.
 14. Intent detection and transparent workflow-suggestion UX that distinguishes no intervention, suggestion, explicit management, and later-gate unsafe requests without claiming hard chat takeover.
+15. Plan-backed continuous-work routing that is bounded to existing plan/design evidence and stops at blockers or clarification needs.
 
 Excluded:
 

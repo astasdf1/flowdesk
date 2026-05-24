@@ -2431,6 +2431,82 @@ test("chat intake tool evaluates routing and executes local command-backed resul
 	assert.equal(result.fallbackAuthority, false);
 	assert.equal(result.hardCancelOrNoReplyAuthority, false);
 
+	const continuousWithoutPlan = JSON.parse(
+		toolOutput(
+			await intakeTool.execute(
+				{
+					schema_version: "flowdesk.chat_intake.request.v1",
+					request_id: "request-nl-continuous-no-plan",
+					input_mode: "chat_routed",
+					session_ref: "session-nl-continuous",
+					redacted_intake_ref: "intake-nl-continuous-no-plan",
+					intake_summary: "막히기전까지 계속 진행해줘",
+					source_surface: "chat.message",
+				},
+				undefined as never,
+			),
+		),
+	) as NaturalLanguageRoutingTestResult;
+	assert.equal(
+		continuousWithoutPlan.evaluation?.response?.route_decision,
+		"ask_clarification",
+	);
+	assert.deepEqual(continuousWithoutPlan.evaluation?.response?.safe_next_actions, [
+		"ask_clarification",
+		"/flowdesk-status",
+	]);
+	assert.equal(continuousWithoutPlan.routedToolName, "flowdesk_status");
+	assert.equal(continuousWithoutPlan.runtimeExecution, false);
+	assert.equal(continuousWithoutPlan.actualLaneLaunch, false);
+
+	const planForContinuous = JSON.parse(
+		toolOutput(
+			await intakeTool.execute(
+				{
+					schema_version: "flowdesk.chat_intake.request.v1",
+					request_id: "request-nl-continuous-plan",
+					input_mode: "chat_routed",
+					session_ref: "session-nl-continuous",
+					redacted_intake_ref: "intake-nl-continuous-plan",
+					intake_summary: "구현 계획을 세워줘",
+					source_surface: "chat.message",
+				},
+				undefined as never,
+			),
+		),
+	) as NaturalLanguageRoutingTestResult;
+	assert.equal(planForContinuous.routedToolName, "flowdesk_plan");
+	assert.equal(planForContinuous.routedToolResult?.localState?.workflowState, "ready_to_run");
+
+	const continuousWithPlan = JSON.parse(
+		toolOutput(
+			await intakeTool.execute(
+				{
+					schema_version: "flowdesk.chat_intake.request.v1",
+					request_id: "request-nl-continuous-with-plan",
+					input_mode: "chat_routed",
+					session_ref: "session-nl-continuous",
+					redacted_intake_ref: "intake-nl-continuous-with-plan",
+					intake_summary: "계획 전체 진행해줘",
+					source_surface: "chat.message",
+				},
+				undefined as never,
+			),
+		),
+	) as NaturalLanguageRoutingTestResult;
+	assert.equal(
+		continuousWithPlan.evaluation?.response?.route_decision,
+		"use_command_fallback",
+	);
+	assert.deepEqual(continuousWithPlan.evaluation?.response?.safe_next_actions, [
+		"/flowdesk-resume",
+		"/flowdesk-status",
+	]);
+	assert.equal(continuousWithPlan.routedToolName, "flowdesk_resume");
+	assert.equal(continuousWithPlan.providerCall, false);
+	assert.equal(continuousWithPlan.runtimeExecution, false);
+	assert.equal(continuousWithPlan.actualLaneLaunch, false);
+
 	const doctor = JSON.parse(
 		toolOutput(
 			await intakeTool.execute(

@@ -15,6 +15,7 @@ export interface FlowDeskChatRoutingInputV1 {
   hookHarnessMode?: HookHarnessModeV1;
   steeringEvidenceRef?: OpaqueRef;
   redactedIntakeRef?: OpaqueRef;
+  planningDocumentAvailable?: boolean;
 }
 
 export interface FlowDeskChatRoutingEvaluationV1 extends ValidationResult {
@@ -28,6 +29,7 @@ const executionLikePattern = /\b(?:run|execute|start|kick[\s_-]*off|launch)\b.{0
 const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead|ok(?:ay)?|sure|sounds good)\b|(?:승인|확인|동의|좋아|네|예|오케이|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요)|그렇게\s*해|해주세요)/i;
 const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this|kinda|sort of|whatever)\b|(?:잘\s*모르(?:겠|겠어)|애매|뭐였|뭔가|어떻게\s*해(?:야)?|뭐\s*해야|아무거나|적당히|대충)/i;
 const proactiveUsagePreflightPattern = /\b(?:large|big|long|multi[\s_-]*step|multi[\s_-]*perspective|multi[\s_-]*model|extensive|whole|entire|full[\s_-]*(?:pass|review|refactor)|many files|agentic loop|autonomous|refactor|migration|audit|review)\b|(?:큰\s*작업|대규모|장시간|오래\s*걸|전체|전부|다관점|다각도|멀티\s*(?:모델|관점)|여러\s*관점|리팩토링|마이그레이션|긴\s*작업|전체\s*완료|끝까지|심층\s*(?:리뷰|검토|분석))/i;
+const continuousWorkPattern = /\b(?:continue\s+(?:if\s+you\s+have\s+next\s+steps|until\s+blocked|with\s+the\s+(?:plan|design)|the\s+(?:whole|entire)\s+(?:plan|design)|working)|keep\s+(?:going|working)|work\s+through\s+the\s+(?:whole\s+)?(?:plan|design)|proceed\s+(?:with\s+)?(?:the\s+)?(?:whole|entire)?\s*(?:plan|design)|do\s+not\s+stop\s+until\s+blocked|don'?t\s+stop\s+until\s+blocked)\b|(?:계획\s*(?:전체|전부)?\s*(?:진행|계속|이어)|전체\s*(?:계획|설계|설계문서)\s*(?:진행|계속|기반)|설계\s*(?:문서)?\s*(?:기반|대로)\s*(?:계속|진행)|막히기\s*전까지|막히기전까지|막히지\s*않으면\s*(?:계속|진행)|계속\s*(?:진행|작업|이어|해줘)|전부\s*계속|다\s*끝날\s*때까지|다음\s*작업\s*(?:등록|이어)|끊기지\s*않게)/i;
 
 const commandRoutes: readonly (readonly [RegExp, readonly SafeNextAction[]])[] = [
   [/\b(?:show|current|check|get|what(?:'s| is)|how(?:'s| is) (?:it|things))\b.{0,40}\b(?:status|progress|state|checkpoint|workflow|lane|attempt|heartbeat)\b|\bflowdesk-status\b|\b(?:is\s+(?:it|this|that)\s+stuck|seems?\s+stuck|stalled|no\s+log|no\s+update|no\s+response|frozen|hung|hanging|silent|heartbeat\s+(?:status|check)|recent\s+heartbeat|lane\s+heartbeat|last\s+heartbeat)\b|(?:상태|진행\s*상황|진행\s*상태|어디까지|어디 까지|어디쯤|현재\s*상태|현재\s*진행|작업\s*상태|작업\s*어디까지|workflow\s*상태|멈췄|멈춘\s*것\s*같|멈춘\s*거\s*같|응답이\s*없|아무\s*로그도\s*없|로그가\s*없|진행이\s*안돼|진행이\s*안\s*돼|꼼짝\s*안|먹통|하트\s*비트|하트비트|심장\s*박동|심박|진행\s*신호|진행\s*표시|레인\s*상태|레인\s*진행|살아\s*있|최근\s*heartbeat|마지막\s*heartbeat)/i, ["/flowdesk-status"]],
@@ -150,6 +152,32 @@ function confirmedExecutionResponse(input: FlowDeskChatRoutingInputV1): FlowDesk
   };
 }
 
+function continuousWorkResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
+  return {
+    schema_version: "flowdesk.chat_intake.response.v1",
+    ok: true,
+    status: "ready",
+    safe_next_actions: ["/flowdesk-resume", "/flowdesk-status"],
+    user_message: "FlowDesk can continue this plan-backed workflow until the next blocker or clarification point.",
+    classification: "managed_plan",
+    redacted_intake_ref: redactedIntakeRef(input),
+    route_decision: "use_command_fallback"
+  };
+}
+
+function continuousWorkNeedsPlanResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
+  return {
+    schema_version: "flowdesk.chat_intake.response.v1",
+    ok: true,
+    status: "needs_clarification",
+    safe_next_actions: ["ask_clarification", "/flowdesk-status"],
+    user_message: "FlowDesk needs an existing plan or design document before continuing work autonomously.",
+    classification: "clarify",
+    redacted_intake_ref: redactedIntakeRef(input),
+    route_decision: "ask_clarification"
+  };
+}
+
 function hasTypedExecutionApproval(input: FlowDeskChatRoutingInputV1, summary: string): boolean {
   return input.request.user_approval_ref !== undefined && explicitApprovalPattern.test(summary);
 }
@@ -188,6 +216,7 @@ export function buildFlowDeskChatIntakeResponseV1(input: FlowDeskChatRoutingInpu
 
   const summary = input.request.intake_summary;
   if (unsafeLaterGatePattern.test(summary)) return blockedResponse(input);
+  if (continuousWorkPattern.test(summary)) return input.planningDocumentAvailable === true ? continuousWorkResponse(input) : continuousWorkNeedsPlanResponse(input);
   if (executionLikePattern.test(summary)) return hasTypedExecutionApproval(input, summary) ? confirmedExecutionResponse(input) : executionConfirmationResponse(input);
   const command = commandRoutes.find(([pattern]) => pattern.test(summary));
   if (command !== undefined) return commandFallbackResponse(input, command[1]);

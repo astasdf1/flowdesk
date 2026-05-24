@@ -56,6 +56,10 @@ Use commands when you need setup, status, recovery, diagnostics, or fallback:
 
 If you say “run”, “execute”, “진행”, or “실행” in chat, FlowDesk should ask for confirmation or show the plan-ready state before running any guarded dry-run or fake-runtime path.
 
+If you ask FlowDesk to keep working continuously, for example `계획 전체 진행`, `막히기전까지 계속 진행`, `전체 설계문서 기반으로 진행`, or `continue until blocked`, FlowDesk first checks that an existing plan or design-document signal is already present for the workflow/session. With that evidence it routes toward `/flowdesk-resume` and `/flowdesk-status`. Without that evidence it asks for clarification/status instead of inventing a plan or starting execution from chat alone.
+
+Continuous work is bounded: it stops when the plan is exhausted, a requirement is unclear, a verification/check fails, Guard blocks, required evidence is missing or stale, or a later-gate capability would be needed. It does not authorize real dispatch, provider calls, automatic fallback, actual lane launch, or hard chat cancellation.
+
 ### First Successful Flow
 
 1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:

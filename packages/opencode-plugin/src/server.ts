@@ -43,6 +43,7 @@ import {
 import {
 	createFlowDeskLocalNonDispatchAdapterSession,
 	flowdeskLocalNonDispatchAdapterProfile,
+	hasFlowDeskLocalPlanningEvidenceV1,
 	type FlowDeskLocalClockV1,
 	type FlowDeskLocalNonDispatchAdapterSessionV1,
 	type FlowDeskLocalProductionEnablementOptionsV1,
@@ -493,6 +494,11 @@ function evaluateNaturalLanguageRouting(
 		request,
 		chatIntakeMode: "steering",
 		hookHarnessMode: "enforce",
+		planningDocumentAvailable: hasFlowDeskLocalPlanningEvidenceV1(
+			session,
+			request.workflow_id,
+			request.session_ref,
+		),
 	});
 	const toolName = evaluation.response.ok
 		? routedToolName(evaluation.response.safe_next_actions)
@@ -564,11 +570,19 @@ function clockMs(clock: FlowDeskLocalClockV1): number {
 	return (typeof clock === "function" ? clock() : clock).getTime();
 }
 
-function previewNaturalLanguageRouting(request: FlowDeskChatIntakeRequestV1) {
+function previewNaturalLanguageRouting(
+	request: FlowDeskChatIntakeRequestV1,
+	session: FlowDeskLocalNonDispatchAdapterSessionV1,
+) {
 	const evaluation = evaluateFlowDeskChatIntakeV1({
 		request,
 		chatIntakeMode: "steering",
 		hookHarnessMode: "enforce",
+		planningDocumentAvailable: hasFlowDeskLocalPlanningEvidenceV1(
+			session,
+			request.workflow_id,
+			request.session_ref,
+		),
 	});
 	const toolName = evaluation.response.ok
 		? routedToolName(evaluation.response.safe_next_actions)
@@ -1699,7 +1713,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 	): Promise<void> {
 		const inputRecord = isRecord(input) ? input : {};
 		const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
-		const preview = previewNaturalLanguageRouting(request);
+		const preview = previewNaturalLanguageRouting(request, session);
 		const nowMs = clockMs(now);
 		for (const [key, recordedAtMs] of recentSuggestionCards) {
 			if (

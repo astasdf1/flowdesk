@@ -87,6 +87,41 @@ export interface FlowDeskLocalNonDispatchAdapterSessionV1 {
   evaluate(toolName: FlowDeskRelease1MinimumToolName, request: unknown): FlowDeskLocalNonDispatchAdapterToolResultV1;
 }
 
+export function hasFlowDeskLocalPlanningEvidenceV1(
+  session: FlowDeskLocalNonDispatchAdapterSessionV1,
+  workflowId?: string,
+  sessionRef?: string,
+): boolean {
+  const state = isRecord(session.state) ? session.state : {};
+  const workflow = isRecord(state.workflow) ? state.workflow : undefined;
+  const laneRecords = Array.isArray(state.laneRecords) ? state.laneRecords : [];
+  const workflowMatches =
+    workflowId !== undefined
+      ? workflow?.workflow_id === workflowId
+      : sessionRef === undefined || workflow?.session_ref === sessionRef;
+  if (
+    workflowMatches &&
+    typeof workflow?.latest_plan_revision_id === "string" &&
+    laneRecords.some(
+      (lane) =>
+        isRecord(lane) &&
+        lane.lane_class === "planning_draft" &&
+        (workflowId === undefined || lane.workflow_id === workflowId),
+    )
+  )
+    return true;
+  const rootDir = typeof state.durableStateRootDir === "string" ? state.durableStateRootDir : undefined;
+  if (rootDir === undefined || workflowId === undefined) return false;
+  const loaded = loadFlowDeskDurableWorkflowState(rootDir, {
+    workflowId,
+    sessionId: "session-local",
+  });
+  if (!loaded.ok || loaded.snapshot === undefined) return false;
+  return loaded.snapshot.laneRecords.some(
+    (lane) => lane.workflow_id === workflowId && lane.lane_class === "planning_draft",
+  );
+}
+
 export type FlowDeskLocalNonDispatchPermissionProviderV1 = (input: {
   nowIso: string;
   expiresAtIso: string;
@@ -534,7 +569,7 @@ function updateWorkflowState(state: LocalAdapterState, request: Record<string, u
   const workflow: FlowDeskWorkflowRecordV1 = {
     schema_version: "flowdesk.workflow_record.v1",
     workflow_id: workflowId,
-    session_ref: "session-local-ref",
+    session_ref: typeof request.session_ref === "string" ? request.session_ref : "session-local-ref",
     created_at: state.workflow?.created_at ?? parts.nowIso,
     updated_at: parts.nowIso,
     state: nextState,
@@ -645,7 +680,7 @@ function fallbackRegatePlanContext(state: LocalAdapterState, request: Record<str
   return entry?.record as FlowDeskFallbackRegatePlanV1 | undefined;
 }
 
-function statusContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>, fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1): NonNullable<FlowDeskCommandBackedHandlerContextV1["status"]> {
+function statusContext(state: LocalAdapterState, request: Record<string, unknown>, parts: ReturnType<typeof nowParts>): NonNullable<FlowDeskCommandBackedHandlerContextV1["status"]> {
   const requestedWorkflowId = workflowIdFrom(request);
   if (state.durableStateRootDir !== undefined && (state.workflow === undefined || state.workflow.workflow_id !== requestedWorkflowId)) {
     const loaded = loadFlowDeskDurableWorkflowState(state.durableStateRootDir, { workflowId: requestedWorkflowId, sessionId: "session-local", now: parts.nowMs });
@@ -733,8 +768,8 @@ function contextFor(toolName: FlowDeskRelease1MinimumToolName, request: unknown,
   const record = isRecord(request) ? request : {};
   if (toolName === "flowdesk_plan") return { plan: makePlanContext(record, parts) };
   if (toolName === "flowdesk_run") return { run: makeRunContext(record, parts, permissionProvider) };
+  if (toolName === "flowdesk_status") return { status: statusContext(state, record, parts) };
   const fallbackRegatePlan = fallbackRegatePlanContext(state, record);
-  if (toolName === "flowdesk_status") return { status: statusContext(state, record, parts, fallbackRegatePlan) };
   if (toolName === "flowdesk_retry") {
     const retry: NonNullable<FlowDeskRetryPlanningInputV1> = { request: record as unknown as FlowDeskRetryPlanningInputV1["request"], providerHealthSnapshot: providerHealth(parts), newAttemptId: id("attempt-retry", record), auditRef: "audit-local", debugRef: "debug-local" };
     return { retry };

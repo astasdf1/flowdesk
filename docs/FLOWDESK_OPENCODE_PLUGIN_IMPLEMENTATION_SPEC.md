@@ -114,8 +114,11 @@ Release 1 implementations use these terms for chat UX and routing:
 3. **FlowDesk management request**: an explicit or high-confidence user request to use FlowDesk. It may route into command-backed planning, status, recovery, diagnostics, guarded dry-run, or fake-runtime paths, subject to Guard and confirmation requirements.
 4. **Unsafe later-gate request**: a request for real dispatch, provider calls, actual lane launch, automatic fallback or reselection, hard no-reply/cancel/stop, or another later-release authority. FlowDesk blocks its own route and shows safe alternatives, but does not claim hard chat suppression unless conformance proves blocking intake.
 5. **Pending intent**: a redacted, time-bound, one-shot state representing a proposed FlowDesk action that requires user confirmation before execution-like behavior.
+6. **Plan-backed continuous work request**: an explicit request such as “continue until blocked”, “work through the whole plan”, “계획 전체 진행”, “막히기전까지 진행”, or “계속 진행” that asks FlowDesk to keep taking the next safe step. Release 1 may route this only when an existing FlowDesk plan, design document, or plan-lane evidence is already present for the workflow/session. Without that evidence the route must ask for clarification or point to status/planning; it must not auto-create a plan, run work, widen scope, or infer missing requirements from the latest chat alone.
 
 These terms must not be exposed as raw product labels. Product copy should explain what FlowDesk can do, what it will not do, and whether user confirmation is required.
+
+Plan-backed continuous work is bounded by the plan/design evidence it references. It stops at any blocker, ambiguous requirement, missing verification, stale or absent usage/health evidence required by the selected release gate, Guard denial, unsupported authority request, or user-facing clarification need. It does not override Release 1 confirmation rules for execution-like dry-run/fake-runtime work and does not promote real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat control.
 
 ### 3.2 Canonical Forbidden Persisted Payloads
 
@@ -668,6 +671,7 @@ Contract field constraints:
 15. Every `*_ref`, `*_id`, and hash is an opaque schema-safe value with max length 128 unless a narrower schema applies.
 16. `delegated_authoring_summary` and `lane_summaries` are bounded typed summaries, not raw logs or transcripts.
 17. `provider_health_summary` is a bounded typed summary of Provider Health Snapshot fields, not raw provider errors, raw logs, payloads, stack traces, or credential details.
+18. Chat intake may classify plan-backed continuous-work phrases only when the caller supplies planning/document evidence from existing workflow state, durable plan-lane records, or an equivalent design-document reference. In that case the safe command-backed route is resume/status. If no evidence is available, the route is clarification/status only and must not auto-run or auto-create a plan.
 
 Release 1 registered tool set is closed: implementations must not register `flowdesk_reference_search` or any unlisted tool. Optional diagnostics may remain unregistered if their schema conformance or user-facing need is not proven.
 

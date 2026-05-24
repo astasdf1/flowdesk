@@ -1,6 +1,6 @@
 {
   "name": "@flowdesk/core",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Core FlowDesk contracts and Release 1 boundaries.",
   "type": "module",
   "license": "MIT",

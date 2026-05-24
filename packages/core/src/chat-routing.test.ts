@@ -233,6 +233,29 @@ test("chat routing suggests usage preflight before larger managed planning work"
   }
 });
 
+test("chat routing gates continuous-work requests on existing planning evidence", () => {
+  for (const summary of [
+    "계획 전체 진행해줘",
+    "막히기전까지 계속 진행",
+    "전체 설계문서 기반으로 계속 진행해",
+    "continue until blocked",
+    "work through the whole plan"
+  ]) {
+    const noPlan = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(noPlan.response.classification, "clarify", summary);
+    assert.equal(noPlan.response.route_decision, "ask_clarification", summary);
+    assert.deepEqual(noPlan.response.safe_next_actions, ["ask_clarification", "/flowdesk-status"], summary);
+    assert.equal(noPlan.response.safe_next_actions.includes("/flowdesk-run"), false, summary);
+    assert.equal(validateChatIntakeResponseV1(noPlan.response).ok, true, summary);
+
+    const withPlan = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce", planningDocumentAvailable: true });
+    assert.equal(withPlan.response.classification, "managed_plan", summary);
+    assert.equal(withPlan.response.route_decision, "use_command_fallback", summary);
+    assert.deepEqual(withPlan.response.safe_next_actions, ["/flowdesk-resume", "/flowdesk-status"], summary);
+    assert.equal(validateChatIntakeResponseV1(withPlan.response).ok, true, summary);
+  }
+});
+
 test("chat routing surfaces Korean clarification cues as ask_clarification when combined with planning intent", () => {
   for (const summary of [
     "코드 좀 만들어줘 잘 모르겠어 어디부터 시작할지",
