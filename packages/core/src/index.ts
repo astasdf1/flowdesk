@@ -49,6 +49,7 @@ export * from "./fds1-schema-probe-result.js";
 export * from "./guard-boundary.js";
 export * from "./guarded-dry-run.js";
 export * from "./hook-harness.js";
+export * from "./lane-heartbeat.js";
 export * from "./lane-lifecycle-record.js";
 export * from "./lane-observability.js";
 export * from "./lane-stall-projection.js";

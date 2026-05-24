@@ -12,6 +12,7 @@ import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./control
 import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
 import { validateFlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
+import { validateFlowDeskLaneHeartbeatRecordV1 } from "./lane-heartbeat.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
 import {
 	type FlowDeskExactModelAvailabilityCacheMaterializationContextV1,
@@ -86,6 +87,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	controlled_redacted_audit_export_write:
 		"flowdesk.controlled_redacted_audit_export_write.v1",
 	fallback_regate_plan: "flowdesk.fallback_regate_plan.v1",
+	lane_heartbeat: "flowdesk.lane_heartbeat.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -760,6 +762,8 @@ function validateEvidenceShape(
 		return validateFlowDeskRuntimeLaneLaunchPlanV1(record);
 	if (evidenceClass === "lane_lifecycle")
 		return validateFlowDeskLaneLifecycleRecordV1(record);
+	if (evidenceClass === "lane_heartbeat")
+		return validateFlowDeskLaneHeartbeatRecordV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")

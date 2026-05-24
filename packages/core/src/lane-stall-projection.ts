@@ -10,6 +10,8 @@ export const FLOWDESK_LANE_HEARTBEAT_MIN_LATE_MS = 10_000;
 const ACTIVE_LIFECYCLE_STATES = new Set([
 	"created",
 	"running",
+	"awaiting_dependency",
+	"cooldown",
 ]);
 
 const TERMINAL_LIFECYCLE_STATES = new Set([
@@ -40,6 +42,9 @@ export interface FlowDeskLaneStallProjectionEntryV1 {
 	lifecycleState?: string;
 	lastSignalAt?: string;
 	lastSignalEvidenceId?: string;
+	lastSignalSource?: "lane_lifecycle" | "lane_heartbeat";
+	lastHeartbeatSeq?: number;
+	expectedNextHeartbeatAt?: string;
 	secondsSinceLastSignal?: number;
 	abnormal: boolean;
 	failureHint?: string;
@@ -74,6 +79,9 @@ interface LifecycleSnapshot {
 	updatedAt: string;
 	updatedAtMs: number;
 	evidenceId: string;
+	signalSource: "lane_lifecycle" | "lane_heartbeat";
+	heartbeatSeq?: number;
+	expectedNextHeartbeatAt?: string;
 }
 
 function getStringField(
@@ -88,6 +96,12 @@ function isLifecycleEntry(
 	entry: FlowDeskSessionEvidenceReloadEntryV1,
 ): boolean {
 	return entry.evidenceClass === "lane_lifecycle";
+}
+
+function isHeartbeatEntry(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+): boolean {
+	return entry.evidenceClass === "lane_heartbeat";
 }
 
 function lifecycleSnapshotFromEntry(
@@ -111,6 +125,39 @@ function lifecycleSnapshotFromEntry(
 		updatedAt,
 		updatedAtMs: parsed,
 		evidenceId: entry.evidenceId,
+		signalSource: "lane_lifecycle",
+	};
+}
+
+function heartbeatSnapshotFromEntry(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+	workflowId: string,
+): LifecycleSnapshot | undefined {
+	const record = entry.record;
+	const laneId = getStringField(record, "lane_id");
+	const state = getStringField(record, "state");
+	const observedAt = getStringField(record, "observed_at");
+	if (laneId === undefined || state === undefined || observedAt === undefined)
+		return undefined;
+	const parsed = Date.parse(observedAt);
+	if (!Number.isFinite(parsed)) return undefined;
+	const heartbeatSeqValue = record.heartbeat_seq;
+	const heartbeatSeq =
+		typeof heartbeatSeqValue === "number" && Number.isFinite(heartbeatSeqValue)
+			? heartbeatSeqValue
+			: undefined;
+	const expectedNext = getStringField(record, "expected_next_heartbeat_at");
+	return {
+		workflowId,
+		laneId,
+		attemptId: getStringField(record, "attempt_id"),
+		state,
+		updatedAt: observedAt,
+		updatedAtMs: parsed,
+		evidenceId: entry.evidenceId,
+		signalSource: "lane_heartbeat",
+		...(heartbeatSeq === undefined ? {} : { heartbeatSeq }),
+		...(expectedNext === undefined ? {} : { expectedNextHeartbeatAt: expectedNext }),
 	};
 }
 
@@ -120,8 +167,11 @@ function pickLatestLifecyclePerLane(
 ): Map<string, LifecycleSnapshot> {
 	const latestByLane = new Map<string, LifecycleSnapshot>();
 	for (const entry of reload.entries) {
-		if (!isLifecycleEntry(entry)) continue;
-		const snapshot = lifecycleSnapshotFromEntry(entry, workflowId);
+		let snapshot: LifecycleSnapshot | undefined;
+		if (isLifecycleEntry(entry))
+			snapshot = lifecycleSnapshotFromEntry(entry, workflowId);
+		else if (isHeartbeatEntry(entry))
+			snapshot = heartbeatSnapshotFromEntry(entry, workflowId);
 		if (snapshot === undefined) continue;
 		const previous = latestByLane.get(snapshot.laneId);
 		if (previous === undefined || snapshot.updatedAtMs > previous.updatedAtMs)
@@ -276,6 +326,13 @@ export function projectFlowDeskLaneStallV1(input: {
 			lifecycleState: snapshot.state,
 			lastSignalAt: snapshot.updatedAt,
 			lastSignalEvidenceId: snapshot.evidenceId,
+			lastSignalSource: snapshot.signalSource,
+			...(snapshot.heartbeatSeq === undefined
+				? {}
+				: { lastHeartbeatSeq: snapshot.heartbeatSeq }),
+			...(snapshot.expectedNextHeartbeatAt === undefined
+				? {}
+				: { expectedNextHeartbeatAt: snapshot.expectedNextHeartbeatAt }),
 			secondsSinceLastSignal,
 			abnormal:
 				classification === "stalled" || classification === "progressing_late",
