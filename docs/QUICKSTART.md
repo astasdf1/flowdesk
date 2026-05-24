@@ -81,3 +81,19 @@ When OpenCode exposes a safe status or reference surface, FlowDesk may show task
 If OpenCode does not prove clickable or openable references for your version, use `/flowdesk-status` and `/flowdesk-export-debug`. Release 1 may show redacted summaries and opaque references instead of raw logs. It does not promise a native clickable task pane unless a later conformance artifact proves one. Raw prompts, transcripts, tool payloads, stack traces, and raw file contents must stay out of status and debug output.
 
 `opencode run` is not a FlowDesk quickstart command. Implementers may use it for provider smoke tests or diagnostics, but it is not FlowDesk's delegated-lane, review fan-out, or normal execution path.
+
+## Natural-Language Tools
+
+Once the FlowDesk plugin is loaded in the active OpenCode profile, the assistant LLM picks up five description-driven natural-language tools without you typing portable commands:
+
+1. `flowdesk_quick_reviewer_run` — say things like `다관점 리뷰 해줘` or `multi-perspective review` to get a 3-perspective FlowDesk reviewer fan-out.
+2. `flowdesk_provider_usage_live` — say `사용량 보여줘` or `how much usage do I have left` to get live Claude/OpenAI/Gemini availability with `alertLevel` and `recommendation`.
+3. `flowdesk_status_live` — say `어디까지 했어`, `상태`, `is anything stuck`, or `lane heartbeat status` to read durable session evidence and the lane heartbeat stall projection.
+4. `flowdesk_quick_fallback_run` — say `Claude 막혔어 OpenAI 로 다시` or `fallback to openai/gpt-5.5` to plan a fresh full re-gate; the actual provider switch is still blocked behind managed-dispatch promotion.
+5. `flowdesk_lane_heartbeat_record` — say `하트비트 남겨줘` or `record a heartbeat for the lane` to persist one durable `lane_heartbeat` evidence record per FlowDesk-owned lane.
+
+None of these promote real dispatch, provider call, lane launch, automatic fallback, or hard chat cancellation authority; they only read or write redacted diagnostic evidence.
+
+## Stalled Lane Alerts in Chat
+
+If you also enable `statusLive.enabled=true` and `chatMessageStallAlert.enabled=true` with a `durableStateRoot`, FlowDesk passively appends a redacted stall card to your chat whenever durable session evidence shows a FlowDesk-owned lane that has not produced a heartbeat or lifecycle update for more than five minutes. The card lists how many lanes are stalled, the top workflow ids with their last-signal age in minutes, the explicit line `FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.`, and a safe next action allowlist (`/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`). The card de-duplicates within a session unless the stalled lane count, worst classification, or per-workflow age bucket changes, so longer stalls re-alert you over time.

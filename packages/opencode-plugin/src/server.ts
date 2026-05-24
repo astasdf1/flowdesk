@@ -1854,9 +1854,15 @@ function stallAlertDuplicateKey(
 	summary: FlowDeskChatMessageStallSummaryV1,
 ): string {
 	const wf = summary.workflowSummaries
-		.map((entry) => `${entry.workflowId}:${entry.stalledLaneCount}`)
+		.map((entry) => {
+			const ageMinutes =
+				typeof entry.secondsSinceLastSignal === "number"
+					? Math.floor(entry.secondsSinceLastSignal / 60)
+					: -1;
+			return `${entry.workflowId}:${entry.stalledLaneCount}:${ageMinutes}`;
+		})
 		.join("|");
-	return `${safeToken(request.session_ref, "session")}|stall|${wf}`;
+	return `${safeToken(request.session_ref, "session")}|stall|${wf}|worst:${summary.worstClassification}`;
 }
 
 function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
