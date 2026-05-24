@@ -126,6 +126,7 @@ function reloadedEvidence(
 					schema_version: "flowdesk.pre_dispatch_audit_record.v1",
 					workflow_id: "workflow-1",
 					pre_dispatch_audit_ref: "audit-predispatch-1",
+					observed_at: "2026-05-19T00:00:00.000Z",
 				},
 				path: ".flowdesk/sessions/workflow-1/evidence/pre-dispatch-audit/audit-predispatch-1.json",
 			},

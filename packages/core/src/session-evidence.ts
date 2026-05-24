@@ -15,6 +15,12 @@ import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-a
 import { validateFlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
 import { validateFlowDeskLaneHeartbeatRecordV1 } from "./lane-heartbeat.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
+import {
+	validateFlowDeskManagedDispatchBetaRuntimeEchoShapeV1,
+	validateFlowDeskManagedDispatchBetaTelemetryCorrelationShapeV1,
+	validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1,
+} from "./managed-dispatch-evidence-shape.js";
+import { validateFlowDeskPreDispatchAuditRecordV1 } from "./pre-dispatch-audit-record.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
@@ -784,6 +790,14 @@ function validateEvidenceShape(
 		return validateFlowDeskExternalAuthProviderPolicyResultV1(record);
 	if (evidenceClass === "production_approval")
 		return validateFlowDeskProductionApprovalDecisionV1(record);
+	if (evidenceClass === "pre_dispatch_audit")
+		return validateFlowDeskPreDispatchAuditRecordV1(record);
+	if (evidenceClass === "usage_authority")
+		return validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1(record);
+	if (evidenceClass === "runtime_echo")
+		return validateFlowDeskManagedDispatchBetaRuntimeEchoShapeV1(record);
+	if (evidenceClass === "telemetry_correlation")
+		return validateFlowDeskManagedDispatchBetaTelemetryCorrelationShapeV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))

@@ -10,6 +10,33 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.4 — 2026-05-24
+
+### Added
+
+- New `@flowdesk/core` validator `validateFlowDeskPreDispatchAuditRecordV1`
+  in `packages/core/src/pre-dispatch-audit-record.ts` for the
+  `flowdesk.pre_dispatch_audit_record.v1` schema. The session-evidence
+  reload dispatch now runs it for every persisted `pre_dispatch_audit`
+  entry instead of falling through to the generic redaction check.
+- New `@flowdesk/core` shape-only validators in
+  `packages/core/src/managed-dispatch-evidence-shape.ts` for
+  `flowdesk.managed_dispatch_beta.usage_authority_evidence.v1`,
+  `flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1`, and
+  `flowdesk.managed_dispatch_beta.telemetry_correlation.v1`. They enforce
+  the schema_version and the redacted-raw-payload boundary at reload time
+  without requiring the cross-validation context that the full Release 2
+  validators need. Session-evidence reload now dispatches to these shape
+  checks for `usage_authority`, `runtime_echo`, and
+  `telemetry_correlation` durable evidence.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. The four new validators only
+tighten fail-closed checks at reload time.
+
 ## 0.1.3 — 2026-05-24
 
 ### Added
