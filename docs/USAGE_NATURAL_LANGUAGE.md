@@ -243,6 +243,8 @@ On failure: `status: "blocked_before_lane_heartbeat"` with a sanitized `redacted
 
 `flowdesk_status_live` already reads `lane_heartbeat` records as the latest signal per lane id, ahead of any older `lane_lifecycle` record for that lane. The projection classifies each lane as `progressing_normal` (<=2 minutes since last signal), `progressing_late` (2-5 minutes), `stalled` (>5 minutes while still in `created`/`running`/`awaiting_dependency`/`cooldown`), `terminal`, or `unknown`. Stalled lanes get a bounded safe action allowlist limited to `/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`.
 
+Each lane entry also carries an optional `expectedNextHeartbeatOverdue: boolean` and `secondsPastExpectedNextHeartbeat: number` hint. These hints reflect the heartbeat record's own declared `expected_next_heartbeat_at` interval, independent of the configurable stall threshold. They are diagnostic only: the classification still comes from the policy thresholds, so a heartbeat with a 30-second expected interval that is only 90 seconds old still classifies as `progressing_normal` while the hint flags the heartbeat's self-declared cadence as overdue.
+
 ## chat.message stall alert card
 
 When `statusLive.enabled=true` and `chatMessageStallAlert.enabled=true` are both set (with a resolvable `durableStateRoot`), FlowDesk also adds a passive `chat.message` card that appears whenever durable evidence shows a stalled FlowDesk-owned lane. The card never auto-retries, auto-aborts, auto-fallbacks, or claims hard chat cancellation; it shows:
