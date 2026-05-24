@@ -45,6 +45,8 @@ export interface FlowDeskLaneStallProjectionEntryV1 {
 	lastSignalSource?: "lane_lifecycle" | "lane_heartbeat";
 	lastHeartbeatSeq?: number;
 	expectedNextHeartbeatAt?: string;
+	expectedNextHeartbeatOverdue?: boolean;
+	secondsPastExpectedNextHeartbeat?: number;
 	secondsSinceLastSignal?: number;
 	abnormal: boolean;
 	failureHint?: string;
@@ -316,6 +318,17 @@ export function projectFlowDeskLaneStallV1(input: {
 		}
 		if (classification === "terminal") totalTerminal += 1;
 		const failureHint = failureHintFor(snapshot.state);
+		let expectedNextHeartbeatOverdue: boolean | undefined;
+		let secondsPastExpectedNextHeartbeat: number | undefined;
+		if (snapshot.expectedNextHeartbeatAt !== undefined) {
+			const expectedMs = Date.parse(snapshot.expectedNextHeartbeatAt);
+			if (Number.isFinite(expectedMs)) {
+				const deltaMs = observedAtMs - expectedMs;
+				expectedNextHeartbeatOverdue = deltaMs > 0;
+				if (deltaMs > 0)
+					secondsPastExpectedNextHeartbeat = Math.floor(deltaMs / 1000);
+			}
+		}
 		entries.push({
 			workflowId: snapshot.workflowId,
 			laneId: snapshot.laneId,
@@ -333,6 +346,12 @@ export function projectFlowDeskLaneStallV1(input: {
 			...(snapshot.expectedNextHeartbeatAt === undefined
 				? {}
 				: { expectedNextHeartbeatAt: snapshot.expectedNextHeartbeatAt }),
+			...(expectedNextHeartbeatOverdue === undefined
+				? {}
+				: { expectedNextHeartbeatOverdue }),
+			...(secondsPastExpectedNextHeartbeat === undefined
+				? {}
+				: { secondsPastExpectedNextHeartbeat }),
 			secondsSinceLastSignal,
 			abnormal:
 				classification === "stalled" || classification === "progressing_late",

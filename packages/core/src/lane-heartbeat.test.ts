@@ -117,6 +117,50 @@ test("heartbeat evidence persists through the session evidence writer and reload
 	}
 });
 
+test("stall projection flags expected_next_heartbeat_at as overdue when observed_at passes it", () => {
+	const observedAt = "2026-05-24T12:05:00.000Z";
+	const observedAtMs = Date.parse(observedAt);
+	const fresh = buildFlowDeskLaneHeartbeatRecordV1({
+		...baseInput,
+		heartbeatSeq: 7,
+		observedAt: new Date(observedAtMs - 90 * 1000).toISOString(),
+		expectedIntervalMs: 30 * 1000,
+	});
+	assert.equal(fresh.ok, true);
+	if (!fresh.ok) return;
+	const reload = {
+		ok: true,
+		errors: [],
+		entries: [
+			{
+				evidenceClass: "lane_heartbeat" as const,
+				evidenceId: fresh.record.heartbeat_id,
+				path: `.flowdesk/sessions/${workflowId}/lane_heartbeat/${fresh.record.heartbeat_id}.json`,
+				record: fresh.record as unknown as Record<string, unknown>,
+			},
+		],
+		blocked: [],
+		realOpenCodeDispatch: false as const,
+		actualLaneLaunch: false as const,
+		providerCall: false as const,
+		runtimeExecution: false as const,
+	};
+	const projection = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload,
+	});
+	assert.equal(projection.entries.length, 1);
+	const entry = projection.entries[0];
+	// 90s since last heartbeat is below the default 2-minute late threshold,
+	// so the classification stays progressing_normal even though the heartbeat's
+	// own expected_next interval (30s) has already passed.
+	assert.equal(entry.classification, "progressing_normal");
+	assert.equal(entry.lastSignalSource, "lane_heartbeat");
+	assert.equal(entry.expectedNextHeartbeatOverdue, true);
+	assert.ok((entry.secondsPastExpectedNextHeartbeat ?? 0) > 0);
+});
+
 test("stall projection uses heartbeat evidence to keep a lane progressing_normal", () => {
 	const observedAt = "2026-05-24T12:10:00.000Z";
 	const observedAtMs = Date.parse(observedAt);
