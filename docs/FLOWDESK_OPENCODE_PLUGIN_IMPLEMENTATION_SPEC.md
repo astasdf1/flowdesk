@@ -115,10 +115,13 @@ Release 1 implementations use these terms for chat UX and routing:
 4. **Unsafe later-gate request**: a request for real dispatch, provider calls, actual lane launch, automatic fallback or reselection, hard no-reply/cancel/stop, or another later-release authority. FlowDesk blocks its own route and shows safe alternatives, but does not claim hard chat suppression unless conformance proves blocking intake.
 5. **Pending intent**: a redacted, time-bound, one-shot state representing a proposed FlowDesk action that requires user confirmation before execution-like behavior.
 6. **Plan-backed continuous work request**: an explicit request such as “continue until blocked”, “work through the whole plan”, “계획 전체 진행”, “막히기전까지 진행”, or “계속 진행” that asks FlowDesk to keep taking the next safe step. Release 1 may route this only when an existing FlowDesk plan, design document, or plan-lane evidence is already present for the workflow/session. Without that evidence the route must ask for clarification or point to status/planning; it must not auto-create a plan, run work, widen scope, or infer missing requirements from the latest chat alone.
+7. **Durable suggestion preference**: a short-lived, redacted UX record that remembers a FlowDesk steering card was already shown for the same session, route decision, and first safe next action. It may suppress duplicate suggestion cards across plugin restarts when `durableStateRoot` is configured. It is not audit, approval, workflow state, or dispatch evidence.
 
 These terms must not be exposed as raw product labels. Product copy should explain what FlowDesk can do, what it will not do, and whether user confirmation is required.
 
 Plan-backed continuous work is bounded by the plan/design evidence it references. It stops at any blocker, ambiguous requirement, missing verification, stale or absent usage/health evidence required by the selected release gate, Guard denial, unsupported authority request, or user-facing clarification need. It does not override Release 1 confirmation rules for execution-like dry-run/fake-runtime work and does not promote real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat control.
+
+Durable suggestion preferences must store only schema-safe ids, route labels, safe next action labels, timestamps, expiry, and disabled authority flags. They must not store raw user messages, prompts, transcripts, file paths, command payloads, tool args/results, provider payloads, stack traces, or raw config. Preference write/read failure must degrade to in-memory duplicate suppression and must never block chat routing.
 
 ### 3.2 Canonical Forbidden Persisted Payloads
 

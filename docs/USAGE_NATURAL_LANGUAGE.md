@@ -19,6 +19,8 @@ This route is deliberately gated. FlowDesk may suggest `/flowdesk-resume` only w
 
 Continuous work always stops at the next blocker, ambiguous requirement, missing verification, Guard denial, stale or absent required evidence, unsupported later-gate capability, or user-facing clarification need. It does not enable real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat cancellation.
 
+When `durableStateRoot` is configured, FlowDesk also remembers recently shown non-confirmation steering cards in a short-lived redacted preference cache. This prevents the same plan/status/usage suggestion from reappearing immediately after the plugin process restarts. The cache stores only schema-safe session/action labels and expiry timestamps; it does not store the chat text, prompts, transcripts, file paths, command payloads, tool results, provider payloads, or credentials. If the cache cannot be read or written, FlowDesk falls back to in-memory de-duplication.
+
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
 3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model.

@@ -1,4 +1,11 @@
 import {
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
+import { join, resolve, sep } from "node:path";
+import {
 	type FlowDeskChatHookAuthorityProbeV1,
 	type FlowDeskChatIntakeRequestV1,
 	type FlowDeskConfiguredVerificationResultV1,
@@ -239,6 +246,22 @@ export interface FlowDeskChatHookAuthorityObservationInputV1 {
 
 const flowdeskChatSuggestionDuplicateWindowMs = 10_000;
 
+interface FlowDeskChatSuggestionPreferenceRecordV1 {
+	schema_version: "flowdesk.chat_suggestion_preference.v1";
+	preference_ref: string;
+	session_ref: string;
+	route_decision: string;
+	safe_next_action: SafeNextAction;
+	recorded_at: string;
+	expires_at: string;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+	fallbackAuthority: false;
+	hardCancelOrNoReplyAuthority: false;
+}
+
 const disabledAuthority = {
 	productionRegistrationEligible: false,
 	dispatchApprovalEligible: false,
@@ -320,6 +343,85 @@ function safeToken(value: unknown, fallback: string): string {
 		typeof value === "string" && value.length > 0 ? value : fallback;
 	const token = source.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 80);
 	return token.length > 0 ? token : fallback;
+}
+
+function hashText(value: string): string {
+	let hash = 2166136261;
+	for (const char of value) {
+		hash ^= char.charCodeAt(0);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function durableSuggestionPreferencePath(
+	rootDir: string | undefined,
+	duplicateKey: string,
+): string | undefined {
+	if (rootDir === undefined || rootDir.trim().length === 0) return undefined;
+	const root = resolve(rootDir);
+	const dir = resolve(root, ".flowdesk", "chat-suggestion-preferences");
+	if (dir !== root && !dir.startsWith(`${root}${sep}`)) return undefined;
+	return join(dir, `${hashText(duplicateKey)}.json`);
+}
+
+function readDurableSuggestionPreferenceAtMs(
+	rootDir: string | undefined,
+	duplicateKey: string,
+	nowMs: number,
+): number | undefined {
+	const filePath = durableSuggestionPreferencePath(rootDir, duplicateKey);
+	if (filePath === undefined) return undefined;
+	try {
+		const record = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+		if (!isRecord(record)) return undefined;
+		if (record.schema_version !== "flowdesk.chat_suggestion_preference.v1")
+			return undefined;
+		const recordedAt = Date.parse(String(record.recorded_at ?? ""));
+		const expiresAt = Date.parse(String(record.expires_at ?? ""));
+		if (!Number.isFinite(recordedAt) || !Number.isFinite(expiresAt))
+			return undefined;
+		if (nowMs > expiresAt) return undefined;
+		return recordedAt;
+	} catch {
+		return undefined;
+	}
+}
+
+function writeDurableSuggestionPreference(
+	rootDir: string | undefined,
+	duplicateKey: string,
+	request: FlowDeskChatIntakeRequestV1,
+	response: ReturnType<typeof evaluateFlowDeskChatIntakeV1>["response"],
+	recordedAtMs: number,
+): void {
+	const filePath = durableSuggestionPreferencePath(rootDir, duplicateKey);
+	if (filePath === undefined) return;
+	try {
+		const record: FlowDeskChatSuggestionPreferenceRecordV1 = {
+			schema_version: "flowdesk.chat_suggestion_preference.v1",
+			preference_ref: `chat-suggestion-${hashText(duplicateKey)}`,
+			session_ref: safeToken(request.session_ref, "session-redacted"),
+			route_decision: safeToken(response.route_decision, "route-redacted"),
+			safe_next_action: response.safe_next_actions[0] ?? "/flowdesk-status",
+			recorded_at: new Date(recordedAtMs).toISOString(),
+			expires_at: new Date(
+				recordedAtMs + flowdeskChatSuggestionDuplicateWindowMs,
+			).toISOString(),
+			realOpenCodeDispatch: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+			fallbackAuthority: false,
+			hardCancelOrNoReplyAuthority: false,
+		};
+		mkdirSync(resolve(filePath, ".."), { recursive: true });
+		const tempPath = `${filePath}.tmp-${record.preference_ref}`;
+		writeFileSync(tempPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+		renameSync(tempPath, filePath);
+	} catch {
+		// Durable preferences are best-effort UX dedupe only; memory dedupe remains.
+	}
 }
 
 function commandNameFromAction(
@@ -1704,6 +1806,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 	now: FlowDeskLocalClockV1 = () => new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
 	stallAlert?: FlowDeskChatMessageStallAlertOptionsV1,
+	durableSuggestionRoot?: string,
 ) {
 	const recentSuggestionCards = new Map<string, number>();
 	const recentStallAlerts = new Map<string, number>();
@@ -1765,8 +1868,21 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				request,
 				preview.evaluation.response,
 			);
-			const previousAtMs = recentSuggestionCards.get(duplicateKey);
+			const previousAtMs =
+				recentSuggestionCards.get(duplicateKey) ??
+				readDurableSuggestionPreferenceAtMs(
+					durableSuggestionRoot,
+					duplicateKey,
+					nowMs,
+				);
 			recentSuggestionCards.set(duplicateKey, nowMs);
+			writeDurableSuggestionPreference(
+				durableSuggestionRoot,
+				duplicateKey,
+				request,
+				preview.evaluation.response,
+				nowMs,
+			);
 			if (
 				previousAtMs !== undefined &&
 				nowMs - previousAtMs <= flowdeskChatSuggestionDuplicateWindowMs
@@ -3325,6 +3441,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			() => new Date(),
 			localSession,
 			stallAlertOption,
+			durableStateRootFromOptions(options),
 		),
 	};
 };

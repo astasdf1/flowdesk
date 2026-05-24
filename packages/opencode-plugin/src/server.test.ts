@@ -3984,6 +3984,26 @@ test("chat.message steering suppresses repeated non-confirmation cards for the s
 			false,
 		);
 
+		const restartedHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+			},
+		)) as ChatMessageHooks;
+		assert.ok(restartedHooks["chat.message"]);
+		const durableRepeatedPlanOutput = {
+			parts: [{ type: "text", text: "구현 계획을 다시 세워줘" }] as unknown[],
+		};
+		await restartedHooks["chat.message"](
+			{
+				messageID: "message-duplicate-plan-after-restart",
+				sessionID: "session-duplicate-plan",
+			},
+			durableRepeatedPlanOutput,
+		);
+		assert.equal(durableRepeatedPlanOutput.parts.length, 1);
+
 		const otherSessionOutput = {
 			parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
 		};

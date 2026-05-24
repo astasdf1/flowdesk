@@ -14,6 +14,8 @@ Critical review update, 2026-05-18: Release 1 must not implement broad OMO-style
 
 Continuous-work update, 2026-05-25: Release 1 may recognize explicit phrases such as `계획 전체 진행`, `막히기전까지 계속 진행`, and `continue until blocked`, but only as plan-backed steering. The route requires existing FlowDesk plan/design evidence for the workflow or session before suggesting `/flowdesk-resume`; otherwise it must ask for clarification/status and must not auto-create a plan, auto-run, or infer missing requirements from chat alone.
 
+Durable suggestion update, 2026-05-25: when `durableStateRoot` is configured, Release 1 may persist short-lived redacted suggestion-preference records so duplicate non-confirmation FlowDesk cards stay suppressed across plugin restarts. These records are UX preferences only, not audit/workflow/approval evidence, and failure to read or write them degrades to in-memory duplicate suppression.
+
 Included:
 
 1. Project workspace and packages.
@@ -31,6 +33,7 @@ Included:
 13. User manual abnormal-use examples and safe alternatives.
 14. Intent detection and transparent workflow-suggestion UX that distinguishes no intervention, suggestion, explicit management, and later-gate unsafe requests without claiming hard chat takeover.
 15. Plan-backed continuous-work routing that is bounded to existing plan/design evidence and stops at blockers or clarification needs.
+16. Short-lived durable suggestion preferences for duplicate-card suppression across plugin restarts when a durable root is configured.
 
 Excluded:
 

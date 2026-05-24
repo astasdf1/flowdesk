@@ -10,6 +10,25 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.6 — 2026-05-25
+
+### Added
+
+- Durable non-confirmation chat suggestion de-duplication when
+  `durableStateRoot` is configured. FlowDesk now writes a short-lived,
+  redacted `flowdesk.chat_suggestion_preference.v1` UX record so repeated
+  plan/status/usage suggestion cards remain suppressed across plugin
+  restarts.
+- Documentation now distinguishes these records from audit, workflow,
+  approval, or dispatch evidence and states their redaction/expiry boundary.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Preference persistence is best-effort UX
+dedupe only and degrades to in-memory suppression on read/write failure.
+
 ## 0.1.5 — 2026-05-25
 
 ### Added

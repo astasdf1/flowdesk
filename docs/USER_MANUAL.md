@@ -60,6 +60,8 @@ If you ask FlowDesk to keep working continuously, for example `계획 전체 진
 
 Continuous work is bounded: it stops when the plan is exhausted, a requirement is unclear, a verification/check fails, Guard blocks, required evidence is missing or stale, or a later-gate capability would be needed. It does not authorize real dispatch, provider calls, automatic fallback, actual lane launch, or hard chat cancellation.
 
+If `durableStateRoot` is configured, FlowDesk remembers recently shown non-confirmation steering suggestions for a few seconds across plugin restarts so the chat is not flooded by repeated identical cards. The record is redacted and short-lived: it stores only safe labels and expiry timestamps, not your message text, prompts, transcripts, paths, commands, tool output, provider payloads, or credentials.
+
 ### First Successful Flow
 
 1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:
