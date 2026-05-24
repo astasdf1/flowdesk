@@ -51,6 +51,7 @@ export * from "./guarded-dry-run.js";
 export * from "./hook-harness.js";
 export * from "./lane-lifecycle-record.js";
 export * from "./lane-observability.js";
+export * from "./lane-stall-projection.js";
 export * from "./model-availability-cache.js";
 export * from "./operational-intelligence.js";
 export * from "./plan.js";

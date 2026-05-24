@@ -324,6 +324,8 @@ Doctor failures may disable different parts of FlowDesk:
 
 Subagent lane failures should also be visible when OpenCode exposes enough event, hook, or status data. Examples include failed launch, missing tool, schema conversion failure, timeout, lost event correlation, abnormal exit, and unproven cancellation. If FlowDesk cannot correlate a lane safely, it should mark the workflow degraded or blocked, write a redacted audit reference when possible, and show a safe next action.
 
+FlowDesk-owned lanes (reviewer lanes, runtime lane launches, provider acquisition lanes, managed-dispatch attempts, fallback regate plans) record a durable heartbeat so the user can tell whether a lane is still progressing or has fallen silent. If a lane goes more than 2 minutes without a new heartbeat or lifecycle update, FlowDesk classifies it as `progressing_late`. If more than 5 minutes pass without a signal while the lane is still in an active state, FlowDesk classifies it as `stalled` and surfaces it in status, doctor, and debug export with safe next actions such as `/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, or `/flowdesk-export-debug`. FlowDesk never auto-retries, auto-aborts, auto-fallbacks, or cancels chat in response to a stall; that follow-up stays with the user through the listed safe commands.
+
 ## What Release 1 Does Not Promise
 
 Release 1 does not promise:

@@ -2,9 +2,12 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
 	FLOWDESK_SESSION_EVIDENCE_CLASSES,
+	type FlowDeskLaneStallClassificationV1,
+	type FlowDeskLaneStallProjectionResultV1,
 	type FlowDeskSessionEvidenceClass,
 	type FlowDeskSessionEvidenceReloadEntryV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
+	projectFlowDeskLaneStallV1,
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
 
@@ -12,6 +15,8 @@ export interface FlowDeskStatusLiveConfigV1 {
 	rootDir: string;
 	maxWorkflows?: number;
 	maxRecentEvidencePerClass?: number;
+	laneHeartbeatLateThresholdMs?: number;
+	laneHeartbeatStallThresholdMs?: number;
 }
 
 export interface FlowDeskStatusLiveRequestV1 {
@@ -33,6 +38,10 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestLaneLifecycleStates: readonly string[];
 	latestRegatePlanState?: string;
 	latestProviderAcquisitionStatus?: string;
+	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
+	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
+	stalledLaneCount?: number;
+	progressingLateLaneCount?: number;
 }
 
 export interface FlowDeskStatusLiveResultV1 {
@@ -42,6 +51,9 @@ export interface FlowDeskStatusLiveResultV1 {
 	requestedWorkflowId?: string;
 	resolvedWorkflowIds: readonly string[];
 	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
+	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
+	totalStalledLaneCount?: number;
+	totalProgressingLateLaneCount?: number;
 	redactedBlockReason?: string;
 	safeNextActions: readonly (
 		| "/flowdesk-status"
@@ -258,9 +270,23 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			workflowId,
 			rootDir,
 		});
-		workflows.push(
-			summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass),
-		);
+		const summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
+		const projection = projectFlowDeskLaneStallV1({
+			workflowId,
+			reload,
+			observedAt,
+			...(input.config.laneHeartbeatLateThresholdMs === undefined
+				? {}
+				: { lateThresholdMs: input.config.laneHeartbeatLateThresholdMs }),
+			...(input.config.laneHeartbeatStallThresholdMs === undefined
+				? {}
+				: { stallThresholdMs: input.config.laneHeartbeatStallThresholdMs }),
+		});
+		summary.laneStallProjection = projection;
+		summary.worstLaneStallClassification = projection.worstClassification;
+		summary.stalledLaneCount = projection.totalStalledLanes;
+		summary.progressingLateLaneCount = projection.totalLateLanes;
+		workflows.push(summary);
 	}
 
 	const observed = workflows.some((summary) =>
@@ -269,6 +295,36 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		),
 	);
 
+	const totalStalled = workflows.reduce(
+		(sum, summary) => sum + (summary.stalledLaneCount ?? 0),
+		0,
+	);
+	const totalLate = workflows.reduce(
+		(sum, summary) => sum + (summary.progressingLateLaneCount ?? 0),
+		0,
+	);
+	const worstLaneStallClassification: FlowDeskLaneStallClassificationV1 =
+		workflows.some(
+			(summary) => summary.worstLaneStallClassification === "stalled",
+		)
+			? "stalled"
+			: workflows.some(
+						(summary) =>
+							summary.worstLaneStallClassification === "progressing_late",
+					)
+				? "progressing_late"
+				: workflows.some(
+							(summary) =>
+								summary.worstLaneStallClassification === "progressing_normal",
+						)
+					? "progressing_normal"
+					: workflows.some(
+								(summary) =>
+									summary.worstLaneStallClassification === "terminal",
+							)
+						? "terminal"
+						: "unknown";
+
 	return {
 		status: "status_live_collected",
 		observedAt,
@@ -276,6 +332,9 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		...(requestedWorkflowId ? { requestedWorkflowId } : {}),
 		resolvedWorkflowIds: workflowIds,
 		workflows,
+		worstLaneStallClassification,
+		totalStalledLaneCount: totalStalled,
+		totalProgressingLateLaneCount: totalLate,
 		safeNextActions: safeNextActions(),
 		authority: {
 			realOpenCodeDispatch: false,

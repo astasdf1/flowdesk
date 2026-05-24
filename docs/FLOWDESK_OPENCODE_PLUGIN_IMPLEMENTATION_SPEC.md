@@ -846,6 +846,39 @@ If the minimum telemetry surfaces are unavailable, delayed beyond policy toleran
 
 Event-derived lifecycle states such as `completed`, `failed`, `cancelled`, or `idle` are observations only. They may update status displays and recovery hints, but they must not transition a workflow to `complete`, promote artifacts, mark verification passed, or mark execution successful without trusted runtime echo, configured verification when required, and durable audit outcome records.
 
+### 6.7a Lane Heartbeat and Stall Detection Contract
+
+FlowDesk-owned lanes must carry a durable heartbeat so the user and the recovery surfaces can tell the difference between a lane that is still progressing, a lane that has fallen silent, and a lane that has clearly stopped. Heartbeat applies only to lanes FlowDesk itself manages (reviewer lanes, runtime lane launches, provider acquisition lanes, managed-dispatch attempts, fallback regate plans, and other FlowDesk-coordinator-launched work). FlowDesk must not claim heartbeat coverage over arbitrary OpenCode user-driven tool calls, native task subviews, or any work that FlowDesk did not launch and does not own.
+
+Policy thresholds:
+
+1. Soft heartbeat interval: every FlowDesk-owned lane should produce at least one durable heartbeat or lifecycle update every 2 minutes while it is in an active state (`running`, `created`, or waiting for an awaited dependency).
+2. Stall classification threshold: if a lane has no heartbeat or lifecycle update for more than 5 minutes while still in an active state, FlowDesk must classify the lane as stalled and surface it in status, doctor, and debug exports.
+3. Both thresholds are policy defaults. The Policy Pack and the lane class may shorten the thresholds. They may lengthen the thresholds only for explicitly long-running lane classes (for example a provider acquisition probe that includes a real provider prompt) and the longer threshold must be persisted in the lane record.
+
+Heartbeat record contract:
+
+1. Each heartbeat is a redacted typed evidence record bound to `workflow_id`, `attempt_id`, `lane_id`, and a monotonically increasing `heartbeat_seq`. The record must include `observed_at`, `expected_next_heartbeat_at`, `state` (`running`, `awaiting_dependency`, `cooldown`, or other approved active state), and an opaque `progress_ref` summary only.
+2. Heartbeats must not embed raw prompts, transcripts, provider payloads, tool args/results, runtime echoes, stack traces, file contents, or paths. They reference opaque ids only.
+3. Heartbeat write failures, schema validation failures, and reload failures fail closed; they do not silently disappear.
+4. Heartbeats must not promote authority. They cannot approve dispatch, widen scope, mark a lane complete, mark verification passed, or replace Guard. They are diagnostic evidence only.
+
+Stall projection contract:
+
+1. The stall projection runs from durable evidence (lane lifecycle records plus heartbeats), not from in-memory timers, so the projection survives plugin restarts. It must read the most recent heartbeat or lifecycle update for each FlowDesk-owned lane and compute `seconds_since_last_signal`.
+2. A lane is `progressing_normal` while `seconds_since_last_signal <= 2 minutes`, `progressing_late` between 2 and 5 minutes, and `stalled` when over 5 minutes while still in an active state. Lanes that have already transitioned to `complete`, `incomplete`, `no_output`, `missing_verdict`, `tool_calls_only_no_verdict`, `aborted`, `timeout`, `late_output`, `orphaned`, or `invocation_failed` are not stalled; they are reported in their terminal state.
+3. Stalled lanes must be surfaced through `flowdesk_status_live` (and the equivalent doctor or debug export sections when present) with `abnormal=true`, `seconds_since_last_signal`, the lane's last known state, the lane's lifecycle ref, and safe next actions limited to `/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, and `/flowdesk-export-debug`.
+4. The stall projection must not auto-retry, auto-abort, auto-fallback, auto-cancel, auto-no-reply, or otherwise mutate dispatch authority. Follow-up is recovery orchestration through existing safe commands and user approval, not a new authority class.
+5. When provider/runtime hints classify the stall (for example transport timeout, lost correlation, abnormal exit, or invocation failure), the projection may attach the matching lane failure class as a hint. It must not invent a failure class without evidence, and it must continue to keep automatic fallback/reselection disabled.
+
+Hook and timer boundaries:
+
+1. FlowDesk heartbeats must be produced by FlowDesk coordinator code that already owns the lane, not by relying on the assistant model to emit text. Model output is not a reliable heartbeat source.
+2. The stall projection must be computed on demand by FlowDesk diagnostic tools (status/doctor/debug) and may be refreshed by the `chat.message` steering hook only when steering is enabled. It must not introduce background timers that run when no user request is active, must not block the OpenCode chat hook beyond bounded steering, and must not claim any hard `noReply`/`cancel`/`stop` authority.
+3. If durable evidence cannot be reloaded, the projection must fail closed with a sanitized diagnostic and route the user to `/flowdesk-status` or `/flowdesk-export-debug`.
+
+This contract extends the existing lane lifecycle and observability surfaces and reuses the existing safe-next-action vocabulary. It does not introduce a new dispatch, fallback, or hard-chat authority.
+
 ### 6.8 Hook Harness Mode
 
 FlowDesk has a hook harness mode that controls how chat, command, tool, and shell-related hook surfaces are used to prevent agent deviation. The harness is containment and routing only. It never approves dispatch, never widens scope, and never replaces FlowDesk Guard.

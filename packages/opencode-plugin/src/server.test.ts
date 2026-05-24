@@ -4304,6 +4304,130 @@ test("status live tool surfaces durable evidence counts for the requested workfl
 	}
 });
 
+test("status live tool exposes a lane heartbeat stall projection for the requested workflow", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-stall-"));
+	try {
+		const workflowId = "workflow-status-live-stall";
+		const observedAtMs = Date.now();
+		const freshLane = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-stall-fresh",
+			workflow_id: workflowId,
+			attempt_id: "attempt-stall-fresh",
+			parent_session_ref: "ses-stall-fresh-parent",
+			agent_ref: "agent-reviewer-stall-fresh",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 30_000).toISOString(),
+			updated_at: new Date(observedAtMs - 30_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const stalledLane = {
+			...freshLane,
+			lane_id: "lane-stall-stalled",
+			attempt_id: "attempt-stall-stalled",
+			parent_session_ref: "ses-stall-stalled-parent",
+			agent_ref: "agent-reviewer-stall-stalled",
+			created_at: new Date(observedAtMs - 10 * 60_000).toISOString(),
+			updated_at: new Date(observedAtMs - 10 * 60_000).toISOString(),
+		};
+		const freshIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-stall-fresh",
+			record: freshLane,
+		});
+		assert.equal(freshIntent.ok, true, freshIntent.errors.join("; "));
+		const stalledIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-stall-stalled",
+			record: stalledLane,
+		});
+		assert.equal(stalledIntent.ok, true, stalledIntent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			freshIntent.writeIntent as never,
+			stalledIntent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const result = JSON.parse(
+			toolOutput(await statusTool.execute({ workflowId }, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "status_live_collected");
+		assert.equal(result.worstLaneStallClassification, "stalled");
+		assert.equal(result.totalStalledLaneCount, 1);
+		const workflows = result.workflows as Array<Record<string, unknown>>;
+		assert.equal(workflows.length, 1);
+		const workflow = workflows[0];
+		assert.equal(workflow.worstLaneStallClassification, "stalled");
+		assert.equal(workflow.stalledLaneCount, 1);
+		const projection = workflow.laneStallProjection as Record<string, unknown>;
+		assert.equal(projection.schema_version, "flowdesk.lane_stall_projection.v1");
+		const entries = projection.entries as Array<Record<string, unknown>>;
+		assert.equal(entries.length, 2);
+		const stalledEntry = entries.find(
+			(entry) => entry.laneId === "lane-stall-stalled",
+		);
+		assert.ok(stalledEntry);
+		assert.equal(stalledEntry.classification, "stalled");
+		assert.equal(stalledEntry.abnormal, true);
+		assert.ok(
+			(stalledEntry.safeNextActions as string[]).includes("/flowdesk-retry"),
+		);
+		const freshEntry = entries.find(
+			(entry) => entry.laneId === "lane-stall-fresh",
+		);
+		assert.ok(freshEntry);
+		assert.equal(freshEntry.classification, "progressing_normal");
+		assert.equal(freshEntry.abnormal, false);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("status live tool description mentions lane heartbeat stall projection vocabulary", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-desc-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const description = String(statusTool.description ?? "");
+		assert.match(description, /lane heartbeat stall projection/);
+		assert.match(description, /progressing_normal/);
+		assert.match(description, /progressing_late/);
+		assert.match(description, /stalled/);
+		assert.match(description, /worstLaneStallClassification/);
+		assert.match(description, /totalStalledLaneCount/);
+		assert.match(description, /멈춘 것 같아/);
+		assert.match(description, /응답이 없어/);
+		assert.equal(/auto-retry|auto-abort|auto-fallback/.test(description), true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("provider usage live tool description exposes proactive usage guidance and alert vocabulary", async () => {
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskProviderUsageLiveOption]: {

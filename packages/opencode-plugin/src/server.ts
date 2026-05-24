@@ -2512,6 +2512,20 @@ function statusLiveConfigFromOptions(
 		config.maxRecentEvidencePerClass = Math.floor(
 			value.maxRecentEvidencePerClass,
 		);
+	if (
+		typeof value.laneHeartbeatLateThresholdMs === "number" &&
+		value.laneHeartbeatLateThresholdMs > 0
+	)
+		config.laneHeartbeatLateThresholdMs = Math.floor(
+			value.laneHeartbeatLateThresholdMs,
+		);
+	if (
+		typeof value.laneHeartbeatStallThresholdMs === "number" &&
+		value.laneHeartbeatStallThresholdMs > 0
+	)
+		config.laneHeartbeatStallThresholdMs = Math.floor(
+			value.laneHeartbeatStallThresholdMs,
+		);
 	return config;
 }
 
@@ -2521,11 +2535,11 @@ export function createFlowDeskStatusLiveOptInTools(
 	return {
 		[flowdeskStatusLiveToolName]: tool({
 			description: [
-				"Return a live FlowDesk status summary by reloading durable session evidence under the configured FlowDesk state root, including reviewer verdict counts, reviewer fan-out plans, runtime lane lifecycle records, fallback regate plans, exact-model availability cache entries, and provider acquisition results.",
-				"WHEN TO USE: the user asks about recent FlowDesk activity, current workflow progress, recent reviewer results, ongoing or stalled runs, or what has been recorded so far. Trigger on English phrases such as 'status', 'what happened', 'recent activity', 'progress', 'where are we', 'how is it going', 'recent reviews', 'recent runs', and Korean phrases such as '상태', '어디까지', '진행 상황', '진행됐', '오늘 작업', '오늘 뭐했', '최근 활동', '최근 리뷰', '지금 어디', '상태 요약', '워크플로우 상태'.",
+				"Return a live FlowDesk status summary by reloading durable session evidence under the configured FlowDesk state root, including reviewer verdict counts, reviewer fan-out plans, runtime lane lifecycle records, fallback regate plans, exact-model availability cache entries, provider acquisition results, and a lane heartbeat stall projection that classifies each FlowDesk-owned lane as progressing_normal, progressing_late, stalled, terminal, or unknown based on the most recent lifecycle update.",
+				"WHEN TO USE: the user asks about recent FlowDesk activity, current workflow progress, recent reviewer results, ongoing or stalled runs, lanes that have stopped logging, lanes that look stuck, or what has been recorded so far. Trigger on English phrases such as 'status', 'what happened', 'recent activity', 'progress', 'where are we', 'how is it going', 'recent reviews', 'recent runs', 'is it stuck', 'stalled', 'no log', 'no update', 'is anything frozen', and Korean phrases such as '상태', '어디까지', '진행 상황', '진행됐', '오늘 작업', '오늘 뭐했', '최근 활동', '최근 리뷰', '지금 어디', '상태 요약', '워크플로우 상태', '멈춘 것 같아', '멈췄어', '응답이 없어', '아무 로그도 없', '오래 걸리는', '진행이 안돼'.",
 				"WHEN NOT TO USE: provider usage/quota questions (use flowdesk_provider_usage_live), multi-perspective code reviews (use flowdesk_quick_reviewer_run), or unrelated general chat.",
 				"INVOKE WITH: optional workflowId. When omitted, the tool lists the most recently modified durable workflows (default up to 5). The plugin user already opted in to durable status evidence reload at configuration time, so this tool can be called automatically without per-call confirmation.",
-				"AFTER CALLING: summarize per-workflow durable evidence counts in plain language for the user. Mention reviewer verdict labels (pass / changes_required / blocked / inconclusive), lane lifecycle states (running, complete, invocation_failed), the most recent fallback_regate_plan state, and the most recent provider acquisition status. If no workflow returned evidence, say so plainly. Never echo raw provider/auth/token payloads.",
+				"AFTER CALLING: summarize per-workflow durable evidence counts in plain language for the user. Mention reviewer verdict labels (pass / changes_required / blocked / inconclusive), lane lifecycle states (running, complete, invocation_failed), the most recent fallback_regate_plan state, the most recent provider acquisition status, and any stalled or progressing_late lanes reported in worstLaneStallClassification with totalStalledLaneCount and totalProgressingLateLaneCount. If stalled lanes are present, surface the laneStallProjection safe next actions (/flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, /flowdesk-export-debug) without auto-retrying, auto-aborting, or auto-fallbacking on the user's behalf. If no workflow returned evidence, say so plainly. Never echo raw provider/auth/token payloads.",
 			].join(" "),
 			args: {
 				workflowId: tool.schema
