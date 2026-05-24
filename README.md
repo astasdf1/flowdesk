@@ -8,10 +8,10 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.1.2` is the latest published release on npm:
+Version `0.1.8` is the latest published release on npm:
 
 ```bash
-npm install @flowdesk/core@^0.1.2 @flowdesk/opencode-plugin@^0.1.2
+npm install @flowdesk/core@^0.1.8 @flowdesk/opencode-plugin@^0.1.8
 ```
 
 Add the plugin to your OpenCode config. The plugin entry must point at the
@@ -46,7 +46,7 @@ opt-in set for the description-driven natural-language tools is:
 }
 ```
 
-Release 1 is intentionally conservative. It provides a default-on, non-dispatch command-backed plugin path: planning records, guarded dry-run, deterministic fake-runtime output, status, recovery, usage/provider diagnostics, redacted debug export, bootstrap installation, and visible chat steering. It does **not** perform real provider dispatch.
+Release 1 is intentionally conservative. It provides a default-on, non-dispatch command-backed plugin path: planning records, guarded dry-run, deterministic fake-runtime output, status, recovery, usage/provider diagnostics, redacted debug export, bootstrap installation, and visible chat steering. It does **not** perform real provider dispatch by default. The `flowdesk_quick_reviewer_run` helper is separate: it can launch real reviewer lanes only after the user opts into `quickReviewerRun.enabled=true` in plugin config and the tool call carries `developerModeAcknowledged=true` plus `allowProviderCall=true`.
 
 The current public package is best understood as the base harness: contracts, validators, command tools, status surfaces, evidence persistence scaffolding, and safety gates needed before real usage-based model selection can become production behavior.
 
@@ -62,7 +62,7 @@ Modern coding users often have access to several capable AI systems: Claude, GPT
 - whether a reviewer lane was separate from the authoring lane,
 - and whether a fallback or retry would be safe rather than wasteful.
 
-FlowDesk treats those as product requirements, not nice-to-have logs. Usage readiness and provider health are separate signals. Unknown, stale, shared-limit, refused, or untrusted usage does not authorize real model selection. Later releases can use remaining-usage evidence to route work, but only behind explicit gates.
+FlowDesk treats those as product requirements, not nice-to-have logs. Usage readiness and provider health are separate signals. Unknown, stale, shared-limit, refused, or untrusted usage does not authorize real model selection. Later releases can use remaining-usage evidence to route work, but only after performance and suitability have already selected an eligible candidate set; usage is a reserve/tie-break signal, not a replacement for fit.
 
 ## Current Commands
 
@@ -100,7 +100,7 @@ FlowDesk Guard is the only dispatch authority. Status, audit, runtime echo, prov
 
 Release 1 does not claim:
 
-- real OpenCode provider dispatch,
+- real OpenCode provider dispatch by default,
 - automatic provider/model fallback,
 - actual OpenCode subtask/model/provider lane launch,
 - hard chat cancellation or hard no-reply control,
@@ -127,7 +127,7 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
 
 - [x] **Phase 3: OpenCode plugin command path (about 90%)**
   - `@flowdesk/opencode-plugin`, command-backed handlers, `/flowdesk-*` command files, bootstrap installer, safe local tools, chat intake/steering, pending confirmation behavior, status/recovery/diagnostics, and Release 1 production-eligible non-dispatch registration exist.
-  - Packages are published as `@flowdesk/core@0.1.0` and `@flowdesk/opencode-plugin@0.1.0`.
+  - Packages are published as `@flowdesk/core@0.1.8` and `@flowdesk/opencode-plugin@0.1.8`.
   - Remaining: user-facing hardening and continued proof that default behavior stays non-dispatch.
 
 - [ ] **Phase 4: OpenCode conformance (about 54%)**
@@ -148,9 +148,9 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
 - [ ] **Phase 8: Federated score registry (0%)**
   - Planned only. Any shared score/telemetry system must be explicit opt-in, revocable, redacted, and advisory-only.
 
-## Planned Usage-Based Model Selection
+## Planned Performance-First Usage-Aware Model Selection
 
-FlowDesk's model-selection target is deliberately stricter than “pick the cheapest or strongest model.” A future dispatch-capable release must prove all of the following before routing work based on remaining usage:
+FlowDesk's model-selection target is deliberately stricter than “pick the cheapest or strongest model.” The primary selector is task fit: capability, policy eligibility, runtime compatibility, expected quality, and verification requirements. Remaining usage only applies inside that already-eligible set to avoid exhausting scarce providers or to break ties. A future dispatch-capable release must prove all of the following before routing work based on remaining usage:
 
 1. fresh provider-native usage or quota evidence,
 2. fresh provider health,
@@ -164,6 +164,10 @@ FlowDesk's model-selection target is deliberately stricter than “pick the chea
 10. no silent fallback or model substitution.
 
 Until those gates pass, FlowDesk reports usage readiness and provider health as diagnostics and stays on safe command-backed, degraded, guarded dry-run, or fake-runtime paths.
+
+## Token Use Compared With OMO/OMC
+
+Pure OpenCode is the baseline at `1.0x` token use. OMO/OMC-style orchestration can cost more on small tasks because planning, routing, and reviewer prompts add overhead, but it can save tokens on large or repeated tasks when reusable context, bounded agents, and better failure handling prevent wasted retries. FlowDesk's current Release 1 value is mostly quota-waste prevention rather than raw token reduction. The target is to beat OMO/OMC on larger workflows by using fast-path routing, redacted durable artifacts, bounded fan-out, neutral reviewer prompts, and performance-first usage-aware model selection.
 
 ## Repository Map
 

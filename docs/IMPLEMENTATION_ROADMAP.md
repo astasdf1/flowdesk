@@ -22,6 +22,10 @@ Debug export materialization update, 2026-05-25: `/flowdesk-export-debug` now wr
 
 Optional code graph tooling update, 2026-05-25: repository-local `symgraph` may be configured as an OpenCode MCP for developer code exploration when installed. It is optional tooling only, not a FlowDesk runtime dependency, connector execution feature, evidence authority, or dispatch gate. If `.symgraph/index.db` is missing, assistants must ask before running `symgraph index` so the user explicitly approves local project analysis.
 
+Natural-language/helper alignment update, 2026-05-25: `flowdesk_quick_reviewer_run` is now documented as the explicit opt-in provider-calling exception among natural-language tools. The default Release 1 command-backed route remains non-dispatch, while the helper requires `quickReviewerRun.enabled=true`, `developerModeAcknowledged=true`, and `allowProviderCall=true` before any provider/lane call. Reviewer prompts must start from a neutral verdict template rather than a prefilled `pass` verdict.
+
+Workflow/model-selection update, 2026-05-25: Release 1 workflow generation may progress by deterministic multi-step plan decomposition inside existing schemas without launching lanes. Usage-aware reviewer/model assignment must keep suitability and highest-tier eligibility primary, using usage pressure only as a secondary ordering signal within already-eligible candidates.
+
 Included:
 
 1. Project workspace and packages.
@@ -43,6 +47,8 @@ Included:
 17. Opt-in real `.flowdesk/config.json` loading with fail-closed natural-language routing when the config is missing, invalid, or disables chat steering.
 18. Redacted debug export manifest materialization for `/flowdesk-export-debug` through the durable state path.
 19. Optional repository-local `symgraph` MCP setup for developer code exploration, with ask-before-index behavior when project analysis has not been created.
+20. Deterministic Release 1 plan decomposition into bounded command-backed steps, with no provider or lane launch authority.
+21. Explicit opt-in natural-language reviewer provider calls separated from default non-dispatch tools.
 
 Excluded:
 

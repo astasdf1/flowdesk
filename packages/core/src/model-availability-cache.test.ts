@@ -154,6 +154,87 @@ test("availability cache blocks stale date, aliases, and lower-tier substitution
 	assert.deepEqual(invalidPlan.lane_bindings, []);
 });
 
+test("reviewer assignment keeps highest-tier eligibility primary and uses usage as tie-breaker", () => {
+	const plan = planFlowDeskReviewerAssignmentsV1({
+		cache: cache({
+			entries: [
+				{
+					entry_id: "entry-claude-critical",
+					provider_family: "claude",
+					provider_identity_ref: "provider-claude-1",
+					provider_qualified_model_id: "claude/claude-opus-4-5",
+					model_family: "opus",
+					registered: true,
+					available: true,
+					highest_tier_eligible: true,
+					availability_ref: "availability-critical",
+				},
+				{
+					entry_id: "entry-openai-ok",
+					provider_family: "openai",
+					provider_identity_ref: "provider-openai-1",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					model_family: "gpt-frontier",
+					registered: true,
+					available: true,
+					highest_tier_eligible: true,
+					availability_ref: "availability-ok",
+				},
+				{
+					entry_id: "entry-gemini-lower-tier",
+					provider_family: "gemini",
+					provider_identity_ref: "provider-gemini-1",
+					provider_qualified_model_id: "gemini/gemini-2.5-pro",
+					model_family: "gemini-pro",
+					registered: true,
+					available: true,
+					highest_tier_eligible: false,
+					availability_ref: "availability-lower-tier",
+				},
+			],
+		}),
+		localDate: "2026-05-21",
+		usagePressureByEntryId: {
+			"entry-claude-critical": "critical",
+			"entry-openai-ok": "ok",
+		},
+	});
+	assert.equal(plan.state, "ready");
+	assert.equal(plan.lane_bindings[0]?.entry_id, "entry-openai-ok");
+	assert.equal(plan.lane_bindings.some((binding) => binding.entry_id === "entry-gemini-lower-tier"), false);
+	assert.equal(plan.providerCall, false);
+});
+
+test("reviewer assignment honors suitability preference before usage pressure", () => {
+	const plan = planFlowDeskReviewerAssignmentsV1({
+		cache: cache({
+			entries: [
+				cache().entries[0],
+				{
+					entry_id: "entry-openai-ok",
+					provider_family: "openai",
+					provider_identity_ref: "provider-openai-1",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					model_family: "gpt-frontier",
+					registered: true,
+					available: true,
+					highest_tier_eligible: true,
+					availability_ref: "availability-ok",
+				},
+			],
+		}),
+		localDate: "2026-05-21",
+		preferredModelFamilies: ["opus", "gpt-frontier"],
+		usagePressureByEntryId: {
+			"entry-claude-1": "critical",
+			"entry-openai-ok": "ok",
+		},
+	});
+	assert.equal(plan.state, "ready");
+	assert.equal(plan.lane_bindings[0]?.entry_id, "entry-claude-1");
+	assert.equal(plan.providerCall, false);
+});
+
 test("availability cache rejects unknown properties and provider drift", () => {
 	const unknown = validateFlowDeskExactModelAvailabilityCacheV1({
 		...cache(),

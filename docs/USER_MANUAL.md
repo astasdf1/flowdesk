@@ -73,7 +73,7 @@ When `/flowdesk-export-debug` runs with durable state enabled, FlowDesk writes a
 1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:
 
    ```text
-   npm install @flowdesk/core@0.1.0 @flowdesk/opencode-plugin@0.1.0
+   npm install @flowdesk/core@0.1.8 @flowdesk/opencode-plugin@0.1.8
    ```
 
    Reviewed local builds are still allowed for development or compatibility testing, but they should record package provenance separately.
@@ -103,7 +103,7 @@ When FlowDesk is loaded in the active OpenCode profile and the natural-language 
 4. `flowdesk_quick_fallback_run` for explicit provider fallback intent in Korean (`Claude 막혔어 OpenAI 로 다시`, `fallback 해줘`) or English (`fallback to`, `switch to`, `retry with`). Plans only; the actual provider switch stays behind managed-dispatch promotion.
 5. `flowdesk_lane_heartbeat_record` for explicit heartbeat requests in Korean (`하트비트 남겨줘`, `심박 남겨줘`, `진행 신호 남겨줘`) or English (`record heartbeat`, `emit heartbeat`, `mark progress`).
 
-None of these promote real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. They only read or write redacted diagnostic evidence.
+None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. The quick reviewer helper is the explicit opt-in exception for real reviewer provider calls; it still cannot approve dispatch, switch providers, or bypass Guard. The remaining tools only read or write redacted diagnostic/planning evidence.
 
 ### Stalled Lane Alerts
 

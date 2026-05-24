@@ -68,7 +68,9 @@ test("plan evaluator returns schema-valid delegated authoring records without ru
   assert.equal(result.response.plan_revision_id, "plan-123");
   assert.deepEqual(result.response.safe_next_actions, ["/flowdesk-run", "/flowdesk-status"]);
   assert.equal(result.response.guard_precheck.result, "requires_approval");
-  assert.equal(result.workflowPlan?.steps[0]?.lane_class, "planning_draft");
+  assert.equal(result.workflowPlan?.steps.length, 3);
+  assert.deepEqual(result.workflowPlan?.steps.map((step) => step.lane_class), ["planning_draft", "planning_refine", "verification"]);
+  assert.equal(result.workflowPlan?.steps[0]?.step_id, "step-plan-123-intake");
   assert.equal(result.laneRecord?.state, "completed");
   assert.equal(result.laneRecord?.safe_next_action, "/flowdesk-status");
   assert.ok(result.laneRecordIntent);
@@ -81,6 +83,18 @@ test("plan evaluator returns schema-valid delegated authoring records without ru
     hardCancelOrNoReply: false,
     stateWriteApplied: false
   });
+});
+
+test("plan evaluator decomposes blocked risks into an explicit diagnostics step without dispatch", () => {
+  const result = evaluateFlowDeskPlanCommandV1(input({ request: request({ risk_hint: "real dispatch blocked" }) }));
+  assert.equal(result.ok, true);
+  assert.equal(validateWorkflowPlanV1(result.workflowPlan).ok, true);
+  assert.equal(result.planSummaryArtifact?.risk_tier, "blocked");
+  assert.equal(result.workflowPlan?.steps.length, 4);
+  assert.equal(result.workflowPlan?.steps.at(-1)?.lane_class, "diagnostics");
+  assert.equal(result.workflowPlan?.steps.at(-1)?.state, "blocked");
+  assert.equal(result.runtime.realOpenCodeDispatch, false);
+  assert.equal(result.runtime.providerCall, false);
 });
 
 test("plan evaluator fails closed for raw or mismatched requests", () => {

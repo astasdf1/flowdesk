@@ -9,7 +9,7 @@ This document covers:
 3. The minimum plugin config + environment variables required for live data.
 4. How to verify the active OpenCode profile.
 
-All five tools keep `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` flags `false`. They are read-only/observation/planning/diagnostic tools; they do not promote default dispatch authority or switch providers in production.
+Default FlowDesk natural-language routing keeps `realOpenCodeDispatch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` false and does not promote default production dispatch or automatic provider switching. Four tools (`flowdesk_provider_usage_live`, `flowdesk_status_live`, `flowdesk_quick_fallback_run`, and `flowdesk_lane_heartbeat_record`) are read-only/diagnostic/planning evidence tools whose provider/runtime/lane-launch authority remains false. `flowdesk_quick_reviewer_run` is the explicit exception: when `quickReviewerRun.enabled=true` is configured and the tool call includes both `developerModeAcknowledged=true` and `allowProviderCall=true`, it may make real provider calls and launch reviewer lanes through the injected SDK helper. That opt-in helper remains outside default Release 1 dispatch authority and cannot approve work, switch providers, or bypass Guard.
 
 ## Plan-Backed Continuous Work Steering
 
@@ -27,7 +27,7 @@ Debug-export requests route to `/flowdesk-export-debug`. With a durable state ro
 
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
-3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model.
+3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model. This is an explicit opt-in provider-calling helper, not part of default non-dispatch command routing.
 
 ### Trigger phrases
 
@@ -56,7 +56,7 @@ The user does not need to attach a code snippet. If no snippet is supplied, the 
 }
 ```
 
-`providerQualifiedModelId` must be the concrete provider/model id for the reviewer agent; `runtimeAgent` must be a configured OpenCode `agent` entry.
+`providerQualifiedModelId` must be the concrete provider/model id for the reviewer agent; `runtimeAgent` must be a configured OpenCode `agent` entry. The assistant may call this tool directly for explicit review intent after config opt-in; the tool itself still blocks unless both `developerModeAcknowledged=true` and `allowProviderCall=true` are present.
 
 ### Result shape
 
@@ -380,7 +380,7 @@ If `localNonDispatchAdapter` and `naturalLanguageRouting` are enabled, FlowDesk 
 ## Privacy and safety
 
 - No raw OAuth tokens are echoed in tool responses; only redacted refs and bucket-level data.
-- No managed dispatch or model lane launch authority is enabled by these tools.
-- All authority flags (`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`) remain `false`.
+- No default managed dispatch, automatic fallback, or hard-chat authority is enabled by these tools.
+- `flowdesk_quick_reviewer_run` may set provider/runtime/lane-launch diagnostic authority fields true only for its explicit opt-in reviewer helper call. The other natural-language tools keep those flags false.
 - Only diagnostic flags (`providerUsageAcquired`, `statusEvidenceObserved`, `exactModelProviderAcquisitionRecorded`, `regatePlanPrepared`, `laneHeartbeatPersisted`) become `true` to indicate that real data was read or written; they do not authorize dispatch.
 - The stall alert card and the lane heartbeat writer never contain raw prompts, transcripts, provider payloads, runtime echoes, tool args/results, stack traces, file contents, or absolute filesystem paths; only redacted opaque refs and bounded labels are stored.

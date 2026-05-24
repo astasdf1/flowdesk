@@ -23,7 +23,7 @@ Example `~/.config/opencode/opencode.json` snippet:
 }
 ```
 
-The opt-in is at config time so a user who does not want FlowDesk to make paid provider calls simply omits the `quickReviewerRun` block.
+The opt-in is at config time so a user who does not want FlowDesk to make real reviewer provider calls simply omits the `quickReviewerRun` block. This helper is intentionally documented separately from the default Release 1 non-dispatch tools because it can make real provider calls after opt-in.
 
 ## Prompt-Driven Flow
 
@@ -70,9 +70,11 @@ English equivalents include `multi-perspective review`, `multi-angle review`, `c
 - Production reviewer fan-out continues to require the explicit nested-pipeline tool plus an externally issued approval.
 
 `allowProviderCall`
-- Acknowledges that the helper makes real paid provider API calls.
+- Acknowledges that the helper makes real provider API calls.
 - Without this flag, the helper blocks before any provider/model is contacted.
 - Decoupled from `developerModeAcknowledged` because policy and cost are different boundaries.
+
+Reviewer prompts start from a neutral verdict template. FlowDesk asks the reviewer lane to choose `pass`, `changes_required`, `blocked`, or `inconclusive` from evidence rather than preserving a prefilled pass verdict. This avoids anchoring the reviewer toward approval while keeping binding fields fixed.
 
 ## What "Durable Linkage" Means
 

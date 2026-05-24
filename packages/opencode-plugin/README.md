@@ -6,7 +6,7 @@ registration plus opt-in description-driven natural-language tools.
 ## Install
 
 ```bash
-npm install @flowdesk/opencode-plugin@^0.1.2
+npm install @flowdesk/opencode-plugin@^0.1.8
 ```
 
 ## Configure
@@ -73,13 +73,16 @@ boundaries.
 
 ## Authority Boundary
 
-`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
-`actualLaneLaunch`, `fallbackAuthority`,
-`hardCancelOrNoReplyAuthority`, and `toolAuthority` always remain `false`.
-Only diagnostic flags (`providerUsageAcquired`, `statusEvidenceObserved`,
+Default command-backed tools keep `realOpenCodeDispatch`, `providerCall`,
+`runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`,
+`hardCancelOrNoReplyAuthority`, and `toolAuthority` false. The explicit
+`flowdesk_quick_reviewer_run` helper can make real provider calls only when
+`quickReviewerRun.enabled=true` and the tool call includes both opt-in flags;
+it still cannot approve dispatch, switch providers, or bypass Guard. Diagnostic
+flags such as `providerUsageAcquired`, `statusEvidenceObserved`,
 `exactModelProviderAcquisitionRecorded`, `regatePlanPrepared`,
-`laneHeartbeatPersisted`, `expectedNextHeartbeatOverdue`) can become
-`true` to indicate that real diagnostic data was read or written.
+`laneHeartbeatPersisted`, and `expectedNextHeartbeatOverdue` do not authorize
+dispatch.
 
 ## License
 

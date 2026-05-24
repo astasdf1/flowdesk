@@ -102,3 +102,32 @@ test("quick reviewer run blocks when injected client lacks session.create and no
 	assert.equal(result.status, "blocked_before_quick_reviewer_run");
 	assert.match(String(result.redactedBlockReason), /session.create/);
 });
+
+test("quick reviewer run prompt starts from a neutral verdict template", async () => {
+	const prompts: string[] = [];
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create() {
+					return { id: "child-session-1" };
+				},
+				async prompt(options: { parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
+					prompts.push(String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? ""));
+					return { id: "child-session-1" };
+				},
+			},
+		} as never,
+		prompt: "Review this change neutrally.",
+		providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+		runtimeAgent: "reviewer-gpt-frontier",
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+		perspectives: ["architecture"],
+	});
+	assert.equal(result.status, "quick_reviewer_run_incomplete");
+	assert.equal(prompts.length, 1);
+	assert.match(prompts[0], /verdict_label":"inconclusive"/);
+	assert.match(prompts[0], /Choose verdict_label neutrally/);
+	assert.doesNotMatch(prompts[0], /If you find a real issue change only verdict_label/);
+});

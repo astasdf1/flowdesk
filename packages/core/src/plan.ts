@@ -105,27 +105,60 @@ function approvalChecks(auditRef: OpaqueRef, routeRef: OpaqueRef): { requiredApp
   };
 }
 
+function workflowPlanSteps(input: FlowDeskPlanCommandInputV1): FlowDeskWorkflowPlanV1["steps"] {
+  const auditCheck = { check: "audit", required: true, ref: input.auditRef } as const;
+  const routeCheck = { check: "policy", required: true, ref: input.routeRef } as const;
+  const steps: FlowDeskWorkflowPlanV1["steps"] = [
+    {
+      step_id: `${input.planningStepId}-intake`,
+      title: "Normalize scope and safety boundary",
+      state: "ready_to_run",
+      lane_class: "planning_draft",
+      requires_guard: true,
+      required_fresh_checks: [auditCheck, routeCheck]
+    },
+    {
+      step_id: `${input.planningStepId}-authoring`,
+      title: "Draft bounded workflow authoring record",
+      state: "plan_pending_approval",
+      lane_class: "planning_refine",
+      requires_guard: true,
+      required_fresh_checks: [auditCheck]
+    },
+    {
+      step_id: `${input.planningStepId}-verification`,
+      title: "Prepare verification and status handoff",
+      state: "guard_pending",
+      lane_class: "verification",
+      requires_guard: true,
+      required_fresh_checks: [auditCheck]
+    }
+  ];
+  if (riskTier(input.request.risk_hint) === "blocked") {
+    steps.push({
+      step_id: `${input.planningStepId}-blocker-review`,
+      title: "Resolve blocker before execution-like work",
+      state: "blocked",
+      lane_class: "diagnostics",
+      requires_guard: true,
+      required_fresh_checks: [auditCheck]
+    });
+  }
+  return steps;
+}
+
 export function buildFlowDeskPlanArtifactsV1(input: FlowDeskPlanCommandInputV1): Omit<FlowDeskPlanCommandEvaluationV1, "ok" | "errors"> {
   const { requiredApprovals, guardPrecheck } = approvalChecks(input.auditRef, input.routeRef);
-  const stepTitle = "Command-backed Release 1 planning summary";
+  const steps = workflowPlanSteps(input);
   const workflowPlan: FlowDeskWorkflowPlanV1 = {
     schema_version: "flowdesk.workflow_plan.v1",
     plan_revision_id: input.planRevisionId,
     workflow_id: input.workflowId,
     created_at: input.nowIso,
     taxonomy: input.taxonomy,
-    steps: [
-      {
-        step_id: input.planningStepId,
-        title: stepTitle,
-        state: "ready_to_run",
-        lane_class: "planning_draft",
-        requires_guard: true,
-        required_fresh_checks: [{ check: "audit", required: true, ref: input.auditRef }]
-      }
-    ],
+    steps,
     required_approvals: guardPrecheck.required_checks,
-    verification_summary: "Plan is command-backed and cannot dispatch in Release 1."
+    verification_summary: "Plan is decomposed into inert command-backed steps and cannot dispatch in Release 1."
   };
   const planSummaryArtifact: FlowDeskPlanSummaryArtifactV1 = {
     schema_version: "flowdesk.plan_summary.v1",
@@ -137,7 +170,7 @@ export function buildFlowDeskPlanArtifactsV1(input: FlowDeskPlanCommandInputV1):
     risk_tier: riskTier(input.request.risk_hint),
     required_approvals: guardPrecheck.required_checks,
     step_summary_refs: [input.laneSummaryRef],
-    verification_summary: "Delegated authoring is represented as redacted lane records only."
+    verification_summary: "Delegated authoring is represented as redacted lane records and inert workflow steps only."
   };
   const laneRecord: FlowDeskLaneRecordV1 = {
     schema_version: "flowdesk.lane_record.v1",
@@ -169,7 +202,7 @@ export function buildFlowDeskPlanArtifactsV1(input: FlowDeskPlanCommandInputV1):
     safe_next_actions: ["/flowdesk-run", "/flowdesk-status"],
     user_message: "FlowDesk prepared a command-backed Release 1 plan. No dispatch or lane launch occurred.",
     plan_revision_id: input.planRevisionId,
-    delegated_authoring_summary: "Delegated workflow authoring was recorded as an inert planning lane summary.",
+    delegated_authoring_summary: `Delegated workflow authoring was decomposed into ${steps.length} inert command-backed steps and recorded as a planning lane summary.`,
     required_approvals: requiredApprovals,
     guard_precheck: guardPrecheck
   };

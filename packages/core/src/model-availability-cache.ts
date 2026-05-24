@@ -165,6 +165,8 @@ export interface FlowDeskReviewerAssignmentPlanV1 extends ValidationResult {
 	runtimeExecution: false;
 }
 
+export type FlowDeskUsagePressureLabelV1 = "ok" | "warning" | "critical" | "exhausted" | "unknown";
+
 export interface FlowDeskReviewerAssignmentRevalidationV1 extends ValidationResult {
 	schema_version: "flowdesk.reviewer_assignment_revalidation.v1";
 	cache_id?: string;
@@ -256,10 +258,34 @@ function unique(values: string[]): string[] {
 	return [...new Set(values)];
 }
 
-function eligibleEntries(cache: FlowDeskExactModelAvailabilityCacheV1): FlowDeskExactModelAvailabilityEntryV1[] {
+function usagePressureRank(label: FlowDeskUsagePressureLabelV1 | undefined): number {
+	switch (label) {
+		case "ok": return 0;
+		case "warning": return 1;
+		case "critical": return 2;
+		case "exhausted": return 3;
+		case "unknown": return 4;
+		default: return 5;
+	}
+}
+
+function modelFamilyPreferenceRank(modelFamily: string, preferredModelFamilies: readonly string[] | undefined): number {
+	if (preferredModelFamilies === undefined || preferredModelFamilies.length === 0) return 0;
+	const index = preferredModelFamilies.indexOf(modelFamily);
+	return index === -1 ? preferredModelFamilies.length : index;
+}
+
+function eligibleEntries(cache: FlowDeskExactModelAvailabilityCacheV1, options: {
+	usagePressureByEntryId?: Partial<Record<string, FlowDeskUsagePressureLabelV1>>;
+	preferredModelFamilies?: readonly string[];
+} = {}): FlowDeskExactModelAvailabilityEntryV1[] {
 	return cache.entries
 		.filter((entry) => entry.registered && entry.available && entry.highest_tier_eligible)
 		.sort((left, right) => {
+			const suitability = modelFamilyPreferenceRank(left.model_family, options.preferredModelFamilies) - modelFamilyPreferenceRank(right.model_family, options.preferredModelFamilies);
+			if (suitability !== 0) return suitability;
+			const usage = usagePressureRank(options.usagePressureByEntryId?.[left.entry_id]) - usagePressureRank(options.usagePressureByEntryId?.[right.entry_id]);
+			if (usage !== 0) return usage;
 			const leftKey = `${left.provider_family}/${left.provider_qualified_model_id}/${left.entry_id}`;
 			const rightKey = `${right.provider_family}/${right.provider_qualified_model_id}/${right.entry_id}`;
 			return leftKey.localeCompare(rightKey);
@@ -362,12 +388,17 @@ export function validateFlowDeskExactModelAvailabilityCacheV1(value: unknown): V
 export function planFlowDeskReviewerAssignmentsV1(input: {
 	cache: FlowDeskExactModelAvailabilityCacheV1;
 	localDate: string;
+	usagePressureByEntryId?: Partial<Record<string, FlowDeskUsagePressureLabelV1>>;
+	preferredModelFamilies?: readonly string[];
 }): FlowDeskReviewerAssignmentPlanV1 {
 	const errors = validateFlowDeskExactModelAvailabilityCacheV1(input.cache).errors;
 	const blockedLabels: string[] = [];
 	if (errors.length > 0) blockedLabels.push("cache_invalid");
 	if (input.cache.local_date !== input.localDate) blockedLabels.push("cache_not_same_day");
-	const eligible = input.cache.entries.filter((entry) => entry.registered && entry.available && entry.highest_tier_eligible);
+	const eligible = eligibleEntries(input.cache, {
+		usagePressureByEntryId: input.usagePressureByEntryId,
+		preferredModelFamilies: input.preferredModelFamilies,
+	});
 	if (eligible.length === 0) blockedLabels.push("no_registered_available_highest_tier_models");
 	const canBind = errors.length === 0 && blockedLabels.length === 0;
 	const lane_bindings = !canBind ? [] : perspectives.map((perspective, index) => {

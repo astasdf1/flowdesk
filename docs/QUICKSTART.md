@@ -15,7 +15,7 @@ FlowDesk does not run real OpenCode dispatch in Release 1. It does not claim aut
 Install the published Release 1 packages, then use the `flowdesk-install-release1` bootstrap CLI from `@flowdesk/opencode-plugin`:
 
 ```text
-npm install @flowdesk/core@0.1.0 @flowdesk/opencode-plugin@0.1.0
+npm install @flowdesk/core@0.1.8 @flowdesk/opencode-plugin@0.1.8
 ```
 
 If you are testing a reviewed local build, record the local package provenance separately and keep the same Release 1 safety boundary.
@@ -92,7 +92,7 @@ Once the FlowDesk plugin is loaded in the active OpenCode profile, the assistant
 4. `flowdesk_quick_fallback_run` — say `Claude 막혔어 OpenAI 로 다시` or `fallback to openai/gpt-5.5` to plan a fresh full re-gate; the actual provider switch is still blocked behind managed-dispatch promotion.
 5. `flowdesk_lane_heartbeat_record` — say `하트비트 남겨줘` or `record a heartbeat for the lane` to persist one durable `lane_heartbeat` evidence record per FlowDesk-owned lane.
 
-None of these promote real dispatch, provider call, lane launch, automatic fallback, or hard chat cancellation authority; they only read or write redacted diagnostic evidence.
+None of these promote default real dispatch, automatic fallback, or hard chat cancellation authority. `flowdesk_quick_reviewer_run` is the explicit opt-in provider-calling exception when `quickReviewerRun.enabled=true` plus the tool's provider-call flags are present; the other tools only read or write redacted diagnostic/planning evidence.
 
 ## Stalled Lane Alerts in Chat
 
