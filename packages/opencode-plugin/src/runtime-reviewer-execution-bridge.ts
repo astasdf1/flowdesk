@@ -6,6 +6,7 @@ import {
 	type FlowDeskTopTierReviewVerdictV1,
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
+import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 import {
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
@@ -214,6 +215,33 @@ export async function executeFlowDeskRuntimeReviewerExecutionBridgeV1(input: {
 				observedAt,
 			});
 		writeAttempted = writeAttempted || runningLifecycle.writeAttempted;
+		if (launchResult.status === "lane_launch_started") {
+			const laneId = launchPlan.lane_id ?? "";
+			const parentSessionRef = launchPlan.parent_session_ref ?? "";
+			const agentRef = launchPlan.agent_ref ?? "";
+			const providerQualifiedModelId =
+				launchPlan.provider_qualified_model_id ?? "";
+			if (
+				laneId.length > 0 &&
+				parentSessionRef.length > 0 &&
+				agentRef.length > 0 &&
+				providerQualifiedModelId.length > 0
+			) {
+				const heartbeat = recordFlowDeskLaneHeartbeatV1({
+					rootDir: input.rootDir,
+					workflowId,
+					attemptId,
+					laneId,
+					parentSessionRef,
+					agentRef,
+					providerQualifiedModelId,
+					state: "running",
+					observedAt,
+					progressSummaryLabel: `reviewer lane ${expectation.perspective} launch heartbeat`,
+				});
+				writeAttempted = writeAttempted || heartbeat.writeAttempted;
+			}
+		}
 		if (launchResult.status !== "lane_launch_started") {
 			lanes.push({
 				launchPlanEvidenceId: expectation.launchPlanEvidenceId,
