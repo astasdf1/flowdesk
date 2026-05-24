@@ -49,6 +49,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskProviderUsageLiveToolName,
 	flowdeskStatusLiveOption,
 	flowdeskStatusLiveToolName,
+	flowdeskQuickFallbackRunOption,
+	flowdeskQuickFallbackRunToolName,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -4366,4 +4368,127 @@ test("pre-spike doctor exposes natural-language tool registration status and hin
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("quick fallback run tool is absent by default and registers only with explicit opt-in", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(defaultHooks.tool?.[flowdeskQuickFallbackRunToolName], undefined);
+
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: {
+			enabled: true,
+			defaultFromProvider: "claude/sonnet-4",
+			defaultToProvider: "openai/gpt-5.5",
+		},
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const tool = enabledHooks.tool?.[flowdeskQuickFallbackRunToolName];
+	assert.ok(tool);
+	const description = String(tool.description ?? "");
+	assert.match(description, /WHEN TO USE/);
+	assert.match(description, /WHEN NOT TO USE/);
+	assert.match(description, /막혔어/);
+	assert.match(description, /다른 provider/);
+	assert.match(description, /바꿔서 다시/);
+	assert.match(description, /fallback to/);
+	assert.match(description, /switch to/);
+	assert.match(description, /managed-dispatch promotion/);
+});
+
+test("quick fallback run blocks without developerModeAcknowledged", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const tool = hooks.tool?.[flowdeskQuickFallbackRunToolName];
+	assert.ok(tool);
+	const result = JSON.parse(
+		toolOutput(
+			await tool.execute(
+				{
+					fromProvider: "claude/sonnet-4",
+					toProvider: "openai/gpt-5.5",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_quick_fallback_run");
+	assert.match(String(result.redactedBlockReason), /developerModeAcknowledged/);
+});
+
+test("quick fallback run produces a fresh full re-gate plan and persists it when opted in", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-quick-fallback-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskQuickFallbackRunOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const tool = hooks.tool?.[flowdeskQuickFallbackRunToolName];
+		assert.ok(tool);
+		const result = JSON.parse(
+			toolOutput(
+				await tool.execute(
+					{
+						fromProvider: "claude/sonnet-4",
+						toProvider: "openai/gpt-5.5",
+						reason: "provider_unhealthy",
+						developerModeAcknowledged: true,
+						persistRegatePlanEvidence: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "quick_fallback_run_completed");
+		assert.equal(result.requestedFromProvider, "claude/sonnet-4");
+		assert.equal(result.requestedToProvider, "openai/gpt-5.5");
+		assert.equal(result.regatePlanState, "full_regate_required");
+		assert.equal(result.regatePlanOk, true);
+		assert.equal(result.regatePlanRequiredEvidenceCount, 3);
+		const evidence = result.regatePlanEvidence as Record<string, unknown>;
+		assert.equal(evidence.status, "regate_plan_evidence_recorded");
+		assert.equal(evidence.writeAttempted, true);
+		assert.equal(evidence.evidenceReloaded, true);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.automaticFallbackAuthorized, false);
+		assert.equal(authority.regatePlanPrepared, true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("quick fallback run blocks before plan when from and to providers are equal", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const tool = hooks.tool?.[flowdeskQuickFallbackRunToolName];
+	assert.ok(tool);
+	const result = JSON.parse(
+		toolOutput(
+			await tool.execute(
+				{
+					fromProvider: "claude/sonnet-4",
+					toProvider: "claude/sonnet-4",
+					developerModeAcknowledged: true,
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_quick_fallback_run");
+	assert.match(String(result.redactedBlockReason), /must differ/);
 });

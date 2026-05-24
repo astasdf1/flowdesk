@@ -1,6 +1,6 @@
 # FlowDesk Natural-Language Usage
 
-FlowDesk exposes three description-driven LLM tools that fire automatically when the assistant detects matching natural-language patterns in the OpenCode chat. No portable command typing required.
+FlowDesk exposes four description-driven LLM tools that fire automatically when the assistant detects matching natural-language patterns in the OpenCode chat. No portable command typing required.
 
 This document covers:
 
@@ -9,7 +9,7 @@ This document covers:
 3. The minimum plugin config + environment variables required for live data.
 4. How to verify the active OpenCode profile.
 
-All three tools keep `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` flags `false`. They are read-only/observation-only data tools; they do not promote default dispatch authority.
+All four tools keep `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` flags `false`. They are read-only/observation/planning tools; they do not promote default dispatch authority or switch providers in production.
 
 ## Tool 1: `flowdesk_quick_reviewer_run`
 
@@ -155,6 +155,52 @@ Per-workflow row: `workflowId`, `reloadOk`, `blockedCount`, `evidenceCounts` by 
 
 Top-level: `resolvedWorkflowIds`, `authority.statusEvidenceObserved`.
 
+## Tool 4: `flowdesk_quick_fallback_run`
+
+Plan a FlowDesk fallback regate from one provider to another by auto-building a developer-mode synthetic fallback decision and consumed `fallback_reselection` approval, then running the FlowDesk fallback regate orchestrator to produce a redacted regate plan. Plans only; does not switch providers or dispatch real lanes.
+
+### Trigger phrases
+
+Korean: `막혔어`, `다른 걸로 다시`, `다른 provider 로`, `다른 모델로 재시도`, `재시도 해줘`, `바꿔서 다시`, `fallback 해줘`, `다른 곳으로 돌려`, `OpenAI 로 다시`, `Claude 로 다시`, `Gemini 로 다시`.
+
+English: `fallback to`, `switch to`, `retry with`, `try with another provider`, `use a different provider`, `this provider is blocked`.
+
+### Required plugin config
+
+```json
+{
+  "plugin": [
+    [
+      "@flowdesk/opencode-plugin",
+      {
+        "quickFallbackRun": {
+          "enabled": true,
+          "defaultFromProvider": "claude/sonnet-4",
+          "defaultToProvider": "openai/gpt-5.5"
+        },
+        "durableStateRoot": "/Users/<you>/.flowdesk"
+      }
+    ]
+  ]
+}
+```
+
+`defaultFromProvider` and `defaultToProvider` are optional fallbacks when the assistant cannot infer them from the user message. `durableStateRoot` enables optional persistence of the regate plan as `fallback_regate_plan` session evidence (visible from `flowdesk_status_live`).
+
+### Result shape
+
+`status: "quick_fallback_run_completed"` and `regatePlanState: "full_regate_required"` on full success. The result also returns `workflowId`, `parentAttemptId`, `newAttemptId`, `regatePlanRequiredEvidenceCount`, and optional `regatePlanEvidence` block when `persistRegatePlanEvidence=true`.
+
+`status: "blocked_before_quick_fallback_run"` with a sanitized `redactedBlockReason` when:
+
+- `developerModeAcknowledged` is not `true`.
+- `fromProvider` / `toProvider` are missing or equal.
+- `reason` is not one of `provider_unhealthy`, `quota_exhausted`, `runtime_incompatible`, `policy_ineligible`, `manual_reselection_requested`.
+
+### Authority
+
+`fallbackAuthority`, `automaticFallbackAuthorized`, `providerCall`, `runtimeExecution`, `actualLaneLaunch`, `realOpenCodeDispatch`, `toolAuthority`, and `hardCancelOrNoReplyAuthority` all remain `false`. Only the new diagnostic `regatePlanPrepared` flag turns true. Actual provider switching remains blocked behind managed-dispatch promotion.
+
 ## Complete example: full active OpenCode profile
 
 ```json
@@ -180,6 +226,9 @@ Top-level: `resolvedWorkflowIds`, `authority.statusEvidenceObserved`.
           "enabled": true,
           "maxWorkflows": 5,
           "maxRecentEvidencePerClass": 3
+        },
+        "quickFallbackRun": {
+          "enabled": true
         },
         "durableStateRoot": "/Users/<you>/.flowdesk"
       }
@@ -221,6 +270,7 @@ Expected tools:
 - `flowdesk_quick_reviewer_run`
 - `flowdesk_provider_usage_live`
 - `flowdesk_status_live`
+- `flowdesk_quick_fallback_run`
 
 ## Chat-routing fallback (when LLM tool discovery is unavailable)
 

@@ -90,6 +90,10 @@ import {
 	executeFlowDeskStatusLiveV1,
 } from "./status-live-tool.js";
 import {
+	type FlowDeskQuickFallbackRunConfigV1,
+	executeFlowDeskQuickFallbackRunV1,
+} from "./quick-fallback-run.js";
+import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
 	getFlowDeskRelease1HandlerReadinessSummary,
 	getFlowDeskRelease1ProductionReadinessSummary,
@@ -122,6 +126,7 @@ export const flowdeskManagedFallbackRegateOption =
 export const flowdeskQuickReviewerRunOption = "quickReviewerRun" as const;
 export const flowdeskProviderUsageLiveOption = "providerUsageLive" as const;
 export const flowdeskStatusLiveOption = "statusLive" as const;
+export const flowdeskQuickFallbackRunOption = "quickFallbackRun" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
@@ -137,6 +142,8 @@ export const flowdeskQuickReviewerRunToolName =
 export const flowdeskProviderUsageLiveToolName =
 	"flowdesk_provider_usage_live" as const;
 export const flowdeskStatusLiveToolName = "flowdesk_status_live" as const;
+export const flowdeskQuickFallbackRunToolName =
+	"flowdesk_quick_fallback_run" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -2358,6 +2365,124 @@ function providerUsageLiveConfigFromOptions(
 	return config;
 }
 
+function isQuickFallbackRunEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskQuickFallbackRunOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
+function quickFallbackRunConfigFromOptions(
+	options?: PluginOptions,
+): FlowDeskQuickFallbackRunConfigV1 | undefined {
+	const value = options?.[flowdeskQuickFallbackRunOption];
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	const config: FlowDeskQuickFallbackRunConfigV1 = {};
+	if (
+		typeof value.defaultFromProvider === "string" &&
+		value.defaultFromProvider.trim().length > 0
+	)
+		config.defaultFromProvider = value.defaultFromProvider;
+	if (
+		typeof value.defaultToProvider === "string" &&
+		value.defaultToProvider.trim().length > 0
+	)
+		config.defaultToProvider = value.defaultToProvider;
+	if (typeof value.sourceLabel === "string" && value.sourceLabel.trim().length > 0)
+		config.sourceLabel = value.sourceLabel;
+	const explicitRoot =
+		typeof value.rootDir === "string" && value.rootDir.trim().length > 0
+			? value.rootDir
+			: undefined;
+	const root = explicitRoot ?? durableStateRootFromOptions(options);
+	if (root !== undefined) config.rootDir = root;
+	return config;
+}
+
+export function createFlowDeskQuickFallbackRunOptInTools(
+	config: FlowDeskQuickFallbackRunConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskQuickFallbackRunToolName]: tool({
+			description: [
+				"Plan a FlowDesk fallback regate from one provider to another by auto-building a developer-mode synthetic fallback decision and consumed fallback_reselection approval, then running the FlowDesk fallback regate orchestrator to produce a redacted regate plan. This tool plans, it does not switch providers or dispatch real lanes; FlowDesk default dispatch authority remains disabled.",
+				"WHEN TO USE: the user explicitly says one provider is blocked, exhausted, slow, or otherwise unwanted and asks to retry the work on a different provider. Trigger on English phrases such as 'fallback to', 'switch to', 'retry with', 'try with another provider', 'use a different provider', 'this provider is blocked', and on Korean phrases such as '막혔어', '다른 걸로 다시', '다른 provider 로', '다른 모델로 재시도', '재시도 해줘', '바꿔서 다시', 'fallback 해줘', '다른 곳으로 돌려', 'OpenAI 로 다시', 'Claude 로 다시', 'Gemini 로 다시'.",
+				"WHEN NOT TO USE: general usage/quota questions (use flowdesk_provider_usage_live), code review/audit requests (use flowdesk_quick_reviewer_run), workflow status questions (use flowdesk_status_live), or any request that does not explicitly ask to retry on a different provider.",
+				"INVOKE WITH: fromProvider (concrete provider-qualified model id, e.g. 'claude/sonnet-4'), toProvider (concrete provider-qualified model id, e.g. 'openai/gpt-5.5'), optional reason ('provider_unhealthy', 'quota_exhausted', 'runtime_incompatible', 'policy_ineligible', or 'manual_reselection_requested'; defaults to 'manual_reselection_requested'), optional workflowId (auto-generated otherwise), and developerModeAcknowledged=true. The plugin user has already opted into this tool at configuration time, so the assistant should set developerModeAcknowledged=true automatically and call the tool directly without per-call confirmation. Optionally set persistRegatePlanEvidence=true to persist the resulting plan as durable session evidence.",
+				"AFTER CALLING: summarize the orchestrator status to the user. On status=quick_fallback_run_completed, surface the new attempt id, regate plan state (typically 'full_regate_required'), required fresh evidence count, and remind the user that the actual provider switch is still blocked behind managed-dispatch promotion. On status=quick_fallback_run_incomplete, surface the regatePlanRedactedErrors or redactedBlockReason and suggest what evidence to refresh. Never echo raw provider/auth/token payloads.",
+			].join(" "),
+			args: {
+				fromProvider: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Concrete provider-qualified model id the current attempt is on (e.g. 'claude/sonnet-4').",
+					),
+				toProvider: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Concrete provider-qualified model id to switch to (e.g. 'openai/gpt-5.5').",
+					),
+				reason: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Fallback reason label: 'provider_unhealthy', 'quota_exhausted', 'runtime_incompatible', 'policy_ineligible', or 'manual_reselection_requested'.",
+					),
+				workflowId: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Optional workflow id to bind the regate plan to. Auto-generated when omitted.",
+					),
+				developerModeAcknowledged: tool.schema
+					.boolean()
+					.describe(
+						"Must be true to acknowledge that this tool synthesizes a developer-mode fallback_reselection approval. Not a production-grade approval.",
+					),
+				persistRegatePlanEvidence: tool.schema
+					.boolean()
+					.optional()
+					.describe(
+						"When true and a durable state root is configured, persist the resulting regate plan as fallback_regate_plan session evidence.",
+					),
+			},
+			async execute(input) {
+				const request = isRecord(input)
+					? {
+							fromProvider:
+								typeof input.fromProvider === "string"
+									? input.fromProvider
+									: undefined,
+							toProvider:
+								typeof input.toProvider === "string"
+									? input.toProvider
+									: undefined,
+							reason:
+								typeof input.reason === "string" ? input.reason : undefined,
+							workflowId:
+								typeof input.workflowId === "string"
+									? input.workflowId
+									: undefined,
+							developerModeAcknowledged:
+								typeof input.developerModeAcknowledged === "boolean"
+									? input.developerModeAcknowledged
+									: undefined,
+							persistRegatePlanEvidence:
+								typeof input.persistRegatePlanEvidence === "boolean"
+									? input.persistRegatePlanEvidence
+									: undefined,
+						}
+					: {};
+				const result = await executeFlowDeskQuickFallbackRunV1({
+					config,
+					request,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 function isStatusLiveEnabled(options?: PluginOptions): boolean {
 	const value = options?.[flowdeskStatusLiveOption];
 	return value === true || (isRecord(value) && value.enabled === true);
@@ -2546,6 +2671,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				const statusLiveConfigForDoctor = isStatusLiveEnabled(options)
 					? statusLiveConfigFromOptions(options)
 					: undefined;
+				const quickFallbackRunConfigForDoctor = isQuickFallbackRunEnabled(
+					options,
+				)
+					? quickFallbackRunConfigFromOptions(options)
+					: undefined;
 				const quickReviewerRunRegistered =
 					isQuickReviewerRunEnabled(options) &&
 					quickReviewerRunClientFrom(input, options) !== undefined;
@@ -2587,6 +2717,16 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							statusLiveConfigForDoctor === undefined
 								? "statusLive.enabled=true but no durable state root resolved; set statusLive.rootDir or top-level durableStateRoot"
 								: undefined,
+					},
+					quickFallbackRun: {
+						enabled: isQuickFallbackRunEnabled(options),
+						registered: quickFallbackRunConfigForDoctor !== undefined,
+						defaultFromProvider:
+							quickFallbackRunConfigForDoctor?.defaultFromProvider,
+						defaultToProvider:
+							quickFallbackRunConfigForDoctor?.defaultToProvider,
+						persistsRegatePlanEvidence:
+							quickFallbackRunConfigForDoctor?.rootDir !== undefined,
 					},
 				};
 				return JSON.stringify({
@@ -2722,6 +2862,14 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		: undefined;
 	if (statusLiveConfig !== undefined)
 		Object.assign(tools, createFlowDeskStatusLiveOptInTools(statusLiveConfig));
+	const quickFallbackRunConfig = isQuickFallbackRunEnabled(options)
+		? quickFallbackRunConfigFromOptions(options)
+		: undefined;
+	if (quickFallbackRunConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskQuickFallbackRunOptInTools(quickFallbackRunConfig),
+		);
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
 	return {
 		tool: tools,
