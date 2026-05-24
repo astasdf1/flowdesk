@@ -610,6 +610,8 @@ function steeringText(
 	const why =
 		response.ok === false
 			? "This request needs capabilities that are not available in the safe FlowDesk mode."
+			: response.safe_next_actions[0] === "/flowdesk-usage"
+				? "This looks like a larger FlowDesk task, so usage should be checked before planning or running more work."
 			: response.route_decision === "ask_clarification"
 				? "FlowDesk needs confirmation or a clearer goal before suggesting a command-backed workflow."
 				: response.route_decision === "show_plan"

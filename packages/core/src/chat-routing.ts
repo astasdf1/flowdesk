@@ -27,6 +27,7 @@ const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|
 const executionLikePattern = /\b(?:run|execute|start|kick[\s_-]*off|launch)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:실행|진행(?:해|하))|(?:(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?).{0,40}(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)))|(?:(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)).{0,40}(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?))/i;
 const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead|ok(?:ay)?|sure|sounds good)\b|(?:승인|확인|동의|좋아|네|예|오케이|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요)|그렇게\s*해|해주세요)/i;
 const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this|kinda|sort of|whatever)\b|(?:잘\s*모르(?:겠|겠어)|애매|뭐였|뭔가|어떻게\s*해(?:야)?|뭐\s*해야|아무거나|적당히|대충)/i;
+const proactiveUsagePreflightPattern = /\b(?:large|big|long|multi[\s_-]*step|multi[\s_-]*perspective|multi[\s_-]*model|extensive|whole|entire|full[\s_-]*(?:pass|review|refactor)|many files|agentic loop|autonomous|refactor|migration|audit|review)\b|(?:큰\s*작업|대규모|장시간|오래\s*걸|전체|전부|다관점|다각도|멀티\s*(?:모델|관점)|여러\s*관점|리팩토링|마이그레이션|긴\s*작업|전체\s*완료|끝까지|심층\s*(?:리뷰|검토|분석))/i;
 
 const commandRoutes: readonly (readonly [RegExp, readonly SafeNextAction[]])[] = [
   [/\b(?:show|current|check|get|what(?:'s| is)|how(?:'s| is) (?:it|things))\b.{0,40}\b(?:status|progress|state|checkpoint|workflow|lane|attempt)\b|\bflowdesk-status\b|(?:상태|진행\s*상황|진행\s*상태|어디까지|어디 까지|어디쯤|현재\s*상태|현재\s*진행|작업\s*상태|작업\s*어디까지|workflow\s*상태)/i, ["/flowdesk-status"]],
@@ -108,13 +109,15 @@ function commandFallbackResponse(input: FlowDeskChatRoutingInputV1, actions: rea
   };
 }
 
-function managedPlanResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
+function managedPlanResponse(input: FlowDeskChatRoutingInputV1, usagePreflight = false): FlowDeskChatIntakeResponseV1 {
   return {
     schema_version: "flowdesk.chat_intake.response.v1",
     ok: true,
     status: "ready",
-    safe_next_actions: ["/flowdesk-plan", "/flowdesk-status"],
-    user_message: "FlowDesk can steer this request into a guarded command-backed planning flow.",
+    safe_next_actions: usagePreflight ? ["/flowdesk-usage", "/flowdesk-plan", "/flowdesk-status"] : ["/flowdesk-plan", "/flowdesk-status"],
+    user_message: usagePreflight
+      ? "FlowDesk should check provider usage before steering this larger request into a guarded command-backed planning flow."
+      : "FlowDesk can steer this request into a guarded command-backed planning flow.",
     classification: "managed_plan",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "show_plan"
@@ -188,7 +191,7 @@ export function buildFlowDeskChatIntakeResponseV1(input: FlowDeskChatRoutingInpu
   if (executionLikePattern.test(summary)) return hasTypedExecutionApproval(input, summary) ? confirmedExecutionResponse(input) : executionConfirmationResponse(input);
   const command = commandRoutes.find(([pattern]) => pattern.test(summary));
   if (command !== undefined) return commandFallbackResponse(input, command[1]);
-  if (planningPattern.test(summary)) return clarificationPattern.test(summary) ? clarifyResponse(input) : managedPlanResponse(input);
+  if (planningPattern.test(summary)) return clarificationPattern.test(summary) ? clarifyResponse(input) : managedPlanResponse(input, proactiveUsagePreflightPattern.test(summary));
   return continueChatResponse(input);
 }
 

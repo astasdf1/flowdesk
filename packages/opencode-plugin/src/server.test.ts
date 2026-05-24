@@ -3740,6 +3740,24 @@ test("chat.message steering mutates message parts without hard interception fiel
 	assert.match(serialized, /- \/flowdesk-status/);
 	assert.equal(/noReply|cancel|stop/.test(serialized), false);
 
+	const largeTaskOutput = {
+		parts: [{ type: "text", text: "대규모 리팩토링 계획 세워줘" }] as unknown[],
+	};
+	await hooks["chat.message"](
+		{
+			messageID: "message-large-usage-preflight",
+			sessionID: "session-hook-large",
+		},
+		largeTaskOutput,
+	);
+	const largeTaskSerialized = JSON.stringify(largeTaskOutput);
+	assert.match(largeTaskSerialized, /Suggested next step: \/flowdesk-usage/);
+	assert.match(largeTaskSerialized, /usage should be checked before planning/);
+	assert.match(largeTaskSerialized, /- \/flowdesk-usage/);
+	assert.match(largeTaskSerialized, /- \/flowdesk-plan/);
+	assert.match(largeTaskSerialized, /- \/flowdesk-status/);
+	assert.equal(/noReply|cancel|stop/.test(largeTaskSerialized), false);
+
 	const executionOutput = {
 		parts: [
 			{ type: "text", text: "approved plan을 fake-runtime으로 실행 진행해" },

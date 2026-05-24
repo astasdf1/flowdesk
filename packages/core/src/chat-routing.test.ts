@@ -182,6 +182,20 @@ test("chat routing recognizes Korean review and refactor intents as managed_plan
   }
 });
 
+test("chat routing suggests usage preflight before larger managed planning work", () => {
+  for (const summary of [
+    "대규모 리팩토링 계획 세워줘",
+    "다관점 심층 리뷰 계획을 만들어줘",
+    "plan a full refactor across many files"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(result.response.classification, "managed_plan", summary);
+    assert.equal(result.response.route_decision, "show_plan", summary);
+    assert.deepEqual(result.response.safe_next_actions, ["/flowdesk-usage", "/flowdesk-plan", "/flowdesk-status"], summary);
+    assert.equal(validateChatIntakeResponseV1(result.response).ok, true, summary);
+  }
+});
+
 test("chat routing surfaces Korean clarification cues as ask_clarification when combined with planning intent", () => {
   for (const summary of [
     "코드 좀 만들어줘 잘 모르겠어 어디부터 시작할지",
