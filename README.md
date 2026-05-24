@@ -8,17 +8,41 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.1.0` is published on npm:
+Version `0.1.2` is the latest published release on npm:
 
 ```bash
-npm install @flowdesk/core@0.1.0 @flowdesk/opencode-plugin@0.1.0
+npm install @flowdesk/core@^0.1.2 @flowdesk/opencode-plugin@^0.1.2
 ```
 
-Add the plugin to your OpenCode config:
+Add the plugin to your OpenCode config. The plugin entry must point at the
+`/server` subpath; the package root only exports helper types:
 
 ```json
 {
-  "plugin": ["@flowdesk/opencode-plugin"]
+  "plugin": ["@flowdesk/opencode-plugin/server"]
+}
+```
+
+You can also pass plugin options inline using the tuple form. The minimum
+opt-in set for the description-driven natural-language tools is:
+
+```json
+{
+  "plugin": [
+    [
+      "@flowdesk/opencode-plugin/server",
+      {
+        "providerUsageLive": {
+          "enabled": true,
+          "providers": ["claude", "openai", "gemini"]
+        },
+        "statusLive": { "enabled": true },
+        "laneHeartbeatWriter": { "enabled": true },
+        "chatMessageStallAlert": { "enabled": true },
+        "durableStateRoot": "/Users/<you>/.flowdesk"
+      }
+    ]
+  ]
 }
 ```
 

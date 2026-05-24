@@ -1,6 +1,6 @@
 {
   "name": "@flowdesk/core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Core FlowDesk contracts and Release 1 boundaries.",
   "type": "module",
   "license": "MIT",
@@ -8,6 +8,13 @@
     "type": "git",
     "url": "git+https://github.com/astasdf1/flowdesk.git",
     "directory": "packages/core"
+  },
+  "homepage": "https://github.com/astasdf1/flowdesk#readme",
+  "bugs": {
+    "url": "https://github.com/astasdf1/flowdesk/issues"
+  },
+  "engines": {
+    "node": ">=20.11.0"
   },
   "publishConfig": {
     "access": "public"
@@ -21,7 +28,9 @@
     "!dist/**/*.test.d.ts.map",
     "!dist/**/*.test.js",
     "!dist/**/*.test.js.map",
-    "!dist/.tsbuildinfo"
+    "!dist/.tsbuildinfo",
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": {

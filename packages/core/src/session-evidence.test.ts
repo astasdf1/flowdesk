@@ -5,6 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   applyFlowDeskSessionEvidenceWriteIntentsV1,
+  createFlowDeskConfiguredVerificationResultV1,
+  createFlowDeskExternalAuthProviderPolicyResultV1,
+  createFlowDeskProductionApprovalDecisionV1,
+  createFlowDeskSanitizedAuthCaptureResultV1,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
   type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
   materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
@@ -23,6 +27,7 @@ import {
 } from "./index.js";
 
 const workflowId = "workflow-evidence-1";
+const now = "2026-05-24T12:00:00.000Z";
 
 function usageAuthorityRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -994,6 +999,84 @@ test("session evidence materializes prepared dispatch idempotency reservations",
     assert.equal(reloaded.entries.length, 1);
     assert.equal(reloaded.entries[0].evidenceClass, "dispatch_idempotency");
     assert.equal((reloaded.entries[0].record.entries as Array<{ state: string }>)[0].state, "reserved");
+  });
+});
+
+test("session evidence reload validates configured_verification, sanitized_auth_capture, external_auth_provider_policy, and production_approval shapes", () => {
+  withEvidenceTree((rootDir) => {
+    const verificationGood = createFlowDeskConfiguredVerificationResultV1({
+      verificationRef: "verification-good",
+      workflowId,
+      result: "passed",
+      producedAt: now,
+      sourceRef: "configured-verification-source-good",
+      checkLabels: ["release_gate"],
+      evidenceRefs: ["configured-verification-evidence-good"]
+    });
+    const captureGood = createFlowDeskSanitizedAuthCaptureResultV1({
+      sanitizedAuthCaptureRef: "sanitized-auth-capture-good",
+      durableCaptureRef: "durable-capture-good",
+      workflowId,
+      providerFamily: "claude",
+      providerQualifiedModelId: "claude/claude-opus-4-5",
+      authProfileRef: "auth-profile-good",
+      authEvidenceRef: "auth-evidence-good",
+      credentialScopeRef: "principal-scope-claude",
+      accountBoundaryRef: "account-boundary-good",
+      sanitizerRef: "sanitizer-good",
+      sourceRef: "source-good",
+      result: "passed",
+      capturedAt: now,
+      metadataLabels: ["release_gate"]
+    });
+    const policyGood = createFlowDeskExternalAuthProviderPolicyResultV1({
+      externalAuthPolicyRef: "external-auth-policy-good",
+      providerPolicyRef: "provider-policy-good",
+      workflowId,
+      providerFamily: "claude",
+      providerQualifiedModelId: "claude/claude-opus-4-5",
+      authProfileRef: "auth-profile-good",
+      authEvidenceRef: "auth-evidence-good",
+      credentialScopeRef: "principal-scope-claude",
+      accountBoundaryRef: "account-boundary-good",
+      sanitizerRef: "sanitizer-good",
+      sourceRef: "source-good",
+      result: "passed",
+      sanitizedAt: now,
+      metadataLabels: ["release_gate"]
+    });
+    const decisionGood = createFlowDeskProductionApprovalDecisionV1({
+      approvalId: "approval-good",
+      workflowId,
+      decision: "approve",
+      createdAt: now,
+      requiredEvidenceRefs: ["approval-evidence-good"],
+      missingEvidenceLabels: [],
+      uncertaintyLabels: []
+    });
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "configured_verification", "verification-good"), JSON.stringify(verificationGood));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "configured_verification", "verification-forged"), JSON.stringify({ ...verificationGood, provider_call_made: true }));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "sanitized_auth_capture", "capture-good"), JSON.stringify(captureGood));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "sanitized_auth_capture", "capture-forged"), JSON.stringify({ ...captureGood, provider_call_made: true }));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "external_auth_provider_policy", "policy-good"), JSON.stringify(policyGood));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "external_auth_provider_policy", "policy-forged"), JSON.stringify({ ...policyGood, provider_call_made: true }));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "production_approval", "decision-good"), JSON.stringify(decisionGood));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "production_approval", "decision-forged"), JSON.stringify({ ...decisionGood, decision: "auto_approved" }));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    const accepted = result.entries.map((entry) => entry.evidenceClass).sort();
+    assert.deepEqual(accepted, [
+      "configured_verification",
+      "external_auth_provider_policy",
+      "production_approval",
+      "sanitized_auth_capture"
+    ]);
+    const blockedClasses = result.blocked.map((blocked) => blocked.evidenceClass).sort();
+    assert.deepEqual(blockedClasses, [
+      "configured_verification",
+      "external_auth_provider_policy",
+      "production_approval",
+      "sanitized_auth_capture"
+    ]);
   });
 });
 

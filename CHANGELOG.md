@@ -10,6 +10,48 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.3 — 2026-05-24
+
+### Added
+
+- Workspace-root `LICENSE` (MIT) plus per-package `LICENSE` files and
+  per-package `README.md` so the published tarballs ship complete OSS
+  documentation.
+- `flowdesk_pre_spike_doctor.naturalLanguageTools.statusLive.exposesExpectedNextHeartbeatOverdueHint`
+  diagnostic exposure.
+- `flowdesk.lane_heartbeat.v1` evidence class is now wired into
+  `validateEvidenceShape`, alongside new dispatch coverage for
+  `configured_verification`, `sanitized_auth_capture`,
+  `external_auth_provider_policy`, and `production_approval` evidence
+  classes. Each previously fell through to a generic schema/redaction
+  check; they now run their dedicated fail-closed validators on every
+  durable reload.
+- New session-evidence reload test asserts that good and forged shapes for
+  the four newly-wired classes are accepted or blocked as expected.
+
+### Changed
+
+- `engines.node` is now declared per-package (`>=20.11.0`) so external
+  consumers installing only one of the two packages still get correct
+  Node engine warnings.
+- `@opencode-ai/plugin` moved from `dependencies` to `peerDependencies`
+  on `@flowdesk/opencode-plugin` (peer range `>=1.14.40 <2`) so the host
+  OpenCode runtime decides the exact plugin API version. A workspace
+  devDependency keeps local development working.
+- `homepage`, `bugs`, and `files` (README/LICENSE) added to both package
+  manifests.
+- Root `README.md` updated to point the OpenCode plugin entry at the
+  `/server` subpath and to install `^0.1.2` (now `^0.1.3`).
+- Per-package READMEs document the natural-language tools, opt-in config,
+  and authority boundary.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Hardening only tightens fail-closed
+checks; no authority was promoted.
+
 ## 0.1.2 — 2026-05-24
 
 ### Added

@@ -13,6 +13,7 @@
     "test": "npm run build && node --test packages/*/dist/**/*.test.js"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "1.15.6",
     "@types/node": "24.10.1",
     "typescript": "5.9.3"
   },

@@ -11,9 +11,13 @@ import { dirname, resolve, sep } from "node:path";
 import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
 import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
+import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
 import { validateFlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
 import { validateFlowDeskLaneHeartbeatRecordV1 } from "./lane-heartbeat.js";
 import { validateFlowDeskLaneLifecycleRecordV1 } from "./lane-lifecycle-record.js";
+import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
+import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
+import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
 import {
 	type FlowDeskExactModelAvailabilityCacheMaterializationContextV1,
 	type FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1,
@@ -772,6 +776,14 @@ function validateEvidenceShape(
 		return validateFlowDeskControlledRedactedAuditExportWriteRecordV1(record);
 	if (evidenceClass === "fallback_regate_plan")
 		return validateFlowDeskFallbackRegatePlanV1(record);
+	if (evidenceClass === "configured_verification")
+		return validateFlowDeskConfiguredVerificationResultV1(record);
+	if (evidenceClass === "sanitized_auth_capture")
+		return validateFlowDeskSanitizedAuthCaptureResultV1(record);
+	if (evidenceClass === "external_auth_provider_policy")
+		return validateFlowDeskExternalAuthProviderPolicyResultV1(record);
+	if (evidenceClass === "production_approval")
+		return validateFlowDeskProductionApprovalDecisionV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))
