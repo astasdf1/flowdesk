@@ -86,6 +86,10 @@ import {
 	executeFlowDeskProviderUsageLiveV1,
 } from "./provider-usage-live-tool.js";
 import {
+	type FlowDeskStatusLiveConfigV1,
+	executeFlowDeskStatusLiveV1,
+} from "./status-live-tool.js";
+import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
 	getFlowDeskRelease1HandlerReadinessSummary,
 	getFlowDeskRelease1ProductionReadinessSummary,
@@ -117,6 +121,7 @@ export const flowdeskManagedFallbackRegateOption =
 	"managedFallbackRegate" as const;
 export const flowdeskQuickReviewerRunOption = "quickReviewerRun" as const;
 export const flowdeskProviderUsageLiveOption = "providerUsageLive" as const;
+export const flowdeskStatusLiveOption = "statusLive" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
@@ -131,6 +136,7 @@ export const flowdeskQuickReviewerRunToolName =
 	"flowdesk_quick_reviewer_run" as const;
 export const flowdeskProviderUsageLiveToolName =
 	"flowdesk_provider_usage_live" as const;
+export const flowdeskStatusLiveToolName = "flowdesk_status_live" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -2352,6 +2358,75 @@ function providerUsageLiveConfigFromOptions(
 	return config;
 }
 
+function isStatusLiveEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskStatusLiveOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
+function statusLiveConfigFromOptions(
+	options?: PluginOptions,
+): FlowDeskStatusLiveConfigV1 | undefined {
+	const value = options?.[flowdeskStatusLiveOption];
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	const explicitRoot =
+		typeof value.rootDir === "string" && value.rootDir.trim().length > 0
+			? value.rootDir
+			: undefined;
+	const fallbackRoot = durableStateRootFromOptions(options);
+	const rootDir = explicitRoot ?? fallbackRoot;
+	if (rootDir === undefined) return undefined;
+	const config: FlowDeskStatusLiveConfigV1 = { rootDir };
+	if (typeof value.maxWorkflows === "number" && value.maxWorkflows > 0)
+		config.maxWorkflows = Math.floor(value.maxWorkflows);
+	if (
+		typeof value.maxRecentEvidencePerClass === "number" &&
+		value.maxRecentEvidencePerClass > 0
+	)
+		config.maxRecentEvidencePerClass = Math.floor(
+			value.maxRecentEvidencePerClass,
+		);
+	return config;
+}
+
+export function createFlowDeskStatusLiveOptInTools(
+	config: FlowDeskStatusLiveConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskStatusLiveToolName]: tool({
+			description: [
+				"Return a live FlowDesk status summary by reloading durable session evidence under the configured FlowDesk state root, including reviewer verdict counts, reviewer fan-out plans, runtime lane lifecycle records, fallback regate plans, exact-model availability cache entries, and provider acquisition results.",
+				"WHEN TO USE: the user asks about recent FlowDesk activity, current workflow progress, recent reviewer results, ongoing or stalled runs, or what has been recorded so far. Trigger on English phrases such as 'status', 'what happened', 'recent activity', 'progress', 'where are we', 'how is it going', 'recent reviews', 'recent runs', and Korean phrases such as '상태', '어디까지', '진행 상황', '진행됐', '오늘 작업', '오늘 뭐했', '최근 활동', '최근 리뷰', '지금 어디', '상태 요약', '워크플로우 상태'.",
+				"WHEN NOT TO USE: provider usage/quota questions (use flowdesk_provider_usage_live), multi-perspective code reviews (use flowdesk_quick_reviewer_run), or unrelated general chat.",
+				"INVOKE WITH: optional workflowId. When omitted, the tool lists the most recently modified durable workflows (default up to 5). The plugin user already opted in to durable status evidence reload at configuration time, so this tool can be called automatically without per-call confirmation.",
+				"AFTER CALLING: summarize per-workflow durable evidence counts in plain language for the user. Mention reviewer verdict labels (pass / changes_required / blocked / inconclusive), lane lifecycle states (running, complete, invocation_failed), the most recent fallback_regate_plan state, and the most recent provider acquisition status. If no workflow returned evidence, say so plainly. Never echo raw provider/auth/token payloads.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Optional specific workflow id to summarize. When omitted, the most recently modified durable workflows are summarized.",
+					),
+			},
+			async execute(input) {
+				const request = isRecord(input)
+					? {
+							workflowId:
+								typeof input.workflowId === "string"
+									? input.workflowId
+									: undefined,
+						}
+					: {};
+				const result = await executeFlowDeskStatusLiveV1({
+					config,
+					request,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 export function createFlowDeskProviderUsageLiveOptInTools(
 	config: FlowDeskProviderUsageLiveConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
@@ -2589,6 +2664,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskProviderUsageLiveOptInTools(providerUsageLiveConfig),
 		);
+	const statusLiveConfig = isStatusLiveEnabled(options)
+		? statusLiveConfigFromOptions(options)
+		: undefined;
+	if (statusLiveConfig !== undefined)
+		Object.assign(tools, createFlowDeskStatusLiveOptInTools(statusLiveConfig));
 	if (!isNaturalLanguageRoutingEnabled(options)) return { tool: tools };
 	return {
 		tool: tools,

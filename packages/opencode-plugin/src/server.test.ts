@@ -47,6 +47,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskQuickReviewerRunToolName,
 	flowdeskProviderUsageLiveOption,
 	flowdeskProviderUsageLiveToolName,
+	flowdeskStatusLiveOption,
+	flowdeskStatusLiveToolName,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -4138,4 +4140,146 @@ test("provider usage live tool blocks when requested family is not configured", 
 		String(result.redactedBlockReason),
 		/openai is not enabled in providerUsageLive configuration/,
 	);
+});
+
+test("status live tool is absent by default and registers only with explicit opt-in plus a durable state root", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(defaultHooks.tool?.[flowdeskStatusLiveToolName], undefined);
+
+	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskStatusLiveOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	assert.equal(enabledWithoutRoot.tool?.[flowdeskStatusLiveToolName], undefined);
+
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-register-"));
+	try {
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const statusTool = enabledHooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const description = String(statusTool.description ?? "");
+		assert.match(description, /WHEN TO USE/);
+		assert.match(description, /WHEN NOT TO USE/);
+		assert.match(description, /어디까지/);
+		assert.match(description, /진행 상황/);
+		assert.match(description, /오늘 작업/);
+		assert.match(description, /최근 리뷰/);
+		assert.match(description, /reviewer verdict/);
+		assert.match(description, /lane lifecycle/);
+		assert.doesNotMatch(description, /paid provider/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("status live tool blocks before reload when durable session root has no workflows", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-empty-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const result = JSON.parse(
+			toolOutput(await statusTool.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "blocked_before_status_live");
+		assert.match(
+			String(result.redactedBlockReason),
+			/no durable session workflows found/,
+		);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.statusEvidenceObserved, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("status live tool surfaces durable evidence counts for the requested workflow", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-summary-"));
+	try {
+		const workflowId = "workflow-status-live-1";
+		const reviewerVerdict = { ...reviewerVerdictRecord("architecture"), workflow_id: workflowId };
+		const fallbackPlan = {
+			schema_version: "flowdesk.fallback_regate_plan.v1",
+			ok: true,
+			errors: [],
+			workflow_id: workflowId,
+			parent_attempt_id: "attempt-status-live-parent",
+			new_attempt_id: "attempt-status-live-child",
+			state: "full_regate_required",
+			required_fresh_evidence_refs: ["fresh-1", "fresh-2", "fresh-3"],
+			safe_next_actions: ["/flowdesk-status", "/flowdesk-run"],
+			automatic_fallback_authorized: false,
+			provider_switch_attempted: false,
+			dispatch_authority_enabled: false,
+			realOpenCodeDispatch: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		};
+		const verdictWriteIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "reviewer-verdict-architecture-status-live",
+			record: reviewerVerdict,
+		});
+		assert.equal(verdictWriteIntent.ok, true, verdictWriteIntent.errors.join("; "));
+		const regateWriteIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "fallback-regate-plan-status-live",
+			record: fallbackPlan,
+		});
+		assert.equal(regateWriteIntent.ok, true, regateWriteIntent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			verdictWriteIntent.writeIntent as never,
+			regateWriteIntent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskStatusLiveOption]: { enabled: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const result = JSON.parse(
+			toolOutput(await statusTool.execute({ workflowId }, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "status_live_collected");
+		assert.deepEqual(result.resolvedWorkflowIds, [workflowId]);
+		const workflows = result.workflows as Array<Record<string, unknown>>;
+		assert.equal(workflows.length, 1);
+		const workflow = workflows[0];
+		assert.equal(workflow.workflowId, workflowId);
+		assert.equal(workflow.reloadOk, true);
+		const counts = workflow.evidenceCounts as Record<string, number>;
+		assert.equal(counts.reviewer_verdict, 1);
+		assert.equal(counts.fallback_regate_plan, 1);
+		const verdictLabels = workflow.latestReviewerVerdictLabels as string[];
+		assert.deepEqual(verdictLabels, ["pass"]);
+		assert.equal(workflow.latestRegatePlanState, "full_regate_required");
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.statusEvidenceObserved, true);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
