@@ -2871,6 +2871,19 @@ function providerUsageLiveConfigFromOptions(
 		value.geminiProjectId.trim().length > 0
 	)
 		config.geminiProjectId = value.geminiProjectId;
+	if (value.persistSnapshots === true) config.persistSnapshots = true;
+	const explicitRoot =
+		typeof value.durableStateRootDir === "string" &&
+		value.durableStateRootDir.trim().length > 0
+			? value.durableStateRootDir
+			: undefined;
+	const root = explicitRoot ?? durableStateRootFromOptions(options);
+	if (root !== undefined) config.durableStateRootDir = root;
+	if (
+		typeof value.persistWorkflowId === "string" &&
+		value.persistWorkflowId.trim().length > 0
+	)
+		config.persistWorkflowId = value.persistWorkflowId;
 	return config;
 }
 
@@ -3397,6 +3410,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						enabled: isProviderUsageLiveEnabled(options),
 						registered: providerUsageLiveConfigForDoctor !== undefined,
 						providers: providerUsageLiveConfigForDoctor?.providers,
+						persistsSnapshots:
+							providerUsageLiveConfigForDoctor?.persistSnapshots === true &&
+							typeof providerUsageLiveConfigForDoctor?.durableStateRootDir ===
+								"string",
+						persistWorkflowId:
+							providerUsageLiveConfigForDoctor?.persistWorkflowId,
 						geminiOAuthConfigured:
 							providerUsageLiveConfigForDoctor !== undefined &&
 							((providerUsageLiveConfigForDoctor.geminiOAuthClientId !==

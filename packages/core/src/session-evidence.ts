@@ -63,6 +63,7 @@ import {
 	validateOpaqueId,
 	validateOpaqueRef,
 	validateTopTierReviewVerdictV1,
+	validateUsageSnapshotV1,
 } from "./validators.js";
 
 const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
@@ -98,6 +99,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.controlled_redacted_audit_export_write.v1",
 	fallback_regate_plan: "flowdesk.fallback_regate_plan.v1",
 	lane_heartbeat: "flowdesk.lane_heartbeat.v1",
+	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -782,6 +784,8 @@ function validateEvidenceShape(
 		return validateFlowDeskControlledRedactedAuditExportWriteRecordV1(record);
 	if (evidenceClass === "fallback_regate_plan")
 		return validateFlowDeskFallbackRegatePlanV1(record);
+	if (evidenceClass === "provider_usage_snapshot")
+		return validateUsageSnapshotV1(record);
 	if (evidenceClass === "configured_verification")
 		return validateFlowDeskConfiguredVerificationResultV1(record);
 	if (evidenceClass === "sanitized_auth_capture")

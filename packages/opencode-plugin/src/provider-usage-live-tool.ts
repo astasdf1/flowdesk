@@ -4,7 +4,9 @@ import {
 	type FlowDeskProviderUsageCollectorOptionsV1,
 	type FlowDeskProviderUsageCollectorResultV1,
 	type FlowDeskProviderUsageCollectorTargetV1,
+	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	collectManagedDispatchBetaUsageEvidenceV1,
+	prepareFlowDeskSessionEvidenceWriteIntentV1,
 } from "@flowdesk/core";
 
 const defaultExecFile = (file: string, args: string[]): string =>
@@ -27,6 +29,9 @@ export interface FlowDeskProviderUsageLiveConfigV1 {
 	geminiOAuthClientId?: string;
 	geminiOAuthClientSecret?: string;
 	geminiProjectId?: string;
+	persistSnapshots?: boolean;
+	durableStateRootDir?: string;
+	persistWorkflowId?: string;
 }
 
 export interface FlowDeskProviderUsageLiveRequestV1 {
@@ -59,6 +64,14 @@ export interface FlowDeskProviderUsageLiveProviderRowV1 {
 	usageAuthorityAcquired: boolean;
 }
 
+export interface FlowDeskProviderUsageLiveSnapshotPersistenceV1 {
+	requested: boolean;
+	durableStateRootConfigured: boolean;
+	workflowId?: string;
+	persistedEvidenceIds: readonly string[];
+	skippedReasons: readonly string[];
+}
+
 export interface FlowDeskProviderUsageLiveResultV1 {
 	status:
 		| "provider_usage_live_collected"
@@ -70,6 +83,7 @@ export interface FlowDeskProviderUsageLiveResultV1 {
 	worstAlertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
 	overallRecommendation: string;
 	redactedBlockReason?: string;
+	snapshotPersistence?: FlowDeskProviderUsageLiveSnapshotPersistenceV1;
 	safeNextActions: readonly ("/flowdesk-doctor" | "/flowdesk-status")[];
 	authority: {
 		realOpenCodeDispatch: false;
@@ -334,6 +348,11 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		providers,
 		worstAlertLevel,
 	);
+	const snapshotPersistence = persistProviderUsageSnapshots(
+		input.config,
+		collectorResults,
+		observedAt,
+	);
 
 	return {
 		status: "provider_usage_live_collected",
@@ -343,6 +362,9 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		providers,
 		worstAlertLevel,
 		overallRecommendation,
+		...(snapshotPersistence !== undefined
+			? { snapshotPersistence }
+			: {}),
 		safeNextActions: safeNextActions(),
 		authority: {
 			realOpenCodeDispatch: false,
@@ -355,6 +377,108 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 			providerUsageAcquired: anyAcquired,
 		},
 	};
+}
+
+function persistProviderUsageSnapshots(
+	config: FlowDeskProviderUsageLiveConfigV1,
+	collectorResults: Array<{
+		family: FlowDeskProviderUsageLiveProviderFamilyV1;
+		result: FlowDeskProviderUsageCollectorResultV1 | undefined;
+	}>,
+	observedAt: string,
+): FlowDeskProviderUsageLiveSnapshotPersistenceV1 | undefined {
+	if (config.persistSnapshots !== true) return undefined;
+	const skippedReasons: string[] = [];
+	if (
+		typeof config.durableStateRootDir !== "string" ||
+		config.durableStateRootDir.trim().length === 0
+	) {
+		return {
+			requested: true,
+			durableStateRootConfigured: false,
+			persistedEvidenceIds: [],
+			skippedReasons: [
+				"providerUsageLive.persistSnapshots=true but no durable state root configured (set providerUsageLive.durableStateRootDir or top-level durableStateRoot)",
+			],
+		};
+	}
+	const workflowId = sanitizePersistWorkflowId(config.persistWorkflowId);
+	const persistedIds: string[] = [];
+	const stamp = observedAt.replaceAll(/[-:.]/g, "").replace("Z", "Z");
+	const intents = [] as ReturnType<
+		typeof prepareFlowDeskSessionEvidenceWriteIntentV1
+	>["writeIntent"][];
+	for (const { family, result } of collectorResults) {
+		if (result === undefined) {
+			skippedReasons.push(`${family}: collector result missing`);
+			continue;
+		}
+		if (result.usageAuthorityEvidence?.usage_acquired !== true) {
+			skippedReasons.push(`${family}: usage authority not acquired`);
+			continue;
+		}
+		const evidenceId = `provider-usage-snapshot-${family}-${stamp}`;
+		const prep = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId,
+			record: result.usageSnapshot as unknown as Record<string, unknown>,
+		});
+		if (!prep.ok || prep.writeIntent === undefined) {
+			skippedReasons.push(
+				`${family}: snapshot prepare failed (${prep.errors.join("; ")})`,
+			);
+			continue;
+		}
+		intents.push(prep.writeIntent);
+		persistedIds.push(evidenceId);
+	}
+	if (intents.length === 0) {
+		return {
+			requested: true,
+			durableStateRootConfigured: true,
+			workflowId,
+			persistedEvidenceIds: [],
+			skippedReasons,
+		};
+	}
+	const filteredIntents = intents.filter(
+		(intent): intent is NonNullable<typeof intent> => intent !== undefined,
+	);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(
+		config.durableStateRootDir,
+		filteredIntents,
+	);
+	if (!applied.ok) {
+		return {
+			requested: true,
+			durableStateRootConfigured: true,
+			workflowId,
+			persistedEvidenceIds: [],
+			skippedReasons: [
+				...skippedReasons,
+				`apply failed: ${applied.errors.join("; ")}`,
+			],
+		};
+	}
+	return {
+		requested: true,
+		durableStateRootConfigured: true,
+		workflowId,
+		persistedEvidenceIds: persistedIds,
+		skippedReasons,
+	};
+}
+
+function sanitizePersistWorkflowId(value: string | undefined): string {
+	if (
+		typeof value === "string" &&
+		value.length > 0 &&
+		/^[A-Za-z0-9_-]+$/.test(value) &&
+		!value.startsWith("-") &&
+		!value.endsWith("-")
+	)
+		return value;
+	return "workflow-provider-usage-live";
 }
 
 const alertSeverityRank: Record<FlowDeskProviderUsageLiveAlertLevelV1, number> = {

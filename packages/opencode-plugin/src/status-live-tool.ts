@@ -38,6 +38,10 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestLaneLifecycleStates: readonly string[];
 	latestRegatePlanState?: string;
 	latestProviderAcquisitionStatus?: string;
+	latestProviderUsageDispatchability?: string;
+	latestProviderUsageFreshness?: string;
+	latestProviderUsageResetBucket?: string;
+	providerUsageSnapshotCount?: number;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
 	stalledLaneCount?: number;
@@ -196,6 +200,10 @@ function summarizeWorkflow(
 		}
 	}
 
+	const providerUsageSummary = summarizeLatestProviderUsageSnapshot(
+		reload.entries,
+	);
+
 	return {
 		workflowId,
 		reloadOk: reload.ok,
@@ -210,6 +218,43 @@ function summarizeWorkflow(
 		...(providerAcquisitionStatus !== undefined
 			? { latestProviderAcquisitionStatus: providerAcquisitionStatus }
 			: {}),
+		...(providerUsageSummary.dispatchability !== undefined
+			? {
+					latestProviderUsageDispatchability:
+						providerUsageSummary.dispatchability,
+				}
+			: {}),
+		...(providerUsageSummary.freshness !== undefined
+			? { latestProviderUsageFreshness: providerUsageSummary.freshness }
+			: {}),
+		...(providerUsageSummary.resetBucket !== undefined
+			? { latestProviderUsageResetBucket: providerUsageSummary.resetBucket }
+			: {}),
+		...(providerUsageSummary.count > 0
+			? { providerUsageSnapshotCount: providerUsageSummary.count }
+			: {}),
+	};
+}
+
+function summarizeLatestProviderUsageSnapshot(
+	entries: readonly FlowDeskSessionEvidenceReloadEntryV1[],
+): {
+	count: number;
+	dispatchability?: string;
+	freshness?: string;
+	resetBucket?: string;
+} {
+	const snapshots = entries.filter(
+		(entry) => entry.evidenceClass === "provider_usage_snapshot",
+	);
+	if (snapshots.length === 0) return { count: 0 };
+	const last = snapshots[snapshots.length - 1];
+	if (last === undefined) return { count: snapshots.length };
+	return {
+		count: snapshots.length,
+		dispatchability: getStringField(last.record, "dispatchability"),
+		freshness: getStringField(last.record, "freshness"),
+		resetBucket: getStringField(last.record, "reset_bucket"),
 	};
 }
 
