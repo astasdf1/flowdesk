@@ -3470,6 +3470,23 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							"statusLive.enabled=true and durableStateRoot (top-level or chatMessageStallAlert.rootDir)",
 						note: "chat.message hook appends a passive stall card listing stalled lanes and safe next actions; no auto-retry, auto-abort, or auto-fallback.",
 					},
+					exportDebug: {
+						registered: true,
+						note: "/flowdesk-export-debug writes a redacted manifest plus one debug section file per requested section under .flowdesk/sessions/<sid>/redacted-debug/sections/<section>.json when durableStateRoot is configured.",
+						sections: [
+							"doctor",
+							"conformance",
+							"workflow_state",
+							"audit_refs",
+							"usage_summary",
+							"policy_summary",
+							"redaction_summary",
+						],
+						manifestPath:
+							".flowdesk/sessions/<sid>/redacted-debug/manifest.json",
+						sectionPathTemplate:
+							".flowdesk/sessions/<sid>/redacted-debug/sections/<section>.json",
+					},
 				};
 				return JSON.stringify({
 					pluginId: flowdeskPluginId,

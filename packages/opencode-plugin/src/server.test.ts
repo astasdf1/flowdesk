@@ -3296,6 +3296,14 @@ test("export debug writes a redacted manifest when durable state root is configu
 		assert.equal(doctorSection.schema_version, "flowdesk.debug_section_file.v1");
 		assert.equal(doctorSection.section, "doctor");
 		assert.equal(doctorSection.redaction_status, "passed");
+		assert.ok(Array.isArray(doctorSection.summary_labels));
+		const doctorLabels = (doctorSection.summary_labels as string[]).join("|");
+		assert.match(doctorLabels, /disabled_modes: real_dispatch managed_fallback lane_launch hard_chat_blocking/);
+		assert.match(doctorLabels, /production_enablement: disabled/);
+		const redactionSection = JSON.parse(readFileSync(redactionSectionPath, "utf8")) as Record<string, unknown>;
+		const redactionLabels = ((redactionSection.summary_labels ?? []) as string[]).join("|");
+		assert.match(redactionLabels, /redaction_version: redaction-v1/);
+		assert.match(redactionLabels, /raw_payload_markers: blocked/);
 		assert.equal(
 			/raw|payload|transcript|credential|secret|token|\/Users/.test(
 				JSON.stringify(manifest) + JSON.stringify(doctorSection),
@@ -5461,6 +5469,20 @@ test("pre-spike doctor exposes natural-language tool registration status and hin
 		assert.equal(nl.statusLive.enabled, true);
 		assert.equal(nl.statusLive.registered, true);
 		assert.equal(nl.statusLive.rootDir, root);
+		assert.equal(nl.exportDebug.registered, true);
+		assert.deepEqual(nl.exportDebug.sections, [
+			"doctor",
+			"conformance",
+			"workflow_state",
+			"audit_refs",
+			"usage_summary",
+			"policy_summary",
+			"redaction_summary",
+		]);
+		assert.equal(
+			nl.exportDebug.sectionPathTemplate,
+			".flowdesk/sessions/<sid>/redacted-debug/sections/<section>.json",
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

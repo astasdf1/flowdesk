@@ -1113,6 +1113,82 @@ function recordRunState(
 	return true;
 }
 
+function debugSectionSummaryLabels(
+	section: string,
+	state: LocalAdapterState,
+): string[] {
+	const labels: string[] = [`flowdesk debug section ${section}`];
+	switch (section) {
+		case "doctor":
+			labels.push(
+				"disabled_modes: real_dispatch managed_fallback lane_launch hard_chat_blocking",
+				"production_enablement: disabled",
+				"command_backed_runs: ready",
+			);
+			break;
+		case "conformance":
+			labels.push(
+				"plugin_package: @flowdesk/opencode-plugin",
+				"release_mode: release1",
+				"dispatch_mode: command-steering",
+			);
+			break;
+		case "workflow_state": {
+			const workflowId = state.workflow?.workflow_id;
+			const workflowState = state.workflow?.state;
+			labels.push(
+				workflowId
+					? `workflow_id: ${workflowId}`
+					: "workflow_id: <none>",
+				workflowState
+					? `workflow_state: ${workflowState}`
+					: "workflow_state: <none>",
+				`lane_records: ${state.laneRecords.length}`,
+			);
+			break;
+		}
+		case "audit_refs": {
+			const auditRefs = Array.isArray(state.workflow?.audit_refs)
+				? (state.workflow?.audit_refs as string[])
+				: [];
+			labels.push(
+				`audit_ref_count: ${auditRefs.length}`,
+				...auditRefs
+					.slice(0, 3)
+					.map((ref) => `audit_ref: ${ref}`),
+			);
+			break;
+		}
+		case "usage_summary":
+			labels.push(
+				"usage_unknown_default: non_dispatchable",
+				"usage_stale_default: non_dispatchable",
+				"provider_console_scraping: disabled",
+			);
+			break;
+		case "policy_summary": {
+			const policyContext = state.policyContext;
+			const policyPackHashes =
+				policyContext.config.policy_pack_hashes ?? [];
+			labels.push(
+				`config_hash: ${policyContext.configHash}`,
+				`release_mode: ${policyContext.config.release_mode}`,
+				`loaded_policy_packs: ${policyContext.policyPacks.length}`,
+				`policy_pack_hashes: ${policyPackHashes.length}`,
+			);
+			break;
+		}
+		case "redaction_summary":
+			labels.push(
+				"redaction_version: redaction-v1",
+				"raw_payload_markers: blocked",
+				"absolute_path_markers: blocked",
+			);
+			break;
+	}
+	return labels;
+}
+
 function recordDebugExportManifestState(
 	state: LocalAdapterState,
 	request: Record<string, unknown>,
@@ -1166,7 +1242,7 @@ function recordDebugExportManifestState(
 			warning_count: warningCount,
 			excluded_categories: excludedCategories,
 			source_refs: [...sourceRefs],
-			summary_labels: [`flowdesk debug section ${sectionName}`],
+			summary_labels: debugSectionSummaryLabels(sectionName, state),
 			audit_refs: ["audit-local"],
 		};
 		sectionFiles.push(sectionFile);
