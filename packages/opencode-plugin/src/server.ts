@@ -1,47 +1,44 @@
-import {
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import {
-	type FlowDeskChatHookAuthorityProbeV1,
-	type FlowDeskChatIntakeRequestV1,
-	type FlowDeskConfiguredVerificationResultV1,
-	type FlowDeskDispatchAttemptManifestV1,
-	type FlowDeskDefaultManagedDispatchAuthorizationV1,
-	type FlowDeskExternalAuthProviderPolicyResultV1,
-	type FlowDeskFallbackDecisionV1,
-	type FlowDeskProductionApprovalSourceV1,
-	type FlowDeskProductionApprovalDecisionV1,
-	type FlowDeskRelease1MinimumPortableCommandName,
-	type FlowDeskRelease1MinimumToolName,
-	type FlowDeskSanitizedAuthCaptureResultV1,
-	type FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
-	type FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
-	type FlowDeskRuntimeLaneLaunchPlanV1,
-	type FlowDeskSessionEvidenceReloadResultV1,
-	type FlowDeskTopTierReviewPerspective,
-	type FlowDeskTopTierReviewVerdictV1,
-	type FlowDeskToolRequestEnvelopeV1,
-	type ManagedDispatchBetaBoundaryInputV1,
-	type SafeNextAction,
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	createFlowDeskChatHookAuthorityProbeV1,
 	evaluateFlowDeskChatIntakeV1,
+	type FlowDeskChatHookAuthorityProbeV1,
+	type FlowDeskChatIntakeRequestV1,
+	type FlowDeskConfiguredVerificationResultV1,
+	type FlowDeskDefaultManagedDispatchAuthorizationV1,
+	type FlowDeskDispatchAttemptManifestV1,
+	type FlowDeskExternalAuthProviderPolicyResultV1,
+	type FlowDeskFallbackDecisionV1,
+	type FlowDeskProductionApprovalDecisionV1,
+	type FlowDeskProductionApprovalSourceV1,
+	type FlowDeskRelease1MinimumPortableCommandName,
+	type FlowDeskRelease1MinimumToolName,
+	type FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
+	type FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
+	type FlowDeskSanitizedAuthCaptureResultV1,
+	type FlowDeskSessionEvidenceReloadResultV1,
+	type FlowDeskToolRequestEnvelopeV1,
 	getFlowDeskPortableCommandToolName,
 	getRelease1SchemaArtifact,
+	type ManagedDispatchBetaBoundaryInputV1,
 	materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
 	materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1,
 	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
-	validateProjectConfigV1,
+	type SafeNextAction,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
+	validateProjectConfigV1,
 	validateRunRequestV1,
 } from "@flowdesk/core";
-import { type Plugin, type PluginModule, type PluginOptions, tool } from "@opencode-ai/plugin";
+import {
+	type Plugin,
+	type PluginModule,
+	type PluginOptions,
+	tool,
+} from "@opencode-ai/plugin";
 import type { z } from "zod";
 import {
 	flowdeskPluginId,
@@ -49,63 +46,57 @@ import {
 	hasProductionOpenCodeRegistration,
 } from "./index.js";
 import {
+	type FlowDeskLaneHeartbeatWriteRequestV1,
+	recordFlowDeskLaneHeartbeatV1,
+} from "./lane-heartbeat-writer.js";
+import {
 	createFlowDeskLocalNonDispatchAdapterSession,
-	flowdeskLocalNonDispatchAdapterProfile,
-	hasFlowDeskLocalPlanningEvidenceV1,
 	type FlowDeskLocalClockV1,
 	type FlowDeskLocalNonDispatchAdapterSessionV1,
 	type FlowDeskLocalProductionEnablementOptionsV1,
+	type FlowDeskLocalProjectConfigFileOptionsV1,
 	type FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1,
+	flowdeskLocalNonDispatchAdapterProfile,
+	hasFlowDeskLocalPlanningEvidenceV1,
 } from "./local-adapter.js";
 import {
+	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
+	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
+	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
+	dispatchManagedDispatchBetaPromptV1,
 	type FlowDeskExactModelProviderAcquisitionClientV1,
 	type FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
 	type FlowDeskManagedDispatchBetaAdapterResultV1,
 	type FlowDeskManagedDispatchBetaDispatchRequestV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
-	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
-	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
-	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
-	dispatchManagedDispatchBetaPromptV1,
-	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
 	materializeFlowDeskManagedFallbackRegatePlanEvidenceV1,
-	materializeFlowDeskObservedReviewerVerdictEvidenceV1,
-	materializeFlowDeskRuntimeLaneCompleteLifecycleEvidenceV1,
-	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
-	observeInjectedSdkReviewerVerdictV1,
 	orchestrateFlowDeskManagedFallbackRegateV1,
-	prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1,
-	prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1,
 	runFlowDeskExactModelProviderAcquisitionLiveTestV1,
 } from "./managed-dispatch-adapter.js";
 import {
-	type FlowDeskRuntimeReviewerExecutionExpectationV1,
+	executeFlowDeskProviderUsageLiveV1,
+	type FlowDeskProviderUsageLiveConfigV1,
+	type FlowDeskProviderUsageLiveProviderFamilyV1,
+} from "./provider-usage-live-tool.js";
+import {
+	executeFlowDeskQuickFallbackRunV1,
+	type FlowDeskQuickFallbackRunConfigV1,
+} from "./quick-fallback-run.js";
+import {
+	executeFlowDeskQuickReviewerRunV1,
+	type FlowDeskQuickReviewerRunResultV1,
+} from "./quick-reviewer-run.js";
+import {
 	executeFlowDeskRuntimeReviewerExecutionBridgeV1,
+	type FlowDeskRuntimeReviewerExecutionExpectationV1,
 	redactedRuntimeReviewerExecutionBlocked,
 	runtimeReviewerExecutionExpectationsFromValue,
 } from "./runtime-reviewer-execution-bridge.js";
 import {
-	type FlowDeskQuickReviewerRunResultV1,
-	executeFlowDeskQuickReviewerRunV1,
-} from "./quick-reviewer-run.js";
-import {
-	type FlowDeskProviderUsageLiveConfigV1,
-	type FlowDeskProviderUsageLiveProviderFamilyV1,
-	executeFlowDeskProviderUsageLiveV1,
-} from "./provider-usage-live-tool.js";
-import {
-	type FlowDeskStatusLiveConfigV1,
 	executeFlowDeskStatusLiveV1,
+	type FlowDeskStatusLiveConfigV1,
 } from "./status-live-tool.js";
-import {
-	type FlowDeskQuickFallbackRunConfigV1,
-	executeFlowDeskQuickFallbackRunV1,
-} from "./quick-fallback-run.js";
-import {
-	type FlowDeskLaneHeartbeatWriteRequestV1,
-	recordFlowDeskLaneHeartbeatV1,
-} from "./lane-heartbeat-writer.js";
 import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
 	getFlowDeskRelease1HandlerReadinessSummary,
@@ -141,8 +132,7 @@ export const flowdeskQuickReviewerRunOption = "quickReviewerRun" as const;
 export const flowdeskProviderUsageLiveOption = "providerUsageLive" as const;
 export const flowdeskStatusLiveOption = "statusLive" as const;
 export const flowdeskQuickFallbackRunOption = "quickFallbackRun" as const;
-export const flowdeskLaneHeartbeatWriterOption =
-	"laneHeartbeatWriter" as const;
+export const flowdeskLaneHeartbeatWriterOption = "laneHeartbeatWriter" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskManagedDispatchBetaToolName =
@@ -332,7 +322,9 @@ function isManagedDispatchBetaReservationStore(
 function isExactModelProviderAcquisitionClient(
 	value: unknown,
 ): value is FlowDeskExactModelProviderAcquisitionClientV1 {
-	return isRecord(value) && typeof value.checkExactModelAvailability === "function";
+	return (
+		isRecord(value) && typeof value.checkExactModelAvailability === "function"
+	);
 }
 
 function boundedText(value: string, fallback: string): string {
@@ -738,11 +730,11 @@ function steeringText(
 			? "This request needs capabilities that are not available in the safe FlowDesk mode."
 			: response.safe_next_actions[0] === "/flowdesk-usage"
 				? "This looks like a larger FlowDesk task, so usage should be checked before planning or running more work."
-			: response.route_decision === "ask_clarification"
-				? "FlowDesk needs confirmation or a clearer goal before suggesting a command-backed workflow."
-				: response.route_decision === "show_plan"
-					? "Your message looks like planning work that FlowDesk can organize as a command-backed plan."
-					: "Your message matches a safe FlowDesk command-backed workflow.";
+				: response.route_decision === "ask_clarification"
+					? "FlowDesk needs confirmation or a clearer goal before suggesting a command-backed workflow."
+					: response.route_decision === "show_plan"
+						? "Your message looks like planning work that FlowDesk can organize as a command-backed plan."
+						: "Your message matches a safe FlowDesk command-backed workflow.";
 	return [
 		"FlowDesk",
 		`Suggested next step: ${suggestedNextStep}`,
@@ -861,7 +853,9 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					description: `FlowDesk local non-dispatch command adapter for ${stub.toolName}; no provider call, real dispatch, or lane launch.`,
 					args,
 					async execute(request) {
-						const record: Record<string, unknown> = isRecord(request) ? request : {};
+						const record: Record<string, unknown> = isRecord(request)
+							? request
+							: {};
 						if (
 							stub.toolName === "flowdesk_run" &&
 							record.run_mode === "managed-dispatch"
@@ -945,7 +939,9 @@ function redactedManagedDispatchBetaToolResult(
 }
 
 function redactedExactModelProviderAcquisitionToolResult(
-	result: Awaited<ReturnType<typeof runFlowDeskExactModelProviderAcquisitionLiveTestV1>>,
+	result: Awaited<
+		ReturnType<typeof runFlowDeskExactModelProviderAcquisitionLiveTestV1>
+	>,
 	cacheMaterialization?: {
 		options: FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1;
 		result: ReturnType<
@@ -991,157 +987,154 @@ function redactedExactModelProviderAcquisitionToolResult(
 		...(cacheMaterialization === undefined
 			? {}
 			: {
-				cacheMaterialization: {
-					state: cacheMaterialization.result.state,
-					blockedLabels: cacheMaterialization.result.blocked_labels,
-					targetCacheEvidenceId:
-						cacheMaterialization.options.targetCacheEvidenceId,
-					targetCacheRefreshPlanEvidenceId:
-						cacheMaterialization.options.targetCacheRefreshPlanEvidenceId,
-					cacheId:
-						cacheMaterialization.result.cache?.cache_id ??
-						cacheMaterialization.options.cacheId,
-					entryId:
-						cacheMaterialization.result.cache?.entries[0]?.entry_id ??
-						cacheMaterialization.options.entryId,
-					availabilityRef:
-						cacheMaterialization.result.cache?.entries[0]?.availability_ref,
-					sanitizedProviderResultRef:
-						cacheMaterialization.result.cache?.entries[0]
-							?.availability_ref === undefined
-							? undefined
-							: result.result?.sanitized_provider_result_ref,
-					selectionState: cacheMaterialization.result.selection?.state,
-					pairSelectionReady:
-						cacheMaterialization.result.selection?.state === "pair_ready",
-					...(cacheMaterialization.fanout === undefined
-						? {}
-						: {
-							reviewerFanoutPlanning: {
-								state: cacheMaterialization.fanout.result.state,
-								blockedLabels:
-									cacheMaterialization.fanout.result.blocked_labels,
-								fanoutPlanState:
-									cacheMaterialization.fanout.result.fanoutPlan.state,
-								plannedPerspectives:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.planned_perspectives,
-								runtimeLaneLaunchRequests:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.runtime_lane_launch_requests.length,
-								launchAttempted:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.launch_attempted,
-								approvalInferred:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.approval_inferred,
-								actualLaneLaunch:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.actualLaneLaunch,
-								providerCall:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.providerCall,
-								runtimeExecution:
-									cacheMaterialization.fanout.result.fanoutPlan
-										.runtimeExecution,
-								persisted: cacheMaterialization.fanout.persisted,
-								persistedEvidenceId:
-									cacheMaterialization.fanout.persistedEvidenceId,
-								persistErrors: cacheMaterialization.fanout.persistErrors,
-								...(cacheMaterialization.fanout.runtimeLaunchPlans === undefined
-									? {}
-									: {
-											runtimeLaunchPlanMaterialization: {
-												state:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.state,
-												blockedLabels:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.blocked_labels,
-												targetLaunchPlanEvidenceIds:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.options.targetLaunchPlanEvidenceIds,
-												launchPlanStates:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.launchPlans.map(
-															(plan) => plan.state,
-														),
-												launchPlanCount:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.launchPlans.length,
-												writeIntentCount:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.writeIntents.length,
-												launchAttempted:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.launchPlans.some(
-															(plan) => plan.launch_attempted,
-														),
-												actualLaneLaunch:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.actualLaneLaunch,
-												providerCall:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.providerCall,
-												runtimeExecution:
-													cacheMaterialization.fanout.runtimeLaunchPlans
-														.result.runtimeExecution,
-												...(cacheMaterialization.fanout.runtimeLaunchPlans
-													.runtimeReviewerExecution === undefined
-													? {}
-													: {
-															runtimeReviewerExecution: {
-																status:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.status,
-																laneCount:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.laneCount,
-																acceptanceStatus:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.acceptanceStatus,
-																acceptedPerspectives:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.acceptedPerspectives,
-																durableLinkageStatus:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.durableLinkageStatus,
-																linkedVerdictCount:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.linkedVerdictCount,
-																linkedLifecycleCount:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.linkedLifecycleCount,
-																redactedBlockReason:
-																	cacheMaterialization.fanout
-																		.runtimeLaunchPlans
-																		.runtimeReviewerExecution.result
-																		.redactedBlockReason,
-															},
-														}),
-											},
-										}),
-							},
-						}),
-				},
-			}),
+					cacheMaterialization: {
+						state: cacheMaterialization.result.state,
+						blockedLabels: cacheMaterialization.result.blocked_labels,
+						targetCacheEvidenceId:
+							cacheMaterialization.options.targetCacheEvidenceId,
+						targetCacheRefreshPlanEvidenceId:
+							cacheMaterialization.options.targetCacheRefreshPlanEvidenceId,
+						cacheId:
+							cacheMaterialization.result.cache?.cache_id ??
+							cacheMaterialization.options.cacheId,
+						entryId:
+							cacheMaterialization.result.cache?.entries[0]?.entry_id ??
+							cacheMaterialization.options.entryId,
+						availabilityRef:
+							cacheMaterialization.result.cache?.entries[0]?.availability_ref,
+						sanitizedProviderResultRef:
+							cacheMaterialization.result.cache?.entries[0]
+								?.availability_ref === undefined
+								? undefined
+								: result.result?.sanitized_provider_result_ref,
+						selectionState: cacheMaterialization.result.selection?.state,
+						pairSelectionReady:
+							cacheMaterialization.result.selection?.state === "pair_ready",
+						...(cacheMaterialization.fanout === undefined
+							? {}
+							: {
+									reviewerFanoutPlanning: {
+										state: cacheMaterialization.fanout.result.state,
+										blockedLabels:
+											cacheMaterialization.fanout.result.blocked_labels,
+										fanoutPlanState:
+											cacheMaterialization.fanout.result.fanoutPlan.state,
+										plannedPerspectives:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.planned_perspectives,
+										runtimeLaneLaunchRequests:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.runtime_lane_launch_requests.length,
+										launchAttempted:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.launch_attempted,
+										approvalInferred:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.approval_inferred,
+										actualLaneLaunch:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.actualLaneLaunch,
+										providerCall:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.providerCall,
+										runtimeExecution:
+											cacheMaterialization.fanout.result.fanoutPlan
+												.runtimeExecution,
+										persisted: cacheMaterialization.fanout.persisted,
+										persistedEvidenceId:
+											cacheMaterialization.fanout.persistedEvidenceId,
+										persistErrors: cacheMaterialization.fanout.persistErrors,
+										...(cacheMaterialization.fanout.runtimeLaunchPlans ===
+										undefined
+											? {}
+											: {
+													runtimeLaunchPlanMaterialization: {
+														state:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.state,
+														blockedLabels:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.blocked_labels,
+														targetLaunchPlanEvidenceIds:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.options.targetLaunchPlanEvidenceIds,
+														launchPlanStates:
+															cacheMaterialization.fanout.runtimeLaunchPlans.result.launchPlans.map(
+																(plan) => plan.state,
+															),
+														launchPlanCount:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.launchPlans.length,
+														writeIntentCount:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.writeIntents.length,
+														launchAttempted:
+															cacheMaterialization.fanout.runtimeLaunchPlans.result.launchPlans.some(
+																(plan) => plan.launch_attempted,
+															),
+														actualLaneLaunch:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.actualLaneLaunch,
+														providerCall:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.providerCall,
+														runtimeExecution:
+															cacheMaterialization.fanout.runtimeLaunchPlans
+																.result.runtimeExecution,
+														...(cacheMaterialization.fanout.runtimeLaunchPlans
+															.runtimeReviewerExecution === undefined
+															? {}
+															: {
+																	runtimeReviewerExecution: {
+																		status:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result.status,
+																		laneCount:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.laneCount,
+																		acceptanceStatus:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.acceptanceStatus,
+																		acceptedPerspectives:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.acceptedPerspectives,
+																		durableLinkageStatus:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.durableLinkageStatus,
+																		linkedVerdictCount:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.linkedVerdictCount,
+																		linkedLifecycleCount:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.linkedLifecycleCount,
+																		redactedBlockReason:
+																			cacheMaterialization.fanout
+																				.runtimeLaunchPlans
+																				.runtimeReviewerExecution.result
+																				.redactedBlockReason,
+																	},
+																}),
+													},
+												}),
+									},
+								}),
+					},
+				}),
 	};
 }
-
 
 function providerAcquisitionRuntimeReviewerExecutionFromValue(
 	value: unknown,
@@ -1163,7 +1156,8 @@ function providerAcquisitionRuntimeReviewerExecutionFromValue(
 		enabled: true,
 		attemptId: value.attemptId,
 		parentSessionId: value.parentSessionId,
-		...(typeof value.observedAt === "string" && value.observedAt.trim().length > 0
+		...(typeof value.observedAt === "string" &&
+		value.observedAt.trim().length > 0
 			? { observedAt: value.observedAt }
 			: {}),
 		consumedReviewerFanoutApproval:
@@ -1174,7 +1168,9 @@ function providerAcquisitionRuntimeReviewerExecutionFromValue(
 
 function providerAcquisitionRuntimeLaunchPlanMaterializationFromValue(
 	value: unknown,
-): FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1 | undefined {
+):
+	| FlowDeskProviderAcquisitionRuntimeLaunchPlanMaterializationOptionsV1
+	| undefined {
 	if (!isRecord(value) || value.enabled !== true) return undefined;
 	if (
 		!Array.isArray(value.targetLaunchPlanEvidenceIds) ||
@@ -1226,7 +1222,8 @@ function providerAcquisitionReviewerFanoutPlanningFromValue(
 		attemptId: value.attemptId,
 		parentSessionRef: value.parentSessionRef,
 		agentRef: value.agentRef,
-		...(typeof value.requestedAt === "string" && value.requestedAt.trim().length > 0
+		...(typeof value.requestedAt === "string" &&
+		value.requestedAt.trim().length > 0
 			? { requestedAt: value.requestedAt }
 			: {}),
 		...(Array.isArray(value.requestedPerspectives) &&
@@ -1239,7 +1236,9 @@ function providerAcquisitionReviewerFanoutPlanningFromValue(
 		...(typeof value.maxConcurrentLaneCount === "number"
 			? { maxConcurrentLaneCount: value.maxConcurrentLaneCount }
 			: {}),
-		...(typeof value.timeoutMs === "number" ? { timeoutMs: value.timeoutMs } : {}),
+		...(typeof value.timeoutMs === "number"
+			? { timeoutMs: value.timeoutMs }
+			: {}),
 		...(typeof value.orphanMaxAgeMs === "number"
 			? { orphanMaxAgeMs: value.orphanMaxAgeMs }
 			: {}),
@@ -1267,9 +1266,12 @@ function providerAcquisitionReviewerFanoutPlanningFromValue(
 
 function exactModelProviderAcquisitionCacheMaterializationFromOptions(
 	options?: PluginOptions,
-): FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 | undefined {
+):
+	| FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1
+	| undefined {
 	const value = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
-	if (!isRecord(value) || !isRecord(value.cacheMaterialization)) return undefined;
+	if (!isRecord(value) || !isRecord(value.cacheMaterialization))
+		return undefined;
 	const cacheMaterialization = value.cacheMaterialization;
 	if (
 		cacheMaterialization.enabled !== true ||
@@ -1279,9 +1281,10 @@ function exactModelProviderAcquisitionCacheMaterializationFromOptions(
 		cacheMaterialization.targetCacheRefreshPlanEvidenceId.trim().length === 0
 	)
 		return undefined;
-	const reviewerFanoutPlanning = providerAcquisitionReviewerFanoutPlanningFromValue(
-		cacheMaterialization.reviewerFanoutPlanning,
-	);
+	const reviewerFanoutPlanning =
+		providerAcquisitionReviewerFanoutPlanningFromValue(
+			cacheMaterialization.reviewerFanoutPlanning,
+		);
 	return {
 		enabled: true,
 		targetCacheEvidenceId: cacheMaterialization.targetCacheEvidenceId,
@@ -1295,9 +1298,7 @@ function exactModelProviderAcquisitionCacheMaterializationFromOptions(
 		cacheMaterialization.entryId.trim().length > 0
 			? { entryId: cacheMaterialization.entryId }
 			: {}),
-		...(reviewerFanoutPlanning === undefined
-			? {}
-			: { reviewerFanoutPlanning }),
+		...(reviewerFanoutPlanning === undefined ? {} : { reviewerFanoutPlanning }),
 	};
 }
 
@@ -1530,7 +1531,8 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 				const record: Record<string, unknown> = isRecord(input) ? input : {};
 				if (!isRecord(record.request)) {
 					return JSON.stringify({
-						adapterProfile: "exact_model_provider_acquisition_live_test_adapter",
+						adapterProfile:
+							"exact_model_provider_acquisition_live_test_adapter",
 						status: "blocked_before_provider_acquisition",
 						providerCallAttempted: false,
 						writeAttempted: false,
@@ -1542,14 +1544,15 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 				}
 				const request =
 					record.request as unknown as FlowDeskExactModelProviderAcquisitionLiveTestRequestV1;
-				const result = await runFlowDeskExactModelProviderAcquisitionLiveTestV1({
-					client,
-					rootDir,
-					request,
-				});
+				const result = await runFlowDeskExactModelProviderAcquisitionLiveTestV1(
+					{
+						client,
+						rootDir,
+						request,
+					},
+				);
 				const materializationResult =
-					cacheMaterialization !== undefined &&
-					result.evidenceReloaded === true
+					cacheMaterialization !== undefined && result.evidenceReloaded === true
 						? materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1(
 								{
 									reloadedEvidence: reloadFlowDeskSessionEvidenceV1({
@@ -1572,12 +1575,10 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 									localDate: request.localDate,
 									activeProfileRef: request.activeProfileRef,
 									opencodeVersionRef: request.opencodeVersionRef,
-									flowdeskPackageVersionRef:
-										request.flowdeskPackageVersionRef,
+									flowdeskPackageVersionRef: request.flowdeskPackageVersionRef,
 									registryHash: request.registryHash,
 									policyPackHash: request.policyPackHash,
-									authAccountBoundaryRef:
-										request.authAccountBoundaryRef,
+									authAccountBoundaryRef: request.authAccountBoundaryRef,
 								},
 							)
 						: undefined;
@@ -1591,19 +1592,15 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 								localDate: request.localDate,
 								activeProfileRef: request.activeProfileRef,
 								opencodeVersionRef: request.opencodeVersionRef,
-								flowdeskPackageVersionRef:
-									request.flowdeskPackageVersionRef,
+								flowdeskPackageVersionRef: request.flowdeskPackageVersionRef,
 								registryHash: request.registryHash,
 								policyPackHash: request.policyPackHash,
-								authAccountBoundaryRef:
-									request.authAccountBoundaryRef,
+								authAccountBoundaryRef: request.authAccountBoundaryRef,
 								attemptId:
 									cacheMaterialization.reviewerFanoutPlanning.attemptId,
 								parentSessionRef:
-									cacheMaterialization.reviewerFanoutPlanning
-										.parentSessionRef,
-								agentRef:
-									cacheMaterialization.reviewerFanoutPlanning.agentRef,
+									cacheMaterialization.reviewerFanoutPlanning.parentSessionRef,
+								agentRef: cacheMaterialization.reviewerFanoutPlanning.agentRef,
 								requestedAt:
 									cacheMaterialization.reviewerFanoutPlanning.requestedAt ??
 									request.observedAt,
@@ -1630,12 +1627,13 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 											timeoutMs:
 												cacheMaterialization.reviewerFanoutPlanning.timeoutMs,
 										}),
-								...(cacheMaterialization.reviewerFanoutPlanning.orphanMaxAgeMs ===
-								undefined
+								...(cacheMaterialization.reviewerFanoutPlanning
+									.orphanMaxAgeMs === undefined
 									? {}
 									: {
 											orphanMaxAgeMs:
-												cacheMaterialization.reviewerFanoutPlanning.orphanMaxAgeMs,
+												cacheMaterialization.reviewerFanoutPlanning
+													.orphanMaxAgeMs,
 										}),
 								...(cacheMaterialization.reviewerFanoutPlanning.retryBudget ===
 								undefined
@@ -1666,7 +1664,8 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 					fanoutResult !== undefined &&
 					cacheMaterialization?.reviewerFanoutPlanning
 						?.persistDerivedFanoutPlanEvidence === true
-						? (cacheMaterialization.reviewerFanoutPlanning.fanoutPlanEvidenceId ??
+						? (cacheMaterialization.reviewerFanoutPlanning
+								.fanoutPlanEvidenceId ??
 							providerAcquisitionFanoutPlanEvidenceId(
 								request.workflowId,
 								fanoutResult,
@@ -1704,7 +1703,8 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 												sdkClientAvailable:
 													runtimeLaunchPlanOptions.sdkClientAvailable,
 											}),
-									...(runtimeLaunchPlanOptions.durableEvidenceRootRef === undefined
+									...(runtimeLaunchPlanOptions.durableEvidenceRootRef ===
+									undefined
 										? {}
 										: {
 												durableEvidenceRootRef:
@@ -1743,7 +1743,8 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 							})
 						: undefined;
 				const redactedMaterialization =
-					cacheMaterialization !== undefined && materializationResult !== undefined
+					cacheMaterialization !== undefined &&
+					materializationResult !== undefined
 						? {
 								options: cacheMaterialization,
 								result: materializationResult,
@@ -1751,11 +1752,9 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 								fanoutResult !== undefined
 									? {
 											fanout: {
-												options:
-													cacheMaterialization.reviewerFanoutPlanning,
+												options: cacheMaterialization.reviewerFanoutPlanning,
 												result: fanoutResult,
-												persistedEvidenceId:
-													fanoutPersistedEvidenceId,
+												persistedEvidenceId: fanoutPersistedEvidenceId,
 												persisted: fanoutPersistence.persisted,
 												persistErrors: fanoutPersistence.errors,
 												...(runtimeLaunchPlanOptions !== undefined &&
@@ -1766,14 +1765,12 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 																result: runtimeLaunchPlanResult,
 																...(runtimeReviewerExecutionOptions !==
 																	undefined &&
-																runtimeReviewerExecutionResult !==
-																	undefined
+																runtimeReviewerExecutionResult !== undefined
 																	? {
 																			runtimeReviewerExecution: {
 																				options:
 																					runtimeReviewerExecutionOptions,
-																				result:
-																					runtimeReviewerExecutionResult,
+																				result: runtimeReviewerExecutionResult,
 																			},
 																		}
 																	: {}),
@@ -1929,7 +1926,9 @@ async function collectStallAlertSummary(
 	clock: FlowDeskLocalClockV1,
 ): Promise<FlowDeskChatMessageStallSummaryV1 | undefined> {
 	try {
-		const observedAt = (typeof clock === "function" ? clock() : clock).toISOString();
+		const observedAt = (
+			typeof clock === "function" ? clock() : clock
+		).toISOString();
 		const config: FlowDeskStatusLiveConfigV1 = {
 			rootDir: stallAlert.rootDir,
 			...(stallAlert.maxWorkflows === undefined
@@ -2037,7 +2036,9 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 			`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
 		);
 	}
-	lines.push("FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.");
+	lines.push(
+		"FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.",
+	);
 	lines.push("Safe next actions:");
 	for (const action of [
 		"/flowdesk-status",
@@ -2088,52 +2089,123 @@ function disabledProjectConfigLoad(): FlowDeskProjectConfigLoadResultV1 {
 	return { enabled: false, status: "disabled", ...disabledAuthority };
 }
 
-function projectConfigPathFromOptions(options?: PluginOptions): string | undefined {
+function projectConfigPathFromOptions(
+	options?: PluginOptions,
+): string | undefined {
 	const raw = options?.[flowdeskProjectConfigOption];
-	if (raw !== true && !(isRecord(raw) && raw.enabled === true)) return undefined;
-	const rootDir = isRecord(raw) && typeof raw.rootDir === "string" && raw.rootDir.trim().length > 0
-		? raw.rootDir
-		: undefined;
+	if (raw !== true && !(isRecord(raw) && raw.enabled === true))
+		return undefined;
+	const rootDir =
+		isRecord(raw) &&
+		typeof raw.rootDir === "string" &&
+		raw.rootDir.trim().length > 0
+			? raw.rootDir
+			: undefined;
 	if (rootDir === undefined) return undefined;
 	const root = resolve(rootDir);
 	const configPath = resolve(root, ".flowdesk", "config.json");
-	if (configPath !== root && !configPath.startsWith(`${root}${sep}`)) return undefined;
+	if (configPath !== root && !configPath.startsWith(`${root}${sep}`))
+		return undefined;
 	return configPath;
 }
 
-function loadProjectConfigFromOptions(options?: PluginOptions): FlowDeskProjectConfigLoadResultV1 {
+function localProjectConfigFileOptionsFromOptions(
+	options?: PluginOptions,
+): FlowDeskLocalProjectConfigFileOptionsV1 | undefined {
 	const raw = options?.[flowdeskProjectConfigOption];
-	if (raw !== true && !(isRecord(raw) && raw.enabled === true)) return disabledProjectConfigLoad();
+	if (raw !== true && !(isRecord(raw) && raw.enabled === true))
+		return undefined;
+	const rootDir =
+		isRecord(raw) &&
+		typeof raw.rootDir === "string" &&
+		raw.rootDir.trim().length > 0
+			? raw.rootDir
+			: undefined;
+	if (rootDir === undefined) return undefined;
+	const policyPackPaths =
+		isRecord(raw) && Array.isArray(raw.policyPackPaths)
+			? raw.policyPackPaths.filter(
+					(path): path is string => typeof path === "string",
+				)
+			: undefined;
+	return {
+		enabled: true,
+		rootDir,
+		...(policyPackPaths === undefined ? {} : { policyPackPaths }),
+	};
+}
+
+function loadProjectConfigFromOptions(
+	options?: PluginOptions,
+): FlowDeskProjectConfigLoadResultV1 {
+	const raw = options?.[flowdeskProjectConfigOption];
+	if (raw !== true && !(isRecord(raw) && raw.enabled === true))
+		return disabledProjectConfigLoad();
 	const configPath = projectConfigPathFromOptions(options);
-	if (configPath === undefined) return { enabled: true, status: "blocked", redactedBlockReason: "projectConfig.enabled=true requires a schema-safe rootDir", ...disabledAuthority };
+	if (configPath === undefined)
+		return {
+			enabled: true,
+			status: "blocked",
+			redactedBlockReason:
+				"projectConfig.enabled=true requires a schema-safe rootDir",
+			...disabledAuthority,
+		};
 	try {
 		const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
 		const validation = validateProjectConfigV1(parsed);
-		if (!validation.ok) return { enabled: true, status: "blocked", redactedBlockReason: validation.errors.join("; ").slice(0, 500), ...disabledAuthority };
+		if (!validation.ok)
+			return {
+				enabled: true,
+				status: "blocked",
+				redactedBlockReason: validation.errors.join("; ").slice(0, 500),
+				...disabledAuthority,
+			};
 		const record = parsed as Record<string, unknown>;
 		return {
 			enabled: true,
 			status: "loaded",
 			configRef: safeToken(record.config_id, "config-redacted"),
-			releaseMode: typeof record.release_mode === "string" ? record.release_mode : undefined,
-			chatIntakeMode: typeof record.chat_intake_mode === "string" ? record.chat_intake_mode : undefined,
-			hookHarnessMode: typeof record.hook_harness_mode === "string" ? record.hook_harness_mode : undefined,
-			disabledModes: Array.isArray(record.disabled_modes) ? record.disabled_modes.filter((mode): mode is string => typeof mode === "string") : undefined,
+			releaseMode:
+				typeof record.release_mode === "string"
+					? record.release_mode
+					: undefined,
+			chatIntakeMode:
+				typeof record.chat_intake_mode === "string"
+					? record.chat_intake_mode
+					: undefined,
+			hookHarnessMode:
+				typeof record.hook_harness_mode === "string"
+					? record.hook_harness_mode
+					: undefined,
+			disabledModes: Array.isArray(record.disabled_modes)
+				? record.disabled_modes.filter(
+						(mode): mode is string => typeof mode === "string",
+					)
+				: undefined,
 			...disabledAuthority,
 		};
 	} catch (error) {
-		const code = error instanceof Error && "code" in error ? String((error as { code?: unknown }).code) : "read_failed";
+		const code =
+			error instanceof Error && "code" in error
+				? String((error as { code?: unknown }).code)
+				: "read_failed";
 		return {
 			enabled: true,
 			status: code === "ENOENT" ? "missing" : "blocked",
-			redactedBlockReason: code === "ENOENT" ? "project config file is missing" : "project config file could not be parsed or read",
+			redactedBlockReason:
+				code === "ENOENT"
+					? "project config file is missing"
+					: "project config file could not be parsed or read",
 			...disabledAuthority,
 		};
 	}
 }
 
-function isNaturalLanguageRoutingAllowedByProjectConfig(load: FlowDeskProjectConfigLoadResultV1): boolean {
-	if (!load.enabled || load.status === "loaded") return load.chatIntakeMode !== "off" && load.hookHarnessMode !== "off";
+function isNaturalLanguageRoutingAllowedByProjectConfig(
+	load: FlowDeskProjectConfigLoadResultV1,
+): boolean {
+	if (!load.enabled || load.status === "loaded")
+		return load.chatIntakeMode !== "off" && load.hookHarnessMode !== "off";
 	return false;
 }
 
@@ -2215,7 +2287,9 @@ function isManagedDispatchBetaAdapterEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
-function isExactModelProviderAcquisitionLiveTestEnabled(options?: PluginOptions): boolean {
+function isExactModelProviderAcquisitionLiveTestEnabled(
+	options?: PluginOptions,
+): boolean {
 	const value = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
 	return isRecord(value) && value.enabled === true;
 }
@@ -2230,8 +2304,10 @@ function defaultManagedDispatchAuthorizationFromOptions(
 ): FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined {
 	const value = options?.[flowdeskDefaultManagedDispatchAuthorizationOption];
 	if (!isRecord(value)) return undefined;
-	const authorization = value as unknown as FlowDeskDefaultManagedDispatchAuthorizationV1;
-	const validation = validateFlowDeskDefaultManagedDispatchAuthorizationV1(authorization);
+	const authorization =
+		value as unknown as FlowDeskDefaultManagedDispatchAuthorizationV1;
+	const validation =
+		validateFlowDeskDefaultManagedDispatchAuthorizationV1(authorization);
 	return validation.ok &&
 		authorization.state === "authorized" &&
 		authorization.default_managed_dispatch_authority_enabled === true
@@ -2294,19 +2370,31 @@ function exactModelProviderAcquisitionClientFrom(
 	const option = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
 	if (isRecord(option) && isExactModelProviderAcquisitionClient(option.client))
 		return option.client;
-	if (isRecord(input) && isExactModelProviderAcquisitionClient(input.exactModelProviderAcquisitionClient))
+	if (
+		isRecord(input) &&
+		isExactModelProviderAcquisitionClient(
+			input.exactModelProviderAcquisitionClient,
+		)
+	)
 		return input.exactModelProviderAcquisitionClient;
 	if (!isRecord(input)) return undefined;
-	const promptBackedCheck = isRecord(option) && isRecord(option.promptBackedCheck)
-		? option.promptBackedCheck
-		: undefined;
+	const promptBackedCheck =
+		isRecord(option) && isRecord(option.promptBackedCheck)
+			? option.promptBackedCheck
+			: undefined;
 	const commonOptions = {
 		client: input.client,
-		...(typeof input.directory === "string" ? { directory: input.directory } : {}),
-		...(typeof input.workspace === "string" ? { workspace: input.workspace } : {}),
+		...(typeof input.directory === "string"
+			? { directory: input.directory }
+			: {}),
+		...(typeof input.workspace === "string"
+			? { workspace: input.workspace }
+			: {}),
 	};
 	if (promptBackedCheck?.enabled === true) {
-		const allowedProviderQualifiedModelIds = Array.isArray(promptBackedCheck.allowedProviderQualifiedModelIds)
+		const allowedProviderQualifiedModelIds = Array.isArray(
+			promptBackedCheck.allowedProviderQualifiedModelIds,
+		)
 			? promptBackedCheck.allowedProviderQualifiedModelIds.filter(
 					(value): value is string => typeof value === "string",
 				)
@@ -2323,14 +2411,21 @@ function exactModelProviderAcquisitionClientFrom(
 				: {}),
 		});
 	}
-	return createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(commonOptions);
+	return createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1(
+		commonOptions,
+	);
 }
 
-function exactModelProviderAcquisitionRootFrom(options?: PluginOptions): string | undefined {
+function exactModelProviderAcquisitionRootFrom(
+	options?: PluginOptions,
+): string | undefined {
 	const option = options?.[flowdeskExactModelProviderAcquisitionLiveTestOption];
-	const optionRoot = isRecord(option) && typeof option.durableStateRoot === "string" && option.durableStateRoot.trim().length > 0
-		? option.durableStateRoot
-		: undefined;
+	const optionRoot =
+		isRecord(option) &&
+		typeof option.durableStateRoot === "string" &&
+		option.durableStateRoot.trim().length > 0
+			? option.durableStateRoot
+			: undefined;
 	return optionRoot ?? durableStateRootFromOptions(options);
 }
 
@@ -2344,10 +2439,7 @@ function exactModelProviderAcquisitionRuntimeReviewerExecutionClientFrom(
 		isManagedDispatchBetaClient(option.runtimeReviewerExecutionClient)
 	)
 		return option.runtimeReviewerExecutionClient;
-	if (
-		isRecord(option) &&
-		isManagedDispatchBetaClient(option.sdkClient)
-	)
+	if (isRecord(option) && isManagedDispatchBetaClient(option.sdkClient))
 		return option.sdkClient;
 	return isRecord(input) && isManagedDispatchBetaClient(input.client)
 		? input.client
@@ -2365,7 +2457,9 @@ function runtimeReviewerExecutionOptionsFrom(
 		value.durableStateRoot.trim().length > 0
 			? { durableStateRoot: value.durableStateRoot }
 			: {}),
-		...(isManagedDispatchBetaClient(value.client) ? { client: value.client } : {}),
+		...(isManagedDispatchBetaClient(value.client)
+			? { client: value.client }
+			: {}),
 	};
 }
 
@@ -2380,9 +2474,13 @@ function runtimeReviewerExecutionClientFrom(
 		: undefined;
 }
 
-function runtimeReviewerExecutionRootFrom(options?: PluginOptions): string | undefined {
+function runtimeReviewerExecutionRootFrom(
+	options?: PluginOptions,
+): string | undefined {
 	const runtimeOptions = runtimeReviewerExecutionOptionsFrom(options);
-	return runtimeOptions?.durableStateRoot ?? durableStateRootFromOptions(options);
+	return (
+		runtimeOptions?.durableStateRoot ?? durableStateRootFromOptions(options)
+	);
 }
 
 export function createFlowDeskRuntimeReviewerExecutionOptInTools(
@@ -2479,7 +2577,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 ): Record<string, FlowDeskOpenCodeTool> {
 	return {
 		[flowdeskQuickReviewerRunToolName]: tool({
-				description: [
+			description: [
 				"Run a 3-perspective FlowDesk reviewer fan-out (policy_security, architecture, verification_implementation) on a user-supplied prompt, pasted content, or the current conversation context, returning typed reviewer verdicts.",
 				"WHEN TO USE: the user explicitly asks for a code review, security audit, multi-perspective check, critical review, design review, or quality review. Trigger on English phrases such as 'multi-perspective review', 'multi-angle review', 'critical review', 'review from multiple perspectives', 'audit', 'critique', 'assess', or 'evaluate'. Trigger on Korean phrases such as '다관점 리뷰', '다관점리뷰', '다관점 비판적리뷰', '다관점 비판적 리뷰', '다각도 리뷰', '다각도 검토', '여러 관점 리뷰', '여러 관점에서 검토', '복수 관점 리뷰', '비판적 리뷰', '비판적 검토', '심층 리뷰', '아키텍처 리뷰', '보안 리뷰', '품질 리뷰', '검토', or '점검'.",
 				"CONTENT SELECTION: code is not required. If the user provides no explicit snippet after the trigger phrase, pass a concise prompt that includes the user's request plus the relevant current conversation context or target they are asking to review.",
@@ -2569,8 +2667,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 					providerQualifiedModelId,
 					runtimeAgent,
 					allowProviderCall: record.allowProviderCall === true,
-					developerModeAcknowledged:
-						record.developerModeAcknowledged === true,
+					developerModeAcknowledged: record.developerModeAcknowledged === true,
 					...(perspectives === undefined ? {} : { perspectives }),
 					...(typeof record.parentSessionId === "string" &&
 					record.parentSessionId.length > 0
@@ -2676,10 +2773,7 @@ export function createFlowDeskManagedFallbackRegateOptInTools(
 			},
 			async execute(input) {
 				const record: Record<string, unknown> = isRecord(input) ? input : {};
-				if (
-					!isRecord(record.decision) ||
-					!isRecord(record.consumedApproval)
-				) {
+				if (!isRecord(record.decision) || !isRecord(record.consumedApproval)) {
 					return JSON.stringify(
 						redactedManagedFallbackRegateBlocked(
 							"Managed fallback regate requires both decision and consumedApproval records.",
@@ -2687,16 +2781,16 @@ export function createFlowDeskManagedFallbackRegateOptInTools(
 					);
 				}
 				const result = orchestrateFlowDeskManagedFallbackRegateV1({
-					decision:
-						record.decision as unknown as FlowDeskFallbackDecisionV1,
+					decision: record.decision as unknown as FlowDeskFallbackDecisionV1,
 					consumedApproval:
 						record.consumedApproval as unknown as FlowDeskProductionApprovalSourceV1,
 				});
 				const redacted = redactedManagedFallbackRegateToolResult(result);
 				const persistRequested = record.persistRegatePlanEvidence === true;
-				const evidenceId = typeof record.regatePlanEvidenceId === "string"
-					? record.regatePlanEvidenceId
-					: undefined;
+				const evidenceId =
+					typeof record.regatePlanEvidenceId === "string"
+						? record.regatePlanEvidenceId
+						: undefined;
 				if (
 					persistRequested &&
 					rootDir !== undefined &&
@@ -2705,11 +2799,12 @@ export function createFlowDeskManagedFallbackRegateOptInTools(
 					evidenceId !== undefined &&
 					evidenceId.trim().length > 0
 				) {
-					const persistResult = materializeFlowDeskManagedFallbackRegatePlanEvidenceV1({
-						rootDir,
-						regatePlan: result.regatePlan,
-						evidenceId,
-					});
+					const persistResult =
+						materializeFlowDeskManagedFallbackRegatePlanEvidenceV1({
+							rootDir,
+							regatePlan: result.regatePlan,
+							evidenceId,
+						});
 					redacted.regatePlanEvidence = {
 						status: persistResult.status,
 						writeAttempted: persistResult.writeAttempted,
@@ -2800,7 +2895,10 @@ function quickFallbackRunConfigFromOptions(
 		value.defaultToProvider.trim().length > 0
 	)
 		config.defaultToProvider = value.defaultToProvider;
-	if (typeof value.sourceLabel === "string" && value.sourceLabel.trim().length > 0)
+	if (
+		typeof value.sourceLabel === "string" &&
+		value.sourceLabel.trim().length > 0
+	)
 		config.sourceLabel = value.sourceLabel;
 	const explicitRoot =
 		typeof value.rootDir === "string" && value.rootDir.trim().length > 0
@@ -2928,7 +3026,9 @@ function laneHeartbeatWriterConfigFromOptions(
 		typeof value.defaultExpectedIntervalMs === "number" &&
 		value.defaultExpectedIntervalMs > 0
 	)
-		config.defaultExpectedIntervalMs = Math.floor(value.defaultExpectedIntervalMs);
+		config.defaultExpectedIntervalMs = Math.floor(
+			value.defaultExpectedIntervalMs,
+		);
 	return config;
 }
 
@@ -2970,12 +3070,7 @@ export function createFlowDeskLaneHeartbeatWriterOptInTools(
 						"Concrete provider-qualified model id (e.g. 'openai/gpt-5.4-mini-fast').",
 					),
 				state: tool.schema
-					.enum([
-						"created",
-						"running",
-						"awaiting_dependency",
-						"cooldown",
-					])
+					.enum(["created", "running", "awaiting_dependency", "cooldown"])
 					.describe("Active lane state at heartbeat time."),
 				progressSummaryLabel: tool.schema
 					.string()
@@ -3010,8 +3105,10 @@ export function createFlowDeskLaneHeartbeatWriterOptInTools(
 				const record: Record<string, unknown> = isRecord(input) ? input : {};
 				const request: FlowDeskLaneHeartbeatWriteRequestV1 = {
 					rootDir: config.rootDir,
-					workflowId: typeof record.workflowId === "string" ? record.workflowId : "",
-					attemptId: typeof record.attemptId === "string" ? record.attemptId : "",
+					workflowId:
+						typeof record.workflowId === "string" ? record.workflowId : "",
+					attemptId:
+						typeof record.attemptId === "string" ? record.attemptId : "",
 					laneId: typeof record.laneId === "string" ? record.laneId : "",
 					parentSessionRef:
 						typeof record.parentSessionRef === "string"
@@ -3160,7 +3257,12 @@ export function createFlowDeskProviderUsageLiveOptInTools(
 			},
 			async execute(input) {
 				const request = isRecord(input)
-					? { providerFamily: typeof input.providerFamily === "string" ? input.providerFamily : undefined }
+					? {
+							providerFamily:
+								typeof input.providerFamily === "string"
+									? input.providerFamily
+									: undefined,
+						}
 					: {};
 				const result = await executeFlowDeskProviderUsageLiveV1({
 					config,
@@ -3218,34 +3320,43 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		isNaturalLanguageRoutingEnabled(options) &&
 		isNaturalLanguageRoutingAllowedByProjectConfig(projectConfigLoad);
 	const localSession =
-		isLocalNonDispatchAdapterEnabled(options) ||
-		naturalLanguageRoutingEnabled
+		isLocalNonDispatchAdapterEnabled(options) || naturalLanguageRoutingEnabled
 			? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, {
 					durableStateRootDir: durableStateRootFromOptions(options),
+					projectConfig: localProjectConfigFileOptionsFromOptions(options),
 					productionEnablement: productionEnablementFromOptions(options),
-					reviewerFanoutDiagnostics: reviewerFanoutDiagnosticsFromOptions(options),
+					reviewerFanoutDiagnostics:
+						reviewerFanoutDiagnosticsFromOptions(options),
 				})
 			: undefined;
-	const managedDispatchBetaClient = isManagedDispatchBetaAdapterEnabled(options)
-		|| isDefaultManagedDispatchAuthorized(options)
-		? managedDispatchBetaClientFrom(input, options)
-		: undefined;
+	const managedDispatchBetaClient =
+		isManagedDispatchBetaAdapterEnabled(options) ||
+		isDefaultManagedDispatchAuthorized(options)
+			? managedDispatchBetaClientFrom(input, options)
+			: undefined;
 	const managedDispatchBetaReservationStore =
-		isManagedDispatchBetaAdapterEnabled(options) || isDefaultManagedDispatchAuthorized(options)
+		isManagedDispatchBetaAdapterEnabled(options) ||
+		isDefaultManagedDispatchAuthorized(options)
 			? (managedDispatchBetaReservationStoreFrom(input, options) ??
 				managedDispatchBetaDurableReservationStoreFrom(options))
 			: undefined;
-	const defaultAuthorization = defaultManagedDispatchAuthorizationFromOptions(options);
-	const exactModelProviderAcquisitionClient = isExactModelProviderAcquisitionLiveTestEnabled(options)
-		? exactModelProviderAcquisitionClientFrom(input, options)
-		: undefined;
-	const exactModelProviderAcquisitionRoot = exactModelProviderAcquisitionRootFrom(options);
+	const defaultAuthorization =
+		defaultManagedDispatchAuthorizationFromOptions(options);
+	const exactModelProviderAcquisitionClient =
+		isExactModelProviderAcquisitionLiveTestEnabled(options)
+			? exactModelProviderAcquisitionClientFrom(input, options)
+			: undefined;
+	const exactModelProviderAcquisitionRoot =
+		exactModelProviderAcquisitionRootFrom(options);
 	const exactModelProviderAcquisitionCacheMaterialization =
 		exactModelProviderAcquisitionCacheMaterializationFromOptions(options);
-	const runtimeReviewerExecutionClient = isRuntimeReviewerExecutionEnabled(options)
+	const runtimeReviewerExecutionClient = isRuntimeReviewerExecutionEnabled(
+		options,
+	)
 		? runtimeReviewerExecutionClientFrom(input, options)
 		: undefined;
-	const runtimeReviewerExecutionRoot = runtimeReviewerExecutionRootFrom(options);
+	const runtimeReviewerExecutionRoot =
+		runtimeReviewerExecutionRootFrom(options);
 	const tools: Record<string, FlowDeskOpenCodeTool> = {
 		[flowdeskPreSpikeDoctorToolName]: tool({
 			description:
@@ -3275,7 +3386,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					quickReviewerRunClientFrom(input, options) !== undefined;
 				const naturalLanguageTools = {
 					quickReviewerRun: {
-							enabled: isQuickReviewerRunEnabled(options),
+						enabled: isQuickReviewerRunEnabled(options),
 						registered: quickReviewerRunRegistered,
 						missingClient:
 							isQuickReviewerRunEnabled(options) && !quickReviewerRunRegistered
@@ -3310,8 +3421,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							statusLiveConfigForDoctor?.laneHeartbeatLateThresholdMs,
 						laneHeartbeatStallThresholdMs:
 							statusLiveConfigForDoctor?.laneHeartbeatStallThresholdMs,
-						exposesLaneStallProjection:
-							statusLiveConfigForDoctor !== undefined,
+						exposesLaneStallProjection: statusLiveConfigForDoctor !== undefined,
 						exposesExpectedNextHeartbeatOverdueHint:
 							statusLiveConfigForDoctor !== undefined,
 						hint:
@@ -3346,15 +3456,19 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						enabled:
 							options?.[flowdeskChatMessageStallAlertOption] === true ||
 							(isRecord(options?.[flowdeskChatMessageStallAlertOption]) &&
-								(options?.[flowdeskChatMessageStallAlertOption] as { enabled?: unknown })
-									.enabled === true),
+								(
+									options?.[flowdeskChatMessageStallAlertOption] as {
+										enabled?: unknown;
+									}
+								).enabled === true),
 						registered:
-							chatMessageStallAlertOptionsFrom(options, statusLiveConfigForDoctor) !==
-							undefined,
+							chatMessageStallAlertOptionsFrom(
+								options,
+								statusLiveConfigForDoctor,
+							) !== undefined,
 						requires:
 							"statusLive.enabled=true and durableStateRoot (top-level or chatMessageStallAlert.rootDir)",
-						note:
-							"chat.message hook appends a passive stall card listing stalled lanes and safe next actions; no auto-retry, auto-abort, or auto-fallback.",
+						note: "chat.message hook appends a passive stall card listing stalled lanes and safe next actions; no auto-retry, auto-abort, or auto-fallback.",
 					},
 				};
 				return JSON.stringify({
@@ -3433,7 +3547,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				durableStateRootFromOptions(options),
 			),
 		);
-	if (exactModelProviderAcquisitionClient !== undefined && exactModelProviderAcquisitionRoot !== undefined)
+	if (
+		exactModelProviderAcquisitionClient !== undefined &&
+		exactModelProviderAcquisitionRoot !== undefined
+	)
 		Object.assign(
 			tools,
 			createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
@@ -3540,7 +3657,8 @@ function chatMessageStallAlertOptionsFrom(
 		recordRaw.rootDir.trim().length > 0
 			? recordRaw.rootDir
 			: undefined;
-	const fallbackRoot = statusLiveConfig?.rootDir ?? durableStateRootFromOptions(options);
+	const fallbackRoot =
+		statusLiveConfig?.rootDir ?? durableStateRootFromOptions(options);
 	const rootDir = explicitRoot ?? fallbackRoot;
 	if (rootDir === undefined) return undefined;
 	if (!explicitEnabled && statusLiveConfig === undefined) return undefined;

@@ -31,31 +31,31 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskFds1SchemaConversionProbeTools,
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskChatIntakeToolName,
+	flowdeskChatMessageStallAlertOption,
 	flowdeskDurableStateRootOption,
 	flowdeskExactModelProviderAcquisitionLiveTestOption,
 	flowdeskExactModelProviderAcquisitionLiveTestToolName,
 	flowdeskFds1SchemaConversionProbeOption,
+	flowdeskLaneHeartbeatWriterOption,
+	flowdeskLaneHeartbeatWriterToolName,
 	flowdeskLocalNonDispatchAdapterOption,
+	flowdeskManagedFallbackRegateOption,
+	flowdeskManagedFallbackRegateToolName,
 	flowdeskNaturalLanguageRoutingOption,
 	flowdeskPreSpikeDoctorToolName,
 	flowdeskProductionEnablementOption,
+	flowdeskProjectConfigOption,
+	flowdeskProviderUsageLiveOption,
+	flowdeskProviderUsageLiveToolName,
+	flowdeskQuickFallbackRunOption,
+	flowdeskQuickFallbackRunToolName,
+	flowdeskQuickReviewerRunOption,
+	flowdeskQuickReviewerRunToolName,
 	flowdeskReviewerFanoutDiagnosticsOption,
 	flowdeskRuntimeReviewerExecutionOption,
 	flowdeskRuntimeReviewerExecutionToolName,
-	flowdeskManagedFallbackRegateOption,
-	flowdeskManagedFallbackRegateToolName,
-	flowdeskQuickReviewerRunOption,
-	flowdeskQuickReviewerRunToolName,
-	flowdeskProviderUsageLiveOption,
-	flowdeskProviderUsageLiveToolName,
-	flowdeskProjectConfigOption,
 	flowdeskStatusLiveOption,
 	flowdeskStatusLiveToolName,
-	flowdeskQuickFallbackRunOption,
-	flowdeskQuickFallbackRunToolName,
-	flowdeskLaneHeartbeatWriterOption,
-	flowdeskLaneHeartbeatWriterToolName,
-	flowdeskChatMessageStallAlertOption,
 } from "./server.js";
 
 const now = "2026-05-17T00:00:00.000Z";
@@ -98,16 +98,47 @@ function release1ProjectConfig(overrides: Record<string, unknown> = {}) {
 			z_ai_usage_without_official_quota: "unknown",
 			allow_automatic_provider_fallback: false,
 		},
-		disabled_modes: ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"],
+		disabled_modes: [
+			"real_dispatch",
+			"managed_fallback",
+			"lane_launch",
+			"hard_chat_blocking",
+		],
 		extension_namespaces: ["flowdesk.core"],
 		audit_refs: ["audit-config-test"],
 		...overrides,
 	};
 }
 
+function release1PolicyPack(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.policy_pack.v1",
+		policy_pack_id: "policy-test",
+		policy_pack_hash: "policy-hash-test",
+		name: "Test policy pack",
+		version: "1.0.0",
+		source_ref: "policy-source-test",
+		applies_to_release_modes: ["release1"],
+		priority: 1,
+		rules: [
+			{
+				rule_id: "rule-test-approval",
+				effect: "require_approval",
+				target: "permission_class",
+				summary_label: "Require scoped non-dispatch approval for tests.",
+				refs: ["approval-test"],
+			},
+		],
+		hard_ban_refs: ["ban-real-dispatch-test"],
+		allowed_extension_namespaces: ["flowdesk.core"],
+		redaction_baseline_ref: "redaction-test",
+		...overrides,
+	};
+}
+
 interface LocalAdapterTestResult {
 	adapterProfile?: unknown;
-		handler?: {
+	handler?: {
 		ok?: unknown;
 		handlerMode?: unknown;
 		errors?: unknown[];
@@ -180,7 +211,9 @@ function toolOutput(value: string | { output: string }): string {
 	return typeof value === "string" ? value : value.output;
 }
 
-function exactModelAvailabilityCacheRecord(overrides: Record<string, unknown> = {}) {
+function exactModelAvailabilityCacheRecord(
+	overrides: Record<string, unknown> = {},
+) {
 	return {
 		schema_version: "flowdesk.exact_model_availability_cache.v1",
 		cache_id: "cache-1",
@@ -191,17 +224,19 @@ function exactModelAvailabilityCacheRecord(overrides: Record<string, unknown> = 
 		registry_hash: "hash-registry-1",
 		policy_pack_hash: "hash-policy-1",
 		auth_account_boundary_ref: "account-1",
-		entries: [{
-			entry_id: "entry-claude-1",
-			provider_family: "claude",
-			provider_identity_ref: "provider-claude-1",
-			provider_qualified_model_id: "claude/claude-opus-4-5",
-			model_family: "opus",
-			registered: true,
-			available: true,
-			highest_tier_eligible: true,
-			availability_ref: "availability-1",
-		}],
+		entries: [
+			{
+				entry_id: "entry-claude-1",
+				provider_family: "claude",
+				provider_identity_ref: "provider-claude-1",
+				provider_qualified_model_id: "claude/claude-opus-4-5",
+				model_family: "opus",
+				registered: true,
+				available: true,
+				highest_tier_eligible: true,
+				availability_ref: "availability-1",
+			},
+		],
 		dispatch_authority_enabled: false,
 		providerCall: false,
 		actualLaneLaunch: false,
@@ -210,7 +245,9 @@ function exactModelAvailabilityCacheRecord(overrides: Record<string, unknown> = 
 	};
 }
 
-function exactModelAvailabilityCacheRefreshPlanRecord(overrides: Record<string, unknown> = {}) {
+function exactModelAvailabilityCacheRefreshPlanRecord(
+	overrides: Record<string, unknown> = {},
+) {
 	return {
 		schema_version: "flowdesk.exact_model_availability_cache_refresh_plan.v1",
 		ok: true,
@@ -365,12 +402,16 @@ function fakeRuntimeReviewerExecutionClient() {
 				messages(options: unknown) {
 					messageCalls.push(options);
 					const sessionID = (options as { sessionID?: string }).sessionID ?? "";
-					const perspective = childPerspectives.get(sessionID) ?? "policy_security";
+					const perspective =
+						childPerspectives.get(sessionID) ?? "policy_security";
 					return Promise.resolve([
 						{
 							info: { id: `message-verdict-${perspective}` },
 							parts: [
-								{ type: "text", text: JSON.stringify(reviewerVerdictRecord(perspective)) },
+								{
+									type: "text",
+									text: JSON.stringify(reviewerVerdictRecord(perspective)),
+								},
 							],
 						},
 					]);
@@ -415,11 +456,15 @@ function exactModelAvailabilityCacheAcquisitionPlanRecord() {
 			discovery_required: true,
 			refresh_required: true,
 			cache_usable_for_assignment: false,
-		}) as Parameters<typeof planFlowDeskExactModelAvailabilityCacheAcquisitionV1>[0]["refreshPlan"],
+		}) as Parameters<
+			typeof planFlowDeskExactModelAvailabilityCacheAcquisitionV1
+		>[0]["refreshPlan"],
 	});
 }
 
-function exactModelProviderAcquisitionToolRequest(overrides: Record<string, unknown> = {}) {
+function exactModelProviderAcquisitionToolRequest(
+	overrides: Record<string, unknown> = {},
+) {
 	return {
 		workflowId: "workflow-provider-acquisition-1",
 		evidenceId: "provider-acquisition-evidence-1",
@@ -446,28 +491,41 @@ function exactModelProviderAcquisitionToolRequest(overrides: Record<string, unkn
 	};
 }
 
-function promptBackedAcquisitionOpenCodeClient(input: {
-	metadataAvailable?: boolean;
-	promptThrows?: boolean;
-	promptResponse?: unknown;
-	promptAsync?: boolean;
-} = {}) {
+function promptBackedAcquisitionOpenCodeClient(
+	input: {
+		metadataAvailable?: boolean;
+		promptThrows?: boolean;
+		promptResponse?: unknown;
+		promptAsync?: boolean;
+	} = {},
+) {
 	const metadataCalls: string[] = [];
 	const promptCalls: unknown[] = [];
 	const prompt = (options: unknown) => {
 		promptCalls.push(options);
-		if (input.promptThrows) throw new Error("provider response token secret raw failure");
-		return input.promptResponse ?? { data: { text: "RAW_MODEL_SECRET_RESPONSE" } };
+		if (input.promptThrows)
+			throw new Error("provider response token secret raw failure");
+		return (
+			input.promptResponse ?? { data: { text: "RAW_MODEL_SECRET_RESPONSE" } }
+		);
 	};
 	const client = {
 		config: {
 			providers(parameters?: { directory?: string }) {
-				metadataCalls.push(`config.providers:${parameters?.directory ?? "none"}`);
+				metadataCalls.push(
+					`config.providers:${parameters?.directory ?? "none"}`,
+				);
 				return {
 					data: {
-						providers: input.metadataAvailable === false
-							? []
-							: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }],
+						providers:
+							input.metadataAvailable === false
+								? []
+								: [
+										{
+											id: "anthropic",
+											models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+										},
+									],
 					},
 				};
 			},
@@ -477,21 +535,38 @@ function promptBackedAcquisitionOpenCodeClient(input: {
 				metadataCalls.push(`provider.list:${parameters?.directory ?? "none"}`);
 				return {
 					data: {
-						all: input.metadataAvailable === false
-							? []
-							: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }],
+						all:
+							input.metadataAvailable === false
+								? []
+								: [
+										{
+											id: "anthropic",
+											models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+										},
+									],
 						connected: input.metadataAvailable === false ? [] : ["anthropic"],
 					},
 				};
 			},
 			auth(parameters?: { directory?: string }) {
 				metadataCalls.push(`provider.auth:${parameters?.directory ?? "none"}`);
-				return { data: input.metadataAvailable === false ? {} : { anthropic: [{ type: "oauth" }] } };
+				return {
+					data:
+						input.metadataAvailable === false
+							? {}
+							: { anthropic: [{ type: "oauth" }] },
+				};
 			},
 		},
-		session: input.promptAsync === false
-			? { prompt }
-			: { promptAsync: prompt, prompt() { throw new Error("prompt fallback should not run"); } },
+		session:
+			input.promptAsync === false
+				? { prompt }
+				: {
+						promptAsync: prompt,
+						prompt() {
+							throw new Error("prompt fallback should not run");
+						},
+					},
 	};
 	return { client, metadataCalls, promptCalls };
 }
@@ -503,27 +578,38 @@ async function executeProviderAcquisitionTool(input: {
 	cacheMaterialization?: Record<string, unknown>;
 	request?: Record<string, unknown>;
 }) {
-	const hooks = await flowdeskOpenCodeServerPlugin.server({ client: input.client, directory: "/flowdesk-project" } as never, {
-		[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-			enabled: true,
-			durableStateRoot: input.root,
-			promptBackedCheck: input.promptBackedCheck,
-			...(input.cacheMaterialization === undefined
-				? {}
-				: { cacheMaterialization: input.cacheMaterialization }),
+	const hooks = await flowdeskOpenCodeServerPlugin.server(
+		{ client: input.client, directory: "/flowdesk-project" } as never,
+		{
+			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+				enabled: true,
+				durableStateRoot: input.root,
+				promptBackedCheck: input.promptBackedCheck,
+				...(input.cacheMaterialization === undefined
+					? {}
+					: { cacheMaterialization: input.cacheMaterialization }),
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
 		},
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
-	const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+	);
+	const liveTool =
+		hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 	assert.ok(liveTool);
-	const raw = await liveTool.execute({
-		request: exactModelProviderAcquisitionToolRequest(input.request),
-	}, undefined as never);
+	const raw = await liveTool.execute(
+		{
+			request: exactModelProviderAcquisitionToolRequest(input.request),
+		},
+		undefined as never,
+	);
 	return JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 }
 
-function writeSessionEvidence(root: string, workflowId: string, records: Record<string, unknown>[]) {
+function writeSessionEvidence(
+	root: string,
+	workflowId: string,
+	records: Record<string, unknown>[],
+) {
 	const intents = records.map((record, index) => {
 		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 			workflowId,
@@ -619,7 +705,9 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-"));
 	const calls: unknown[] = [];
 	try {
-		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never);
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+		);
 		assert.equal(
 			Object.keys(defaultHooks.tool ?? {}).includes(
 				flowdeskExactModelProviderAcquisitionLiveTestToolName,
@@ -627,38 +715,54 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 			false,
 		);
 
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				client: {
-					checkExactModelAvailability(request: unknown) {
-						calls.push(request);
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-1",
-							availability_ref: "availability-live-1",
-							highest_tier_eligible: true,
-						};
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+					enabled: true,
+					durableStateRoot: root,
+					client: {
+						checkExactModelAvailability(request: unknown) {
+							calls.push(request);
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref: "provider-result-redacted-1",
+								availability_ref: "availability-live-1",
+								highest_tier_eligible: true,
+							};
+						},
 					},
 				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest(),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest(),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_recorded");
 		assert.equal(result.providerCallAttempted, true);
 		assert.equal(result.writeAttempted, true);
 		assert.equal(result.evidenceReloaded, true);
-		assert.equal((result.authority as Record<string, unknown>).providerCall, false);
-		assert.equal((result.authority as Record<string, unknown>).dispatchAuthorityEnabled, false);
-		assert.equal(result.sanitizedProviderResultRef, "provider-result-redacted-1");
+		assert.equal(
+			(result.authority as Record<string, unknown>).providerCall,
+			false,
+		);
+		assert.equal(
+			(result.authority as Record<string, unknown>).dispatchAuthorityEnabled,
+			false,
+		);
+		assert.equal(
+			result.sanitizedProviderResultRef,
+			"provider-result-redacted-1",
+		);
 		assert.equal("cacheMaterialization" in result, false);
 		assert.equal("result" in result, false);
 		assert.equal(calls.length, 1);
@@ -668,20 +772,23 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 		});
 		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
 		assert.equal(
-			reloaded.entries.some((entry) =>
-				entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result"
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass ===
+					"exact_model_availability_cache_provider_acquisition_result",
 			),
 			true,
 		);
 		assert.equal(
-			reloaded.entries.some((entry) =>
-				entry.evidenceClass === "exact_model_availability_cache"
+			reloaded.entries.some(
+				(entry) => entry.evidenceClass === "exact_model_availability_cache",
 			),
 			false,
 		);
 		assert.equal(
-			reloaded.entries.some((entry) =>
-				entry.evidenceClass === "exact_model_availability_cache_refresh_plan"
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "exact_model_availability_cache_refresh_plan",
 			),
 			false,
 		);
@@ -691,42 +798,53 @@ test("exact-model provider acquisition live-test tool is explicit opt-in and wri
 });
 
 test("exact-model provider acquisition cache materialization is explicit opt-in and writes selected-pair evidence", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-materialization-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-acquisition-cache-materialization-"),
+	);
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-from-provider-live-1",
-					targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-1",
-					cacheId: "cache-from-provider-live-1",
-					entryId: "entry-from-provider-live-1",
-				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-cache-1",
-							availability_ref: "availability-live-cache-1",
-							highest_tier_eligible: true,
-						};
+					durableStateRoot: root,
+					cacheMaterialization: {
+						enabled: true,
+						targetCacheEvidenceId: "cache-from-provider-live-1",
+						targetCacheRefreshPlanEvidenceId:
+							"cache-refresh-from-provider-live-1",
+						cacheId: "cache-from-provider-live-1",
+						entryId: "entry-from-provider-live-1",
+					},
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-cache-1",
+								availability_ref: "availability-live-cache-1",
+								highest_tier_eligible: true,
+							};
+						},
 					},
 				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-acquisition-cache-1",
-				evidenceId: "provider-acquisition-cache-evidence-1",
-				resultId: "provider-acquisition-cache-result-1",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-acquisition-cache-1",
+					evidenceId: "provider-acquisition-cache-evidence-1",
+					resultId: "provider-acquisition-cache-result-1",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_recorded");
 		assert.equal(result.providerCallAttempted, true);
@@ -772,8 +890,7 @@ test("exact-model provider acquisition cache materialization is explicit opt-in 
 		assert.equal(
 			reloaded.entries.filter(
 				(entry) =>
-					entry.evidenceClass ===
-					"exact_model_availability_cache_refresh_plan",
+					entry.evidenceClass === "exact_model_availability_cache_refresh_plan",
 			).length,
 			1,
 		);
@@ -783,66 +900,80 @@ test("exact-model provider acquisition cache materialization is explicit opt-in 
 });
 
 test("exact-model provider acquisition cache materialization can derive reviewer fanout and runtime launch-plan evidence without lane launch", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-"),
+	);
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-from-provider-live-fanout",
-					targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-fanout",
-					cacheId: "cache-from-provider-live-fanout",
-					entryId: "entry-from-provider-live-fanout",
-					reviewerFanoutPlanning: {
+					durableStateRoot: root,
+					cacheMaterialization: {
 						enabled: true,
-						attemptId: "attempt-provider-live-fanout",
-						parentSessionRef: "ses-provider-live-fanout-parent",
-						agentRef: "agent-reviewer-provider-live-fanout",
-						requestedAt: "2026-05-19T00:02:00.000Z",
-						preLaunchAuditRef: "audit-provider-live-fanout-1",
-						laneLaunchApprovalRef: "approval-provider-live-fanout-1",
-						persistDerivedFanoutPlanEvidence: true,
-						fanoutPlanEvidenceId: "fanout-from-provider-live-1",
-						runtimeLaunchPlanMaterialization: {
+						targetCacheEvidenceId: "cache-from-provider-live-fanout",
+						targetCacheRefreshPlanEvidenceId:
+							"cache-refresh-from-provider-live-fanout",
+						cacheId: "cache-from-provider-live-fanout",
+						entryId: "entry-from-provider-live-fanout",
+						reviewerFanoutPlanning: {
 							enabled: true,
-							targetLaunchPlanEvidenceIds: [
-								"launch-plan-from-provider-policy",
-								"launch-plan-from-provider-architecture",
-								"launch-plan-from-provider-verification",
-							],
-							sdkClientAvailable: true,
-							durableEvidenceRootRef: "evidence-root-provider-live-fanout",
+							attemptId: "attempt-provider-live-fanout",
+							parentSessionRef: "ses-provider-live-fanout-parent",
+							agentRef: "agent-reviewer-provider-live-fanout",
+							requestedAt: "2026-05-19T00:02:00.000Z",
+							preLaunchAuditRef: "audit-provider-live-fanout-1",
+							laneLaunchApprovalRef: "approval-provider-live-fanout-1",
+							persistDerivedFanoutPlanEvidence: true,
+							fanoutPlanEvidenceId: "fanout-from-provider-live-1",
+							runtimeLaunchPlanMaterialization: {
+								enabled: true,
+								targetLaunchPlanEvidenceIds: [
+									"launch-plan-from-provider-policy",
+									"launch-plan-from-provider-architecture",
+									"launch-plan-from-provider-verification",
+								],
+								sdkClientAvailable: true,
+								durableEvidenceRootRef: "evidence-root-provider-live-fanout",
+							},
+						},
+					},
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-fanout-1",
+								availability_ref: "availability-live-fanout-1",
+								highest_tier_eligible: true,
+							};
 						},
 					},
 				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-fanout-1",
-							availability_ref: "availability-live-fanout-1",
-							highest_tier_eligible: true,
-						};
-					},
-				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-acquisition-cache-fanout",
-				evidenceId: "provider-acquisition-cache-fanout-evidence-1",
-				resultId: "provider-acquisition-cache-fanout-result-1",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-acquisition-cache-fanout",
+					evidenceId: "provider-acquisition-cache-fanout-evidence-1",
+					resultId: "provider-acquisition-cache-fanout-result-1",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_recorded");
-		const materialization = result.cacheMaterialization as Record<string, unknown>;
+		const materialization = result.cacheMaterialization as Record<
+			string,
+			unknown
+		>;
 		assert.equal(materialization.state, "materialized");
 		assert.equal(materialization.pairSelectionReady, true);
 		assert.deepEqual(materialization.reviewerFanoutPlanning, {
@@ -930,58 +1061,68 @@ test("exact-model provider acquisition runtime launch-plan materialization requi
 		join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-no-runtime-"),
 	);
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: noRuntimeRoot,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-from-provider-live-no-runtime",
-					targetCacheRefreshPlanEvidenceId:
-						"cache-refresh-from-provider-live-no-runtime",
-					cacheId: "cache-from-provider-live-no-runtime",
-					entryId: "entry-from-provider-live-no-runtime",
-					reviewerFanoutPlanning: {
+					durableStateRoot: noRuntimeRoot,
+					cacheMaterialization: {
 						enabled: true,
-						attemptId: "attempt-provider-live-no-runtime",
-						parentSessionRef: "ses-provider-live-no-runtime-parent",
-						agentRef: "agent-reviewer-provider-live-no-runtime",
-						requestedAt: "2026-05-19T00:03:00.000Z",
-						preLaunchAuditRef: "audit-provider-live-no-runtime-1",
-						laneLaunchApprovalRef: "approval-provider-live-no-runtime-1",
-						persistDerivedFanoutPlanEvidence: true,
-						fanoutPlanEvidenceId: "fanout-from-provider-live-no-runtime-1",
+						targetCacheEvidenceId: "cache-from-provider-live-no-runtime",
+						targetCacheRefreshPlanEvidenceId:
+							"cache-refresh-from-provider-live-no-runtime",
+						cacheId: "cache-from-provider-live-no-runtime",
+						entryId: "entry-from-provider-live-no-runtime",
+						reviewerFanoutPlanning: {
+							enabled: true,
+							attemptId: "attempt-provider-live-no-runtime",
+							parentSessionRef: "ses-provider-live-no-runtime-parent",
+							agentRef: "agent-reviewer-provider-live-no-runtime",
+							requestedAt: "2026-05-19T00:03:00.000Z",
+							preLaunchAuditRef: "audit-provider-live-no-runtime-1",
+							laneLaunchApprovalRef: "approval-provider-live-no-runtime-1",
+							persistDerivedFanoutPlanEvidence: true,
+							fanoutPlanEvidenceId: "fanout-from-provider-live-no-runtime-1",
+						},
+					},
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-no-runtime-1",
+								availability_ref: "availability-live-no-runtime-1",
+								highest_tier_eligible: true,
+							};
+						},
 					},
 				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref:
-								"provider-result-redacted-no-runtime-1",
-							availability_ref: "availability-live-no-runtime-1",
-							highest_tier_eligible: true,
-						};
-					},
-				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-acquisition-no-runtime",
-				evidenceId: "provider-acquisition-no-runtime-evidence-1",
-				resultId: "provider-acquisition-no-runtime-result-1",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-acquisition-no-runtime",
+					evidenceId: "provider-acquisition-no-runtime-evidence-1",
+					resultId: "provider-acquisition-no-runtime-result-1",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		const reviewerFanoutPlanning = (
 			result.cacheMaterialization as Record<string, unknown>
 		).reviewerFanoutPlanning as Record<string, unknown>;
-		assert.equal(reviewerFanoutPlanning.runtimeLaunchPlanMaterialization, undefined);
+		assert.equal(
+			reviewerFanoutPlanning.runtimeLaunchPlanMaterialization,
+			undefined,
+		);
 		assert.equal(
 			reloadFlowDeskSessionEvidenceV1({
 				workflowId: "workflow-provider-acquisition-no-runtime",
@@ -996,66 +1137,76 @@ test("exact-model provider acquisition runtime launch-plan materialization requi
 	}
 
 	const blockedRoot = mkdtempSync(
-		join(tmpdir(), "flowdesk-provider-acquisition-cache-fanout-blocked-runtime-"),
+		join(
+			tmpdir(),
+			"flowdesk-provider-acquisition-cache-fanout-blocked-runtime-",
+		),
 	);
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: blockedRoot,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-from-provider-live-blocked-runtime",
-					targetCacheRefreshPlanEvidenceId:
-						"cache-refresh-from-provider-live-blocked-runtime",
-					cacheId: "cache-from-provider-live-blocked-runtime",
-					entryId: "entry-from-provider-live-blocked-runtime",
-					reviewerFanoutPlanning: {
+					durableStateRoot: blockedRoot,
+					cacheMaterialization: {
 						enabled: true,
-						attemptId: "attempt-provider-live-blocked-runtime",
-						parentSessionRef: "ses-provider-live-blocked-runtime-parent",
-						agentRef: "agent-reviewer-provider-live-blocked-runtime",
-						requestedAt: "2026-05-19T00:04:00.000Z",
-						preLaunchAuditRef: "audit-provider-live-blocked-runtime-1",
-						laneLaunchApprovalRef:
-							"approval-provider-live-blocked-runtime-1",
-						persistDerivedFanoutPlanEvidence: true,
-						fanoutPlanEvidenceId: "fanout-from-provider-live-blocked-runtime-1",
-						runtimeLaunchPlanMaterialization: {
+						targetCacheEvidenceId: "cache-from-provider-live-blocked-runtime",
+						targetCacheRefreshPlanEvidenceId:
+							"cache-refresh-from-provider-live-blocked-runtime",
+						cacheId: "cache-from-provider-live-blocked-runtime",
+						entryId: "entry-from-provider-live-blocked-runtime",
+						reviewerFanoutPlanning: {
 							enabled: true,
-							targetLaunchPlanEvidenceIds: [
-								"launch-plan-blocked-provider-policy",
-								"launch-plan-blocked-provider-architecture",
-								"launch-plan-blocked-provider-verification",
-							],
-							sdkClientAvailable: true,
+							attemptId: "attempt-provider-live-blocked-runtime",
+							parentSessionRef: "ses-provider-live-blocked-runtime-parent",
+							agentRef: "agent-reviewer-provider-live-blocked-runtime",
+							requestedAt: "2026-05-19T00:04:00.000Z",
+							preLaunchAuditRef: "audit-provider-live-blocked-runtime-1",
+							laneLaunchApprovalRef: "approval-provider-live-blocked-runtime-1",
+							persistDerivedFanoutPlanEvidence: true,
+							fanoutPlanEvidenceId:
+								"fanout-from-provider-live-blocked-runtime-1",
+							runtimeLaunchPlanMaterialization: {
+								enabled: true,
+								targetLaunchPlanEvidenceIds: [
+									"launch-plan-blocked-provider-policy",
+									"launch-plan-blocked-provider-architecture",
+									"launch-plan-blocked-provider-verification",
+								],
+								sdkClientAvailable: true,
+							},
+						},
+					},
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-blocked-runtime-1",
+								availability_ref: "availability-live-blocked-runtime-1",
+								highest_tier_eligible: true,
+							};
 						},
 					},
 				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref:
-								"provider-result-redacted-blocked-runtime-1",
-							availability_ref: "availability-live-blocked-runtime-1",
-							highest_tier_eligible: true,
-						};
-					},
-				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-acquisition-blocked-runtime",
-				evidenceId: "provider-acquisition-blocked-runtime-evidence-1",
-				resultId: "provider-acquisition-blocked-runtime-result-1",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-acquisition-blocked-runtime",
+					evidenceId: "provider-acquisition-blocked-runtime-evidence-1",
+					resultId: "provider-acquisition-blocked-runtime-result-1",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		const materialization = (
 			(result.cacheMaterialization as Record<string, unknown>)
@@ -1085,7 +1236,9 @@ test("exact-model provider acquisition runtime launch-plan materialization requi
 });
 
 test("runtime reviewer execution bridge launches persisted plans and accepts durable verdict linkage", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-runtime-reviewer-execution-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-runtime-reviewer-execution-"),
+	);
 	try {
 		const perspectives = [
 			"policy_security",
@@ -1105,32 +1258,45 @@ test("runtime reviewer execution bridge launches persisted plans and accepts dur
 			assert.ok(prepared.writeIntent);
 			return prepared.writeIntent;
 		});
-		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, writeIntents);
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(
+			root,
+			writeIntents,
+		);
 		assert.equal(applied.ok, true, applied.errors.join("; "));
 
 		const fake = fakeRuntimeReviewerExecutionClient();
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskRuntimeReviewerExecutionOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				client: fake.client,
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskRuntimeReviewerExecutionOption]: {
+					enabled: true,
+					durableStateRoot: root,
+					client: fake.client,
+				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const executionTool = hooks.tool?.[flowdeskRuntimeReviewerExecutionToolName];
+		);
+		const executionTool =
+			hooks.tool?.[flowdeskRuntimeReviewerExecutionToolName];
 		assert.ok(executionTool);
-		const raw = await executionTool.execute({
-			request: {
-				workflowId: "workflow-runtime-reviewer-execution",
-				attemptId: "attempt-runtime-reviewer-execution",
-				parentSessionId: "parent-runtime-reviewer",
-				allowActualLaneLaunch: true,
-				observedAt: now,
-				consumedReviewerFanoutApproval: consumedReviewerFanoutApprovalRecord(),
-				verdictExpectations: perspectives.map(runtimeReviewerExecutionExpectation),
+		const raw = await executionTool.execute(
+			{
+				request: {
+					workflowId: "workflow-runtime-reviewer-execution",
+					attemptId: "attempt-runtime-reviewer-execution",
+					parentSessionId: "parent-runtime-reviewer",
+					allowActualLaneLaunch: true,
+					observedAt: now,
+					consumedReviewerFanoutApproval:
+						consumedReviewerFanoutApprovalRecord(),
+					verdictExpectations: perspectives.map(
+						runtimeReviewerExecutionExpectation,
+					),
+				},
 			},
-		}, undefined as never);
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "runtime_reviewer_execution_completed");
 		assert.equal(result.laneCount, 3);
@@ -1139,22 +1305,34 @@ test("runtime reviewer execution bridge launches persisted plans and accepts dur
 		assert.equal(result.linkedVerdictCount, 3);
 		assert.equal(result.linkedLifecycleCount, 3);
 		assert.equal(fake.createCalls.length, 3);
-		assert.deepEqual(fake.createCalls[0], { parentID: "parent-runtime-reviewer" });
+		assert.deepEqual(fake.createCalls[0], {
+			parentID: "parent-runtime-reviewer",
+		});
 		assert.equal(fake.promptCalls.length, 3);
-		assert.equal((fake.promptCalls[0] as { sessionID?: string }).sessionID, "child-runtime-reviewer-policy_security");
+		assert.equal(
+			(fake.promptCalls[0] as { sessionID?: string }).sessionID,
+			"child-runtime-reviewer-policy_security",
+		);
 		assert.equal(fake.messageCalls.length, 3);
-		assert.equal((fake.messageCalls[0] as { sessionID?: string }).sessionID, "child-runtime-reviewer-policy_security");
+		assert.equal(
+			(fake.messageCalls[0] as { sessionID?: string }).sessionID,
+			"child-runtime-reviewer-policy_security",
+		);
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
 			workflowId: "workflow-runtime-reviewer-execution",
 			rootDir: root,
 		});
 		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
 		assert.equal(
-			reloaded.entries.filter((entry) => entry.evidenceClass === "reviewer_verdict").length,
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "reviewer_verdict",
+			).length,
 			3,
 		);
 		assert.equal(
-			reloaded.entries.filter((entry) => entry.evidenceClass === "lane_lifecycle").length,
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "lane_lifecycle",
+			).length,
 			6,
 		);
 	} finally {
@@ -1163,37 +1341,51 @@ test("runtime reviewer execution bridge launches persisted plans and accepts dur
 });
 
 test("runtime reviewer execution bridge is explicit opt-in and blocks before SDK calls without approval", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-runtime-reviewer-execution-blocked-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-runtime-reviewer-execution-blocked-"),
+	);
 	try {
 		const fake = fakeRuntimeReviewerExecutionClient();
-		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		assert.equal(
 			defaultHooks.tool?.[flowdeskRuntimeReviewerExecutionToolName],
 			undefined,
 		);
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskRuntimeReviewerExecutionOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				client: fake.client,
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskRuntimeReviewerExecutionOption]: {
+					enabled: true,
+					durableStateRoot: root,
+					client: fake.client,
+				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const executionTool = hooks.tool?.[flowdeskRuntimeReviewerExecutionToolName];
+		);
+		const executionTool =
+			hooks.tool?.[flowdeskRuntimeReviewerExecutionToolName];
 		assert.ok(executionTool);
-		const raw = await executionTool.execute({
-			request: {
-				workflowId: "workflow-runtime-reviewer-execution",
-				attemptId: "attempt-runtime-reviewer-execution",
-				parentSessionId: "parent-runtime-reviewer",
-				allowActualLaneLaunch: true,
-				verdictExpectations: [runtimeReviewerExecutionExpectation("policy_security")],
+		const raw = await executionTool.execute(
+			{
+				request: {
+					workflowId: "workflow-runtime-reviewer-execution",
+					attemptId: "attempt-runtime-reviewer-execution",
+					parentSessionId: "parent-runtime-reviewer",
+					allowActualLaneLaunch: true,
+					verdictExpectations: [
+						runtimeReviewerExecutionExpectation("policy_security"),
+					],
+				},
 			},
-		}, undefined as never);
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "blocked_before_runtime_reviewer_execution");
 		assert.equal(result.launchAttempted, false);
@@ -1235,73 +1427,102 @@ test("exact-model provider acquisition can chain cache, fanout, launch plans, an
 			resultId: "provider-acquisition-pipeline-result-1",
 		});
 		const consumedApproval = consumedReviewerFanoutApprovalRecord();
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-pipeline-1",
-					targetCacheRefreshPlanEvidenceId: "cache-refresh-pipeline-1",
-					cacheId: "cache-pipeline-1",
-					entryId: "entry-pipeline-1",
-					reviewerFanoutPlanning: {
+					durableStateRoot: root,
+					cacheMaterialization: {
 						enabled: true,
-						attemptId: "attempt-runtime-reviewer-execution",
-						parentSessionRef: "ses-pipeline-parent",
-						agentRef: "agent-reviewer-gpt-frontier",
-						requestedAt: now,
-						preLaunchAuditRef: "audit-pipeline-1",
-						laneLaunchApprovalRef: "approval-pipeline-1",
-						persistDerivedFanoutPlanEvidence: true,
-						fanoutPlanEvidenceId: "fanout-pipeline-1",
-						runtimeLaunchPlanMaterialization: {
+						targetCacheEvidenceId: "cache-pipeline-1",
+						targetCacheRefreshPlanEvidenceId: "cache-refresh-pipeline-1",
+						cacheId: "cache-pipeline-1",
+						entryId: "entry-pipeline-1",
+						reviewerFanoutPlanning: {
 							enabled: true,
-							targetLaunchPlanEvidenceIds: launchPlanEvidenceIds,
-							sdkClientAvailable: true,
-							durableEvidenceRootRef: "evidence-root-pipeline",
-							runtimeReviewerExecution: {
+							attemptId: "attempt-runtime-reviewer-execution",
+							parentSessionRef: "ses-pipeline-parent",
+							agentRef: "agent-reviewer-gpt-frontier",
+							requestedAt: now,
+							preLaunchAuditRef: "audit-pipeline-1",
+							laneLaunchApprovalRef: "approval-pipeline-1",
+							persistDerivedFanoutPlanEvidence: true,
+							fanoutPlanEvidenceId: "fanout-pipeline-1",
+							runtimeLaunchPlanMaterialization: {
 								enabled: true,
-								attemptId: "attempt-runtime-reviewer-execution",
-								parentSessionId: "pipeline-parent",
-								observedAt: now,
-								consumedReviewerFanoutApproval: consumedApproval,
-								verdictExpectations,
+								targetLaunchPlanEvidenceIds: launchPlanEvidenceIds,
+								sdkClientAvailable: true,
+								durableEvidenceRootRef: "evidence-root-pipeline",
+								runtimeReviewerExecution: {
+									enabled: true,
+									attemptId: "attempt-runtime-reviewer-execution",
+									parentSessionId: "pipeline-parent",
+									observedAt: now,
+									consumedReviewerFanoutApproval: consumedApproval,
+									verdictExpectations,
+								},
 							},
 						},
 					},
-				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-pipeline-1",
-							availability_ref: "availability-live-pipeline-1",
-							highest_tier_eligible: true,
-						};
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-pipeline-1",
+								availability_ref: "availability-live-pipeline-1",
+								highest_tier_eligible: true,
+							};
+						},
 					},
+					runtimeReviewerExecutionClient: sdkFake.client,
 				},
-				runtimeReviewerExecutionClient: sdkFake.client,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({ request: acquisitionRequest }, undefined as never);
+		const raw = await liveTool.execute(
+			{ request: acquisitionRequest },
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_recorded");
-		const materialization = result.cacheMaterialization as Record<string, unknown>;
-		const fanoutPlanning = materialization.reviewerFanoutPlanning as Record<string, unknown>;
+		const materialization = result.cacheMaterialization as Record<
+			string,
+			unknown
+		>;
+		const fanoutPlanning = materialization.reviewerFanoutPlanning as Record<
+			string,
+			unknown
+		>;
 		const launchPlanMaterialization =
-			fanoutPlanning.runtimeLaunchPlanMaterialization as Record<string, unknown>;
+			fanoutPlanning.runtimeLaunchPlanMaterialization as Record<
+				string,
+				unknown
+			>;
 		assert.equal(launchPlanMaterialization.state, "materialized");
 		const runtimeReviewerExecution =
-			launchPlanMaterialization.runtimeReviewerExecution as Record<string, unknown>;
-		assert.equal(runtimeReviewerExecution.status, "runtime_reviewer_execution_completed");
+			launchPlanMaterialization.runtimeReviewerExecution as Record<
+				string,
+				unknown
+			>;
+		assert.equal(
+			runtimeReviewerExecution.status,
+			"runtime_reviewer_execution_completed",
+		);
 		assert.equal(runtimeReviewerExecution.laneCount, 3);
-		assert.equal(runtimeReviewerExecution.acceptanceStatus, "verdicts_accepted");
-		assert.equal(runtimeReviewerExecution.durableLinkageStatus, "durable_verdicts_accepted");
+		assert.equal(
+			runtimeReviewerExecution.acceptanceStatus,
+			"verdicts_accepted",
+		);
+		assert.equal(
+			runtimeReviewerExecution.durableLinkageStatus,
+			"durable_verdicts_accepted",
+		);
 		assert.equal(runtimeReviewerExecution.linkedVerdictCount, 3);
 		assert.equal(runtimeReviewerExecution.linkedLifecycleCount, 3);
 		assert.equal(sdkFake.createCalls.length, 3);
@@ -1313,15 +1534,21 @@ test("exact-model provider acquisition can chain cache, fanout, launch plans, an
 		});
 		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
 		assert.equal(
-			reloaded.entries.filter((entry) => entry.evidenceClass === "reviewer_verdict").length,
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "reviewer_verdict",
+			).length,
 			3,
 		);
 		assert.equal(
-			reloaded.entries.filter((entry) => entry.evidenceClass === "lane_lifecycle").length,
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "lane_lifecycle",
+			).length,
 			6,
 		);
 		assert.equal(
-			reloaded.entries.filter((entry) => entry.evidenceClass === "runtime_lane_launch_plan").length,
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "runtime_lane_launch_plan",
+			).length,
 			3,
 		);
 	} finally {
@@ -1330,70 +1557,89 @@ test("exact-model provider acquisition can chain cache, fanout, launch plans, an
 });
 
 test("exact-model provider acquisition chained reviewer execution requires explicit nested opt-in and approval", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-pipeline-blocked-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-pipeline-blocked-"),
+	);
 	try {
 		const sdkFake = fakeRuntimeReviewerExecutionClient();
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-pipeline-blocked",
-					targetCacheRefreshPlanEvidenceId: "cache-refresh-pipeline-blocked",
-					cacheId: "cache-pipeline-blocked",
-					entryId: "entry-pipeline-blocked",
-					reviewerFanoutPlanning: {
+					durableStateRoot: root,
+					cacheMaterialization: {
 						enabled: true,
-						attemptId: "attempt-pipeline-blocked",
-						parentSessionRef: "ses-pipeline-blocked-parent",
-						agentRef: "agent-reviewer-blocked",
-						requestedAt: now,
-						preLaunchAuditRef: "audit-pipeline-blocked",
-						laneLaunchApprovalRef: "approval-pipeline-blocked",
-						persistDerivedFanoutPlanEvidence: true,
-						fanoutPlanEvidenceId: "fanout-pipeline-blocked",
-						runtimeLaunchPlanMaterialization: {
+						targetCacheEvidenceId: "cache-pipeline-blocked",
+						targetCacheRefreshPlanEvidenceId: "cache-refresh-pipeline-blocked",
+						cacheId: "cache-pipeline-blocked",
+						entryId: "entry-pipeline-blocked",
+						reviewerFanoutPlanning: {
 							enabled: true,
-							targetLaunchPlanEvidenceIds: [
-								"launch-plan-pipeline-blocked-policy",
-								"launch-plan-pipeline-blocked-architecture",
-								"launch-plan-pipeline-blocked-verification",
-							],
-							sdkClientAvailable: true,
-							durableEvidenceRootRef: "evidence-root-pipeline-blocked",
+							attemptId: "attempt-pipeline-blocked",
+							parentSessionRef: "ses-pipeline-blocked-parent",
+							agentRef: "agent-reviewer-blocked",
+							requestedAt: now,
+							preLaunchAuditRef: "audit-pipeline-blocked",
+							laneLaunchApprovalRef: "approval-pipeline-blocked",
+							persistDerivedFanoutPlanEvidence: true,
+							fanoutPlanEvidenceId: "fanout-pipeline-blocked",
+							runtimeLaunchPlanMaterialization: {
+								enabled: true,
+								targetLaunchPlanEvidenceIds: [
+									"launch-plan-pipeline-blocked-policy",
+									"launch-plan-pipeline-blocked-architecture",
+									"launch-plan-pipeline-blocked-verification",
+								],
+								sdkClientAvailable: true,
+								durableEvidenceRootRef: "evidence-root-pipeline-blocked",
+							},
 						},
 					},
-				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-blocked",
-							availability_ref: "availability-live-blocked",
-							highest_tier_eligible: true,
-						};
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-blocked",
+								availability_ref: "availability-live-blocked",
+								highest_tier_eligible: true,
+							};
+						},
 					},
+					runtimeReviewerExecutionClient: sdkFake.client,
 				},
-				runtimeReviewerExecutionClient: sdkFake.client,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-pipeline-blocked",
-				evidenceId: "provider-acquisition-pipeline-blocked-evidence-1",
-				resultId: "provider-acquisition-pipeline-blocked-result-1",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-pipeline-blocked",
+					evidenceId: "provider-acquisition-pipeline-blocked-evidence-1",
+					resultId: "provider-acquisition-pipeline-blocked-result-1",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
-		const materialization = result.cacheMaterialization as Record<string, unknown>;
-		const fanoutPlanning = materialization.reviewerFanoutPlanning as Record<string, unknown>;
+		const materialization = result.cacheMaterialization as Record<
+			string,
+			unknown
+		>;
+		const fanoutPlanning = materialization.reviewerFanoutPlanning as Record<
+			string,
+			unknown
+		>;
 		const launchPlanMaterialization =
-			fanoutPlanning.runtimeLaunchPlanMaterialization as Record<string, unknown>;
+			fanoutPlanning.runtimeLaunchPlanMaterialization as Record<
+				string,
+				unknown
+			>;
 		assert.equal(launchPlanMaterialization.runtimeReviewerExecution, undefined);
 		assert.equal(sdkFake.createCalls.length, 0);
 		assert.equal(sdkFake.promptCalls.length, 0);
@@ -1476,10 +1722,13 @@ function consumedFallbackApprovalRecord() {
 }
 
 test("managed fallback regate tool is explicit opt-in and returns a fresh regate plan only after orchestrator success", async () => {
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
 	assert.equal(
 		defaultHooks.tool?.[flowdeskManagedFallbackRegateToolName],
 		undefined,
@@ -1493,10 +1742,13 @@ test("managed fallback regate tool is explicit opt-in and returns a fresh regate
 	const regateTool = hooks.tool?.[flowdeskManagedFallbackRegateToolName];
 	assert.ok(regateTool);
 
-	const raw = await regateTool.execute({
-		decision: fallbackDecisionRecord(),
-		consumedApproval: consumedFallbackApprovalRecord(),
-	}, undefined as never);
+	const raw = await regateTool.execute(
+		{
+			decision: fallbackDecisionRecord(),
+			consumedApproval: consumedFallbackApprovalRecord(),
+		},
+		undefined as never,
+	);
 	const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 	assert.equal(
 		result.status,
@@ -1518,11 +1770,17 @@ test("managed fallback regate tool is explicit opt-in and returns a fresh regate
 });
 
 test("quick reviewer run tool is absent by default and registers only with explicit opt-in", async () => {
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
-	assert.equal(defaultHooks.tool?.[flowdeskQuickReviewerRunToolName], undefined);
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		defaultHooks.tool?.[flowdeskQuickReviewerRunToolName],
+		undefined,
+	);
 
 	const dummyClient = {
 		session: {
@@ -1554,15 +1812,21 @@ test("quick reviewer run tool is absent by default and registers only with expli
 
 	const blocked = JSON.parse(
 		toolOutput(
-			await quickTool.execute({
-				prompt: "Review this content",
-				developerModeAcknowledged: false,
-				allowProviderCall: true,
-			}, undefined as never),
+			await quickTool.execute(
+				{
+					prompt: "Review this content",
+					developerModeAcknowledged: false,
+					allowProviderCall: true,
+				},
+				undefined as never,
+			),
 		),
 	) as Record<string, unknown>;
 	assert.equal(blocked.status, "blocked_before_quick_reviewer_run");
-	assert.match(String(blocked.redactedBlockReason), /developerModeAcknowledged/);
+	assert.match(
+		String(blocked.redactedBlockReason),
+		/developerModeAcknowledged/,
+	);
 	const description = String(quickTool.description ?? "");
 	assert.match(description, /code review|multi-perspective/);
 	assert.match(description, /WHEN TO USE/);
@@ -1584,20 +1848,26 @@ test("quick reviewer run tool is absent by default and registers only with expli
 test("managed fallback regate tool persists regate plan as durable evidence when opt-in is set", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-fallback-regate-persist-"));
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskManagedFallbackRegateOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskManagedFallbackRegateOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const regateTool = hooks.tool?.[flowdeskManagedFallbackRegateToolName];
 		assert.ok(regateTool);
-		const raw = await regateTool.execute({
-			decision: fallbackDecisionRecord(),
-			consumedApproval: consumedFallbackApprovalRecord(),
-			persistRegatePlanEvidence: true,
-			regatePlanEvidenceId: "regate-plan-evidence-1",
-		}, undefined as never);
+		const raw = await regateTool.execute(
+			{
+				decision: fallbackDecisionRecord(),
+				consumedApproval: consumedFallbackApprovalRecord(),
+				persistRegatePlanEvidence: true,
+				regatePlanEvidenceId: "regate-plan-evidence-1",
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "regate_plan_ready");
 		const evidence = result.regatePlanEvidence as Record<string, unknown>;
@@ -1639,10 +1909,16 @@ test("managed fallback regate tool blocks before plan when decision or approval 
 
 	const terminal = JSON.parse(
 		toolOutput(
-			await regateTool.execute({
-				decision: fallbackDecisionRecord({ depth: 2, state: "terminal_max_depth" }),
-				consumedApproval: consumedFallbackApprovalRecord(),
-			}, undefined as never),
+			await regateTool.execute(
+				{
+					decision: fallbackDecisionRecord({
+						depth: 2,
+						state: "terminal_max_depth",
+					}),
+					consumedApproval: consumedFallbackApprovalRecord(),
+				},
+				undefined as never,
+			),
 		),
 	) as Record<string, unknown>;
 	assert.equal(terminal.status, "blocked_before_regate_plan");
@@ -1652,45 +1928,56 @@ test("managed fallback regate tool blocks before plan when decision or approval 
 });
 
 test("exact-model provider acquisition cache materialization blocks duplicate target evidence before extra cache-refresh writes", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-acquisition-cache-duplicate-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-acquisition-cache-duplicate-"),
+	);
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				cacheMaterialization: {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
 					enabled: true,
-					targetCacheEvidenceId: "cache-from-provider-live-dup",
-					targetCacheRefreshPlanEvidenceId: "cache-refresh-from-provider-live-dup",
-					cacheId: "cache-from-provider-live-dup",
-					entryId: "entry-from-provider-live-dup",
-				},
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-cache-dup",
-							availability_ref: "availability-live-cache-dup",
-							highest_tier_eligible: true,
-						};
+					durableStateRoot: root,
+					cacheMaterialization: {
+						enabled: true,
+						targetCacheEvidenceId: "cache-from-provider-live-dup",
+						targetCacheRefreshPlanEvidenceId:
+							"cache-refresh-from-provider-live-dup",
+						cacheId: "cache-from-provider-live-dup",
+						entryId: "entry-from-provider-live-dup",
+					},
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-cache-dup",
+								availability_ref: "availability-live-cache-dup",
+								highest_tier_eligible: true,
+							};
+						},
 					},
 				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
 
-		const firstRaw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-acquisition-cache-duplicate",
-				evidenceId: "provider-acquisition-cache-duplicate-1",
-				resultId: "provider-acquisition-cache-duplicate-result-1",
-				idempotencyRef: "provider-acquisition-cache-duplicate-idempotency-1",
-				liveTestRunRef: "provider-acquisition-cache-duplicate-run-1",
-			}),
-		}, undefined as never);
+		const firstRaw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-acquisition-cache-duplicate",
+					evidenceId: "provider-acquisition-cache-duplicate-1",
+					resultId: "provider-acquisition-cache-duplicate-result-1",
+					idempotencyRef: "provider-acquisition-cache-duplicate-idempotency-1",
+					liveTestRunRef: "provider-acquisition-cache-duplicate-run-1",
+				}),
+			},
+			undefined as never,
+		);
 		const first = JSON.parse(toolOutput(firstRaw)) as Record<string, unknown>;
 		assert.equal(first.status, "provider_acquisition_recorded");
 		assert.equal(
@@ -1698,15 +1985,18 @@ test("exact-model provider acquisition cache materialization blocks duplicate ta
 			"materialized",
 		);
 
-		const secondRaw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-acquisition-cache-duplicate",
-				evidenceId: "provider-acquisition-cache-duplicate-2",
-				resultId: "provider-acquisition-cache-duplicate-result-2",
-				idempotencyRef: "provider-acquisition-cache-duplicate-idempotency-2",
-				liveTestRunRef: "provider-acquisition-cache-duplicate-run-2",
-			}),
-		}, undefined as never);
+		const secondRaw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-acquisition-cache-duplicate",
+					evidenceId: "provider-acquisition-cache-duplicate-2",
+					resultId: "provider-acquisition-cache-duplicate-result-2",
+					idempotencyRef: "provider-acquisition-cache-duplicate-idempotency-2",
+					liveTestRunRef: "provider-acquisition-cache-duplicate-run-2",
+				}),
+			},
+			undefined as never,
+		);
 		const second = JSON.parse(toolOutput(secondRaw)) as Record<string, unknown>;
 		assert.equal(second.status, "provider_acquisition_recorded");
 		const secondMaterialization = second.cacheMaterialization as
@@ -1733,10 +2023,7 @@ test("exact-model provider acquisition cache materialization blocks duplicate ta
 			"provider-result-redacted-cache-dup",
 		);
 		assert.equal(secondMaterialization.pairSelectionReady, false);
-		assert.equal(
-			Array.isArray(secondMaterialization.blockedLabels),
-			true,
-		);
+		assert.equal(Array.isArray(secondMaterialization.blockedLabels), true);
 		assert.ok(
 			(secondMaterialization.blockedLabels as unknown[]).includes(
 				"target_cache_evidence_duplicate",
@@ -1770,8 +2057,7 @@ test("exact-model provider acquisition cache materialization blocks duplicate ta
 		assert.equal(
 			reloaded.entries.filter(
 				(entry) =>
-					entry.evidenceClass ===
-					"exact_model_availability_cache_refresh_plan",
+					entry.evidenceClass === "exact_model_availability_cache_refresh_plan",
 			).length,
 			1,
 		);
@@ -1790,10 +2076,12 @@ test("exact-model provider acquisition can use OpenCode metadata client without 
 					calls.push(`config.providers:${parameters?.directory ?? "none"}`);
 					return {
 						data: {
-							providers: [{
-								id: "anthropic",
-								models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
-							}],
+							providers: [
+								{
+									id: "anthropic",
+									models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+								},
+							],
 							default: { anthropic: "claude-opus-4-5" },
 						},
 					};
@@ -1804,10 +2092,12 @@ test("exact-model provider acquisition can use OpenCode metadata client without 
 					calls.push(`provider.list:${parameters?.directory ?? "none"}`);
 					return {
 						data: {
-							all: [{
-								id: "anthropic",
-								models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
-							}],
+							all: [
+								{
+									id: "anthropic",
+									models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+								},
+							],
 							default: { anthropic: "claude-opus-4-5" },
 							connected: ["anthropic"],
 						},
@@ -1827,7 +2117,10 @@ test("exact-model provider acquisition can use OpenCode metadata client without 
 				},
 			},
 		};
-		const defaultHooks = await flowdeskOpenCodeServerPlugin.server({ client: opencodeClient, directory: "/flowdesk-project" } as never);
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server({
+			client: opencodeClient,
+			directory: "/flowdesk-project",
+		} as never);
 		assert.equal(
 			Object.keys(defaultHooks.tool ?? {}).includes(
 				flowdeskExactModelProviderAcquisitionLiveTestToolName,
@@ -1835,29 +2128,39 @@ test("exact-model provider acquisition can use OpenCode metadata client without 
 			false,
 		);
 
-		const hooks = await flowdeskOpenCodeServerPlugin.server({ client: opencodeClient, directory: "/flowdesk-project" } as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: opencodeClient, directory: "/flowdesk-project" } as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+					enabled: true,
+					durableStateRoot: root,
+				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId: "workflow-provider-metadata-1",
-				evidenceId: "provider-metadata-evidence-1",
-				resultId: "provider-metadata-result-1",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId: "workflow-provider-metadata-1",
+					evidenceId: "provider-metadata-evidence-1",
+					resultId: "provider-metadata-result-1",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_recorded");
 		assert.equal(result.providerCallAttempted, false);
 		assert.equal(result.writeAttempted, true);
 		assert.equal(result.evidenceReloaded, true);
-		assert.equal(result.sanitizedProviderResultRef, "provider-result-anthropic-claude-opus-4-5-metadata");
+		assert.equal(
+			result.sanitizedProviderResultRef,
+			"provider-result-anthropic-claude-opus-4-5-metadata",
+		);
 		assert.deepEqual(calls, [
 			"config.providers:/flowdesk-project",
 			"provider.list:/flowdesk-project",
@@ -1898,9 +2201,19 @@ test("exact-model provider acquisition metadata client fails closed for missing 
 		{
 			name: "model",
 			client: {
-				config: { providers: () => ({ data: { providers: [{ id: "anthropic", models: {} }], default: {} } }) },
+				config: {
+					providers: () => ({
+						data: { providers: [{ id: "anthropic", models: {} }], default: {} },
+					}),
+				},
 				provider: {
-					list: () => ({ data: { all: [{ id: "anthropic", models: {} }], default: {}, connected: ["anthropic"] } }),
+					list: () => ({
+						data: {
+							all: [{ id: "anthropic", models: {} }],
+							default: {},
+							connected: ["anthropic"],
+						},
+					}),
 					auth: () => ({ data: { anthropic: [{ type: "oauth" }] } }),
 				},
 			},
@@ -1909,9 +2222,32 @@ test("exact-model provider acquisition metadata client fails closed for missing 
 		{
 			name: "auth",
 			client: {
-				config: { providers: () => ({ data: { providers: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }], default: {} } }) },
+				config: {
+					providers: () => ({
+						data: {
+							providers: [
+								{
+									id: "anthropic",
+									models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+								},
+							],
+							default: {},
+						},
+					}),
+				},
 				provider: {
-					list: () => ({ data: { all: [{ id: "anthropic", models: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }], default: {}, connected: [] } }),
+					list: () => ({
+						data: {
+							all: [
+								{
+									id: "anthropic",
+									models: { "claude-opus-4-5": { id: "claude-opus-4-5" } },
+								},
+							],
+							default: {},
+							connected: [],
+						},
+					}),
 					auth: () => ({ data: {} }),
 				},
 			},
@@ -1920,33 +2256,45 @@ test("exact-model provider acquisition metadata client fails closed for missing 
 	];
 
 	for (const entry of cases) {
-		const root = mkdtempSync(join(tmpdir(), `flowdesk-provider-${entry.name}-missing-`));
+		const root = mkdtempSync(
+			join(tmpdir(), `flowdesk-provider-${entry.name}-missing-`),
+		);
 		try {
-			const hooks = await flowdeskOpenCodeServerPlugin.server({ client: entry.client, directory: "/flowdesk-project" } as never, {
-				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-					enabled: true,
-					durableStateRoot: root,
+			const hooks = await flowdeskOpenCodeServerPlugin.server(
+				{ client: entry.client, directory: "/flowdesk-project" } as never,
+				{
+					[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+						enabled: true,
+						durableStateRoot: root,
+					},
+					localNonDispatchAdapter: false,
+					naturalLanguageRouting: false,
 				},
-				localNonDispatchAdapter: false,
-				naturalLanguageRouting: false,
-			});
-			const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+			);
+			const liveTool =
+				hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 			assert.ok(liveTool);
 			const workflowId = `workflow-provider-${entry.name}-missing`;
 			const evidenceId = `provider-${entry.name}-missing-evidence`;
-			const raw = await liveTool.execute({
-				request: exactModelProviderAcquisitionToolRequest({
-					workflowId,
-					evidenceId,
-					resultId: `provider-${entry.name}-missing-result`,
-				}),
-			}, undefined as never);
+			const raw = await liveTool.execute(
+				{
+					request: exactModelProviderAcquisitionToolRequest({
+						workflowId,
+						evidenceId,
+						resultId: `provider-${entry.name}-missing-result`,
+					}),
+				},
+				undefined as never,
+			);
 			const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 			assert.equal(result.status, "provider_acquisition_blocked");
 			assert.equal(result.providerCallAttempted, false);
 			assert.equal(result.writeAttempted, true);
 			assert.equal(result.resultState, "blocked");
-			const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+			const reloaded = reloadFlowDeskSessionEvidenceV1({
+				workflowId,
+				rootDir: root,
+			});
 			assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
 			const record = reloaded.entries.find(
 				(item) => item.evidenceId === evidenceId,
@@ -1954,7 +2302,9 @@ test("exact-model provider acquisition metadata client fails closed for missing 
 			assert.ok(record);
 			assert.equal(record.providerCall, false);
 			assert.equal(record.acquisition_attempted, false);
-			assert.ok((record.blocked_labels as unknown[]).includes(entry.blockedLabel));
+			assert.ok(
+				(record.blocked_labels as unknown[]).includes(entry.blockedLabel),
+			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -1962,8 +2312,11 @@ test("exact-model provider acquisition metadata client fails closed for missing 
 });
 
 test("prompt-backed provider acquisition blocks unallowed exact model before prompt", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-allowlist-"));
-	const { client, metadataCalls, promptCalls } = promptBackedAcquisitionOpenCodeClient();
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-prompt-allowlist-"),
+	);
+	const { client, metadataCalls, promptCalls } =
+		promptBackedAcquisitionOpenCodeClient();
 	try {
 		const result = await executeProviderAcquisitionTool({
 			root,
@@ -1981,7 +2334,9 @@ test("prompt-backed provider acquisition blocks unallowed exact model before pro
 		});
 		assert.equal(result.status, "provider_acquisition_blocked");
 		assert.equal(result.providerCallAttempted, false);
-		assert.deepEqual(result.blockedLabels, ["opencode_sdk_provider_model_not_allowed"]);
+		assert.deepEqual(result.blockedLabels, [
+			"opencode_sdk_provider_model_not_allowed",
+		]);
 		assert.deepEqual(metadataCalls, [
 			"config.providers:/flowdesk-project",
 			"provider.list:/flowdesk-project",
@@ -1994,7 +2349,9 @@ test("prompt-backed provider acquisition blocks unallowed exact model before pro
 });
 
 test("prompt-backed provider acquisition requires explicit provider-call allow flag", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-allow-flag-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-prompt-allow-flag-"),
+	);
 	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient();
 	try {
 		const result = await executeProviderAcquisitionTool({
@@ -2013,7 +2370,9 @@ test("prompt-backed provider acquisition requires explicit provider-call allow f
 		});
 		assert.equal(result.status, "provider_acquisition_blocked");
 		assert.equal(result.providerCallAttempted, false);
-		assert.deepEqual(result.blockedLabels, ["opencode_sdk_provider_call_not_allowed"]);
+		assert.deepEqual(result.blockedLabels, [
+			"opencode_sdk_provider_call_not_allowed",
+		]);
 		assert.equal(promptCalls.length, 0);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -2021,8 +2380,11 @@ test("prompt-backed provider acquisition requires explicit provider-call allow f
 });
 
 test("prompt-backed provider acquisition blocks metadata preflight failure before prompt", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-preflight-"));
-	const { client, metadataCalls, promptCalls } = promptBackedAcquisitionOpenCodeClient({ metadataAvailable: false });
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-prompt-preflight-"),
+	);
+	const { client, metadataCalls, promptCalls } =
+		promptBackedAcquisitionOpenCodeClient({ metadataAvailable: false });
 	try {
 		const result = await executeProviderAcquisitionTool({
 			root,
@@ -2070,9 +2432,18 @@ test("prompt-backed provider acquisition calls prompt once with exact runtime mo
 		});
 		assert.equal(result.status, "provider_acquisition_recorded");
 		assert.equal(result.providerCallAttempted, true);
-		assert.equal(result.sanitizedProviderResultRef, "provider-result-anthropic-claude-opus-4-5-sdk-sentinel");
-		assert.equal(result.availabilityRef, "availability-anthropic-claude-opus-4-5-sdk-sentinel");
-		assert.equal(JSON.stringify(result).includes("RAW_MODEL_SECRET_RESPONSE"), false);
+		assert.equal(
+			result.sanitizedProviderResultRef,
+			"provider-result-anthropic-claude-opus-4-5-sdk-sentinel",
+		);
+		assert.equal(
+			result.availabilityRef,
+			"availability-anthropic-claude-opus-4-5-sdk-sentinel",
+		);
+		assert.equal(
+			JSON.stringify(result).includes("RAW_MODEL_SECRET_RESPONSE"),
+			false,
+		);
 		assert.equal(promptCalls.length, 1);
 		assert.deepEqual(promptCalls[0], {
 			path: { id: "provider-sdk-session-1" },
@@ -2080,22 +2451,40 @@ test("prompt-backed provider acquisition calls prompt once with exact runtime mo
 			body: {
 				model: { providerID: "anthropic", modelID: "claude-opus-4-5" },
 				agent: "reviewer",
-				parts: [{ type: "text", text: "FlowDesk exact-model provider acquisition sentinel. Return a short acknowledgement only." }],
+				parts: [
+					{
+						type: "text",
+						text: "FlowDesk exact-model provider acquisition sentinel. Return a short acknowledgement only.",
+					},
+				],
 			},
 		});
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-provider-sdk-success", rootDir: root });
-		const record = reloaded.entries.find((entry) => entry.evidenceId === "provider-sdk-success-evidence")?.record as Record<string, unknown> | undefined;
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-sdk-success",
+			rootDir: root,
+		});
+		const record = reloaded.entries.find(
+			(entry) => entry.evidenceId === "provider-sdk-success-evidence",
+		)?.record as Record<string, unknown> | undefined;
 		assert.ok(record);
 		assert.equal(record.providerCall, true);
-		assert.equal(record.sanitized_provider_result_ref, "provider-result-anthropic-claude-opus-4-5-sdk-sentinel");
-		assert.equal(JSON.stringify(record).includes("RAW_MODEL_SECRET_RESPONSE"), false);
+		assert.equal(
+			record.sanitized_provider_result_ref,
+			"provider-result-anthropic-claude-opus-4-5-sdk-sentinel",
+		);
+		assert.equal(
+			JSON.stringify(record).includes("RAW_MODEL_SECRET_RESPONSE"),
+			false,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
 test("prompt-backed provider acquisition blocks duplicate durable refs before second prompt", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-duplicate-"));
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-provider-prompt-duplicate-"),
+	);
 	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient();
 	try {
 		const promptBackedCheck = {
@@ -2160,10 +2549,15 @@ test("prompt-backed provider acquisition blocks duplicate durable refs before se
 			/duplicate idempotency evidence blocks before any provider call/,
 		);
 		assert.equal(promptCalls.length, 1);
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-provider-sdk-duplicate", rootDir: root });
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-sdk-duplicate",
+			rootDir: root,
+		});
 		assert.equal(
 			reloaded.entries.filter(
-				(entry) => entry.evidenceClass === "exact_model_availability_cache_provider_acquisition_result",
+				(entry) =>
+					entry.evidenceClass ===
+					"exact_model_availability_cache_provider_acquisition_result",
 			).length,
 			1,
 		);
@@ -2174,7 +2568,9 @@ test("prompt-backed provider acquisition blocks duplicate durable refs before se
 
 test("prompt-backed provider acquisition records sanitized blocked evidence on prompt throw", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-prompt-throw-"));
-	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient({ promptThrows: true });
+	const { client, promptCalls } = promptBackedAcquisitionOpenCodeClient({
+		promptThrows: true,
+	});
 	try {
 		const result = await executeProviderAcquisitionTool({
 			root,
@@ -2192,16 +2588,37 @@ test("prompt-backed provider acquisition records sanitized blocked evidence on p
 		});
 		assert.equal(result.status, "provider_acquisition_blocked");
 		assert.equal(result.providerCallAttempted, true);
-		assert.deepEqual(result.blockedLabels, ["opencode_sdk_provider_call_failed"]);
-		assert.equal(JSON.stringify(result).includes("provider response token secret raw failure"), false);
+		assert.deepEqual(result.blockedLabels, [
+			"opencode_sdk_provider_call_failed",
+		]);
+		assert.equal(
+			JSON.stringify(result).includes(
+				"provider response token secret raw failure",
+			),
+			false,
+		);
 		assert.equal(promptCalls.length, 1);
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-provider-sdk-throw", rootDir: root });
-		const record = reloaded.entries.find((entry) => entry.evidenceId === "provider-sdk-throw-evidence")?.record as Record<string, unknown> | undefined;
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-provider-sdk-throw",
+			rootDir: root,
+		});
+		const record = reloaded.entries.find(
+			(entry) => entry.evidenceId === "provider-sdk-throw-evidence",
+		)?.record as Record<string, unknown> | undefined;
 		assert.ok(record);
 		assert.equal(record.state, "blocked");
 		assert.equal(record.providerCall, true);
-		assert.ok((record.blocked_labels as unknown[]).includes("opencode_sdk_provider_call_failed"));
-		assert.equal(JSON.stringify(record).includes("provider response token secret raw failure"), false);
+		assert.ok(
+			(record.blocked_labels as unknown[]).includes(
+				"opencode_sdk_provider_call_failed",
+			),
+		);
+		assert.equal(
+			JSON.stringify(record).includes(
+				"provider response token secret raw failure",
+			),
+			false,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -2210,49 +2627,64 @@ test("prompt-backed provider acquisition records sanitized blocked evidence on p
 test("exact-model provider acquisition live-test rejects unsanitized client payloads", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-raw-reject-"));
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
-				enabled: true,
-				durableStateRoot: root,
-				client: {
-					checkExactModelAvailability() {
-						return {
-							outcome: "available",
-							sanitized_provider_result_ref: "provider-result-redacted-raw-test",
-							availability_ref: "availability-live-raw-test",
-							highest_tier_eligible: true,
-							raw_provider_payload: "provider response token secret",
-						};
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskExactModelProviderAcquisitionLiveTestOption]: {
+					enabled: true,
+					durableStateRoot: root,
+					client: {
+						checkExactModelAvailability() {
+							return {
+								outcome: "available",
+								sanitized_provider_result_ref:
+									"provider-result-redacted-raw-test",
+								availability_ref: "availability-live-raw-test",
+								highest_tier_eligible: true,
+								raw_provider_payload: "provider response token secret",
+							};
+						},
 					},
 				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
 			},
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
-		const liveTool = hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
+		);
+		const liveTool =
+			hooks.tool?.[flowdeskExactModelProviderAcquisitionLiveTestToolName];
 		assert.ok(liveTool);
 		const workflowId = "workflow-provider-raw-reject";
 		const evidenceId = "provider-raw-reject-evidence";
-		const raw = await liveTool.execute({
-			request: exactModelProviderAcquisitionToolRequest({
-				workflowId,
-				evidenceId,
-				resultId: "provider-raw-reject-result",
-			}),
-		}, undefined as never);
+		const raw = await liveTool.execute(
+			{
+				request: exactModelProviderAcquisitionToolRequest({
+					workflowId,
+					evidenceId,
+					resultId: "provider-raw-reject-result",
+				}),
+			},
+			undefined as never,
+		);
 		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
 		assert.equal(result.status, "provider_acquisition_blocked");
 		assert.equal(result.providerCallAttempted, true);
 		assert.equal("raw_provider_payload" in result, false);
 		assert.equal("result" in result, false);
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId,
+			rootDir: root,
+		});
 		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
 		const record = reloaded.entries.find(
 			(item) => item.evidenceId === evidenceId,
 		)?.record as Record<string, unknown> | undefined;
 		assert.ok(record);
 		assert.equal(record.state, "blocked");
-		assert.ok((record.blocked_labels as unknown[]).includes("provider_acquisition_result_not_sanitized"));
+		assert.ok(
+			(record.blocked_labels as unknown[]).includes(
+				"provider_acquisition_result_not_sanitized",
+			),
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -2447,43 +2879,72 @@ test("server plugin loads project config and fails closed for missing or disabli
 			`${JSON.stringify(release1ProjectConfig(), null, 2)}\n`,
 			"utf8",
 		);
-		const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskNaturalLanguageRoutingOption]: true,
-			[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
-		})) as ChatMessageHooks;
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
+			},
+		)) as ChatMessageHooks;
 		assert.ok(hooks["chat.message"]);
 		const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
 		assert.ok(doctor);
-		const result = JSON.parse(toolOutput(await doctor.execute({}, undefined as never))) as Record<string, unknown>;
-		assert.equal((result.projectConfig as { status?: unknown }).status, "loaded");
-		assert.equal((result.projectConfig as { configRef?: unknown }).configRef, "config-test");
+		const result = JSON.parse(
+			toolOutput(await doctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(
+			(result.projectConfig as { status?: unknown }).status,
+			"loaded",
+		);
+		assert.equal(
+			(result.projectConfig as { configRef?: unknown }).configRef,
+			"config-test",
+		);
 
 		writeFileSync(
 			join(root, ".flowdesk", "config.json"),
 			`${JSON.stringify(release1ProjectConfig({ chat_intake_mode: "off", hook_harness_mode: "off", disabled_modes: ["chat_routed", "real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"] }), null, 2)}\n`,
 			"utf8",
 		);
-		const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskNaturalLanguageRoutingOption]: true,
-			[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
-		})) as ChatMessageHooks;
+		const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
+			},
+		)) as ChatMessageHooks;
 		assert.equal(disabledHooks["chat.message"], undefined);
 		const disabledDoctor = disabledHooks.tool?.[flowdeskPreSpikeDoctorToolName];
 		assert.ok(disabledDoctor);
-		const disabledResult = JSON.parse(toolOutput(await disabledDoctor.execute({}, undefined as never))) as Record<string, unknown>;
+		const disabledResult = JSON.parse(
+			toolOutput(await disabledDoctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
 		assert.equal(disabledResult.naturalLanguageRoutingProfile, "disabled");
 
-		const missingRoot = mkdtempSync(join(tmpdir(), "flowdesk-project-config-missing-"));
+		const missingRoot = mkdtempSync(
+			join(tmpdir(), "flowdesk-project-config-missing-"),
+		);
 		try {
-			const missingHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-				[flowdeskNaturalLanguageRoutingOption]: true,
-				[flowdeskProjectConfigOption]: { enabled: true, rootDir: missingRoot },
-			})) as ChatMessageHooks;
+			const missingHooks = (await flowdeskOpenCodeServerPlugin.server(
+				undefined as never,
+				{
+					[flowdeskNaturalLanguageRoutingOption]: true,
+					[flowdeskProjectConfigOption]: {
+						enabled: true,
+						rootDir: missingRoot,
+					},
+				},
+			)) as ChatMessageHooks;
 			assert.equal(missingHooks["chat.message"], undefined);
 			const missingDoctor = missingHooks.tool?.[flowdeskPreSpikeDoctorToolName];
 			assert.ok(missingDoctor);
-			const missingResult = JSON.parse(toolOutput(await missingDoctor.execute({}, undefined as never))) as Record<string, unknown>;
-			assert.equal((missingResult.projectConfig as { status?: unknown }).status, "missing");
+			const missingResult = JSON.parse(
+				toolOutput(await missingDoctor.execute({}, undefined as never)),
+			) as Record<string, unknown>;
+			assert.equal(
+				(missingResult.projectConfig as { status?: unknown }).status,
+				"missing",
+			);
 		} finally {
 			rmSync(missingRoot, { recursive: true, force: true });
 		}
@@ -2552,10 +3013,10 @@ test("chat intake tool evaluates routing and executes local command-backed resul
 		continuousWithoutPlan.evaluation?.response?.route_decision,
 		"ask_clarification",
 	);
-	assert.deepEqual(continuousWithoutPlan.evaluation?.response?.safe_next_actions, [
-		"ask_clarification",
-		"/flowdesk-status",
-	]);
+	assert.deepEqual(
+		continuousWithoutPlan.evaluation?.response?.safe_next_actions,
+		["ask_clarification", "/flowdesk-status"],
+	);
 	assert.equal(continuousWithoutPlan.routedToolName, "flowdesk_status");
 	assert.equal(continuousWithoutPlan.runtimeExecution, false);
 	assert.equal(continuousWithoutPlan.actualLaneLaunch, false);
@@ -2577,7 +3038,10 @@ test("chat intake tool evaluates routing and executes local command-backed resul
 		),
 	) as NaturalLanguageRoutingTestResult;
 	assert.equal(planForContinuous.routedToolName, "flowdesk_plan");
-	assert.equal(planForContinuous.routedToolResult?.localState?.workflowState, "ready_to_run");
+	assert.equal(
+		planForContinuous.routedToolResult?.localState?.workflowState,
+		"ready_to_run",
+	);
 
 	const continuousWithPlan = JSON.parse(
 		toolOutput(
@@ -2761,7 +3225,10 @@ test("chat intake tool evaluates routing and executes local command-backed resul
 	]);
 	assert.equal(exportDebug.routedToolName, "flowdesk_export_debug");
 	assert.equal(exportDebug.routedToolResult?.handler?.ok, true);
-	assert.equal(exportDebug.routedToolResult?.localState?.stateWriteApplied, true);
+	assert.equal(
+		exportDebug.routedToolResult?.localState?.stateWriteApplied,
+		true,
+	);
 	assert.equal(exportDebug.providerCall, false);
 	assert.equal(exportDebug.runtimeExecution, false);
 });
@@ -2769,28 +3236,56 @@ test("chat intake tool evaluates routing and executes local command-backed resul
 test("export debug writes a redacted manifest when durable state root is configured", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-debug-export-"));
 	try {
-		const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskDurableStateRootOption]: root,
-			[flowdeskNaturalLanguageRoutingOption]: false,
-		})) as ChatMessageHooks;
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+			},
+		)) as ChatMessageHooks;
 		const exportDebugTool = hooks.tool?.flowdesk_export_debug;
 		assert.ok(exportDebugTool);
-		const result = JSON.parse(toolOutput(await exportDebugTool.execute({
-			schema_version: "flowdesk.export_debug.request.v1",
-			request_id: "request-export-debug-durable",
-			input_mode: "test_fixture",
-			include_sections: ["doctor", "redaction_summary"],
-			retention_hint: "keep_until_default_expiry",
-		}, undefined as never))) as LocalAdapterTestResult;
+		const result = JSON.parse(
+			toolOutput(
+				await exportDebugTool.execute(
+					{
+						schema_version: "flowdesk.export_debug.request.v1",
+						request_id: "request-export-debug-durable",
+						input_mode: "test_fixture",
+						include_sections: ["doctor", "redaction_summary"],
+						retention_hint: "keep_until_default_expiry",
+					},
+					undefined as never,
+				),
+			),
+		) as LocalAdapterTestResult;
 		assert.equal(result.handler?.ok, true);
 		assert.equal(result.localState?.stateWriteApplied, true);
 		assert.equal(result.localState?.durableStateWriteApplied, true);
-		const manifestPath = join(root, ".flowdesk/sessions/session-local/redacted-debug/manifest.json");
+		const manifestPath = join(
+			root,
+			".flowdesk/sessions/session-local/redacted-debug/manifest.json",
+		);
 		assert.equal(existsSync(manifestPath), true);
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<
+			string,
+			unknown
+		>;
 		assert.equal(manifest.schema_version, "flowdesk.debug_export_manifest.v1");
-		assert.deepEqual(manifest.included_sections instanceof Array ? manifest.included_sections.map((section) => (section as { section?: unknown }).section) : [], ["doctor", "redaction_summary"]);
-		assert.equal(/raw|payload|transcript|credential|secret|token|\/Users/.test(JSON.stringify(manifest)), false);
+		assert.deepEqual(
+			Array.isArray(manifest.included_sections)
+				? manifest.included_sections.map(
+						(section) => (section as { section?: unknown }).section,
+					)
+				: [],
+			["doctor", "redaction_summary"],
+		);
+		assert.equal(
+			/raw|payload|transcript|credential|secret|token|\/Users/.test(
+				JSON.stringify(manifest),
+			),
+			false,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -3152,6 +3647,128 @@ test("local adapter can opt into durable .flowdesk state materialization", () =>
 		assert.equal(reloadedStatus.localState.workflowState, "ready_to_run");
 		assert.equal(reloadedStatus.localState.laneRecords, 1);
 		assert.equal(reloadedStatus.providerCall, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("local adapter loads project config and policy packs from disk for non-dispatch runs", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-policy-load-"));
+	try {
+		mkdirSync(join(root, ".flowdesk", "policy-packs"), { recursive: true });
+		writeFileSync(
+			join(root, ".flowdesk", "config.json"),
+			`${JSON.stringify(
+				release1ProjectConfig({
+					config_id: "config-disk",
+					config_hash: "config-hash-disk",
+					project_root_ref: "project-root-disk",
+					policy_pack_refs: ["policy-source-disk"],
+					policy_pack_hashes: ["policy-hash-disk"],
+					audit_refs: ["audit-disk"],
+				}),
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		writeFileSync(
+			join(root, ".flowdesk", "policy-packs", "policy.json"),
+			`${JSON.stringify(
+				release1PolicyPack({
+					policy_pack_id: "policy-disk",
+					policy_pack_hash: "policy-hash-disk",
+					source_ref: "policy-source-disk",
+				}),
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const session = createFlowDeskLocalNonDispatchAdapterSession(
+			new Date("2026-05-17T00:00:00.000Z"),
+			undefined,
+			{
+				projectConfig: {
+					enabled: true,
+					rootDir: root,
+					policyPackPaths: [".flowdesk/policy-packs/policy.json"],
+				},
+			},
+		);
+		const run = session.evaluate("flowdesk_run", {
+			schema_version: "flowdesk.run.request.v1",
+			request_id: "request-disk-policy-run",
+			input_mode: "test_fixture",
+			workflow_id: "workflow-disk-policy",
+			session_ref: "session-disk-policy",
+			run_mode: "fake-runtime",
+			plan_revision_id: "plan-disk-policy",
+			step_id: "step-disk-policy",
+		});
+		assert.equal(run.ok, true, run.errors.join("; "));
+		assert.equal(run.handler.ok, true, run.handler.errors.join("; "));
+		assert.equal(run.providerCall, false);
+		assert.equal(run.actualLaneLaunch, false);
+		assert.equal(run.runtimeExecution, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("local adapter fails closed for missing or unsafe policy pack disk config", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-policy-blocked-"));
+	try {
+		mkdirSync(join(root, ".flowdesk"), { recursive: true });
+		writeFileSync(
+			join(root, ".flowdesk", "config.json"),
+			`${JSON.stringify(release1ProjectConfig({ policy_pack_refs: ["policy-source-test"], policy_pack_hashes: ["policy-hash-test"] }), null, 2)}\n`,
+			"utf8",
+		);
+		const missingPackSession = createFlowDeskLocalNonDispatchAdapterSession(
+			new Date("2026-05-17T00:00:00.000Z"),
+			undefined,
+			{ projectConfig: { enabled: true, rootDir: root } },
+		);
+		const missingPack = missingPackSession.evaluate("flowdesk_plan", {
+			schema_version: "flowdesk.plan.request.v1",
+			request_id: "request-missing-policy-pack",
+			input_mode: "chat_routed",
+			workflow_id: "workflow-missing-policy-pack",
+			goal_summary: "Verify policy pack fail closed behavior.",
+			scope_summary: "Disk policy pack loading test.",
+		});
+		assert.equal(missingPack.ok, false);
+		assert.match(
+			missingPack.errors.join("|"),
+			/policy_pack_file_count_mismatch/,
+		);
+		assert.equal(missingPack.providerCall, false);
+		assert.equal(missingPack.actualLaneLaunch, false);
+
+		const unsafePathSession = createFlowDeskLocalNonDispatchAdapterSession(
+			new Date("2026-05-17T00:00:00.000Z"),
+			undefined,
+			{
+				projectConfig: {
+					enabled: true,
+					rootDir: root,
+					policyPackPaths: ["../outside.json"],
+				},
+			},
+		);
+		const unsafePath = unsafePathSession.evaluate("flowdesk_plan", {
+			schema_version: "flowdesk.plan.request.v1",
+			request_id: "request-unsafe-policy-pack",
+			input_mode: "chat_routed",
+			workflow_id: "workflow-unsafe-policy-pack",
+			goal_summary: "Verify unsafe policy path blocks.",
+			scope_summary: "Disk policy pack loading test.",
+		});
+		assert.equal(unsafePath.ok, false);
+		assert.match(unsafePath.errors.join("|"), /policy_pack_path_0_unsafe/);
+		assert.equal(unsafePath.runtimeExecution, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -3577,7 +4194,9 @@ test("server option derives reviewer fanout diagnostics from durable cache evide
 			compatibility.refs?.includes("exact_model_cache_refresh_state=cache_hit"),
 		);
 		assert.ok(
-			compatibility.refs?.includes("exact_model_cache_usable_for_assignment=true"),
+			compatibility.refs?.includes(
+				"exact_model_cache_usable_for_assignment=true",
+			),
 		);
 		assert.ok(
 			compatibility.refs?.includes("reviewer_fanout_state=fanout_ready"),
@@ -3594,8 +4213,13 @@ test("server option derives reviewer fanout diagnostics from durable cache evide
 		assert.equal(doctor.providerCall, false);
 		assert.equal(doctor.runtimeExecution, false);
 		assert.equal(doctor.actualLaneLaunch, false);
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
-		const fanoutPlans = reloaded.entries.filter((entry) => entry.evidenceClass === "reviewer_fanout_plan");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId,
+			rootDir: root,
+		});
+		const fanoutPlans = reloaded.entries.filter(
+			(entry) => entry.evidenceClass === "reviewer_fanout_plan",
+		);
 		assert.equal(fanoutPlans.length, 1);
 		assert.equal(fanoutPlans[0].evidenceId, "derived-fanout-plan-1");
 		assert.equal(fanoutPlans[0].record.state, "fanout_ready");
@@ -3633,7 +4257,9 @@ test("server option surfaces blocked reviewer fanout diagnostics from drifted ca
 	try {
 		writeSessionEvidence(root, workflowId, [
 			exactModelAvailabilityCacheRecord(),
-			exactModelAvailabilityCacheRefreshPlanRecord({ expected_policy_pack_hash: "hash-policy-other" }),
+			exactModelAvailabilityCacheRefreshPlanRecord({
+				expected_policy_pack_hash: "hash-policy-other",
+			}),
 		]);
 		const hooks = (await flowdeskOpenCodeServerPlugin.server(
 			undefined as never,
@@ -3684,25 +4310,43 @@ test("server option surfaces blocked reviewer fanout diagnostics from drifted ca
 		assert.equal(status.handler?.ok, true, status.handler?.errors?.join("; "));
 		assert.ok(status.handler?.response?.blocker);
 		assert.ok(
-			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_state=blocked"),
+			status.handler?.response?.blocker?.refs?.includes(
+				"reviewer_fanout_state=blocked",
+			),
 		);
 		assert.ok(
-			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_blocker=assignment_revalidation_blocked"),
+			status.handler?.response?.blocker?.refs?.includes(
+				"reviewer_fanout_blocker=assignment_revalidation_blocked",
+			),
 		);
 		assert.ok(
-			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_blocker=cache_refresh_pair_missing"),
+			status.handler?.response?.blocker?.refs?.includes(
+				"reviewer_fanout_blocker=cache_refresh_pair_missing",
+			),
 		);
 		assert.ok(
-			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_actualLaneLaunch=false"),
+			status.handler?.response?.blocker?.refs?.includes(
+				"reviewer_fanout_actualLaneLaunch=false",
+			),
 		);
 		assert.ok(
-			status.handler?.response?.blocker?.refs?.includes("reviewer_fanout_providerCall=false"),
+			status.handler?.response?.blocker?.refs?.includes(
+				"reviewer_fanout_providerCall=false",
+			),
 		);
 		assert.equal(status.providerCall, false);
 		assert.equal(status.runtimeExecution, false);
 		assert.equal(status.actualLaneLaunch, false);
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
-		assert.equal(reloaded.entries.some((entry) => entry.evidenceClass === "reviewer_fanout_plan"), false);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId,
+			rootDir: root,
+		});
+		assert.equal(
+			reloaded.entries.some(
+				(entry) => entry.evidenceClass === "reviewer_fanout_plan",
+			),
+			false,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -4320,25 +4964,37 @@ test("FDS-1 probe records OpenCode provider-facing closed-schema caveat", () => 
 });
 
 test("provider usage live tool is absent by default and registers only with explicit opt-in", async () => {
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
-	assert.equal(defaultHooks.tool?.[flowdeskProviderUsageLiveToolName], undefined);
-
-	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		[flowdeskProviderUsageLiveOption]: {
-			enabled: true,
-			providers: ["claude", "openai", "gemini"],
-			homeDir: "/home/test",
-			geminiOAuthClientId: "client-id-test",
-			geminiOAuthClientSecret: "client-secret-test",
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
 		},
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
+	);
+	assert.equal(
+		defaultHooks.tool?.[flowdeskProviderUsageLiveToolName],
+		undefined,
+	);
+
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskProviderUsageLiveOption]: {
+				enabled: true,
+				providers: ["claude", "openai", "gemini"],
+				homeDir: "/home/test",
+				geminiOAuthClientId: "client-id-test",
+				geminiOAuthClientSecret: "client-secret-test",
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
 	const usageTool = enabledHooks.tool?.[flowdeskProviderUsageLiveToolName];
-	assert.ok(usageTool, "provider usage live tool should be registered when enabled");
+	assert.ok(
+		usageTool,
+		"provider usage live tool should be registered when enabled",
+	);
 	const description = String(usageTool.description ?? "");
 	assert.match(description, /WHEN TO USE/);
 	assert.match(description, /WHEN NOT TO USE/);
@@ -4364,7 +5020,9 @@ test("provider usage live tool blocks when no provider family is enabled in conf
 	const usageTool = hooks.tool?.[flowdeskProviderUsageLiveToolName];
 	assert.ok(usageTool);
 	const result = JSON.parse(
-		toolOutput(await usageTool.execute({ providerFamily: "gemini" }, undefined as never)),
+		toolOutput(
+			await usageTool.execute({ providerFamily: "gemini" }, undefined as never),
+		),
 	) as Record<string, unknown>;
 	assert.equal(result.status, "blocked_before_provider_usage_live");
 	const authority = result.authority as Record<string, unknown>;
@@ -4384,7 +5042,9 @@ test("provider usage live tool blocks when requested family is not configured", 
 	const usageTool = hooks.tool?.[flowdeskProviderUsageLiveToolName];
 	assert.ok(usageTool);
 	const result = JSON.parse(
-		toolOutput(await usageTool.execute({ providerFamily: "openai" }, undefined as never)),
+		toolOutput(
+			await usageTool.execute({ providerFamily: "openai" }, undefined as never),
+		),
 	) as Record<string, unknown>;
 	assert.equal(result.status, "blocked_before_provider_usage_live");
 	assert.match(
@@ -4394,27 +5054,39 @@ test("provider usage live tool blocks when requested family is not configured", 
 });
 
 test("status live tool is absent by default and registers only with explicit opt-in plus a durable state root", async () => {
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
 	assert.equal(defaultHooks.tool?.[flowdeskStatusLiveToolName], undefined);
 
-	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		[flowdeskStatusLiveOption]: { enabled: true },
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
-	assert.equal(enabledWithoutRoot.tool?.[flowdeskStatusLiveToolName], undefined);
+	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskStatusLiveOption]: { enabled: true },
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		enabledWithoutRoot.tool?.[flowdeskStatusLiveToolName],
+		undefined,
+	);
 
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-register-"));
 	try {
-		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const statusTool = enabledHooks.tool?.[flowdeskStatusLiveToolName];
 		assert.ok(statusTool);
 		const description = String(statusTool.description ?? "");
@@ -4435,12 +5107,15 @@ test("status live tool is absent by default and registers only with explicit opt
 test("status live tool blocks before reload when durable session root has no workflows", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-empty-"));
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
 		assert.ok(statusTool);
 		const result = JSON.parse(
@@ -4466,7 +5141,10 @@ test("status live tool surfaces durable evidence counts for the requested workfl
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-summary-"));
 	try {
 		const workflowId = "workflow-status-live-1";
-		const reviewerVerdict = { ...reviewerVerdictRecord("architecture"), workflow_id: workflowId };
+		const reviewerVerdict = {
+			...reviewerVerdictRecord("architecture"),
+			workflow_id: workflowId,
+		};
 		const fallbackPlan = {
 			schema_version: "flowdesk.fallback_regate_plan.v1",
 			ok: true,
@@ -4490,24 +5168,35 @@ test("status live tool surfaces durable evidence counts for the requested workfl
 			evidenceId: "reviewer-verdict-architecture-status-live",
 			record: reviewerVerdict,
 		});
-		assert.equal(verdictWriteIntent.ok, true, verdictWriteIntent.errors.join("; "));
+		assert.equal(
+			verdictWriteIntent.ok,
+			true,
+			verdictWriteIntent.errors.join("; "),
+		);
 		const regateWriteIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
 			workflowId,
 			evidenceId: "fallback-regate-plan-status-live",
 			record: fallbackPlan,
 		});
-		assert.equal(regateWriteIntent.ok, true, regateWriteIntent.errors.join("; "));
+		assert.equal(
+			regateWriteIntent.ok,
+			true,
+			regateWriteIntent.errors.join("; "),
+		);
 		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
 			verdictWriteIntent.writeIntent as never,
 			regateWriteIntent.writeIntent as never,
 		]);
 		assert.equal(applied.ok, true, applied.errors.join("; "));
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
 		assert.ok(statusTool);
 		const result = JSON.parse(
@@ -4585,12 +5274,15 @@ test("status live tool exposes a lane heartbeat stall projection for the request
 			stalledIntent.writeIntent as never,
 		]);
 		assert.equal(applied.ok, true, applied.errors.join("; "));
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
 		assert.ok(statusTool);
 		const result = JSON.parse(
@@ -4605,7 +5297,10 @@ test("status live tool exposes a lane heartbeat stall projection for the request
 		assert.equal(workflow.worstLaneStallClassification, "stalled");
 		assert.equal(workflow.stalledLaneCount, 1);
 		const projection = workflow.laneStallProjection as Record<string, unknown>;
-		assert.equal(projection.schema_version, "flowdesk.lane_stall_projection.v1");
+		assert.equal(
+			projection.schema_version,
+			"flowdesk.lane_stall_projection.v1",
+		);
 		const entries = projection.entries as Array<Record<string, unknown>>;
 		assert.equal(entries.length, 2);
 		const stalledEntry = entries.find(
@@ -4636,12 +5331,15 @@ test("status live tool exposes a lane heartbeat stall projection for the request
 test("status live tool description mentions lane heartbeat stall projection vocabulary", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-desc-"));
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
 		assert.ok(statusTool);
 		const description = String(statusTool.description ?? "");
@@ -4680,16 +5378,22 @@ test("provider usage live tool description exposes proactive usage guidance and 
 });
 
 test("pre-spike doctor exposes natural-language tool registration status and hints", async () => {
-	const baseline = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
+	const baseline = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
 	const doctorTool = baseline.tool?.[flowdeskPreSpikeDoctorToolName];
 	assert.ok(doctorTool);
 	const baselineResult = JSON.parse(
 		toolOutput(await doctorTool.execute({}, undefined as never)),
 	) as Record<string, unknown>;
-	const baselineNl = baselineResult.naturalLanguageTools as Record<string, Record<string, unknown>>;
+	const baselineNl = baselineResult.naturalLanguageTools as Record<
+		string,
+		Record<string, unknown>
+	>;
 	assert.equal(baselineNl.quickReviewerRun.enabled, false);
 	assert.equal(baselineNl.quickReviewerRun.registered, false);
 	assert.equal(baselineNl.providerUsageLive.enabled, false);
@@ -4729,7 +5433,10 @@ test("pre-spike doctor exposes natural-language tool registration status and hin
 		const result = JSON.parse(
 			toolOutput(await doctor.execute({}, undefined as never)),
 		) as Record<string, unknown>;
-		const nl = result.naturalLanguageTools as Record<string, Record<string, unknown>>;
+		const nl = result.naturalLanguageTools as Record<
+			string,
+			Record<string, unknown>
+		>;
 		assert.equal(nl.quickReviewerRun.enabled, true);
 		assert.equal(nl.quickReviewerRun.registered, true);
 		assert.equal(nl.providerUsageLive.enabled, true);
@@ -4744,21 +5451,30 @@ test("pre-spike doctor exposes natural-language tool registration status and hin
 });
 
 test("quick fallback run tool is absent by default and registers only with explicit opt-in", async () => {
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
-	assert.equal(defaultHooks.tool?.[flowdeskQuickFallbackRunToolName], undefined);
-
-	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		[flowdeskQuickFallbackRunOption]: {
-			enabled: true,
-			defaultFromProvider: "claude/sonnet-4",
-			defaultToProvider: "openai/gpt-5.5",
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
 		},
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
+	);
+	assert.equal(
+		defaultHooks.tool?.[flowdeskQuickFallbackRunToolName],
+		undefined,
+	);
+
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskQuickFallbackRunOption]: {
+				enabled: true,
+				defaultFromProvider: "claude/sonnet-4",
+				defaultToProvider: "openai/gpt-5.5",
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
 	const tool = enabledHooks.tool?.[flowdeskQuickFallbackRunToolName];
 	assert.ok(tool);
 	const description = String(tool.description ?? "");
@@ -4798,12 +5514,15 @@ test("quick fallback run blocks without developerModeAcknowledged", async () => 
 test("quick fallback run produces a fresh full re-gate plan and persists it when opted in", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-quick-fallback-"));
 	try {
-		const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskQuickFallbackRunOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskQuickFallbackRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const tool = hooks.tool?.[flowdeskQuickFallbackRunToolName];
 		assert.ok(tool);
 		const result = JSON.parse(
@@ -4843,28 +5562,40 @@ test("quick fallback run produces a fresh full re-gate plan and persists it when
 });
 
 test("lane heartbeat writer tool is absent by default and registers only with explicit opt-in plus a durable state root", async () => {
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
-	assert.equal(defaultHooks.tool?.[flowdeskLaneHeartbeatWriterToolName], undefined);
-	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-		[flowdeskLaneHeartbeatWriterOption]: { enabled: true },
-		localNonDispatchAdapter: false,
-		naturalLanguageRouting: false,
-	});
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		defaultHooks.tool?.[flowdeskLaneHeartbeatWriterToolName],
+		undefined,
+	);
+	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLaneHeartbeatWriterOption]: { enabled: true },
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
 	assert.equal(
 		enabledWithoutRoot.tool?.[flowdeskLaneHeartbeatWriterToolName],
 		undefined,
 	);
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-lane-heartbeat-writer-"));
 	try {
-		const enabled = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskLaneHeartbeatWriterOption]: { enabled: true },
-			[flowdeskDurableStateRootOption]: root,
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		});
+		const enabled = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskLaneHeartbeatWriterOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
 		const tool = enabled.tool?.[flowdeskLaneHeartbeatWriterToolName];
 		assert.ok(tool);
 		const result = JSON.parse(
@@ -4955,12 +5686,15 @@ test("chat.message stall alert card appends safe next actions when stalled lanes
 			intent.writeIntent as never,
 		]);
 		assert.equal(applied.ok, true, applied.errors.join("; "));
-		const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskNaturalLanguageRoutingOption]: true,
-			[flowdeskDurableStateRootOption]: root,
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskChatMessageStallAlertOption]: { enabled: true },
-		})) as ChatMessageHooks;
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true },
+			},
+		)) as ChatMessageHooks;
 		assert.ok(hooks["chat.message"]);
 		const generalOutput = {
 			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
@@ -5032,12 +5766,15 @@ test("chat.message stall alert surfaces progressing-late lanes only when include
 		]);
 		assert.equal(applied.ok, true, applied.errors.join("; "));
 
-		const defaultHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskNaturalLanguageRoutingOption]: true,
-			[flowdeskDurableStateRootOption]: root,
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskChatMessageStallAlertOption]: { enabled: true },
-		})) as ChatMessageHooks;
+		const defaultHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true },
+			},
+		)) as ChatMessageHooks;
 		assert.ok(defaultHooks["chat.message"]);
 		const noLateOutput = {
 			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
@@ -5057,15 +5794,18 @@ test("chat.message stall alert surfaces progressing-late lanes only when include
 			false,
 		);
 
-		const lateHooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
-			[flowdeskNaturalLanguageRoutingOption]: true,
-			[flowdeskDurableStateRootOption]: root,
-			[flowdeskStatusLiveOption]: { enabled: true },
-			[flowdeskChatMessageStallAlertOption]: {
-				enabled: true,
-				includeProgressingLate: true,
+		const lateHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					includeProgressingLate: true,
+				},
 			},
-		})) as ChatMessageHooks;
+		)) as ChatMessageHooks;
 		assert.ok(lateHooks["chat.message"]);
 		const lateOutput = {
 			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
