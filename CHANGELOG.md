@@ -10,6 +10,40 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.9 — 2026-05-25
+
+### Added
+
+- Reviewer assignment and fan-out planning now prefer distinct concrete
+  provider-qualified models before repeating a model, lower
+  `max_concurrent_lane_count` to the number of distinct concrete models in the
+  ready plan, and carry `same_model_stagger_ms` (default 3000) plus a
+  `lane_launch_schedule` with per-lane `launch_delay_ms` when the same model
+  must be reused. The new fields are scheduling metadata only.
+- Release 1 Policy Pack disk loading/merge. The local non-dispatch adapter
+  now loads `.flowdesk/config.json` plus configured `policyPackPaths`,
+  validates schema, rejects missing/unsafe/invalid/hash-drift packs, merges
+  loaded packs into the effective policy, and threads the policy context
+  into Guard, local permissions, workflow records, doctor/project-config
+  status, and non-dispatch command-backed runs.
+- `flowdesk_export_debug` materializes one redacted JSON file per included
+  section under `.flowdesk/sessions/<sid>/redacted-debug/sections/<section>.json`
+  alongside the existing manifest. The new `flowdesk.debug_section_file.v1`
+  contract carries export_id, section, redaction status, warning count,
+  excluded categories, source refs, summary labels, and audit refs. The
+  manifest now reports real `file_count` and `byte_count` derived from the
+  persisted section files, and each `included_sections[].ref` points at the
+  section file ref.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Reviewer scheduling metadata,
+Policy Pack disk loading, and debug section file materialization are
+redacted non-dispatch state writes only and cannot promote later-gate
+authority.
+
 ## 0.1.8 — 2026-05-25
 
 ### Added
