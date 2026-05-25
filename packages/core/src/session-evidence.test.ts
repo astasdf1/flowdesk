@@ -166,6 +166,28 @@ function reviewerVerdictRecord(overrides: Record<string, unknown> = {}) {
 }
 
 function reviewerFanoutPlanRecord(overrides: Record<string, unknown> = {}) {
+	const fanoutPerspectives = ["policy_security", "architecture", "verification_implementation"] as const;
+	const runtimeRequests = fanoutPerspectives.map((perspective) => ({
+		schema_version: "flowdesk.runtime_lane_launch_request.v1" as const,
+		launch_request_id: `reviewer-launch-attempt-1-${perspective}`,
+		workflow_id: workflowId,
+		attempt_id: "attempt-1",
+		lane_id: `reviewer-lane-attempt-1-${perspective}`,
+		parent_session_ref: "ses-parent-1",
+		agent_ref: "agent-reviewer",
+		provider_qualified_model_id: "claude/claude-opus-4-5",
+		launch_reason: "reviewer_fanout" as const,
+		pre_launch_audit_ref: "audit-pre-launch-1",
+		lane_launch_approval_ref: "approval-lane-launch-1",
+		requested_at: "2026-05-19T00:01:00.000Z",
+		timeout_ms: 30000,
+		orphan_max_age_ms: 60000,
+		retry_budget: 1,
+		dispatch_authority_enabled: false as const,
+		providerCall: false as const,
+		actualLaneLaunch: false as const,
+		runtimeExecution: false as const
+	}));
   return {
     schema_version: "flowdesk.reviewer_fanout_plan.v1",
     ok: true,
@@ -175,30 +197,16 @@ function reviewerFanoutPlanRecord(overrides: Record<string, unknown> = {}) {
     cache_id: "cache-1",
     state: "fanout_ready",
     blocked_labels: [],
-    required_perspectives: ["policy_security", "architecture", "verification_implementation"],
-    planned_perspectives: ["policy_security", "architecture", "verification_implementation"],
-    runtime_lane_launch_requests: ["policy_security", "architecture", "verification_implementation"].map((perspective) => ({
-      schema_version: "flowdesk.runtime_lane_launch_request.v1",
-      launch_request_id: `reviewer-launch-attempt-1-${perspective}`,
-      workflow_id: workflowId,
-      attempt_id: "attempt-1",
-      lane_id: `reviewer-lane-attempt-1-${perspective}`,
-      parent_session_ref: "ses-parent-1",
-      agent_ref: "agent-reviewer",
-      provider_qualified_model_id: "claude/claude-opus-4-5",
-      launch_reason: "reviewer_fanout",
-      pre_launch_audit_ref: "audit-pre-launch-1",
-      lane_launch_approval_ref: "approval-lane-launch-1",
-      requested_at: "2026-05-19T00:01:00.000Z",
-      timeout_ms: 30000,
-      orphan_max_age_ms: 60000,
-      retry_budget: 1,
-      dispatch_authority_enabled: false,
-      providerCall: false,
-      actualLaneLaunch: false,
-      runtimeExecution: false
-    })),
-    max_concurrent_lane_count: 3,
+    required_perspectives: [...fanoutPerspectives],
+    planned_perspectives: [...fanoutPerspectives],
+    runtime_lane_launch_requests: runtimeRequests,
+    max_concurrent_lane_count: 1,
+    same_model_stagger_ms: 3000,
+    lane_launch_schedule: runtimeRequests.map((request, index) => ({
+			lane_id: request.lane_id,
+			provider_qualified_model_id: request.provider_qualified_model_id,
+			launch_delay_ms: index * 3000
+		})),
     runtime_launch_plan_required: true,
     lane_launch_approval_required: true,
     launch_attempted: false,

@@ -166,6 +166,8 @@ function reviewerFanoutPlan(overrides: Partial<FlowDeskReviewerFanoutPlanV1> = {
     planned_perspectives: [],
     runtime_lane_launch_requests: [],
     max_concurrent_lane_count: 3,
+    same_model_stagger_ms: 3000,
+    lane_launch_schedule: [],
     runtime_launch_plan_required: true,
     lane_launch_approval_required: true,
     launch_attempted: false,
@@ -345,6 +347,20 @@ test("status surfaces reviewer fanout planning blockers without lane authority",
         providerCall: false,
         actualLaneLaunch: false,
         runtimeExecution: false
+      }],
+      max_concurrent_lane_count: 1,
+      lane_launch_schedule: [{
+        lane_id: "reviewer-lane-attempt-123-policy_security",
+        provider_qualified_model_id: "claude/claude-opus-4-5",
+        launch_delay_ms: 0
+      }, {
+        lane_id: "reviewer-lane-attempt-123-architecture",
+        provider_qualified_model_id: "claude/claude-opus-4-5",
+        launch_delay_ms: 3000
+      }, {
+        lane_id: "reviewer-lane-attempt-123-verification_implementation",
+        provider_qualified_model_id: "claude/claude-opus-4-5",
+        launch_delay_ms: 6000
       }]
     })
   }));

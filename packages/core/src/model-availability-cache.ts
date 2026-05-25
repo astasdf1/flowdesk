@@ -207,6 +207,8 @@ export interface FlowDeskReviewerFanoutPlanV1 extends ValidationResult {
 	planned_perspectives: FlowDeskTopTierReviewPerspective[];
 	runtime_lane_launch_requests: FlowDeskRuntimeLaneLaunchRequestV1[];
 	max_concurrent_lane_count: number;
+	same_model_stagger_ms: number;
+	lane_launch_schedule: FlowDeskReviewerFanoutLaneLaunchScheduleEntryV1[];
 	runtime_launch_plan_required: true;
 	lane_launch_approval_required: true;
 	launch_attempted: false;
@@ -215,6 +217,12 @@ export interface FlowDeskReviewerFanoutPlanV1 extends ValidationResult {
 	providerCall: false;
 	actualLaneLaunch: false;
 	runtimeExecution: false;
+}
+
+export interface FlowDeskReviewerFanoutLaneLaunchScheduleEntryV1 {
+	lane_id: string;
+	provider_qualified_model_id: string;
+	launch_delay_ms: number;
 }
 
 const perspectives: FlowDeskTopTierReviewPerspective[] = [
@@ -256,6 +264,26 @@ function validateTimestamp(value: unknown, label: string): ValidationResult {
 
 function unique(values: string[]): string[] {
 	return [...new Set(values)];
+}
+
+function spreadByConcreteModel<T extends { provider_qualified_model_id: string }>(items: readonly T[]): T[] {
+	const firstByModel = new Set<string>();
+	const preferred: T[] = [];
+	const repeats: T[] = [];
+	for (const item of items) {
+		if (firstByModel.has(item.provider_qualified_model_id)) repeats.push(item);
+		else {
+			firstByModel.add(item.provider_qualified_model_id);
+			preferred.push(item);
+		}
+	}
+	return [...preferred, ...repeats];
+}
+
+function boundedInt(value: unknown, label: string, min: number, max: number): ValidationResult {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max)
+		return invalid(`${label} must be an integer between ${min} and ${max}`);
+	return valid();
 }
 
 function usagePressureRank(label: FlowDeskUsagePressureLabelV1 | undefined): number {
@@ -401,8 +429,9 @@ export function planFlowDeskReviewerAssignmentsV1(input: {
 	});
 	if (eligible.length === 0) blockedLabels.push("no_registered_available_highest_tier_models");
 	const canBind = errors.length === 0 && blockedLabels.length === 0;
+	const spreadEligible = spreadByConcreteModel(eligible);
 	const lane_bindings = !canBind ? [] : perspectives.map((perspective, index) => {
-		const entry = eligible[index % eligible.length];
+		const entry = spreadEligible[index % spreadEligible.length];
 		return { perspective, entry_id: entry.entry_id, provider_qualified_model_id: entry.provider_qualified_model_id };
 	});
 	const ready = canBind;
@@ -1237,6 +1266,7 @@ export function planFlowDeskReviewerFanoutV1(input: {
 	timeoutMs?: number;
 	orphanMaxAgeMs?: number;
 	retryBudget?: number;
+	sameModelStaggerMs?: number;
 	preLaunchAuditRef?: string;
 	laneLaunchApprovalRef?: string;
 }): FlowDeskReviewerFanoutPlanV1 {
@@ -1252,18 +1282,20 @@ export function planFlowDeskReviewerFanoutV1(input: {
 		errors.push("requested_at must be a parseable timestamp");
 	const requiredPerspectives = input.requestedPerspectives ?? perspectives;
 	errors.push(...validatePerspectiveArray(requiredPerspectives, "required_perspectives").errors);
-	const maxConcurrentLaneCount = input.maxConcurrentLaneCount ?? Math.min(3, requiredPerspectives.length);
-	if (!Number.isInteger(maxConcurrentLaneCount) || maxConcurrentLaneCount < 1 || maxConcurrentLaneCount > requiredPerspectives.length)
+	const requestedMaxConcurrentLaneCount = input.maxConcurrentLaneCount ?? Math.min(3, requiredPerspectives.length);
+	if (!Number.isInteger(requestedMaxConcurrentLaneCount) || requestedMaxConcurrentLaneCount < 1 || requestedMaxConcurrentLaneCount > requiredPerspectives.length)
 		errors.push("max_concurrent_lane_count must be a bounded positive integer");
 	const timeoutMs = input.timeoutMs ?? 30000;
 	const orphanMaxAgeMs = input.orphanMaxAgeMs ?? 60000;
 	const retryBudget = input.retryBudget ?? 1;
+	const sameModelStaggerMs = input.sameModelStaggerMs ?? 3000;
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 600000) errors.push("timeout_ms must be bounded");
 	if (!Number.isInteger(orphanMaxAgeMs) || orphanMaxAgeMs < 0 || orphanMaxAgeMs > 3600000)
 		errors.push("orphan_max_age_ms must be bounded");
 	if (!Number.isInteger(retryBudget) || retryBudget < 0 || retryBudget > 2) errors.push("retry_budget must be bounded");
+	errors.push(...boundedInt(sameModelStaggerMs, "same_model_stagger_ms", 0, 60000).errors);
 	const ready = errors.length === 0 && blockedLabels.length === 0;
-	const bindings = input.revalidation.eligible_bindings;
+	const bindings = spreadByConcreteModel(input.revalidation.eligible_bindings);
 	const runtimeRequests: FlowDeskRuntimeLaneLaunchRequestV1[] = ready
 		? requiredPerspectives.map((perspective, index) => {
 			const binding = bindings[index % bindings.length];
@@ -1287,9 +1319,23 @@ export function planFlowDeskReviewerFanoutV1(input: {
 			};
 		})
 		: [];
+	const seenLaunchCounts = new Map<string, number>();
+	const laneLaunchSchedule: FlowDeskReviewerFanoutLaneLaunchScheduleEntryV1[] = runtimeRequests.map((request) => {
+		const previousCount = seenLaunchCounts.get(request.provider_qualified_model_id) ?? 0;
+		seenLaunchCounts.set(request.provider_qualified_model_id, previousCount + 1);
+		return {
+			lane_id: request.lane_id,
+			provider_qualified_model_id: request.provider_qualified_model_id,
+			launch_delay_ms: previousCount * sameModelStaggerMs,
+		};
+	});
 	for (const [index, request] of runtimeRequests.entries())
 		errors.push(...validateFlowDeskRuntimeLaneLaunchRequestV1(request).errors.map((error) => `runtime_lane_launch_requests[${index}].${error}`));
 	const finalReady = errors.length === 0 && blockedLabels.length === 0 && runtimeRequests.length === requiredPerspectives.length;
+	const uniqueModelCount = Math.max(1, new Set(runtimeRequests.map((request) => request.provider_qualified_model_id)).size);
+	const maxConcurrentLaneCount = finalReady
+		? Math.min(requestedMaxConcurrentLaneCount, uniqueModelCount)
+		: requestedMaxConcurrentLaneCount;
 	return {
 		schema_version: "flowdesk.reviewer_fanout_plan.v1",
 		ok: errors.length === 0,
@@ -1303,6 +1349,8 @@ export function planFlowDeskReviewerFanoutV1(input: {
 		planned_perspectives: finalReady ? [...requiredPerspectives] : [],
 		runtime_lane_launch_requests: runtimeRequests,
 		max_concurrent_lane_count: maxConcurrentLaneCount,
+		same_model_stagger_ms: sameModelStaggerMs,
+		lane_launch_schedule: finalReady ? laneLaunchSchedule : [],
 		runtime_launch_plan_required: true,
 		lane_launch_approval_required: true,
 		launch_attempted: false,
@@ -1328,6 +1376,8 @@ export function validateFlowDeskReviewerFanoutPlanV1(value: unknown): Validation
 		"planned_perspectives",
 		"runtime_lane_launch_requests",
 		"max_concurrent_lane_count",
+		"same_model_stagger_ms",
+		"lane_launch_schedule",
 		"runtime_launch_plan_required",
 		"lane_launch_approval_required",
 		"launch_attempted",
@@ -1368,6 +1418,28 @@ export function validateFlowDeskReviewerFanoutPlanV1(value: unknown): Validation
 	}
 	if (typeof record.max_concurrent_lane_count !== "number" || !Number.isInteger(record.max_concurrent_lane_count) || record.max_concurrent_lane_count < 1)
 		errors.push("max_concurrent_lane_count must be a positive integer");
+	errors.push(...boundedInt(record.same_model_stagger_ms, "same_model_stagger_ms", 0, 60000).errors);
+	if (!Array.isArray(record.lane_launch_schedule)) errors.push("lane_launch_schedule must be an array");
+	else {
+		if (record.state === "fanout_ready" && record.lane_launch_schedule.length !== (record.runtime_lane_launch_requests?.length ?? 0))
+			errors.push("fanout_ready plan requires one schedule entry per launch request");
+		for (const [index, schedule] of record.lane_launch_schedule.entries()) {
+			if (!isRecord(schedule)) {
+				errors.push(`lane_launch_schedule[${index}] must be an object`);
+				continue;
+			}
+			errors.push(...rejectUnknownProperties(schedule, ["lane_id", "provider_qualified_model_id", "launch_delay_ms"], `lane_launch_schedule[${index}]`).errors);
+			errors.push(...validateOpaqueId(schedule.lane_id, `lane_launch_schedule[${index}].lane_id`).errors);
+			errors.push(...validateConcreteProviderQualifiedModelId(schedule.provider_qualified_model_id, `lane_launch_schedule[${index}].provider_qualified_model_id`).errors);
+			errors.push(...boundedInt(schedule.launch_delay_ms, `lane_launch_schedule[${index}].launch_delay_ms`, 0, 60000).errors);
+			const request = record.runtime_lane_launch_requests?.[index];
+			if (isRecord(request)) {
+				if (schedule.lane_id !== request.lane_id) errors.push(`lane_launch_schedule[${index}] lane_id must match launch request`);
+				if (schedule.provider_qualified_model_id !== request.provider_qualified_model_id)
+					errors.push(`lane_launch_schedule[${index}] model must match launch request`);
+			}
+		}
+	}
 	if (record.runtime_launch_plan_required !== true || record.lane_launch_approval_required !== true)
 		errors.push("reviewer fanout plan must require runtime launch plan and lane launch approval");
 	if (

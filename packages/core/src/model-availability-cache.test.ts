@@ -235,6 +235,45 @@ test("reviewer assignment honors suitability preference before usage pressure", 
 	assert.equal(plan.providerCall, false);
 });
 
+test("reviewer assignment prefers distinct concrete models before repeating one", () => {
+	const plan = planFlowDeskReviewerAssignmentsV1({
+		cache: cache({
+			entries: [
+				cache().entries[0],
+				{
+					entry_id: "entry-openai-1",
+					provider_family: "openai",
+					provider_identity_ref: "provider-openai-1",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					model_family: "gpt-frontier",
+					registered: true,
+					available: true,
+					highest_tier_eligible: true,
+					availability_ref: "availability-openai-1",
+				},
+				{
+					entry_id: "entry-openai-2",
+					provider_family: "openai",
+					provider_identity_ref: "provider-openai-2",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					model_family: "gpt-frontier",
+					registered: true,
+					available: true,
+					highest_tier_eligible: true,
+					availability_ref: "availability-openai-2",
+				},
+			],
+		}),
+		localDate: "2026-05-21",
+	});
+	assert.equal(plan.state, "ready");
+	assert.deepEqual(
+		plan.lane_bindings.map((binding) => binding.provider_qualified_model_id),
+		["claude/claude-opus-4-5", "openai/gpt-5.5", "openai/gpt-5.5"],
+	);
+	assert.equal(plan.providerCall, false);
+});
+
 test("availability cache rejects unknown properties and provider drift", () => {
 	const unknown = validateFlowDeskExactModelAvailabilityCacheV1({
 		...cache(),
@@ -846,10 +885,71 @@ test("reviewer fanout plan deterministically materializes launch requests withou
 		).size,
 		1,
 	);
+	assert.equal(plan.max_concurrent_lane_count, 1);
+	assert.equal(plan.same_model_stagger_ms, 3000);
+	assert.deepEqual(
+		plan.lane_launch_schedule.map((entry) => entry.launch_delay_ms),
+		[0, 3000, 6000],
+	);
 	assert.equal(plan.launch_attempted, false);
 	assert.equal(plan.approval_inferred, false);
 	assert.equal(plan.providerCall, false);
 	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(validateFlowDeskReviewerFanoutPlanV1(plan).ok, true);
+});
+
+test("reviewer fanout spreads distinct models and only staggers repeated models", () => {
+	const plan = planFlowDeskReviewerFanoutV1({
+		revalidation: revalidation({
+			cache: cache({
+				entries: [
+					cache().entries[0],
+					{
+						entry_id: "entry-openai-1",
+						provider_family: "openai",
+						provider_identity_ref: "provider-openai-1",
+						provider_qualified_model_id: "openai/gpt-5.5",
+						model_family: "gpt-frontier",
+						registered: true,
+						available: true,
+						highest_tier_eligible: true,
+						availability_ref: "availability-openai-1",
+					},
+					{
+						entry_id: "entry-gemini-1",
+						provider_family: "gemini",
+						provider_identity_ref: "provider-gemini-1",
+						provider_qualified_model_id: "gemini/gemini-2.5-pro",
+						model_family: "gemini-pro",
+						registered: true,
+						available: true,
+						highest_tier_eligible: true,
+						availability_ref: "availability-gemini-1",
+					},
+				],
+			}),
+		}),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		parentSessionRef: "ses-parent-1",
+		agentRef: "agent-reviewer",
+		requestedAt: "2026-05-21T00:00:00.000Z",
+		sameModelStaggerMs: 4000,
+	});
+	assert.equal(plan.state, "fanout_ready", plan.errors.join("; "));
+	assert.equal(
+		new Set(
+			plan.runtime_lane_launch_requests.map(
+				(request) => request.provider_qualified_model_id,
+			),
+		).size,
+		3,
+	);
+	assert.equal(plan.max_concurrent_lane_count, 3);
+	assert.deepEqual(
+		plan.lane_launch_schedule.map((entry) => entry.launch_delay_ms),
+		[0, 0, 0],
+	);
 	assert.equal(validateFlowDeskReviewerFanoutPlanV1(plan).ok, true);
 });
 
