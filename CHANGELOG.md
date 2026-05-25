@@ -10,6 +10,44 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.11 — 2026-05-25
+
+### Added
+
+- `flowdesk_provider_usage_live` can now opt in to durable evidence
+  persistence. When `providerUsageLive.persistSnapshots=true` is set and
+  a durable state root resolves (`providerUsageLive.durableStateRootDir`
+  or top-level `durableStateRoot`), each acquired provider usage
+  snapshot is persisted under
+  `.flowdesk/sessions/<workflowId>/evidence/provider-usage-snapshot/<evidenceId>.json`.
+  The default workflow id is `workflow-provider-usage-live` and can be
+  overridden via `providerUsageLive.persistWorkflowId`. The tool result
+  now surfaces a `snapshotPersistence` block reporting whether
+  persistence was requested, whether the durable root was configured,
+  which evidence ids were written, and any skipped reasons.
+- `FLOWDESK_SESSION_EVIDENCE_CLASSES` registers the new
+  `provider_usage_snapshot` class bound to `flowdesk.usage_snapshot.v1`;
+  session evidence validators reuse the existing usage snapshot
+  validator and fail-closed for malformed records.
+- `flowdesk_status_live` workflow summaries now expose
+  `latestProviderUsageDispatchability`,
+  `latestProviderUsageFreshness`,
+  `latestProviderUsageResetBucket`, and
+  `providerUsageSnapshotCount` when durable provider usage snapshot
+  evidence is present.
+- `flowdesk_pre_spike_doctor.naturalLanguageTools.providerUsageLive`
+  reports a new `persistsSnapshots` field plus the resolved
+  `persistWorkflowId`.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Persisted provider usage snapshots
+are redacted opt-in observations only; they do not grant dispatch
+authority and the persisted records cannot replace authoritative
+workflow state.
+
 ## 0.1.10 — 2026-05-25
 
 ### Added
