@@ -10,6 +10,29 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.1.10 — 2026-05-25
+
+### Added
+
+- `/flowdesk-export-debug` debug section files now carry per-section
+  redacted `summary_labels` derived from current adapter state. `doctor`,
+  `conformance`, `workflow_state`, `audit_refs`, `usage_summary`,
+  `policy_summary`, and `redaction_summary` each produce a small bounded
+  set of labels (e.g. `disabled_modes:`, `config_hash:`, `release_mode:`,
+  `redaction_version:`) that stay redacted-only and do not echo raw
+  paths, payloads, transcripts, or credentials.
+- `flowdesk_pre_spike_doctor.naturalLanguageTools.exportDebug` now lists
+  the supported debug sections, the manifest path, and the section file
+  path template so users can discover the new persisted layout from the
+  doctor tool.
+
+### Authority Boundary
+
+`realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
+`actualLaneLaunch`, `fallbackAuthority`, `hardCancelOrNoReplyAuthority`,
+and `toolAuthority` remain `false`. Section labels and doctor surface
+expose redacted metadata only.
+
 ## 0.1.9 — 2026-05-25
 
 ### Added
