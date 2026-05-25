@@ -12,6 +12,7 @@ import type {
 	FlowDeskAuditRecordV1,
 	FlowDeskCheckpointRecordV1,
 	FlowDeskDebugExportManifestV1,
+	FlowDeskDebugSectionFileV1,
 	FlowDeskLaneRecordV1,
 	FlowDeskWorkflowActiveV1,
 	FlowDeskWorkflowRecordV1,
@@ -22,6 +23,7 @@ import {
 	checkpointRecordPath,
 	FLOWDESK_WORKFLOW_ACTIVE_PATH,
 	redactedDebugManifestPath,
+	redactedDebugSectionFilePath,
 	sessionAuditPath,
 	sessionLanesPath,
 	validateFlowDeskRelativeStatePath,
@@ -36,6 +38,7 @@ import {
 	validateAuditRecordV1,
 	validateCheckpointRecordV1,
 	validateDebugExportManifestV1,
+	validateFlowDeskDebugSectionFileV1,
 	validateLaneRecordV1,
 	validateSessionRecordCannotReplaceWorkflowState,
 	validateWorkflowActiveV1,
@@ -116,6 +119,7 @@ const sessionSchemas = new Set([
 	"flowdesk.lane_record.v1",
 	"flowdesk.audit_record.v1",
 	"flowdesk.debug_export_manifest.v1",
+	"flowdesk.debug_section_file.v1",
 ]);
 
 const disabledDurableStateAuthority = {
@@ -289,6 +293,18 @@ function validateWriteIntentRecord(
 				!intent.path.endsWith("/redacted-debug/manifest.json")
 			)
 				return invalid("debug-export-manifest intent target is invalid");
+			return validateSessionRecordCannotReplaceWorkflowState(intent.record);
+		}
+		case "flowdesk.debug_section_file.v1": {
+			const recordResult = validateFlowDeskDebugSectionFileV1(intent.record);
+			if (!recordResult.ok) return recordResult;
+			if (
+				intent.operation !== "write_json" ||
+				intent.serialization !== "json" ||
+				!intent.path.startsWith(".flowdesk/sessions/") ||
+				!/\/redacted-debug\/sections\/[a-z][a-z0-9_]*\.json$/.test(intent.path)
+			)
+				return invalid("debug-section-file intent target is invalid");
 			return validateSessionRecordCannotReplaceWorkflowState(intent.record);
 		}
 		default:
@@ -513,6 +529,30 @@ export function prepareDebugExportManifestWriteIntent(
 		return failedFromThrown(
 			error,
 		) as FlowDeskStatePrepareResult<FlowDeskDebugExportManifestV1>;
+	}
+}
+
+export function prepareDebugSectionFileWriteIntent(
+	sessionId: string,
+	record: FlowDeskDebugSectionFileV1,
+): FlowDeskStatePrepareResult<FlowDeskDebugSectionFileV1> {
+	const result = validateFlowDeskDebugSectionFileV1(record);
+	if (!result.ok) return result;
+	const authorityResult =
+		validateSessionRecordCannotReplaceWorkflowState(record);
+	if (!authorityResult.ok) return authorityResult;
+	try {
+		return intentFor({
+			operation: "write_json",
+			path: redactedDebugSectionFilePath(sessionId, record.section),
+			schemaId: record.schema_version,
+			authority: "redacted_session_support",
+			record,
+		});
+	} catch (error) {
+		return failedFromThrown(
+			error,
+		) as FlowDeskStatePrepareResult<FlowDeskDebugSectionFileV1>;
 	}
 }
 

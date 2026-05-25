@@ -104,6 +104,7 @@ const expectedFixturePrefixes = [
   "provider-health-snapshot",
   "doctor-section-result",
   "debug-section-summary",
+  "debug-section-file",
   "workflow-active",
   "workflow-record",
   "attempt-record",
@@ -165,6 +166,7 @@ const normativeSchemaIds = [
   "flowdesk.provider_health_snapshot.v1",
   "flowdesk.doctor_section_result.v1",
   "flowdesk.debug_section_summary.v1",
+  "flowdesk.debug_section_file.v1",
   "flowdesk.audit_ref_summary.v1",
   "flowdesk.conformance_runtime_metadata.v1",
   "flowdesk.conformance_evidence_record.v1"

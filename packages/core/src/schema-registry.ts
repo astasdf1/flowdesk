@@ -158,6 +158,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.lane_record.v1", "lane-record", "FlowDeskLaneRecordV1", "persisted_state"),
   artifactEntry("flowdesk.audit_record.v1", "audit-record", "FlowDeskAuditRecordV1", "persisted_state"),
   artifactEntry("flowdesk.debug_export_manifest.v1", "debug-export-manifest", "FlowDeskDebugExportManifestV1", "persisted_state"),
+  artifactEntry("flowdesk.debug_section_file.v1", "debug-section-file", "FlowDeskDebugSectionFileV1", "persisted_state"),
   artifactEntry("flowdesk.project_config.v1", "project-config", "FlowDeskProjectConfigV1", "config_policy"),
   artifactEntry("flowdesk.policy_pack.v1", "policy-pack", "FlowDeskPolicyPackV1", "config_policy"),
   artifactEntry("flowdesk.effective_policy.v1", "effective-policy", "FlowDeskEffectivePolicyV1", "config_policy"),

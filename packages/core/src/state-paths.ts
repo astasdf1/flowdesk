@@ -90,6 +90,19 @@ export function redactedDebugManifestPath(sessionId: string): string {
 	return `${redactedDebugDirectoryPath(sessionId)}/manifest.json`;
 }
 
+export function redactedDebugSectionsDirectoryPath(sessionId: string): string {
+	return `${redactedDebugDirectoryPath(sessionId)}/sections`;
+}
+
+export function redactedDebugSectionFilePath(
+	sessionId: string,
+	section: string,
+): string {
+	if (!/^[a-z][a-z0-9_]*$/.test(section))
+		throw new Error("debug section must be a lowercase identifier");
+	return `${redactedDebugSectionsDirectoryPath(sessionId)}/${section}.json`;
+}
+
 export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"usage_authority",
 	"runtime_echo",

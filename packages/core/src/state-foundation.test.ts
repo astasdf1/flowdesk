@@ -21,11 +21,13 @@ import {
   prepareAuditRecordWriteIntent,
   prepareCheckpointRecordWriteIntent,
   prepareDebugExportManifestWriteIntent,
+  prepareDebugSectionFileWriteIntent,
   prepareLaneRecordWriteIntent,
   preparePreRunAuditWriteIntent,
   prepareWorkflowActiveWriteIntent,
   prepareWorkflowRecordWriteIntent,
   redactedDebugManifestPath,
+  redactedDebugSectionFilePath,
   sessionAuditPath,
   sessionLanesPath,
   validateAuditEventV1,
@@ -185,6 +187,25 @@ function auditRecord() {
   };
 }
 
+function debugSectionFile() {
+  return {
+    schema_version: "flowdesk.debug_section_file.v1" as const,
+    export_id: "export-123",
+    section: "doctor" as const,
+    ref: "debug-section-file-export-123-doctor",
+    workflow_id: workflowId,
+    session_ref: "session-ref-123",
+    generated_at: now,
+    redaction_version: "redaction-v1",
+    redaction_status: "passed" as const,
+    warning_count: 0,
+    excluded_categories: [],
+    source_refs: ["debug-export-request"],
+    summary_labels: ["flowdesk debug section doctor"],
+    audit_refs: ["audit-123"]
+  };
+}
+
 function debugManifest() {
   return {
     schema_version: "flowdesk.debug_export_manifest.v1" as const,
@@ -243,6 +264,8 @@ test("Checkpoint 2 path builders produce relative .flowdesk paths and reject pat
   assert.equal(sessionLanesPath(sessionId), ".flowdesk/sessions/session-123/lanes.jsonl");
   assert.equal(sessionAuditPath(sessionId), ".flowdesk/sessions/session-123/audit.jsonl");
   assert.equal(redactedDebugManifestPath(sessionId), ".flowdesk/sessions/session-123/redacted-debug/manifest.json");
+  assert.equal(redactedDebugSectionFilePath(sessionId, "doctor"), ".flowdesk/sessions/session-123/redacted-debug/sections/doctor.json");
+  assert.throws(() => redactedDebugSectionFilePath(sessionId, "../escape"));
   assert.equal(validateFlowDeskRelativeStatePath("/Users/example/.flowdesk/workflows/active.json").ok, false);
   assert.throws(() => workflowRecordPath("../workflow-123"));
   assert.throws(() => sessionAuditPath(".flowdesk/sessions/raw"));
@@ -257,23 +280,52 @@ test("valid persisted workflow and redacted session records prepare deterministi
     prepareActiveAttemptLockWriteIntent(activeLock(), validationClock),
     prepareLaneRecordWriteIntent(sessionId, laneRecord()),
     prepareAuditRecordWriteIntent(sessionId, auditRecord()),
-    prepareDebugExportManifestWriteIntent(sessionId, debugManifest())
+    prepareDebugExportManifestWriteIntent(sessionId, debugManifest()),
+    prepareDebugSectionFileWriteIntent(sessionId, debugSectionFile())
   ];
   assert.ok(preparations.every((preparation) => preparation.ok));
   const intents = preparations.map((preparation) => preparation.writeIntent).filter((intent) => intent !== undefined);
-  assert.equal(intents.length, 8);
+  assert.equal(intents.length, 9);
   assert.equal(intents[0]?.authority, "authoritative_workflow_state");
   assert.equal(intents[5]?.authority, "redacted_session_support");
+  assert.equal(intents[8]?.path, ".flowdesk/sessions/session-123/redacted-debug/sections/doctor.json");
   assert.ok(intents.every((intent) => intent.path.startsWith(".flowdesk/")));
   assert.ok(intents.every((intent) => !intent.path.startsWith("/")));
   assert.ok(intents.every((intent) => intent.atomicity.strategy === "temp_then_rename_intent"));
 
   const plan = createFlowDeskStateWritePlan(intents, { now: validationClock });
   assert.equal(plan.ok, true);
-  assert.equal(plan.plan?.intents.length, 8);
+  assert.equal(plan.plan?.intents.length, 9);
   const memoryState = applyWriteIntentsToInMemoryState(intents, undefined, { now: validationClock });
   assert.equal(memoryState.has(".flowdesk/workflows/active.json"), true);
+  assert.equal(memoryState.has(".flowdesk/sessions/session-123/redacted-debug/sections/doctor.json"), true);
   assert.match(memoryState.get(".flowdesk/sessions/session-123/audit.jsonl") ?? "", /"audit_ref":"audit-123"/);
+});
+
+test("debug section files persist as durable redacted JSON per section", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-debug-section-"));
+  try {
+    const manifestIntent = prepareDebugExportManifestWriteIntent(sessionId, debugManifest()).writeIntent;
+    const sectionIntent = prepareDebugSectionFileWriteIntent(sessionId, debugSectionFile()).writeIntent;
+    assert.ok(manifestIntent);
+    assert.ok(sectionIntent);
+
+    const applied = applyWriteIntentsToDurableState(root, [manifestIntent, sectionIntent], { now: validationClock });
+    assert.equal(applied.ok, true);
+
+    const manifestPath = join(root, ".flowdesk/sessions/session-123/redacted-debug/manifest.json");
+    const sectionPath = join(root, ".flowdesk/sessions/session-123/redacted-debug/sections/doctor.json");
+    assert.equal(existsSync(manifestPath), true);
+    assert.equal(existsSync(sectionPath), true);
+
+    const section = JSON.parse(readFileSync(sectionPath, "utf8")) as Record<string, unknown>;
+    assert.equal(section.schema_version, "flowdesk.debug_section_file.v1");
+    assert.equal(section.section, "doctor");
+    assert.equal(section.redaction_status, "passed");
+    assert.equal(/raw|payload|transcript|credential|secret|token|\/Users/.test(JSON.stringify(section)), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("validated write intents materialize durable .flowdesk files atomically", () => {
@@ -355,6 +407,8 @@ test("invalid persisted records fail closed before write intents", () => {
   assert.equal(prepareWorkflowRecordWriteIntent({ ...workflowRecord(), unknown: true } as never).ok, false);
   assert.equal(prepareAuditRecordWriteIntent(sessionId, { ...auditRecord(), provider_payload: "raw" } as never).ok, false);
   assert.equal(prepareDebugExportManifestWriteIntent(sessionId, { ...debugManifest(), warnings: ["see /Users/example/raw.log"] }).ok, false);
+  assert.equal(prepareDebugSectionFileWriteIntent(sessionId, { ...debugSectionFile(), summary_labels: ["see /Users/example/raw.log"] }).ok, false);
+  assert.equal(prepareDebugSectionFileWriteIntent(sessionId, { ...debugSectionFile(), section: "doctor", active_workflow_id: workflowId } as never).ok, false);
   assert.equal(prepareWorkflowActiveWriteIntent({ ...workflowActive(), active_workflow_id: "workflow-other" }, { workflowId }).ok, false);
   assert.equal(prepareCheckpointRecordWriteIntent(checkpointRecord(), { source: "event_only" }).ok, false);
   assert.equal(prepareActiveAttemptLockWriteIntent({ ...activeLock(), expires_at: "2026-05-16T00:00:00.000Z" }, Date.parse(now)).ok, false);

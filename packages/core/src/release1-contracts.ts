@@ -852,6 +852,23 @@ export interface FlowDeskDebugExportManifestV1 {
   audit_refs: OpaqueRef[];
 }
 
+export interface FlowDeskDebugSectionFileV1 {
+  schema_version: "flowdesk.debug_section_file.v1";
+  export_id: OpaqueId;
+  section: DebugSectionV1;
+  ref: OpaqueRef;
+  workflow_id?: OpaqueId;
+  session_ref?: OpaqueRef;
+  generated_at: IsoTimestamp;
+  redaction_version: string;
+  redaction_status: "passed" | "partial" | "blocked";
+  warning_count: number;
+  excluded_categories: RedactedErrorCategory[];
+  source_refs: OpaqueRef[];
+  summary_labels: string[];
+  audit_refs: OpaqueRef[];
+}
+
 export interface GuardRequestV1 {
   schema_version: "flowdesk.guard_request.v1";
   guard_request_id: OpaqueId;

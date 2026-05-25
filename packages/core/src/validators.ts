@@ -11,6 +11,7 @@ import type {
   FlowDeskConformanceEvidenceRecordV1,
   FlowDeskConformanceRuntimeMetadataV1,
   FlowDeskDebugExportManifestV1,
+  FlowDeskDebugSectionFileV1,
   FlowDeskDoctorRequestV1,
   FlowDeskDoctorResponseV1,
   FlowDeskExportDebugResponseV1,
@@ -1461,6 +1462,27 @@ export function validateDebugSectionSummaryV1(value: unknown): ValidationResult 
   ]);
 }
 
+export function validateFlowDeskDebugSectionFileV1(value: unknown): ValidationResult {
+  if (!isRecord(value)) return invalid("debug section file must be an object");
+  return combine([
+    validateSchemaArtifactValue("flowdesk.debug_section_file.v1", value),
+    validateOpaqueId(value.export_id, "export_id"),
+    isEnumValue(value.section, DEBUG_SECTIONS) ? valid() : invalid("debug section is invalid"),
+    validateOpaqueRef(value.ref, "ref"),
+    value.workflow_id === undefined ? valid() : validateOpaqueId(value.workflow_id, "workflow_id"),
+    value.session_ref === undefined ? valid() : validateOpaqueRef(value.session_ref, "session_ref"),
+    validateTimestamp(value.generated_at, "generated_at"),
+    typeof value.redaction_version === "string" && value.redaction_version.length > 0 && value.redaction_version.length <= 64 ? validateNoForbiddenRawPayloads(value.redaction_version, "redaction_version") : invalid("redaction_version is required"),
+    isEnumValue(value.redaction_status, ["passed", "partial", "blocked"]) ? valid() : invalid("redaction_status is invalid"),
+    validateNonNegativeInteger(value.warning_count, "warning_count"),
+    validateStringArray(value.excluded_categories, "excluded_categories", REDACTED_ERROR_CATEGORIES),
+    validateOpaqueRefArray(value.source_refs, "source_refs"),
+    validateStringArray(value.summary_labels, "summary_labels", undefined, 20),
+    validateOpaqueRefArray(value.audit_refs, "audit_refs"),
+    validateNoForbiddenRawPayloads(value, "debug_section_file")
+  ]);
+}
+
 export function validateDebugExportManifestV1(value: unknown): ValidationResult {
   if (!isRecord(value)) return invalid("debug export manifest must be an object");
   const partialDeletionWarningResult = value.partial_deletion_warning === undefined
@@ -1573,13 +1595,14 @@ export function assertExportDebugResponseV1(value: unknown): asserts value is Fl
 export function validateSessionRecordCannotReplaceWorkflowState(value: unknown): ValidationResult {
   if (!isRecord(value)) return invalid("session record must be an object");
   if (typeof value.schema_version !== "string" || !value.schema_version.startsWith("flowdesk.")) return invalid("session record schema_version is missing");
-  const sessionSchemas = new Set(["flowdesk.audit_record.v1", "flowdesk.lane_record.v1", "flowdesk.debug_export_manifest.v1"]);
+  const sessionSchemas = new Set(["flowdesk.audit_record.v1", "flowdesk.lane_record.v1", "flowdesk.debug_export_manifest.v1", "flowdesk.debug_section_file.v1"]);
   if (!sessionSchemas.has(value.schema_version)) return invalid("unknown session-side schema cannot replace workflow state");
   const forbiddenAuthorityKeys = ["active_workflow_id", "active_attempt_id", "latest_checkpoint_id", "current_attempt_id", "workflow_active", "checkpoint_state", "guard_approved_dispatch"];
   const present = forbiddenAuthorityKeys.filter((key) => key in value);
   if (present.length > 0) return invalid(`session record cannot replace workflow/checkpoint state: ${present.join(",")}`);
   if (value.schema_version === "flowdesk.audit_record.v1") return validateAuditRecordV1(value);
   if (value.schema_version === "flowdesk.lane_record.v1") return validateLaneRecordV1(value);
+  if (value.schema_version === "flowdesk.debug_section_file.v1") return validateFlowDeskDebugSectionFileV1(value);
   return validateDebugExportManifestV1(value);
 }
 

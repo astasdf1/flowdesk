@@ -4,6 +4,7 @@ import type {
 	FlowDeskAttemptRecordV1,
 	FlowDeskConfiguredVerificationResultV1,
 	FlowDeskDebugExportManifestV1,
+	FlowDeskDebugSectionFileV1,
 	FlowDeskEffectivePolicyV1,
 	FlowDeskExternalAuthProviderPolicyResultV1,
 	FlowDeskFallbackRegatePlanV1,
@@ -38,6 +39,7 @@ import {
 	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
 	prepareAttemptRecordWriteIntent,
 	prepareDebugExportManifestWriteIntent,
+	prepareDebugSectionFileWriteIntent,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	prepareLaneRecordWriteIntent,
 	prepareWorkflowActiveWriteIntent,
@@ -1122,9 +1124,66 @@ function recordDebugExportManifestState(
 		response.export_manifest_ref,
 		id("debug-export", request),
 	);
-	const includedSections = Array.isArray(response.included_sections)
+	const rawSections = Array.isArray(response.included_sections)
 		? response.included_sections
 		: [];
+	const workflowId =
+		typeof request.workflow_id === "string" ? request.workflow_id : undefined;
+	const sessionRef =
+		typeof request.session_ref === "string" ? request.session_ref : undefined;
+	const sourceRefs = [
+		safeToken(request.redacted_intake_ref, "debug-export-request"),
+	];
+	const sectionFiles: FlowDeskDebugSectionFileV1[] = [];
+	const updatedSummaries: FlowDeskDebugExportManifestV1["included_sections"] =
+		[];
+	for (const entry of rawSections) {
+		if (!isRecord(entry) || typeof entry.section !== "string") continue;
+		const sectionName = entry.section as FlowDeskDebugSectionFileV1["section"];
+		const sectionRef = `debug-section-file-${exportId}-${sectionName.replaceAll("_", "-")}`;
+		const redactionStatus: FlowDeskDebugSectionFileV1["redaction_status"] =
+			entry.redaction_status === "partial" ||
+			entry.redaction_status === "blocked"
+				? entry.redaction_status
+				: "passed";
+		const warningCount =
+			typeof entry.warning_count === "number" && entry.warning_count >= 0
+				? entry.warning_count
+				: 0;
+		const excludedCategories = Array.isArray(entry.excluded_categories)
+			? (entry.excluded_categories as FlowDeskDebugSectionFileV1["excluded_categories"])
+			: [];
+		const sectionFile: FlowDeskDebugSectionFileV1 = {
+			schema_version: "flowdesk.debug_section_file.v1",
+			export_id: exportId,
+			section: sectionName,
+			ref: sectionRef,
+			...(workflowId !== undefined ? { workflow_id: workflowId } : {}),
+			...(sessionRef !== undefined ? { session_ref: sessionRef } : {}),
+			generated_at: parts.nowIso,
+			redaction_version: "redaction-v1",
+			redaction_status: redactionStatus,
+			warning_count: warningCount,
+			excluded_categories: excludedCategories,
+			source_refs: [...sourceRefs],
+			summary_labels: [`flowdesk debug section ${sectionName}`],
+			audit_refs: ["audit-local"],
+		};
+		sectionFiles.push(sectionFile);
+		updatedSummaries.push({
+			schema_version: "flowdesk.debug_section_summary.v1",
+			export_id: exportId,
+			section: sectionName,
+			ref: sectionRef,
+			redaction_status: redactionStatus,
+			warning_count: warningCount,
+			excluded_categories: excludedCategories,
+		});
+	}
+	const byteCount = sectionFiles.reduce(
+		(acc, file) => acc + Buffer.byteLength(JSON.stringify(file), "utf8"),
+		0,
+	);
 	const manifest: FlowDeskDebugExportManifestV1 = {
 		schema_version: "flowdesk.debug_export_manifest.v1",
 		export_id: exportId,
@@ -1132,25 +1191,18 @@ function recordDebugExportManifestState(
 			response.export_manifest_ref,
 			`manifest-${exportId}`,
 		),
-		...(typeof request.workflow_id === "string"
-			? { workflow_id: request.workflow_id }
-			: {}),
-		...(typeof request.session_ref === "string"
-			? { session_ref: request.session_ref }
-			: {}),
+		...(workflowId !== undefined ? { workflow_id: workflowId } : {}),
+		...(sessionRef !== undefined ? { session_ref: sessionRef } : {}),
 		created_at: parts.nowIso,
 		delete_after:
 			typeof response.delete_after === "string"
 				? response.delete_after
 				: parts.expiresAtIso,
-		included_sections:
-			includedSections as FlowDeskDebugExportManifestV1["included_sections"],
+		included_sections: updatedSummaries,
 		redaction_version: "redaction-v1",
-		source_refs: [
-			safeToken(request.redacted_intake_ref, "debug-export-request"),
-		],
-		file_count: 0,
-		byte_count: 0,
+		source_refs: sourceRefs,
+		file_count: sectionFiles.length,
+		byte_count: byteCount,
 		warnings: [],
 		deletion_state:
 			request.retention_hint === "delete_after_export"
@@ -1161,12 +1213,22 @@ function recordDebugExportManifestState(
 			: {}),
 		audit_refs: ["audit-local"],
 	};
-	const intent = prepareDebugExportManifestWriteIntent(
+	const manifestIntent = prepareDebugExportManifestWriteIntent(
 		"session-local",
 		manifest,
 	).writeIntent;
-	if (intent === undefined) return false;
-	return applyAdapterWriteIntents(state, [intent], parts);
+	if (manifestIntent === undefined) return false;
+	const sectionIntents: FlowDeskStateWriteIntent[] = [];
+	for (const file of sectionFiles) {
+		const prep = prepareDebugSectionFileWriteIntent("session-local", file);
+		if (prep.writeIntent === undefined) return false;
+		sectionIntents.push(prep.writeIntent);
+	}
+	return applyAdapterWriteIntents(
+		state,
+		[manifestIntent, ...sectionIntents],
+		parts,
+	);
 }
 
 function fallbackRegatePlanContext(

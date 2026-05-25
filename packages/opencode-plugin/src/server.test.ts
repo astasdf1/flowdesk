@@ -3280,9 +3280,25 @@ test("export debug writes a redacted manifest when durable state root is configu
 				: [],
 			["doctor", "redaction_summary"],
 		);
+		assert.equal(manifest.file_count, 2);
+		assert.equal(typeof manifest.byte_count === "number" && (manifest.byte_count as number) > 0, true);
+		const doctorSectionPath = join(
+			root,
+			".flowdesk/sessions/session-local/redacted-debug/sections/doctor.json",
+		);
+		const redactionSectionPath = join(
+			root,
+			".flowdesk/sessions/session-local/redacted-debug/sections/redaction_summary.json",
+		);
+		assert.equal(existsSync(doctorSectionPath), true);
+		assert.equal(existsSync(redactionSectionPath), true);
+		const doctorSection = JSON.parse(readFileSync(doctorSectionPath, "utf8")) as Record<string, unknown>;
+		assert.equal(doctorSection.schema_version, "flowdesk.debug_section_file.v1");
+		assert.equal(doctorSection.section, "doctor");
+		assert.equal(doctorSection.redaction_status, "passed");
 		assert.equal(
 			/raw|payload|transcript|credential|secret|token|\/Users/.test(
-				JSON.stringify(manifest),
+				JSON.stringify(manifest) + JSON.stringify(doctorSection),
 			),
 			false,
 		);
