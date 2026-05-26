@@ -25,6 +25,7 @@ export interface FlowDeskChatRoutingEvaluationV1 extends ValidationResult {
 const fallbackActions = ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"] as const;
 const unsafeLaterGatePattern = /\b(real[\s_-]*(?:opencode[\s_-]*)?dispatch|realOpenCodeDispatch|actual[\s_-]*lane[\s_-]*launch|actualLaneLaunch|provider[\s_-]*(?:call|request|api)|providerCall|automatic[\s_-]*(?:fallback|reselection)|automaticFallbackOrReselection|fallback[\s_-]*(?:provider|model|authority)|fallbackAuthority|reselect(?:ion)?|hard[\s_-]*(?:cancel|stop|no[\s_-]*reply)|hardCancelOrNoReply|noReply|no[\s_-]*reply|cancel:\s*true|stop:\s*true|opencode[\s_-]*run)\b/i;
 const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve|audit|critique|assess|evaluate|analyze|inspect)\b|(?:계획|구현|만들|개발|수정|버그|개선|리팩토|테스트|작성|조사|분석|리뷰|검토|점검|진단|평가)/i;
+const reviewIntentPattern = /\b(?:review|critique|assess|evaluate|audit|inspect|how\s+(?:does\s+this\s+look|is\s+this\s+code)|what\s+(?:do|would)\s+you\s+think|spot\s+(?:issues|problems)|find\s+(?:issues|problems|bugs))\b|(?:리뷰|검토|점검|비판|평가|봐줘|괜찮(?:아|은지)|문제\s*(?:있어|찾)|이슈\s*찾|어때(?:\?|$|보여))/i;
 const executionLikePattern = /\b(?:run|execute|start|kick[\s_-]*off|launch)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:실행|진행(?:해|하))|(?:(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?).{0,40}(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)))|(?:(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)).{0,40}(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?))/i;
 const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead|ok(?:ay)?|sure|sounds good)\b|(?:승인|확인|동의|좋아|네|예|오케이|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요)|그렇게\s*해|해주세요)/i;
 const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this|kinda|sort of|whatever)\b|(?:잘\s*모르(?:겠|겠어)|애매|뭐였|뭔가|어떻게\s*해(?:야)?|뭐\s*해야|아무거나|적당히|대충)/i;
@@ -32,8 +33,8 @@ const proactiveUsagePreflightPattern = /\b(?:large|big|long|multi[\s_-]*step|mul
 const continuousWorkPattern = /\b(?:continue\s+(?:if\s+you\s+have\s+next\s+steps|until\s+blocked|with\s+the\s+(?:plan|design)|the\s+(?:whole|entire)\s+(?:plan|design)|working)|keep\s+(?:going|working)|work\s+through\s+the\s+(?:whole\s+)?(?:plan|design)|proceed\s+(?:with\s+)?(?:the\s+)?(?:whole|entire)?\s*(?:plan|design)|do\s+not\s+stop\s+until\s+blocked|don'?t\s+stop\s+until\s+blocked)\b|(?:계획\s*(?:전체|전부)?\s*(?:진행|계속|이어)|전체\s*(?:계획|설계|설계문서)\s*(?:진행|계속|기반)|설계\s*(?:문서)?\s*(?:기반|대로)\s*(?:계속|진행)|막히기\s*전까지|막히기전까지|막히지\s*않으면\s*(?:계속|진행)|계속\s*(?:진행|작업|이어|해줘)|전부\s*계속|다\s*끝날\s*때까지|다음\s*작업\s*(?:등록|이어)|끊기지\s*않게)/i;
 
 const commandRoutes: readonly (readonly [RegExp, readonly SafeNextAction[]])[] = [
-  [/\b(?:show|current|check|get|what(?:'s| is)|how(?:'s| is) (?:it|things))\b.{0,40}\b(?:status|progress|state|checkpoint|workflow|lane|attempt|heartbeat)\b|\bflowdesk-status\b|\b(?:is\s+(?:it|this|that)\s+stuck|seems?\s+stuck|stalled|no\s+log|no\s+update|no\s+response|frozen|hung|hanging|silent|heartbeat\s+(?:status|check)|recent\s+heartbeat|lane\s+heartbeat|last\s+heartbeat)\b|(?:상태|진행\s*상황|진행\s*상태|어디까지|어디 까지|어디쯤|현재\s*상태|현재\s*진행|작업\s*상태|작업\s*어디까지|workflow\s*상태|멈췄|멈춘\s*것\s*같|멈춘\s*거\s*같|응답이\s*없|아무\s*로그도\s*없|로그가\s*없|진행이\s*안돼|진행이\s*안\s*돼|꼼짝\s*안|먹통|하트\s*비트|하트비트|심장\s*박동|심박|진행\s*신호|진행\s*표시|레인\s*상태|레인\s*진행|살아\s*있|최근\s*heartbeat|마지막\s*heartbeat)/i, ["/flowdesk-status"]],
   [/\b(usage|quota|limit|rate[\s_-]*limit|reset(?:s)?|remaining|budget|credits?|tokens? left|how (?:much|many) (?:tokens?|requests?|usage|left|remaining))\b|(?:사용량|잔량|남은\s*(?:사용량|토큰|요청|쿼터|크레딧|예산)|남은(?:거|것)?\s*얼마|얼마\s*남(?:았|아|아서)|쿼터|한도|리셋|사용\s*가능량|쓸\s*수\s*있|토큰\s*남은|크레딧)/i, ["/flowdesk-usage", "/flowdesk-doctor"]],
+  [/\b(?:show|current|check|get|what(?:'s| is)|how(?:'s| is) (?:it|things)|how\s+did\s+(?:it|that|the\s+(?:run|review))\s+go|did\s+it\s+(?:work|finish|complete)|last\s+(?:run|review|result|status)|earlier\s+(?:run|review|result)|previous\s+(?:run|review|result)|just\s+now|a\s+(?:moment|second)\s+ago)\b.{0,40}\b(?:status|progress|state|checkpoint|workflow|lane|attempt|heartbeat|review|result|run|finish)\b|\bflowdesk-status\b|\b(?:how\s+did\s+(?:it|that)\s+go|did\s+it\s+(?:work|finish|complete)|is\s+(?:it|this|that)\s+stuck|seems?\s+stuck|stalled|no\s+log|no\s+update|no\s+response|frozen|hung|hanging|silent|heartbeat\s+(?:status|check)|recent\s+heartbeat|lane\s+heartbeat|last\s+heartbeat)\b|(?:상태|진행\s*상황|진행\s*상태|어디까지|어디 까지|어디쯤|현재\s*상태|현재\s*진행|작업\s*상태|작업\s*어디까지|workflow\s*상태|멈췄|멈춘\s*것\s*같|멈춘\s*거\s*같|응답이\s*없|아무\s*로그도\s*없|로그가\s*없|진행이\s*안돼|진행이\s*안\s*돼|꼼짝\s*안|먹통|하트\s*비트|하트비트|심장\s*박동|심박|진행\s*신호|진행\s*표시|레인\s*상태|레인\s*진행|살아\s*있|최근\s*heartbeat|마지막\s*heartbeat|방금\s*(?:거|뭐|결과|어땠|어떻|어떘|한\s*거)|직전\s*(?:거|결과|어땠)|조금\s*전에?\s*(?:거|결과|한\s*거)|이전\s*(?:거|결과)|아까\s*(?:거|결과|뭐|한)|최근에\s*한\s*(?:거|작업)|결과\s*(?:보여|알려|어땠|어땠어|어떻게)|잘\s*됐어|잘\s*됐나|잘\s*끝났|성공\s*했어|성공\s*했나)/i, ["/flowdesk-status"]],
   [/\b(doctor|diagnos(?:e|tic)|compatibility|health[\s_-]*check|sanity[\s_-]*check)\b|(?:진단|점검|건강\s*상태|설정\s*확인|환경\s*확인|호환성)/i, ["/flowdesk-doctor"]],
   [/\b(resume|continue from checkpoint|pick up where|continue (?:the )?workflow)\b|(?:이어\s*(?:서|가)|재개|중단(?:된|했던)\s*거|체크포인트|이어가)/i, ["/flowdesk-status", "/flowdesk-resume"]],
   [/\b(retry|try again|run again|do over)\b|(?:다시\s*(?:해|시도|돌려|실행)|재시도|또\s*해)/i, ["/flowdesk-status", "/flowdesk-retry"]],
@@ -111,15 +112,23 @@ function commandFallbackResponse(input: FlowDeskChatRoutingInputV1, actions: rea
   };
 }
 
-function managedPlanResponse(input: FlowDeskChatRoutingInputV1, usagePreflight = false): FlowDeskChatIntakeResponseV1 {
+function managedPlanResponse(input: FlowDeskChatRoutingInputV1, usagePreflight = false, reviewIntent = false): FlowDeskChatIntakeResponseV1 {
+  const baseActions: SafeNextAction[] = usagePreflight
+    ? ["/flowdesk-usage", "/flowdesk-plan", "/flowdesk-status"]
+    : ["/flowdesk-plan", "/flowdesk-status"];
+  const userMessage = reviewIntent
+    ? usagePreflight
+      ? "FlowDesk detected a review intent. Provider usage check is recommended before launching the FlowDesk quick reviewer (flowdesk_quick_reviewer_run) for multi-perspective critique."
+      : "FlowDesk detected a review intent. The FlowDesk quick reviewer (flowdesk_quick_reviewer_run) can run a 3-perspective fan-out on this target."
+    : usagePreflight
+      ? "FlowDesk should check provider usage before steering this larger request into a guarded command-backed planning flow."
+      : "FlowDesk can steer this request into a guarded command-backed planning flow.";
   return {
     schema_version: "flowdesk.chat_intake.response.v1",
     ok: true,
     status: "ready",
-    safe_next_actions: usagePreflight ? ["/flowdesk-usage", "/flowdesk-plan", "/flowdesk-status"] : ["/flowdesk-plan", "/flowdesk-status"],
-    user_message: usagePreflight
-      ? "FlowDesk should check provider usage before steering this larger request into a guarded command-backed planning flow."
-      : "FlowDesk can steer this request into a guarded command-backed planning flow.",
+    safe_next_actions: baseActions,
+    user_message: userMessage,
     classification: "managed_plan",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "show_plan"
@@ -220,7 +229,7 @@ export function buildFlowDeskChatIntakeResponseV1(input: FlowDeskChatRoutingInpu
   if (executionLikePattern.test(summary)) return hasTypedExecutionApproval(input, summary) ? confirmedExecutionResponse(input) : executionConfirmationResponse(input);
   const command = commandRoutes.find(([pattern]) => pattern.test(summary));
   if (command !== undefined) return commandFallbackResponse(input, command[1]);
-  if (planningPattern.test(summary)) return clarificationPattern.test(summary) ? clarifyResponse(input) : managedPlanResponse(input, proactiveUsagePreflightPattern.test(summary));
+  if (planningPattern.test(summary) || reviewIntentPattern.test(summary)) return clarificationPattern.test(summary) ? clarifyResponse(input) : managedPlanResponse(input, proactiveUsagePreflightPattern.test(summary), reviewIntentPattern.test(summary));
   return continueChatResponse(input);
 }
 

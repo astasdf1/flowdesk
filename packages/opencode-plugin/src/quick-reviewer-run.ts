@@ -63,6 +63,7 @@ export interface FlowDeskQuickReviewerRunResultV1 {
 	linkedLifecycleCount?: number;
 	acceptedPerspectives?: readonly string[];
 	redactedBlockReason?: string;
+	summaryForUser?: string;
 	safeNextActions: ["/flowdesk-status"] | ["/flowdesk-status", "/flowdesk-export-debug"];
 	authority: {
 		realOpenCodeDispatch: false;
@@ -76,6 +77,35 @@ export interface FlowDeskQuickReviewerRunResultV1 {
 		developerModeAcknowledged: boolean;
 		quickReviewerRunExecuted: boolean;
 	};
+}
+
+function buildQuickReviewerSummaryForUser(input: {
+	status: FlowDeskQuickReviewerRunResultV1["status"];
+	providerQualifiedModelId: string;
+	runtimeAgent: string;
+	laneCount: number;
+	acceptedPerspectives?: readonly string[];
+	linkedVerdictCount?: number;
+	redactedBlockReason?: string;
+	safeNextActions: readonly string[];
+}): string {
+	const acceptedCount = input.acceptedPerspectives?.length ?? 0;
+	const total = input.laneCount;
+	if (input.status === "blocked_before_quick_reviewer_run") {
+		const reason = input.redactedBlockReason ?? "blocked before reviewer launch";
+		return `FlowDesk quick reviewer blocked before launch: ${reason}. Safe next actions: ${input.safeNextActions.join(", ")}.`;
+	}
+	if (input.status === "quick_reviewer_run_completed") {
+		const linked = input.linkedVerdictCount ?? acceptedCount;
+		const perspectiveLabel =
+			acceptedCount > 0 && input.acceptedPerspectives !== undefined
+				? input.acceptedPerspectives.join(", ")
+				: "(none)";
+		return `FlowDesk quick reviewer completed: ${acceptedCount}/${total} perspectives accepted (${perspectiveLabel}) via ${input.runtimeAgent} on ${input.providerQualifiedModelId}; ${linked} typed verdicts linked to durable evidence.`;
+	}
+	const blockReason =
+		input.redactedBlockReason ?? "see lanes[].observationStatus";
+	return `FlowDesk quick reviewer incomplete: ${acceptedCount}/${total} perspectives accepted via ${input.runtimeAgent} on ${input.providerQualifiedModelId}. Blocker: ${blockReason}. Safe next actions: ${input.safeNextActions.join(", ")}.`;
 }
 
 const DEFAULT_TITLE = "FlowDesk quick reviewer run";
@@ -101,6 +131,15 @@ function blocked(input: {
 	workflowId?: string;
 	attemptId?: string;
 }): FlowDeskQuickReviewerRunResultV1 {
+	const safeNextActions: ["/flowdesk-status"] = ["/flowdesk-status"];
+	const summaryForUser = buildQuickReviewerSummaryForUser({
+		status: "blocked_before_quick_reviewer_run",
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		runtimeAgent: input.runtimeAgent,
+		laneCount: 0,
+		redactedBlockReason: input.reason,
+		safeNextActions,
+	});
 	return {
 		adapterProfile: "quick_reviewer_run_helper",
 		status: "blocked_before_quick_reviewer_run",
@@ -111,7 +150,8 @@ function blocked(input: {
 		laneCount: 0,
 		lanes: [],
 		redactedBlockReason: input.reason,
-		safeNextActions: ["/flowdesk-status"],
+		summaryForUser,
+		safeNextActions,
 		authority: {
 			realOpenCodeDispatch: false,
 			fallbackAuthority: false,
@@ -517,6 +557,32 @@ export async function executeFlowDeskQuickReviewerRunV1(
 	const completed =
 		bridgeResult.status === "runtime_reviewer_execution_completed" &&
 		bridgeResult.durableLinkageStatus === "durable_verdicts_accepted";
+	const acceptedPerspectives = Array.isArray(bridgeResult.acceptedPerspectives)
+		? (bridgeResult.acceptedPerspectives as readonly string[])
+		: undefined;
+	const linkedVerdictCount =
+		typeof bridgeResult.linkedVerdictCount === "number"
+			? bridgeResult.linkedVerdictCount
+			: undefined;
+	const redactedBlockReason =
+		typeof bridgeResult.redactedBlockReason === "string"
+			? bridgeResult.redactedBlockReason
+			: undefined;
+	const safeNextActions: ["/flowdesk-status"] | ["/flowdesk-status", "/flowdesk-export-debug"] = completed
+		? ["/flowdesk-status"]
+		: ["/flowdesk-status", "/flowdesk-export-debug"];
+	const summaryForUser = buildQuickReviewerSummaryForUser({
+		status: completed
+			? "quick_reviewer_run_completed"
+			: "quick_reviewer_run_incomplete",
+		providerQualifiedModelId,
+		runtimeAgent,
+		laneCount: lanes.length,
+		acceptedPerspectives,
+		linkedVerdictCount,
+		redactedBlockReason,
+		safeNextActions,
+	});
 	return {
 		adapterProfile: "quick_reviewer_run_helper",
 		status: completed
@@ -530,6 +596,7 @@ export async function executeFlowDeskQuickReviewerRunV1(
 		runtimeAgent,
 		laneCount: lanes.length,
 		lanes,
+		summaryForUser,
 		...(typeof bridgeResult.acceptanceStatus === "string"
 			? { acceptanceStatus: bridgeResult.acceptanceStatus }
 			: {}),
@@ -551,9 +618,7 @@ export async function executeFlowDeskQuickReviewerRunV1(
 		...(typeof bridgeResult.redactedBlockReason === "string"
 			? { redactedBlockReason: bridgeResult.redactedBlockReason }
 			: {}),
-		safeNextActions: completed
-			? ["/flowdesk-status"]
-			: ["/flowdesk-status", "/flowdesk-export-debug"],
+		safeNextActions,
 		authority: {
 			realOpenCodeDispatch: false,
 			fallbackAuthority: false,

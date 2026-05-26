@@ -266,3 +266,45 @@ test("chat routing surfaces Korean clarification cues as ask_clarification when 
     assert.equal(result.response.route_decision, "ask_clarification", summary);
   }
 });
+
+test("chat routing recognizes follow-up status phrases like 방금/직전/결과", () => {
+  for (const summary of [
+    "방금 거 결과 어땠어",
+    "직전 리뷰 결과 보여줘",
+    "조금 전에 한 거 어떻게 됐어",
+    "아까 한 거 잘 됐어",
+    "최근에 한 작업 상태 알려줘",
+    "결과 보여줘",
+    "잘 됐어?",
+    "how did it go",
+    "last review result",
+    "previous run status",
+    "did it finish"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(result.ok, true, summary);
+    assert.equal(result.response.classification, "fast_chat", summary);
+    assert.equal(result.response.route_decision, "use_command_fallback", summary);
+    assert.deepEqual(result.response.safe_next_actions, ["/flowdesk-status"], summary);
+  }
+});
+
+test("chat routing review intent surfaces flowdesk_quick_reviewer_run guidance in user message", () => {
+  for (const summary of [
+    "이 함수 리뷰해줘",
+    "이 코드 어때",
+    "보안 검토 부탁",
+    "review this function",
+    "critique this design",
+    "spot issues in this snippet"
+  ]) {
+    const result = evaluateFlowDeskChatIntakeV1({ request: request(summary), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+    assert.equal(result.ok, true, summary);
+    assert.equal(result.response.classification, "managed_plan", summary);
+    assert.match(
+      result.response.user_message,
+      /flowdesk_quick_reviewer_run/,
+      summary,
+    );
+  }
+});

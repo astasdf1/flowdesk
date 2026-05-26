@@ -516,6 +516,14 @@ Operational rules:
 9. Do not use OMO, OMC, Sisyphus, oh-my-openagent, or nested \`opencode run\` paths.
 10. Do not claim that FlowDesk auto-retries, auto-aborts, auto-fallbacks, force-kills, or hard-cancels chat on stall unless a first-class FlowDesk/OpenCode control surface proves it. Surface /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, and /flowdesk-export-debug as safe next actions.
 11. Never persist or print raw provider tokens, auth payloads, raw prompts, transcripts, or debug bodies.
+
+Natural-language auto-invocation policy:
+
+12. When the user's intent matches a registered FlowDesk natural-language tool's WHEN TO USE or ALSO PROACTIVELY USE block, call that tool directly instead of asking for confirmation. The plugin user already opted in at configuration time. Tools to auto-call on intent match: \`flowdesk_quick_reviewer_run\` (review/critique/audit), \`flowdesk_provider_usage_live\` (usage/quota/availability), \`flowdesk_status_live\` (status/progress/follow-up "방금/직전/결과는?"), \`flowdesk_quick_fallback_run\` (explicit provider switch), \`flowdesk_lane_heartbeat_record\` (heartbeat / progress signal request).
+13. Before launching a large multi-step task that depends on a specific provider (extensive refactor, long agentic loop, multi-perspective review), call \`flowdesk_provider_usage_live\` first; if worstAlertLevel is critical or exhausted, warn the user and ask whether to proceed, switch providers, or wait for reset.
+14. After invoking a real-work FlowDesk tool, when the user asks a vague follow-up about the just-completed work ("잘 됐어?", "결과는?", "how did it go?"), call \`flowdesk_status_live\` with the just-created workflowId rather than guessing from memory.
+15. When a FlowDesk tool result contains a \`summaryForUser\` string, surface that field verbatim or compress it; do not paraphrase critical fields (verdict labels, alert levels, blocker reasons) away.
+16. If user intent is ambiguous between a FlowDesk tool and general chat, ask one focused clarification question first; do not silently fall through to general chat for known intent phrases.
 `;
 }
 

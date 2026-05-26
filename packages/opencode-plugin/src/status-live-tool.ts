@@ -161,6 +161,7 @@ export interface FlowDeskStatusLiveResultV1 {
 	totalStalledLaneCount?: number;
 	totalProgressingLateLaneCount?: number;
 	redactedBlockReason?: string;
+	summaryForUser?: string;
 	safeNextActions: readonly (
 		| "/flowdesk-status"
 		| "/flowdesk-doctor"
@@ -473,6 +474,14 @@ export async function executeFlowDeskStatusLiveV1(input: {
 						? "terminal"
 						: "unknown";
 
+	const summaryForUser = buildStatusLiveSummaryForUser({
+		workflows,
+		worstLaneStallClassification,
+		totalStalled,
+		totalLate,
+		requestedWorkflowId,
+	});
+
 	return {
 		status: "status_live_collected",
 		observedAt,
@@ -483,6 +492,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		worstLaneStallClassification,
 		totalStalledLaneCount: totalStalled,
 		totalProgressingLateLaneCount: totalLate,
+		summaryForUser,
 		safeNextActions: safeNextActions(),
 		authority: {
 			realOpenCodeDispatch: false,
@@ -495,4 +505,46 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			statusEvidenceObserved: observed,
 		},
 	};
+}
+
+function buildStatusLiveSummaryForUser(input: {
+	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
+	worstLaneStallClassification: FlowDeskLaneStallClassificationV1;
+	totalStalled: number;
+	totalLate: number;
+	requestedWorkflowId?: string;
+}): string {
+	const workflowsCount = input.workflows.length;
+	if (workflowsCount === 0) {
+		return input.requestedWorkflowId !== undefined
+			? `FlowDesk status: no durable evidence for workflow ${input.requestedWorkflowId}.`
+			: "FlowDesk status: no durable workflows found.";
+	}
+	const headline =
+		input.totalStalled > 0
+			? `FlowDesk status: ${workflowsCount} workflow(s); worst classification stalled (${input.totalStalled} stalled, ${input.totalLate} progressing-late).`
+			: input.totalLate > 0
+				? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalLate} progressing-late, no stalled lanes.`
+				: input.worstLaneStallClassification === "terminal"
+					? `FlowDesk status: ${workflowsCount} workflow(s); all observed lanes terminal/complete.`
+					: input.worstLaneStallClassification === "progressing_normal"
+						? `FlowDesk status: ${workflowsCount} workflow(s); active lanes progressing_normal.`
+						: `FlowDesk status: ${workflowsCount} workflow(s); worst classification ${input.worstLaneStallClassification}.`;
+
+	const perWorkflow = input.workflows.slice(0, 3).map((workflow) => {
+		const verdictLabels = workflow.latestReviewerVerdictLabels;
+		const verdictText =
+			verdictLabels.length > 0
+				? `verdicts=${verdictLabels.join("/")}`
+				: "verdicts=(none)";
+		const lifecycleStates = workflow.latestLaneLifecycleStates;
+		const lifecycleText =
+			lifecycleStates.length > 0
+				? `lifecycle=${lifecycleStates.slice(0, 3).join("/")}`
+				: "lifecycle=(none)";
+		const classification = workflow.worstLaneStallClassification ?? "unknown";
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}`;
+	});
+
+	return [headline, ...perWorkflow].join("\n");
 }
