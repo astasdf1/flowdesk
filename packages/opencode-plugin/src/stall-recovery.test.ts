@@ -12,6 +12,7 @@ import {
 	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskReviewerLaneContextV1,
 	type FlowDeskAgentTaskContextV1,
+	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
 	type FlowDeskPendingRetryPlanV1,
 	type FlowDeskRetryExecutedV1,
@@ -421,6 +422,24 @@ function taskFailedRecord(overrides: Partial<FlowDeskTaskFailedV1> = {}): FlowDe
 	};
 }
 
+function taskResultRecord(overrides: Partial<FlowDeskTaskResultV1> = {}): FlowDeskTaskResultV1 {
+	return {
+		schema_version: "flowdesk.task_result.v1",
+		workflow_id: "workflow-agent-task-123",
+		lane_id: "lane-agent-task-123",
+		task_id: "task-agent-123",
+		agent_ref: "agent-general-123",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		task_prompt_sha256: "promptsha256",
+		result_text: "agent task result",
+		result_text_truncated: false,
+		result_text_sha256: "resultsha256",
+		created_at: "2026-05-26T10:02:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
 function writeAgentTaskContext(rootDir: string, record: FlowDeskAgentTaskContextV1, evidenceId = "agent-task-context-001"): void {
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 		workflowId: record.workflow_id,
@@ -434,6 +453,18 @@ function writeAgentTaskContext(rootDir: string, record: FlowDeskAgentTaskContext
 }
 
 function writeTaskFailed(rootDir: string, record: FlowDeskTaskFailedV1, evidenceId = "task-failed-001"): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writeTaskResult(rootDir: string, record: FlowDeskTaskResultV1, evidenceId = "task-result-001"): void {
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 		workflowId: record.workflow_id,
 		evidenceId,
@@ -577,6 +608,58 @@ test("agent-task backfill uses agent_task_context and no_response maps to no_out
 	);
 	assert.equal(laneProjection?.classification, "terminal");
 	assert.equal(projection.totalStalledLanes, 0);
+});
+
+test("agent-task backfill terminalizes stale legacy task result lane", () => {
+	const rootDir = withTempRoot("flowdesk-agent-task-backfill-result-");
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			agent_ref: "agent-general-123",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running",
+			updated_at: "2026-05-26T10:01:00.000Z",
+		}),
+		"lifecycle-agent-task-running-001",
+	);
+	writeTaskResult(rootDir, taskResultRecord());
+
+	const result = backfillTerminalAgentTaskFailedLanesV1({
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		now: new Date("2026-05-26T10:05:00.000Z"),
+	});
+
+	assert.equal(result.status, "backfill_completed");
+	assert.equal(result.lanesTerminalized, 1);
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-agent-task-123" });
+	assert.equal(reload.ok, true);
+	const terminal = reload.entries.find(
+		(entry) =>
+			entry.evidenceClass === "lane_lifecycle" &&
+			entry.record.lane_id === "lane-agent-task-123" &&
+			entry.record.state === "incomplete",
+	)?.record as Record<string, unknown> | undefined;
+	assert.ok(terminal);
+	assert.equal(terminal.verdict_ref, undefined);
+	assert.equal(terminal.output_ref, "output-task-agent-123");
+	assert.equal(terminal.dispatch_authority_enabled, false);
+	assert.equal(terminal.providerCall, false);
+	assert.equal(terminal.actualLaneLaunch, false);
+	assert.equal(terminal.runtimeExecution, false);
+	const projection = projectFlowDeskLaneStallV1({
+		workflowId: "workflow-agent-task-123",
+		reload,
+		observedAt: "2026-05-26T10:10:00.000Z",
+		stallThresholdMs: 60_000,
+	});
+	assert.equal(projection.totalStalledLanes, 0);
+	assert.equal(
+		projection.entries.find((entry) => entry.laneId === "lane-agent-task-123")?.classification,
+		"terminal",
+	);
 });
 
 // ---------------------------------------------------------------------------

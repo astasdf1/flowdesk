@@ -8,6 +8,7 @@ import {
 	type FlowDeskPendingAbortWarningV1,
 	type FlowDeskReviewerLaneContextV1,
 	type FlowDeskAgentTaskContextV1,
+	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
 	type FlowDeskPendingRetryPlanV1,
 	type FlowDeskRetryExecutedV1,
@@ -569,6 +570,10 @@ function isTaskFailed(value: unknown): value is FlowDeskTaskFailedV1 {
 	return isRecord(value) && value.schema_version === "flowdesk.task_failed.v1";
 }
 
+function isTaskResult(value: unknown): value is FlowDeskTaskResultV1 {
+	return isRecord(value) && value.schema_version === "flowdesk.task_result.v1";
+}
+
 function isPendingRetryPlan(value: unknown): value is FlowDeskPendingRetryPlanV1 {
 	return isRecord(value) && value.schema_version === "flowdesk.pending_retry_plan.v1";
 }
@@ -617,6 +622,17 @@ function latestTaskFailedByLane(records: readonly FlowDeskTaskFailedV1[]): Map<s
 	return byLane;
 }
 
+function latestTaskResultByLane(records: readonly FlowDeskTaskResultV1[]): Map<string, FlowDeskTaskResultV1> {
+	const byLane = new Map<string, FlowDeskTaskResultV1>();
+	for (const record of records) {
+		const existing = byLane.get(record.lane_id);
+		if (existing === undefined || Date.parse(record.created_at) >= Date.parse(existing.created_at)) {
+			byLane.set(record.lane_id, record);
+		}
+	}
+	return byLane;
+}
+
 function agentTaskContextByLane(records: readonly FlowDeskAgentTaskContextV1[]): Map<string, FlowDeskAgentTaskContextV1> {
 	const byLane = new Map<string, FlowDeskAgentTaskContextV1>();
 	for (const record of records) byLane.set(record.lane_id, record);
@@ -626,10 +642,11 @@ function agentTaskContextByLane(records: readonly FlowDeskAgentTaskContextV1[]):
 /**
  * Safe local cleanup/backfill for legacy `flowdesk_agent_task_run` lanes.
  *
- * Older agent-task failures could persist `task_failed.v1` while the latest
- * `lane_lifecycle` remained `created`/`running`, which made status cards keep
- * reporting stale active lanes. This helper only writes terminal lifecycle
- * evidence when existing durable evidence already proves the agent-task failed.
+ * Older agent-task results/failures could persist `task_result.v1` or
+ * `task_failed.v1` while the latest `lane_lifecycle` remained
+ * `created`/`running`, which made status cards keep reporting stale active
+ * lanes. This helper only writes terminal lifecycle evidence when existing
+ * durable evidence already proves the agent-task ended.
  * It never launches, aborts, retries, enables dispatch authority, or rewrites
  * existing evidence.
  */
@@ -642,15 +659,18 @@ export function backfillTerminalAgentTaskFailedLanesV1(input: {
 	if (!reloaded.ok) return { status: "backfill_skipped", workflowId: input.workflowId, reason: "session_evidence_reload_failed" };
 
 	const lifecycles: FlowDeskLaneLifecycleRecordV1[] = [];
+	const taskResults: FlowDeskTaskResultV1[] = [];
 	const taskFailures: FlowDeskTaskFailedV1[] = [];
 	const contexts: FlowDeskAgentTaskContextV1[] = [];
 	for (const entry of reloaded.entries) {
 		if (isLaneLifecycleRecord(entry.record)) lifecycles.push(entry.record);
+		else if (isTaskResult(entry.record)) taskResults.push(entry.record);
 		else if (isTaskFailed(entry.record)) taskFailures.push(entry.record);
 		else if (isAgentTaskContext(entry.record)) contexts.push(entry.record);
 	}
 
 	const latestLifecycle = latestLifecycleByLane(lifecycles);
+	const latestResult = latestTaskResultByLane(taskResults);
 	const latestFailure = latestTaskFailedByLane(taskFailures);
 	const contextByLane = agentTaskContextByLane(contexts);
 	const observedAt = (input.now ?? new Date()).toISOString();
@@ -658,7 +678,37 @@ export function backfillTerminalAgentTaskFailedLanesV1(input: {
 	const terminalEvidenceIds: string[] = [];
 	let lanesScanned = 0;
 
+	for (const [laneId, result] of latestResult) {
+		const latest = latestLifecycle.get(laneId);
+		if (latest === undefined) continue;
+		lanesScanned++;
+		if (!ABORT_ELIGIBLE_LANE_STATES.has(latest.state)) continue;
+		const context = contextByLane.get(laneId);
+		const evidenceId = `lifecycle-agent-task-terminal-backfill-${safeToken(laneId)}-${token}`;
+		const terminalRecord: FlowDeskLaneLifecycleRecordV1 = {
+			...latest,
+			workflow_id: result.workflow_id,
+			lane_id: laneId,
+			agent_ref: context?.agent_ref ?? result.agent_ref ?? latest.agent_ref,
+			provider_qualified_model_id: context?.provider_qualified_model_id ?? result.provider_qualified_model_id ?? latest.provider_qualified_model_id,
+			parent_session_ref: context?.parent_session_ref ?? latest.parent_session_ref,
+			state: "incomplete",
+			verdict_ref: undefined,
+			output_ref: `output-${safeToken(result.task_id)}`,
+			updated_at: observedAt,
+			spawned_by: latest.spawned_by ?? "flowdesk",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		};
+		if (writeEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, evidenceId, record: terminalRecord as unknown as Record<string, unknown> })) {
+			terminalEvidenceIds.push(evidenceId);
+		}
+	}
+
 	for (const [laneId, failed] of latestFailure) {
+		if (latestResult.has(laneId)) continue;
 		const latest = latestLifecycle.get(laneId);
 		if (latest === undefined) continue;
 		lanesScanned++;
