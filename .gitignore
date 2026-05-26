@@ -1,7 +1,8 @@
 node_modules/
 .omc/
 .tools/
-.symgraph/
+.codegraph/
+.flowdesk/
 dist/
 packages/*/dist/
 *.tsbuildinfo

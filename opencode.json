@@ -1,14 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "symgraph": {
+    "codegraph": {
       "type": "local",
-      "command": ["./.tools/symgraph/bin/symgraph", "serve"],
-      "environment": {
-        "SYMGRAPH_ROOT": "."
-      },
+      "command": ["./.tools/codegraph/node_modules/.bin/codegraph", "serve", "--mcp", "--path", "."],
       "enabled": true,
-      "timeout": 5000
+      "timeout": 10000
     }
   }
 }
