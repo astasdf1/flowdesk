@@ -74,16 +74,29 @@ function extractAssistantTextFromResponse(client: FlowDeskManagedDispatchBetaOpe
 	if (messages === undefined) return undefined;
 	return (async () => {
 		try {
-			const response = await (messages as (options: unknown) => unknown | Promise<unknown>).call(
-				client.session,
-				{ path: { id: childSessionId } },
-			);
+			const method = messages as (options: unknown) => unknown | Promise<unknown>;
+			const current = await method.call(client.session, { sessionID: childSessionId });
+			const response = isSdkErrorResponse(current)
+				? await method.call(client.session, { path: { id: childSessionId } })
+				: current;
 			const data = asResponseData(response);
-			const items = Array.isArray(data) ? data : (asRecord(data)?.items as unknown[] | undefined) ?? [];
+			const record = asRecord(data);
+			const items = Array.isArray(data)
+				? data
+				: Array.isArray(record?.items)
+					? record.items
+					: Array.isArray(record?.messages)
+						? record.messages
+						: [];
 			for (const message of items) {
 				const record = asRecord(message);
-				if (record?.role !== "assistant") continue;
-				const parts = Array.isArray(record.parts) ? record.parts : [];
+				const info = asRecord(record?.info) ?? record;
+				if (info?.role !== "assistant") continue;
+				const parts = Array.isArray(record?.parts)
+					? record.parts
+					: Array.isArray(info?.parts)
+						? info.parts
+						: [];
 				for (const part of parts) {
 					const partRecord = asRecord(part);
 					const text =
@@ -111,6 +124,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function asResponseData(value: unknown): unknown {
 	const record = asRecord(value);
 	return record !== undefined && "data" in record ? record.data : value;
+}
+
+function isSdkErrorResponse(value: unknown): boolean {
+	const record = asRecord(value);
+	const data = asRecord(asResponseData(value));
+	return record?.error !== undefined || data?.error !== undefined;
 }
 
 function sha256Hex(text: string): string {

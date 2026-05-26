@@ -3132,8 +3132,10 @@ function opencodeRuntimeProviderIDForFlowDeskProviderFamily(
 ): string | undefined {
 	switch (providerFamily) {
 		case "claude":
+		case "anthropic":
 			return "anthropic";
 		case "gemini":
+		case "google":
 			return "google";
 		case "openai":
 			return "openai";

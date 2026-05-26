@@ -271,6 +271,8 @@ test("opaque ids, refs, model ids, and provider family validators fail closed", 
   assert.equal(validateProviderQualifiedModelId("sonnet-4").ok, false);
   assert.equal(validateProviderQualifiedModelId("unknown/model").ok, false);
   assert.equal(validateProviderQualifiedModelId("claude/sonnet-4").ok, true);
+  assert.equal(validateProviderQualifiedModelId("anthropic/claude-opus-4-7").ok, true);
+  assert.equal(validateProviderQualifiedModelId("google/gemini-3.1-pro-preview").ok, true);
 
   const usageRequestWithoutProvider = {
     schema_version: "flowdesk.usage.request.v1",

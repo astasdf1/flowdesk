@@ -212,7 +212,16 @@ export function validateProviderQualifiedModelId(value: unknown): ValidationResu
   const parts = value.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return invalid("model id must be provider-qualified as provider/model");
   const [family, model] = parts;
-  if (!isEnumValue(family, PROVIDER_FAMILIES) || family === "unknown" || family === "all") return invalid("model id provider family is not dispatchable");
+  const dispatchableModelProviderPrefixes = [
+    "claude",
+    "anthropic",
+    "openai",
+    "gemini",
+    "google",
+    "opencode_go",
+    "z_ai",
+  ];
+  if (!dispatchableModelProviderPrefixes.includes(family)) return invalid("model id provider family is not dispatchable");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(model)) return invalid("model id is not schema-safe");
   return validateNoForbiddenRawPayloads(value, "model id");
 }

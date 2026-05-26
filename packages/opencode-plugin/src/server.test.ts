@@ -6767,7 +6767,7 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 						workflowId: "workflow-task-exec-1",
 						taskDescription: "Analyze this code for security issues.",
 						agentName: "reviewer-claude-opus",
-						providerQualifiedModelId: "claude/claude-opus-4-7",
+						providerQualifiedModelId: "anthropic/claude-opus-4-7",
 						parentSessionId: "parent-agent-task-exec-1",
 						developerModeAcknowledged: true,
 						allowProviderCall: true,
@@ -6782,6 +6782,68 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 		assert.ok(typeof result.workflowId === "string");
 		assert.ok(typeof result.laneId === "string");
 		assert.ok(typeof result.taskId === "string");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run reads current SDK messages response shapes", async () => {
+	const assistantText = "Architecture synthesis complete";
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-agent-task-current-sdk-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-agent-task-current-sdk-1" } });
+			},
+			messages(options: unknown) {
+				const record = options as Record<string, unknown>;
+				if ("path" in record) return Promise.resolve({ data: { error: "legacy path should not be needed" } });
+				return Promise.resolve({
+					data: {
+						messages: [
+							{
+								info: { role: "assistant" },
+								parts: [{ type: "text", text: assistantText }],
+							},
+						],
+					},
+				});
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-current-sdk-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-current-sdk-1",
+						taskDescription: "Summarize the architecture.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "parent-agent-task-current-sdk-1",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_completed");
+		assert.match(String(result.resultText), /Architecture synthesis complete/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
