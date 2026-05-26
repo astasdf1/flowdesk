@@ -283,6 +283,7 @@ export async function executeFlowDeskRuntimeReviewerExecutionBridgeV1(input: {
 				launchStatus: launchResult.status,
 				runningLifecycle: runningLifecycle.lifecycleState,
 				observationStatus: observation.status,
+				redactedObservationErrors: observation.redactedErrors,
 				redactedBlockReason: "typed reviewer verdict was not observed",
 			});
 			continue;

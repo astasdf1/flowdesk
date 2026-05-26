@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { validateTopTierReviewVerdictV1 } from "@flowdesk/core";
 import { executeFlowDeskQuickReviewerRunV1 } from "./quick-reviewer-run.js";
 
 function neverCalledClient() {
@@ -130,4 +131,37 @@ test("quick reviewer run prompt starts from a neutral verdict template", async (
 	assert.match(prompts[0], /verdict_label":"inconclusive"/);
 	assert.match(prompts[0], /Choose verdict_label neutrally/);
 	assert.doesNotMatch(prompts[0], /If you find a real issue change only verdict_label/);
+	const template = JSON.parse(prompts[0].split("\n").at(-1) ?? "{}");
+	const templateValidation = validateTopTierReviewVerdictV1(template);
+	assert.equal(templateValidation.ok, true, templateValidation.errors.join("; "));
+});
+
+test("quick reviewer run derives reviewer source labels from concrete bindings", async () => {
+	const prompts: string[] = [];
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create() {
+					return { id: "child-session-1" };
+				},
+				async prompt(options: { parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
+					prompts.push(String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? ""));
+					return { id: "child-session-1" };
+				},
+			},
+		} as never,
+		prompt: "Review this change neutrally.",
+		providerQualifiedModelId: "claude/claude-opus-4-5",
+		runtimeAgent: "reviewer-claude-opus",
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+		perspectives: ["policy_security"],
+	});
+	assert.equal(result.status, "quick_reviewer_run_incomplete");
+	assert.equal(prompts.length, 1);
+	const template = JSON.parse(prompts[0].split("\n").at(-1) ?? "{}");
+	assert.equal(template.source, "claude_opus");
+	const templateValidation = validateTopTierReviewVerdictV1(template);
+	assert.equal(templateValidation.ok, true, templateValidation.errors.join("; "));
 });

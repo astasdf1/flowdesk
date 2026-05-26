@@ -40,6 +40,7 @@ export interface FlowDeskQuickReviewerRunLaneSummaryV1 {
 	completeLifecycle?: string;
 	observationStatus?: string;
 	verdictMaterializationStatus?: string;
+	redactedObservationErrors?: string[];
 }
 
 export interface FlowDeskQuickReviewerRunResultV1 {
@@ -79,6 +80,19 @@ export interface FlowDeskQuickReviewerRunResultV1 {
 
 const DEFAULT_TITLE = "FlowDesk quick reviewer run";
 const DEFAULT_SOURCE_LABEL = "gpt_frontier";
+
+function defaultSourceLabelForReviewer(input: {
+	providerQualifiedModelId: string;
+	runtimeAgent: string;
+}): string {
+	const binding = `${input.runtimeAgent} ${input.providerQualifiedModelId}`.toLowerCase();
+	if (binding.includes("claude") || binding.includes("opus"))
+		return "claude_opus";
+	if (binding.includes("gemini")) return "gemini_pro";
+	if (binding.includes("gpt") || binding.includes("openai"))
+		return "gpt_frontier";
+	return DEFAULT_SOURCE_LABEL;
+}
 
 function blocked(input: {
 	reason: string;
@@ -177,9 +191,12 @@ function quickReviewerPrompt(input: {
 		redaction_version: "redaction-v1",
 		findings: [
 			{
+				finding_id: `finding-${input.perspective}-1`,
 				severity: "info",
-				category: "verification",
-				summary: "Replace this placeholder with the most important review finding, or remove it if there are no findings.",
+				category: "conformance",
+				summary_label: "Replace this placeholder with the most important review finding, or remove this finding if there are no findings.",
+				evidence_refs: [input.evidenceRef],
+				required_fix_label: "Replace this placeholder with the required fix, or remove this finding if no fix is required.",
 			},
 		],
 		evidence_refs: [input.evidenceRef],
@@ -321,7 +338,10 @@ export async function executeFlowDeskQuickReviewerRunV1(
 			workflowId,
 			attemptId,
 		});
-	const sourceLabel = input.sourceLabel ?? DEFAULT_SOURCE_LABEL;
+	const sourceLabel = input.sourceLabel ?? defaultSourceLabelForReviewer({
+		providerQualifiedModelId,
+		runtimeAgent,
+	});
 	let parentSessionId = input.parentSessionId;
 	if (parentSessionId === undefined) {
 		const create = input.client.session.create as
@@ -481,6 +501,17 @@ export async function executeFlowDeskQuickReviewerRunV1(
 								lane.verdictMaterializationStatus,
 							),
 						}),
+				...(Array.isArray(lane.redactedObservationErrors)
+					? {
+							redactedObservationErrors: (
+								lane.redactedObservationErrors as unknown[]
+							)
+								.filter(
+									(error): error is string => typeof error === "string",
+								)
+								.slice(0, 8),
+						}
+					: {}),
 			}))
 		: [];
 	const completed =
