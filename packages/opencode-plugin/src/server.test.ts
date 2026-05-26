@@ -6149,6 +6149,97 @@ test("chat.message stall alert surfaces progressing-late lanes only when include
 	}
 });
 
+test("chat.message progress card surfaces active lanes when includeProgressCards is opted in", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-progress-card-"));
+	try {
+		const workflowId = "workflow-chat-progress-card";
+		const observedAtMs = Date.now();
+		const runningLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-progress-card",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-progress-card",
+			parent_session_ref: "ses-chat-progress-card-parent",
+			agent_ref: "agent-chat-progress-card",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 20_000).toISOString(),
+			updated_at: new Date(observedAtMs - 20_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-progress-card",
+			record: runningLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [intent.writeIntent as never]).ok,
+			true,
+		);
+
+		const defaultHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true },
+			},
+		)) as ChatMessageHooks;
+		const defaultChatMessage = defaultHooks["chat.message"];
+		assert.ok(defaultChatMessage);
+		const defaultOutput = {
+			parts: [{ type: "text", text: "일반 대화" }] as unknown[],
+		};
+		await defaultChatMessage(
+			{ messageID: "message-progress-card-default", sessionID: "session-progress-card-default" },
+			defaultOutput,
+		);
+		assert.equal(JSON.stringify(defaultOutput).includes("Lane progress:"), false);
+
+		const progressHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					includeProgressCards: true,
+					maxProgressCards: 2,
+				},
+			},
+		)) as ChatMessageHooks;
+		const progressChatMessage = progressHooks["chat.message"];
+		assert.ok(progressChatMessage);
+		const progressOutput = {
+			parts: [{ type: "text", text: "일반 대화" }] as unknown[],
+		};
+		await progressChatMessage(
+			{ messageID: "message-progress-card-opt", sessionID: "session-progress-card-opt" },
+			progressOutput,
+		);
+		const serialized = JSON.stringify(progressOutput);
+		assert.match(serialized, /Lane progress:/);
+		assert.match(serialized, /lane-chat-progress-card/);
+		assert.match(serialized, /running\/progressing_normal/);
+		assert.match(serialized, /agent=agent-chat-progress-card/);
+		assert.match(serialized, /model=openai\/gpt-5\.5/);
+		assert.match(serialized, /- \/flowdesk-status/);
+		assert.match(serialized, /native clickable task UI is not claimed/);
+		assert.equal(/noReply|cancel|stop/.test(serialized), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("chat.message appended parts carry opencode 1.x TextPart schema fields (id, sessionID, messageID)", async () => {
 	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskNaturalLanguageRoutingOption]: true,

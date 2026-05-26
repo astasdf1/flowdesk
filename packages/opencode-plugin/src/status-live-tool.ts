@@ -149,6 +149,23 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
 	stalledLaneCount?: number;
 	progressingLateLaneCount?: number;
+	laneProgressCards?: readonly FlowDeskStatusLiveLaneProgressCardV1[];
+}
+
+export interface FlowDeskStatusLiveLaneProgressCardV1 {
+	workflowId: string;
+	laneId: string;
+	attemptId?: string;
+	state?: string;
+	classification: FlowDeskLaneStallClassificationV1;
+	secondsSinceLastSignal?: number;
+	lastSignalSource?: string;
+	agentRef?: string;
+	providerQualifiedModelId?: string;
+	verdictLabel?: "pass" | "changes_required" | "blocked" | "inconclusive";
+	failureHint?: string;
+	statusCommandRef: "/flowdesk-status";
+	debugCommandRef: "/flowdesk-export-debug";
 }
 
 export interface FlowDeskStatusLiveResultV1 {
@@ -340,6 +357,88 @@ function summarizeWorkflow(
 	};
 }
 
+function buildLaneProgressCards(
+	workflowId: string,
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+	projection: FlowDeskLaneStallProjectionResultV1,
+): readonly FlowDeskStatusLiveLaneProgressCardV1[] {
+	const lifecycleMeta = new Map<
+		string,
+		{
+			updatedAtMs: number;
+			state?: string;
+			agentRef?: string;
+			providerQualifiedModelId?: string;
+			verdictRef?: string;
+		}
+	>();
+	const verdictLabels = new Map<
+		string,
+		"pass" | "changes_required" | "blocked" | "inconclusive"
+	>();
+	for (const entry of reload.entries) {
+		if (entry.evidenceClass === "reviewer_verdict") {
+			const label = getStringField(entry.record, "verdict_label");
+			if (
+				label === "pass" ||
+				label === "changes_required" ||
+				label === "blocked" ||
+				label === "inconclusive"
+			)
+				verdictLabels.set(entry.evidenceId, label);
+		}
+		if (entry.evidenceClass !== "lane_lifecycle") continue;
+		const laneId = getStringField(entry.record, "lane_id");
+		if (laneId === undefined) continue;
+		const updatedAtRaw =
+			getStringField(entry.record, "updated_at") ??
+			getStringField(entry.record, "created_at");
+		const updatedAtMs = updatedAtRaw === undefined ? 0 : Date.parse(updatedAtRaw);
+		const current = lifecycleMeta.get(laneId);
+		if (current !== undefined && current.updatedAtMs > updatedAtMs) continue;
+		lifecycleMeta.set(laneId, {
+			updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : 0,
+			state: getStringField(entry.record, "state"),
+			agentRef: getStringField(entry.record, "agent_ref"),
+			providerQualifiedModelId: getStringField(
+				entry.record,
+				"provider_qualified_model_id",
+			),
+			verdictRef: getStringField(entry.record, "verdict_ref"),
+		});
+	}
+	return projection.entries.slice(0, 6).map((entry) => {
+		const meta = lifecycleMeta.get(entry.laneId);
+		const verdictLabel =
+			meta?.verdictRef === undefined
+				? undefined
+				: verdictLabels.get(meta.verdictRef);
+		return {
+			workflowId,
+			laneId: entry.laneId,
+			attemptId: entry.attemptId,
+			state: meta?.state ?? entry.lifecycleState,
+			classification: entry.classification,
+			...(entry.secondsSinceLastSignal === undefined
+				? {}
+				: { secondsSinceLastSignal: entry.secondsSinceLastSignal }),
+			...(entry.lastSignalSource === undefined
+				? {}
+				: { lastSignalSource: entry.lastSignalSource }),
+			...(meta?.agentRef === undefined ? {} : { agentRef: meta.agentRef }),
+			...(meta?.providerQualifiedModelId === undefined
+				? {}
+				: { providerQualifiedModelId: meta.providerQualifiedModelId }),
+			...(verdictLabel === undefined ? {} : { verdictLabel }),
+			...(entry.failureHint === undefined
+				? {}
+				: { failureHint: entry.failureHint }),
+			statusCommandRef: "/flowdesk-status" as const,
+			debugCommandRef: "/flowdesk-export-debug" as const,
+		};
+	});
+}
+
 function summarizeLatestProviderUsageSnapshot(
 	entries: readonly FlowDeskSessionEvidenceReloadEntryV1[],
 ): {
@@ -441,6 +540,11 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		summary.worstLaneStallClassification = projection.worstClassification;
 		summary.stalledLaneCount = projection.totalStalledLanes;
 		summary.progressingLateLaneCount = projection.totalLateLanes;
+		summary.laneProgressCards = buildLaneProgressCards(
+			workflowId,
+			projectionReload,
+			projection,
+		);
 		workflows.push(summary);
 	}
 
@@ -549,7 +653,18 @@ function buildStatusLiveSummaryForUser(input: {
 				? `lifecycle=${lifecycleStates.slice(0, 3).join("/")}`
 				: "lifecycle=(none)";
 		const classification = workflow.worstLaneStallClassification ?? "unknown";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}`;
+		const lanePreview = (workflow.laneProgressCards ?? [])
+			.slice(0, 2)
+			.map((lane) => {
+				const age =
+					lane.secondsSinceLastSignal === undefined
+						? "unknown"
+						: `~${Math.floor(lane.secondsSinceLastSignal / 60)}m`;
+				return `${lane.laneId}:${lane.state ?? "unknown"}/${lane.classification}/last=${age}`;
+			})
+			.join(", ");
+		const laneText = lanePreview.length > 0 ? `, lanes=${lanePreview}` : "";
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}${laneText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

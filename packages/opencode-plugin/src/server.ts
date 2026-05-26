@@ -1817,6 +1817,8 @@ export interface FlowDeskChatMessageStallAlertOptionsV1 {
 	laneHeartbeatLateThresholdMs?: number;
 	laneHeartbeatStallThresholdMs?: number;
 	includeProgressingLate?: boolean;
+	includeProgressCards?: boolean;
+	maxProgressCards?: number;
 	statusLiveTimeoutMs?: number;
 	guardedAutoAbort?: FlowDeskChatMessageGuardedAutoAbortOptionsV1;
 }
@@ -1893,7 +1895,12 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				stallAlert?.includeProgressingLate === true &&
 				summary.worstClassification === "progressing_late" &&
 				summary.totalLate > 0;
-			if (stalledAlertReady || lateAlertReady) {
+			const progressCardReady =
+				stallAlert?.includeProgressCards === true &&
+				summary.workflowSummaries.some(
+					(workflow) => (workflow.laneCards?.length ?? 0) > 0,
+				);
+			if (stalledAlertReady || lateAlertReady || progressCardReady) {
 				stallDedupKey = stallAlertDuplicateKey(request, summary);
 				stallTextToAppend = stallAlertText(summary);
 			}
@@ -1961,6 +1968,16 @@ interface FlowDeskChatMessageStallSummaryV1 {
 		secondsSinceLastSignal?: number;
 		laneId?: string;
 		failureHint?: string;
+		laneCards?: Array<{
+			laneId: string;
+			state?: string;
+			classification: string;
+			secondsSinceLastSignal?: number;
+			agentRef?: string;
+			providerQualifiedModelId?: string;
+			verdictLabel?: string;
+			failureHint?: string;
+		}>;
 	}>;
 	autoAbortSummaries?: string[];
 }
@@ -2051,7 +2068,9 @@ export async function collectStallAlertResult(
 				(workflow) =>
 					(workflow.stalledLaneCount ?? 0) > 0 ||
 					(stallAlert.includeProgressingLate === true &&
-						(workflow.progressingLateLaneCount ?? 0) > 0),
+						(workflow.progressingLateLaneCount ?? 0) > 0) ||
+					(stallAlert.includeProgressCards === true &&
+						(workflow.laneProgressCards?.length ?? 0) > 0),
 			)
 			.slice(0, 3)
 			.map(async (workflow) => {
@@ -2153,6 +2172,22 @@ export async function collectStallAlertResult(
 					...(primary?.failureHint === undefined
 						? {}
 						: { failureHint: primary.failureHint }),
+					...(stallAlert.includeProgressCards === true
+						? {
+								laneCards: (workflow.laneProgressCards ?? [])
+									.slice(0, stallAlert.maxProgressCards ?? 3)
+									.map((lane) => ({
+										laneId: lane.laneId,
+										state: lane.state,
+										classification: lane.classification,
+										secondsSinceLastSignal: lane.secondsSinceLastSignal,
+										agentRef: lane.agentRef,
+										providerQualifiedModelId: lane.providerQualifiedModelId,
+										verdictLabel: lane.verdictLabel,
+										failureHint: lane.failureHint,
+									})),
+							}
+						: {}),
 				};
 			}));
 		if (workflowSummaries.length === 0) {
@@ -2189,7 +2224,16 @@ function stallAlertDuplicateKey(
 				typeof entry.secondsSinceLastSignal === "number"
 					? Math.floor(entry.secondsSinceLastSignal / 60)
 					: -1;
-			return `${entry.workflowId}:${entry.stalledLaneCount}:${ageMinutes}`;
+			const lanes = (entry.laneCards ?? [])
+				.map((lane) => {
+					const laneAge =
+						typeof lane.secondsSinceLastSignal === "number"
+							? Math.floor(lane.secondsSinceLastSignal / 60)
+							: -1;
+					return `${lane.laneId}:${lane.state ?? "unknown"}:${lane.classification}:${laneAge}`;
+				})
+				.join(",");
+			return `${entry.workflowId}:${entry.stalledLaneCount}:${ageMinutes}:${lanes}`;
 		})
 		.join("|");
 	return `${safeToken(request.session_ref, "session")}|stall|${wf}|worst:${summary.worstClassification}`;
@@ -2198,6 +2242,10 @@ function stallAlertDuplicateKey(
 function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 	const lines: string[] = [];
 	lines.push("FlowDesk");
+	const progressCardCount = summary.workflowSummaries.reduce(
+		(sum, workflow) => sum + (workflow.laneCards?.length ?? 0),
+		0,
+	);
 	if (summary.worstClassification === "stalled") {
 		lines.push(
 			`Stalled lanes detected: ${summary.totalStalled} stalled, ${summary.totalLate} progressing-late.`,
@@ -2205,6 +2253,10 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 	} else if (summary.worstClassification === "progressing_late") {
 		lines.push(
 			`Late-progressing lanes detected: ${summary.totalLate} late, ${summary.totalStalled} stalled.`,
+		);
+	} else if (progressCardCount > 0) {
+		lines.push(
+			`Lane progress: ${progressCardCount} lane(s) visible on the main screen.`,
 		);
 	} else {
 		lines.push(
@@ -2222,6 +2274,19 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 		lines.push(
 			`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
 		);
+		for (const lane of workflow.laneCards?.slice(0, 3) ?? []) {
+			const age =
+				lane.secondsSinceLastSignal === undefined
+					? "unknown"
+					: `~${Math.floor(lane.secondsSinceLastSignal / 60)}m ago`;
+			const model = lane.providerQualifiedModelId ?? "(unknown)";
+			const agent = lane.agentRef ?? "(unknown)";
+			const verdict = lane.verdictLabel ?? "(none)";
+			const issue = lane.failureHint === undefined ? "" : ` issue=${lane.failureHint}`;
+			lines.push(
+				`  - lane ${lane.laneId}: ${lane.state ?? "unknown"}/${lane.classification}, last signal ${age}, agent=${agent}, model=${model}, verdict=${verdict}${issue}`,
+			);
+		}
 	}
 	if (summary.autoAbortSummaries !== undefined && summary.autoAbortSummaries.length > 0) {
 		lines.push("Guarded auto-abort diagnostics (evidence-only, opt-in):");
@@ -2237,6 +2302,9 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 		"/flowdesk-export-debug",
 	])
 		lines.push(`- ${action}`);
+	if (progressCardCount > 0) {
+		lines.push("Lane log refs are command-based in this MVP; native clickable task UI is not claimed.");
+	}
 	return lines.join("\n");
 }
 
@@ -4164,6 +4232,20 @@ function chatMessageStallAlertOptionsFrom(
 		typeof recordRaw.includeProgressingLate === "boolean"
 	)
 		config.includeProgressingLate = recordRaw.includeProgressingLate;
+	if (
+		recordRaw !== undefined &&
+		typeof recordRaw.includeProgressCards === "boolean"
+	)
+		config.includeProgressCards = recordRaw.includeProgressCards;
+	if (
+		recordRaw !== undefined &&
+		typeof recordRaw.maxProgressCards === "number" &&
+		recordRaw.maxProgressCards > 0
+	)
+		config.maxProgressCards = Math.min(
+			6,
+			Math.max(1, Math.floor(recordRaw.maxProgressCards)),
+		);
 	if (recordRaw !== undefined && isRecord(recordRaw.guardedAutoAbort)) {
 		const rawGuard = recordRaw.guardedAutoAbort;
 		const guardedAutoAbort: FlowDeskChatMessageGuardedAutoAbortOptionsV1 = {
