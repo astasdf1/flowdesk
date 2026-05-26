@@ -2586,7 +2586,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 	return {
 		[flowdeskQuickReviewerRunToolName]: tool({
 			description: [
-				"Run a 3-perspective FlowDesk reviewer fan-out (policy_security, architecture, verification_implementation) on a user-supplied prompt, pasted code/content, or the current conversation context, returning typed reviewer verdicts plus a concise summaryForUser string.",
+				"Run a 3-perspective FlowDesk reviewer fan-out (policy_security, architecture, verification_implementation) on a user-supplied prompt, pasted code/content, or the current conversation context, returning typed reviewer verdicts plus a concise summaryForUser string. Supports optional per-perspective bindings[] for multi-model fan-out when exact provider/model ids and reviewer agents are configured.",
 				"WHEN TO USE: the user explicitly asks for a code review, security audit, multi-perspective check, critical review, design review, or quality review. Trigger on English phrases such as 'multi-perspective review', 'multi-angle review', 'critical review', 'review from multiple perspectives', 'audit', 'critique', 'assess', or 'evaluate'. Trigger on Korean phrases such as '다관점 리뷰', '다관점리뷰', '다관점 비판적리뷰', '다관점 비판적 리뷰', '다각도 리뷰', '다각도 검토', '여러 관점 리뷰', '여러 관점에서 검토', '복수 관점 리뷰', '비판적 리뷰', '비판적 검토', '심층 리뷰', '아키텍처 리뷰', '보안 리뷰', '품질 리뷰', '검토', or '점검'.",
 				"ALSO PROACTIVELY USE: when the user supplies a code snippet, file reference, or design idea and asks for opinion/critique without explicitly typing 'review' (English: 'what do you think', 'how does this look', 'spot issues', 'find problems'; Korean: '어때', '괜찮아', '문제 있어 보여', '이슈 찾아줘', '봐줘'). When the user gives no snippet, derive a concise review target from the immediate prior turn and call this tool instead of asking for one more clarification.",
 				"CONTENT SELECTION: code is not required. If the user provides no explicit snippet after the trigger phrase, pass a concise prompt that includes the user's request plus the relevant current conversation context or target they are asking to review.",
@@ -2629,6 +2629,19 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 					.describe(
 						"Optional subset of reviewer perspectives (policy_security, architecture, verification_implementation). Defaults to all three.",
 					),
+				bindings: tool.schema
+					.array(
+						tool.schema.object({
+							perspective: tool.schema.string(),
+							providerQualifiedModelId: tool.schema.string(),
+							runtimeAgent: tool.schema.string(),
+							sourceLabel: tool.schema.string().optional(),
+						}),
+					)
+					.optional()
+					.describe(
+						"Optional per-perspective reviewer bindings for multi-model fan-out. Each entry must include perspective, concrete providerQualifiedModelId, and runtimeAgent. When omitted, all perspectives use providerQualifiedModelId/runtimeAgent.",
+					),
 				parentSessionId: tool.schema
 					.string()
 					.optional()
@@ -2656,20 +2669,44 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 					record.runtimeAgent.trim().length > 0
 						? record.runtimeAgent
 						: defaults.runtimeAgent;
-				if (
-					typeof providerQualifiedModelId !== "string" ||
-					typeof runtimeAgent !== "string"
-				)
-					return JSON.stringify(
-						redactedQuickReviewerRunBlocked(
-							"Quick reviewer run requires providerQualifiedModelId and runtimeAgent (either as args or plugin defaults).",
-						),
-					);
 				const perspectives = Array.isArray(record.perspectives)
 					? (record.perspectives.filter(
 							(value): value is string => typeof value === "string",
 						) as never)
 					: undefined;
+				const bindings = Array.isArray(record.bindings)
+					? (record.bindings
+							.filter((value): value is Record<string, unknown> => isRecord(value))
+							.map((value) => ({
+								perspective: value.perspective,
+								providerQualifiedModelId: value.providerQualifiedModelId,
+								runtimeAgent: value.runtimeAgent,
+								...(typeof value.sourceLabel === "string"
+									? { sourceLabel: value.sourceLabel }
+									: {}),
+							}))
+							.filter(
+								(value): value is {
+									perspective: never;
+									providerQualifiedModelId: string;
+									runtimeAgent: string;
+									sourceLabel?: string;
+								} =>
+									typeof value.perspective === "string" &&
+									typeof value.providerQualifiedModelId === "string" &&
+									typeof value.runtimeAgent === "string",
+							) as never)
+					: undefined;
+				if (
+					bindings === undefined &&
+					(typeof providerQualifiedModelId !== "string" ||
+						typeof runtimeAgent !== "string")
+				)
+					return JSON.stringify(
+						redactedQuickReviewerRunBlocked(
+							"Quick reviewer run requires providerQualifiedModelId and runtimeAgent (either as args or plugin defaults) unless per-perspective bindings are supplied.",
+						),
+					);
 				const result = await executeFlowDeskQuickReviewerRunV1({
 					client,
 					prompt,
@@ -2678,6 +2715,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 					allowProviderCall: record.allowProviderCall === true,
 					developerModeAcknowledged: record.developerModeAcknowledged === true,
 					...(perspectives === undefined ? {} : { perspectives }),
+					...(bindings === undefined ? {} : { bindings }),
 					...(typeof record.parentSessionId === "string" &&
 					record.parentSessionId.length > 0
 						? { parentSessionId: record.parentSessionId }

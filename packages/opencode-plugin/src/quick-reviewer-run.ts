@@ -17,8 +17,9 @@ import { executeFlowDeskRuntimeReviewerExecutionBridgeV1 } from "./runtime-revie
 export interface FlowDeskQuickReviewerRunRequestV1 {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	prompt: string;
-	providerQualifiedModelId: string;
-	runtimeAgent: string;
+	providerQualifiedModelId?: string;
+	runtimeAgent?: string;
+	bindings?: readonly FlowDeskQuickReviewerRunBindingV1[];
 	allowProviderCall: boolean;
 	developerModeAcknowledged: boolean;
 	perspectives?: readonly FlowDeskTopTierReviewPerspective[];
@@ -31,9 +32,18 @@ export interface FlowDeskQuickReviewerRunRequestV1 {
 	title?: string;
 }
 
+export interface FlowDeskQuickReviewerRunBindingV1 {
+	perspective: FlowDeskTopTierReviewPerspective;
+	providerQualifiedModelId: string;
+	runtimeAgent: string;
+	sourceLabel?: string;
+}
+
 export interface FlowDeskQuickReviewerRunLaneSummaryV1 {
 	perspective: string;
 	launchPlanEvidenceId: string;
+	providerQualifiedModelId?: string;
+	runtimeAgent?: string;
 	verdictId?: string;
 	launchStatus?: string;
 	runningLifecycle?: string;
@@ -41,6 +51,13 @@ export interface FlowDeskQuickReviewerRunLaneSummaryV1 {
 	observationStatus?: string;
 	verdictMaterializationStatus?: string;
 	redactedObservationErrors?: string[];
+}
+
+interface ResolvedQuickReviewerBindingV1 {
+	perspective: FlowDeskTopTierReviewPerspective;
+	providerQualifiedModelId: string;
+	runtimeAgent: string;
+	sourceLabel: string;
 }
 
 export interface FlowDeskQuickReviewerRunResultV1 {
@@ -83,6 +100,7 @@ function buildQuickReviewerSummaryForUser(input: {
 	status: FlowDeskQuickReviewerRunResultV1["status"];
 	providerQualifiedModelId: string;
 	runtimeAgent: string;
+	bindingSummary?: string;
 	laneCount: number;
 	acceptedPerspectives?: readonly string[];
 	linkedVerdictCount?: number;
@@ -97,15 +115,17 @@ function buildQuickReviewerSummaryForUser(input: {
 	}
 	if (input.status === "quick_reviewer_run_completed") {
 		const linked = input.linkedVerdictCount ?? acceptedCount;
+		const bindingText = input.bindingSummary ?? `${input.runtimeAgent} on ${input.providerQualifiedModelId}`;
 		const perspectiveLabel =
 			acceptedCount > 0 && input.acceptedPerspectives !== undefined
 				? input.acceptedPerspectives.join(", ")
 				: "(none)";
-		return `FlowDesk quick reviewer completed: ${acceptedCount}/${total} perspectives accepted (${perspectiveLabel}) via ${input.runtimeAgent} on ${input.providerQualifiedModelId}; ${linked} typed verdicts linked to durable evidence.`;
+		return `FlowDesk quick reviewer completed: ${acceptedCount}/${total} perspectives accepted (${perspectiveLabel}) via ${bindingText}; ${linked} typed verdicts linked to durable evidence.`;
 	}
 	const blockReason =
 		input.redactedBlockReason ?? "see lanes[].observationStatus";
-	return `FlowDesk quick reviewer incomplete: ${acceptedCount}/${total} perspectives accepted via ${input.runtimeAgent} on ${input.providerQualifiedModelId}. Blocker: ${blockReason}. Safe next actions: ${input.safeNextActions.join(", ")}.`;
+	const bindingText = input.bindingSummary ?? `${input.runtimeAgent} on ${input.providerQualifiedModelId}`;
+	return `FlowDesk quick reviewer incomplete: ${acceptedCount}/${total} perspectives accepted via ${bindingText}. Blocker: ${blockReason}. Safe next actions: ${input.safeNextActions.join(", ")}.`;
 }
 
 const DEFAULT_TITLE = "FlowDesk quick reviewer run";
@@ -206,6 +226,65 @@ function quickReviewerLaunchPlan(input: {
 		actualLaneLaunch: false,
 		runtimeExecution: false,
 	};
+}
+
+function concreteBindingOk(binding: {
+	providerQualifiedModelId?: string;
+	runtimeAgent?: string;
+}): boolean {
+	return (
+		typeof binding.providerQualifiedModelId === "string" &&
+		binding.providerQualifiedModelId.includes("/") &&
+		typeof binding.runtimeAgent === "string" &&
+		binding.runtimeAgent.trim().length > 0
+	);
+}
+
+function resolveQuickReviewerBindings(input: {
+	perspectives: readonly FlowDeskTopTierReviewPerspective[];
+	providerQualifiedModelId?: string;
+	runtimeAgent?: string;
+	sourceLabel?: string;
+	bindings?: readonly FlowDeskQuickReviewerRunBindingV1[];
+}): { ok: true; bindings: ResolvedQuickReviewerBindingV1[] } | { ok: false; reason: string } {
+	const explicitBindings = Array.isArray(input.bindings) ? input.bindings : [];
+	const bindings: ResolvedQuickReviewerBindingV1[] = [];
+	for (const perspective of input.perspectives) {
+		const explicit = explicitBindings.find(
+			(binding) => binding.perspective === perspective,
+		);
+		const providerQualifiedModelId = explicit?.providerQualifiedModelId ?? input.providerQualifiedModelId;
+		const runtimeAgent = explicit?.runtimeAgent ?? input.runtimeAgent;
+		const sourceLabel = explicit?.sourceLabel ?? input.sourceLabel;
+		const resolved = {
+			providerQualifiedModelId,
+			runtimeAgent,
+		};
+		if (!concreteBindingOk(resolved)) {
+			return { ok: false, reason: `missing concrete reviewer binding for ${perspective}` };
+		}
+		bindings.push({
+			perspective,
+			providerQualifiedModelId: providerQualifiedModelId as string,
+			runtimeAgent: runtimeAgent as string,
+			sourceLabel:
+				sourceLabel ??
+				defaultSourceLabelForReviewer({
+					providerQualifiedModelId: providerQualifiedModelId as string,
+					runtimeAgent: runtimeAgent as string,
+				}),
+		});
+	}
+	return {
+		ok: true,
+		bindings,
+	};
+}
+
+function bindingSummary(bindings: readonly ResolvedQuickReviewerBindingV1[]): string {
+	const distinct = [...new Set(bindings.map((binding) => `${binding.runtimeAgent} on ${binding.providerQualifiedModelId}`))];
+	if (distinct.length === 1) return distinct[0] ?? "(none)";
+	return `${distinct.length} reviewer bindings (${distinct.join("; ")})`;
 }
 
 function quickReviewerPrompt(input: {
@@ -328,8 +407,9 @@ function sessionIdFromResponse(value: unknown): string | undefined {
 export async function executeFlowDeskQuickReviewerRunV1(
 	input: FlowDeskQuickReviewerRunRequestV1,
 ): Promise<FlowDeskQuickReviewerRunResultV1> {
-	const providerQualifiedModelId = input.providerQualifiedModelId;
-	const runtimeAgent = input.runtimeAgent;
+	const firstBinding = Array.isArray(input.bindings) ? input.bindings[0] : undefined;
+	const providerQualifiedModelId = input.providerQualifiedModelId ?? firstBinding?.providerQualifiedModelId ?? "";
+	const runtimeAgent = input.runtimeAgent ?? firstBinding?.runtimeAgent ?? "";
 	if (input.developerModeAcknowledged !== true)
 		return blocked({
 			reason: "developerModeAcknowledged=true is required for quick reviewer run",
@@ -348,21 +428,20 @@ export async function executeFlowDeskQuickReviewerRunV1(
 			providerQualifiedModelId,
 			runtimeAgent,
 		});
-	if (
-		typeof providerQualifiedModelId !== "string" ||
-		!providerQualifiedModelId.includes("/")
-	)
-		return blocked({
-			reason: "providerQualifiedModelId must be a concrete provider/model id",
-			providerQualifiedModelId,
-			runtimeAgent,
-		});
-	if (typeof runtimeAgent !== "string" || runtimeAgent.trim().length === 0)
-		return blocked({
-			reason: "runtimeAgent is required",
-			providerQualifiedModelId,
-			runtimeAgent,
-		});
+	if (!Array.isArray(input.bindings)) {
+		if (!providerQualifiedModelId.includes("/"))
+			return blocked({
+				reason: "providerQualifiedModelId must be a concrete provider/model id",
+				providerQualifiedModelId,
+				runtimeAgent,
+			});
+		if (runtimeAgent.trim().length === 0)
+			return blocked({
+				reason: "runtimeAgent is required",
+				providerQualifiedModelId,
+				runtimeAgent,
+			});
+	}
 	const observedAtMs = Date.now();
 	const token = timestampToken(observedAtMs);
 	const observedAt = input.observedAt ?? new Date(observedAtMs).toISOString();
@@ -378,10 +457,23 @@ export async function executeFlowDeskQuickReviewerRunV1(
 			workflowId,
 			attemptId,
 		});
-	const sourceLabel = input.sourceLabel ?? defaultSourceLabelForReviewer({
-		providerQualifiedModelId,
-		runtimeAgent,
+	const resolvedBindings = resolveQuickReviewerBindings({
+		perspectives,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		runtimeAgent: input.runtimeAgent,
+		sourceLabel: input.sourceLabel,
+		bindings: input.bindings,
 	});
+	if (!resolvedBindings.ok)
+		return blocked({
+			reason: resolvedBindings.reason,
+			providerQualifiedModelId,
+			runtimeAgent,
+			workflowId,
+			attemptId,
+		});
+	const bindings = resolvedBindings.bindings;
+	const summaryBindingText = bindingSummary(bindings);
 	let parentSessionId = input.parentSessionId;
 	if (parentSessionId === undefined) {
 		const create = input.client.session.create as
@@ -421,19 +513,19 @@ export async function executeFlowDeskQuickReviewerRunV1(
 		});
 	const rootDir =
 		input.rootDir ?? mkdtempSync(join(tmpdir(), "flowdesk-quick-reviewer-"));
-	const launchPlans = perspectives.map((perspective) =>
+	const launchPlans = bindings.map((binding) =>
 		quickReviewerLaunchPlan({
 			workflowId,
 			attemptId,
 			parentSessionId,
-			providerQualifiedModelId,
-			runtimeAgent,
-			perspective,
+			providerQualifiedModelId: binding.providerQualifiedModelId,
+			runtimeAgent: binding.runtimeAgent,
+			perspective: binding.perspective,
 			token,
 		}),
 	);
-	const launchPlanEvidenceIds = perspectives.map(
-		(perspective) => `launch-plan-quick-${perspective}-${token}`,
+	const launchPlanEvidenceIds = bindings.map(
+		(binding) => `launch-plan-quick-${binding.perspective}-${token}`,
 	);
 	const writeIntents: FlowDeskSessionEvidenceWriteIntentV1[] = [];
 	for (const [index, plan] of launchPlans.entries()) {
@@ -475,29 +567,29 @@ export async function executeFlowDeskQuickReviewerRunV1(
 		observedAtMs,
 		token,
 	});
-	const verdictExpectations = perspectives.map((perspective) => ({
-		launchPlanEvidenceId: `launch-plan-quick-${perspective}-${token}`,
-		lanePlanRef: `lane-plan-quick-${perspective}-${token}`,
-		bindingRef: `binding-quick-${perspective}-${token}`,
-		perspective,
+	const verdictExpectations = bindings.map((binding) => ({
+		launchPlanEvidenceId: `launch-plan-quick-${binding.perspective}-${token}`,
+		lanePlanRef: `lane-plan-quick-${binding.perspective}-${token}`,
+		bindingRef: `binding-quick-${binding.perspective}-${token}`,
+		perspective: binding.perspective,
 		promptText: quickReviewerPrompt({
 			prompt: input.prompt,
 			workflowId,
-			perspective,
-			lanePlanRef: `lane-plan-quick-${perspective}-${token}`,
-			bindingRef: `binding-quick-${perspective}-${token}`,
-			verdictId: `verdict-quick-${perspective}-${token}`,
-			evidenceRef: `evidence-quick-${perspective}-${token}`,
+			perspective: binding.perspective,
+			lanePlanRef: `lane-plan-quick-${binding.perspective}-${token}`,
+			bindingRef: `binding-quick-${binding.perspective}-${token}`,
+			verdictId: `verdict-quick-${binding.perspective}-${token}`,
+			evidenceRef: `evidence-quick-${binding.perspective}-${token}`,
 			observedAt,
-			sourceLabel,
+			sourceLabel: binding.sourceLabel,
 		}),
-		runningLifecycleEvidenceId: `lifecycle-running-quick-${perspective}-${token}`,
-		completeLifecycleEvidenceId: `lifecycle-complete-quick-${perspective}-${token}`,
-		reviewerVerdictEvidenceId: `reviewer-verdict-quick-${perspective}-${token}`,
-		outputRef: `output-quick-${perspective}-${token}`,
-		runtimeEchoRef: `runtime-echo-quick-${perspective}-${token}`,
-		telemetryRef: `telemetry-quick-${perspective}-${token}`,
-		title: `${input.title ?? DEFAULT_TITLE} ${perspective}`.slice(0, 120),
+		runningLifecycleEvidenceId: `lifecycle-running-quick-${binding.perspective}-${token}`,
+		completeLifecycleEvidenceId: `lifecycle-complete-quick-${binding.perspective}-${token}`,
+		reviewerVerdictEvidenceId: `reviewer-verdict-quick-${binding.perspective}-${token}`,
+		outputRef: `output-quick-${binding.perspective}-${token}`,
+		runtimeEchoRef: `runtime-echo-quick-${binding.perspective}-${token}`,
+		telemetryRef: `telemetry-quick-${binding.perspective}-${token}`,
+		title: `${input.title ?? DEFAULT_TITLE} ${binding.perspective}`.slice(0, 120),
 	}));
 	const bridgeResult = await executeFlowDeskRuntimeReviewerExecutionBridgeV1({
 		client: input.client,
@@ -516,9 +608,18 @@ export async function executeFlowDeskQuickReviewerRunV1(
 	const lanes: FlowDeskQuickReviewerRunLaneSummaryV1[] = Array.isArray(
 		bridgeResult.lanes,
 	)
-		? bridgeResult.lanes.map((lane) => ({
-				perspective: String(lane.perspective ?? ""),
+		? bridgeResult.lanes.map((lane) => {
+				const perspective = String(lane.perspective ?? "");
+				const binding = bindings.find((item) => item.perspective === perspective);
+				return {
+				perspective,
 				launchPlanEvidenceId: String(lane.launchPlanEvidenceId ?? ""),
+				...(binding === undefined
+					? {}
+					: {
+							providerQualifiedModelId: binding.providerQualifiedModelId,
+							runtimeAgent: binding.runtimeAgent,
+						}),
 				...(lane.verdictId === undefined
 					? {}
 					: { verdictId: String(lane.verdictId) }),
@@ -552,7 +653,8 @@ export async function executeFlowDeskQuickReviewerRunV1(
 								.slice(0, 8),
 						}
 					: {}),
-			}))
+			};
+			})
 		: [];
 	const completed =
 		bridgeResult.status === "runtime_reviewer_execution_completed" &&
@@ -577,6 +679,7 @@ export async function executeFlowDeskQuickReviewerRunV1(
 			: "quick_reviewer_run_incomplete",
 		providerQualifiedModelId,
 		runtimeAgent,
+		bindingSummary: summaryBindingText,
 		laneCount: lanes.length,
 		acceptedPerspectives,
 		linkedVerdictCount,

@@ -165,3 +165,62 @@ test("quick reviewer run derives reviewer source labels from concrete bindings",
 	const templateValidation = validateTopTierReviewVerdictV1(template);
 	assert.equal(templateValidation.ok, true, templateValidation.errors.join("; "));
 });
+
+test("quick reviewer run supports per-perspective multi-model bindings", async () => {
+	const prompts: string[] = [];
+	const promptOptions: Array<{ agent?: string; model?: Record<string, unknown> }> = [];
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create() {
+					return { id: "child-session-1" };
+				},
+				async prompt(options: { agent?: string; model?: Record<string, unknown>; parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
+					promptOptions.push({ agent: options.agent, model: options.model });
+					prompts.push(String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? ""));
+					return { id: "message-multi-model" };
+				},
+			},
+		} as never,
+		prompt: "Review this change with distinct reviewer bindings.",
+		bindings: [
+			{
+				perspective: "policy_security",
+				providerQualifiedModelId: "claude/claude-opus-4-5",
+				runtimeAgent: "reviewer-claude-opus",
+			},
+			{
+				perspective: "architecture",
+				providerQualifiedModelId: "openai/gpt-5.5",
+				runtimeAgent: "reviewer-gpt-frontier",
+			},
+			{
+				perspective: "verification_implementation",
+				providerQualifiedModelId: "gemini/gemini-3.1-pro",
+				runtimeAgent: "reviewer-gemini-pro",
+			},
+		],
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+	});
+	assert.equal(result.status, "quick_reviewer_run_incomplete");
+	assert.equal(result.lanes.length, 3);
+	assert.deepEqual(
+		result.lanes.map((lane) => [lane.perspective, lane.runtimeAgent, lane.providerQualifiedModelId]),
+		[
+			["policy_security", "reviewer-claude-opus", "claude/claude-opus-4-5"],
+			["architecture", "reviewer-gpt-frontier", "openai/gpt-5.5"],
+			["verification_implementation", "reviewer-gemini-pro", "gemini/gemini-3.1-pro"],
+		],
+	);
+	assert.match(String(result.summaryForUser), /3 reviewer bindings/);
+	assert.equal(prompts.length, 3);
+	assert.equal(JSON.parse(prompts[0].split("\n").at(-1) ?? "{}").source, "claude_opus");
+	assert.equal(JSON.parse(prompts[1].split("\n").at(-1) ?? "{}").source, "gpt_frontier");
+	assert.equal(JSON.parse(prompts[2].split("\n").at(-1) ?? "{}").source, "gemini_pro");
+	assert.deepEqual(
+		promptOptions.map((option) => option.agent),
+		["reviewer-claude-opus", "reviewer-gpt-frontier", "reviewer-gemini-pro"],
+	);
+});

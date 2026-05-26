@@ -1842,6 +1842,8 @@ test("quick reviewer run tool is absent by default and registers only with expli
 	assert.match(description, /WHEN NOT TO USE/);
 	assert.match(description, /developerModeAcknowledged=true/);
 	assert.match(description, /allowProviderCall=true/);
+	assert.match(description, /bindings\[\]/);
+	assert.match(description, /multi-model fan-out/);
 	assert.match(description, /Do not ask the user for extra confirmation/);
 	assert.doesNotMatch(description, /paid provider/);
 });
