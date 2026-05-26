@@ -38,6 +38,22 @@ export interface FlowDeskReviewerLaneContextV1 {
 	dispatch_authority_enabled: false;
 }
 
+export interface FlowDeskAgentTaskContextV1 {
+	schema_version: "flowdesk.agent_task_context.v1";
+	workflow_id: string;
+	lane_id: string;
+	task_id: string;
+	agent_ref: string;
+	provider_qualified_model_id: string;
+	parent_session_ref: string;
+	prompt_text: string;
+	prompt_text_truncated: boolean;
+	prompt_text_sha256: string;
+	redaction_version: string;
+	created_at: string;
+	dispatch_authority_enabled: false;
+}
+
 export interface FlowDeskPendingRetryPlanV1 {
 	schema_version: "flowdesk.pending_retry_plan.v1";
 	workflow_id: string;
@@ -188,6 +204,48 @@ export function validateFlowDeskReviewerLaneContextV1(value: unknown): Validatio
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("reviewer lane context cannot enable dispatch authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "reviewer_lane_context").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function validateFlowDeskAgentTaskContextV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("agent task context must be an object");
+	const record = value as Partial<FlowDeskAgentTaskContextV1>;
+	const errors: string[] = [];
+	const allowed = new Set([
+		"schema_version",
+		"workflow_id",
+		"lane_id",
+		"task_id",
+		"agent_ref",
+		"provider_qualified_model_id",
+		"parent_session_ref",
+		"prompt_text",
+		"prompt_text_truncated",
+		"prompt_text_sha256",
+		"redaction_version",
+		"created_at",
+		"dispatch_authority_enabled",
+	]);
+	for (const key of Object.keys(record)) if (!allowed.has(key)) errors.push(`unknown property: ${key}`);
+	errors.push(...exactString(record.schema_version, "flowdesk.agent_task_context.v1", "schema_version").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueId(record.lane_id, "lane_id").errors);
+	errors.push(...nonEmptyString(record.task_id, "task_id").errors);
+	errors.push(...nonEmptyString(record.agent_ref, "agent_ref").errors);
+	errors.push(...nonEmptyString(record.provider_qualified_model_id, "provider_qualified_model_id").errors);
+	errors.push(...nonEmptyString(record.parent_session_ref, "parent_session_ref").errors);
+	if (typeof record.prompt_text !== "string")
+		errors.push("prompt_text must be a string");
+	else if (record.prompt_text.length > 32_768)
+		errors.push("prompt_text exceeds 32768 chars");
+	if (typeof record.prompt_text_truncated !== "boolean")
+		errors.push("prompt_text_truncated must be a boolean");
+	errors.push(...nonEmptyString(record.prompt_text_sha256, "prompt_text_sha256").errors);
+	errors.push(...nonEmptyString(record.redaction_version, "redaction_version").errors);
+	errors.push(...timestamp(record.created_at, "created_at").errors);
+	if (record.dispatch_authority_enabled !== false)
+		errors.push("agent task context cannot enable dispatch authority");
+	errors.push(...validateNoForbiddenRawPayloads(record, "agent_task_context").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 

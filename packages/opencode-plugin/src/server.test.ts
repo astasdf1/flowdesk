@@ -6782,6 +6782,96 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 		assert.ok(typeof result.workflowId === "string");
 		assert.ok(typeof result.laneId === "string");
 		assert.ok(typeof result.taskId === "string");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-task-exec-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.dispatch_authority_enabled === false,
+			),
+		);
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.state === "incomplete" &&
+					typeof entry.record.output_ref === "string",
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run writes terminal no_output lifecycle when no response text is found", async () => {
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-agent-task-no-response-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-agent-task-no-response-1" } });
+			},
+			messages(options: unknown) {
+				void options;
+				return Promise.resolve([{ role: "user", parts: [{ type: "text", text: "prompt only" }] }]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-no-response-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-no-response-1",
+						taskDescription: "Analyze this code for security issues.",
+						agentName: "reviewer-claude-opus",
+						providerQualifiedModelId: "anthropic/claude-opus-4-7",
+						parentSessionId: "parent-agent-task-no-response-1",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_failed");
+		assert.equal(result.failureCategory, "no_response");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-task-no-response-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.state === "no_output" &&
+					entry.record.output_ref === undefined,
+			),
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

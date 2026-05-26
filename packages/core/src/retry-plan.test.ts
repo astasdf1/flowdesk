@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	validateFlowDeskReviewerLaneContextV1,
+	validateFlowDeskAgentTaskContextV1,
 	validateFlowDeskPendingRetryPlanV1,
 	validateFlowDeskRetryExecutedV1,
 	validateFlowDeskRetryFailedV1,
@@ -44,6 +45,25 @@ function pendingRetryPlan(overrides: Record<string, unknown> = {}) {
 		status: "pending",
 		created_at: "2026-05-26T10:00:00.000Z",
 		expires_at: "2026-05-26T11:00:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function agentTaskContext(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.agent_task_context.v1",
+		workflow_id: "workflow-agent-task-abc123",
+		lane_id: "lane-task-abc123",
+		task_id: "task-abc123",
+		agent_ref: "agent-reviewer-gpt-frontier",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		parent_session_ref: "ses-parent-001",
+		prompt_text: "Analyze this code for security issues.",
+		prompt_text_truncated: false,
+		prompt_text_sha256: "abc123sha256hex",
+		redaction_version: "v1",
+		created_at: "2026-05-26T10:00:00.000Z",
 		dispatch_authority_enabled: false,
 		...overrides,
 	};
@@ -115,6 +135,32 @@ test("reviewer lane context validator rejects dispatch_authority_enabled: true",
 	);
 	assert.equal(result.ok, false);
 	assert.equal(result.errors.some((e) => e.includes("dispatch authority")), true);
+});
+
+// ---------------------------------------------------------------------------
+// agent task context validator
+// ---------------------------------------------------------------------------
+
+test("agent task context validator accepts valid records", () => {
+	assert.equal(validateFlowDeskAgentTaskContextV1(agentTaskContext()).ok, true);
+	assert.equal(
+		validateFlowDeskAgentTaskContextV1(agentTaskContext({ prompt_text_truncated: true })).ok,
+		true,
+	);
+});
+
+test("agent task context validator rejects oversized prompt text and authority", () => {
+	const oversized = validateFlowDeskAgentTaskContextV1(
+		agentTaskContext({ prompt_text: "x".repeat(32_769) }),
+	);
+	assert.equal(oversized.ok, false);
+	assert.equal(oversized.errors.some((e) => e.includes("prompt_text")), true);
+
+	const authority = validateFlowDeskAgentTaskContextV1(
+		agentTaskContext({ dispatch_authority_enabled: true }),
+	);
+	assert.equal(authority.ok, false);
+	assert.equal(authority.errors.some((e) => e.includes("dispatch authority")), true);
 });
 
 // ---------------------------------------------------------------------------

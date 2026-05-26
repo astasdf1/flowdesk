@@ -21,6 +21,27 @@ If no progress fields changed, the final response should explicitly say the prog
 
 This snapshot tracks implementation against the full roadmap, not only passing tests. Percentages are approximate readiness estimates for each phase’s exit criteria.
 
+## Current Canonical Summary
+
+FlowDesk `0.1.12` is published on npm for both `@flowdesk/core` and `@flowdesk/opencode-plugin`. Release 1's default user path is now mostly complete as a conservative, command-backed, non-dispatch OpenCode plugin: bootstrap, `/flowdesk-*` commands, chat steering, confirmation-before-run, durable status/debug evidence, live provider usage diagnostics, heartbeat/stall projection, and safe recovery diagnostics are implemented and tested. Provider-calling helpers (`flowdesk_quick_reviewer_run`, `flowdesk_agent_task_run`) are explicit opt-in developer-mode tools and do not promote default dispatch authority.
+
+Recent live proof after restart confirmed `flowdesk_quick_reviewer_run` single/subset acceptance and immediate `flowdesk_status_live` durable follow-up on shared state root. Current active operational evidence also shows one FlowDesk-owned task workflow (`workflow-agent-taxonomy-design-20260526`) with one stalled lane and one progressing-late lane; guarded auto-abort recommended manual action rather than automatic execution. This operational stall is not a Release 1 product-readiness proof by itself, but it shows the stall card/status diagnostics are active and should be resolved via `/flowdesk-status`, `/flowdesk-export-debug`, and then an explicit retry/resume/abort decision.
+
+## Release 1 Completion Checklist
+
+Release 1 can be considered complete when the following are true and documented:
+
+1. README, quickstart, user manual, and progress snapshot all reference the current npm version and accurately distinguish default non-dispatch behavior from opt-in provider-calling helpers.
+2. A fresh install smoke from npm `0.1.12` passes in an isolated OpenCode profile: plugin load, command registration, `/flowdesk-doctor`, `/flowdesk-status`, `/flowdesk-usage`, chat steering, and bootstrap preview/install.
+3. Active profile smoke passes after restart: `flowdesk_pre_spike_doctor`, provider usage, quick reviewer subset smoke, and status follow-up with no stalled lanes left unresolved or undocumented.
+4. Debug export is verified on a recent workflow and contains only redacted manifest/section files.
+5. Any active guarded auto-abort/auto-retry/watchdog options are documented as explicit opt-in diagnostics/recovery, not default Release 1 authority.
+6. Final release notes state that hard chat cancellation/no-reply, automatic provider fallback, and production dispatch remain later-gated.
+
+## Historical Log Note
+
+The detailed itemized log below is append-only and includes some duplicated item numbers from parallel work sessions. The canonical current state is the phase table plus the current summary/checklist above; future cleanup should renumber or split the historical log without changing the underlying evidence claims.
+
 | Area | Progress | Evidence | Remaining gap |
 |---|---:|---|---|
 | Phase 0 Bootstrap workspace | 100% | Workspace, packages, build/test scripts, docs, and no-OMO/no-production-dispatch scaffolding exist. | None for scaffold. |
@@ -40,6 +61,8 @@ Release 1 foundations are substantially implemented, with default safe local com
 P8 Background Watchdog (`runFlowDeskWatchdogCycleV1`) was implemented 2026-05-26: opt-in `setInterval`-backed autonomous stall detection and guarded abort/retry cycle, concurrent-execution guard, Guard HMAC re-verify each cycle, per-lane error isolation, optional `flowdesk_watchdog_trigger` MCP tool for Option A external-process fallback, and `.unref()` on the interval so it does not block process exit. 4 new tests added (watchdog cycle abort+retry, guard-invalid skip, concurrent prevention, trigger tool registration). All 573 tests pass.
 
 Generic agent task dispatch tool (`flowdesk_agent_task_run`) was implemented 2026-05-26: added `"agent_task"` to `FLOWDESK_RUNTIME_LANE_LAUNCH_REASONS`, new `FlowDeskTaskResultV1`/`FlowDeskTaskFailedV1` evidence schema in `packages/core/src/task-result.ts` with validators and full property/enum checks, `task_result`/`task_failed` evidence classes added to `state-paths.ts` and `session-evidence.ts`, exported from `core/index.ts`, new `packages/opencode-plugin/src/agent-task-runner.ts` implementing `executeFlowDeskAgentTaskV1` (builds a direct launch plan with `launch_reason: "agent_task"`, launches via injected SDK, extracts assistant text from messages API, writes `task_result.v1` or `task_failed.v1` durable evidence), and new opt-in `flowdesk_agent_task_run` MCP tool registered in `server.ts` behind `agentTaskRun.enabled=true` with `client` and `durableStateRoot` requirements. 15 new tests added (3 core validators + 3 server tool tests). All 588 tests pass.
+
+Generic agent task stall cleanup was patched on 2026-05-27: `executeFlowDeskAgentTaskV1` now writes terminal `lane_lifecycle` evidence for task success and failure paths so completed, launch-failed, and no-response lanes do not remain indefinitely `running` in status/watchdog projections. The patch also adds `flowdesk.agent_task_context.v1` evidence for retry/context recovery with bounded prompt text, prompt hash, concrete agent/model refs, parent session ref, and disabled dispatch authority. Verification passed with `npm run typecheck`, full `npm test` (592/592), and `npm run build --workspace @flowdesk/opencode-plugin`.
 
 The full multi-release roadmap is roughly one quarter complete because Releases 2-4 are intentionally unstarted.
 

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import {
+	type FlowDeskAgentTaskContextV1,
+	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
 	type FlowDeskRuntimeLaneLaunchPlanV1,
@@ -14,6 +16,7 @@ import {
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
+const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
 
 export interface FlowDeskAgentTaskInputV1 {
 	workflowId: string;
@@ -136,6 +139,70 @@ function sha256Hex(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+function writeSessionEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	evidenceId: string;
+	record: Record<string, unknown>;
+}): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
+		evidenceId: input.evidenceId,
+		record: input.record,
+	});
+	if (prepared.ok && prepared.writeIntent !== undefined) {
+		applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+	}
+}
+
+function writeAgentTaskTerminalLifecycle(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	attemptId: string;
+	parentSessionRef: string;
+	childSessionRef?: string;
+	messageRef?: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	state: "incomplete" | "no_output" | "invocation_failed";
+	outputRef?: string;
+	evidenceId: string;
+	createdAt: string;
+	updatedAt: string;
+	timeoutMs?: number;
+}): void {
+	const childSessionRef = input.childSessionRef === input.parentSessionRef ? undefined : input.childSessionRef;
+	const record: FlowDeskLaneLifecycleRecordV1 = {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: input.laneId,
+		workflow_id: input.workflowId,
+		attempt_id: input.attemptId,
+		parent_session_ref: input.parentSessionRef,
+		...(childSessionRef === undefined ? {} : { child_session_ref: childSessionRef }),
+		...(input.messageRef === undefined ? {} : { message_ref: input.messageRef }),
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		state: input.state,
+		...(input.outputRef === undefined ? {} : { output_ref: input.outputRef }),
+		timeout_ms: input.timeoutMs ?? 0,
+		orphan_max_age_ms: 0,
+		retry_count: 0,
+		created_at: input.createdAt,
+		updated_at: input.updatedAt,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: input.evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+}
+
 export async function executeFlowDeskAgentTaskV1(
 	input: FlowDeskAgentTaskInputV1,
 ): Promise<FlowDeskAgentTaskResultV1> {
@@ -152,6 +219,32 @@ export async function executeFlowDeskAgentTaskV1(
 	});
 
 	const runningLifecycleEvidenceId = `lifecycle-task-running-${input.laneId}-${token}`;
+	const attemptId = launchPlan.attempt_id ?? `attempt-task-${token}`;
+	const parentSessionRef = `ses-${input.parentSessionId}`;
+	const promptTextTruncated = input.promptText.length > AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT;
+	const agentTaskContextRecord: FlowDeskAgentTaskContextV1 = {
+		schema_version: "flowdesk.agent_task_context.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		parent_session_ref: parentSessionRef,
+		prompt_text: promptTextTruncated
+			? input.promptText.slice(0, AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT)
+			: input.promptText,
+		prompt_text_truncated: promptTextTruncated,
+		prompt_text_sha256: sha256Hex(input.promptText),
+		redaction_version: "v1",
+		created_at: observedAt,
+		dispatch_authority_enabled: false,
+	};
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: `agent-task-context-${input.taskId}-${token}`,
+		record: agentTaskContextRecord as unknown as Record<string, unknown>,
+	});
 
 	// Launch the lane
 	const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
@@ -179,9 +272,9 @@ export async function executeFlowDeskAgentTaskV1(
 		recordFlowDeskLaneHeartbeatV1({
 			rootDir: input.rootDir,
 			workflowId: input.workflowId,
-			attemptId: launchPlan.attempt_id ?? `attempt-task-${token}`,
+			attemptId,
 			laneId: input.laneId,
-			parentSessionRef: `ses-${input.parentSessionId}`,
+			parentSessionRef,
 			agentRef: input.agentRef,
 			providerQualifiedModelId: input.providerQualifiedModelId,
 			state: "running",
@@ -205,14 +298,26 @@ export async function executeFlowDeskAgentTaskV1(
 			created_at: observedAt,
 			dispatch_authority_enabled: false,
 		};
-		const taskFailedPrepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		writeSessionEvidence({
+			rootDir: input.rootDir,
 			workflowId: input.workflowId,
 			evidenceId: taskFailedEvidenceId,
 			record: taskFailedRecord as unknown as Record<string, unknown>,
 		});
-		if (taskFailedPrepared.ok && taskFailedPrepared.writeIntent !== undefined) {
-			applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [taskFailedPrepared.writeIntent]);
-		}
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			state: "invocation_failed",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
+			createdAt: observedAt,
+			updatedAt: new Date().toISOString(),
+			timeoutMs: input.timeoutMs,
+		});
 
 		return {
 			status: "task_failed",
@@ -223,13 +328,12 @@ export async function executeFlowDeskAgentTaskV1(
 	}
 
 	// Lane launched successfully - record heartbeat
-	const attemptId = launchPlan.attempt_id ?? `attempt-task-${token}`;
 	recordFlowDeskLaneHeartbeatV1({
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,
 		attemptId,
 		laneId: input.laneId,
-		parentSessionRef: `ses-${input.parentSessionId}`,
+		parentSessionRef,
 		agentRef: input.agentRef,
 		providerQualifiedModelId: input.providerQualifiedModelId,
 		state: "running",
@@ -262,14 +366,28 @@ export async function executeFlowDeskAgentTaskV1(
 			created_at: observedAt,
 			dispatch_authority_enabled: false,
 		};
-		const taskFailedPrepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		writeSessionEvidence({
+			rootDir: input.rootDir,
 			workflowId: input.workflowId,
 			evidenceId: taskFailedEvidenceId,
 			record: taskFailedRecord as unknown as Record<string, unknown>,
 		});
-		if (taskFailedPrepared.ok && taskFailedPrepared.writeIntent !== undefined) {
-			applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [taskFailedPrepared.writeIntent]);
-		}
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			childSessionRef: launchResult.childSessionRef,
+			messageRef: launchResult.messageRef?.startsWith("msg-") ? launchResult.messageRef : undefined,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			state: "no_output",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
+			createdAt: observedAt,
+			updatedAt: new Date().toISOString(),
+			timeoutMs: input.timeoutMs,
+		});
 		return {
 			status: "task_failed",
 			failureCategory: "no_response",
@@ -301,14 +419,29 @@ export async function executeFlowDeskAgentTaskV1(
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	};
-	const taskResultPrepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+	writeSessionEvidence({
+		rootDir: input.rootDir,
 		workflowId: input.workflowId,
 		evidenceId: taskResultEvidenceId,
 		record: taskResultRecord as unknown as Record<string, unknown>,
 	});
-	if (taskResultPrepared.ok && taskResultPrepared.writeIntent !== undefined) {
-		applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [taskResultPrepared.writeIntent]);
-	}
+	writeAgentTaskTerminalLifecycle({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		attemptId,
+		parentSessionRef,
+		childSessionRef: launchResult.childSessionRef,
+		messageRef: launchResult.messageRef?.startsWith("msg-") ? launchResult.messageRef : undefined,
+		agentRef: input.agentRef,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		state: "incomplete",
+		outputRef: `output-${taskResultEvidenceId}`,
+		evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
+		createdAt: observedAt,
+		updatedAt: new Date().toISOString(),
+		timeoutMs: input.timeoutMs,
+	});
 
 	return {
 		status: "task_completed",

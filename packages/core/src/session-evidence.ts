@@ -27,6 +27,7 @@ import {
 } from "./pending-abort.js";
 import {
 	validateFlowDeskReviewerLaneContextV1,
+	validateFlowDeskAgentTaskContextV1,
 	validateFlowDeskPendingRetryPlanV1,
 	validateFlowDeskRetryExecutedV1,
 	validateFlowDeskRetryFailedV1,
@@ -117,6 +118,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	pending_abort_cancel: "flowdesk.pending_abort_cancel.v1",
 	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
 	reviewer_lane_context: "flowdesk.reviewer_lane_context.v1",
+	agent_task_context: "flowdesk.agent_task_context.v1",
 	pending_retry_plan: "flowdesk.pending_retry_plan.v1",
 	retry_executed: "flowdesk.retry_executed.v1",
 	retry_failed: "flowdesk.retry_failed.v1",
@@ -804,6 +806,8 @@ function validateEvidenceShape(
 		return validateFlowDeskPendingAbortCancelV1(record);
 	if (evidenceClass === "reviewer_lane_context")
 		return validateFlowDeskReviewerLaneContextV1(record);
+	if (evidenceClass === "agent_task_context")
+		return validateFlowDeskAgentTaskContextV1(record);
 	if (evidenceClass === "pending_retry_plan")
 		return validateFlowDeskPendingRetryPlanV1(record);
 	if (evidenceClass === "retry_executed")
