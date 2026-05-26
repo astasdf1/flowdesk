@@ -2223,9 +2223,6 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 			`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
 		);
 	}
-	lines.push(
-		"FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.",
-	);
 	if (summary.autoAbortSummaries !== undefined && summary.autoAbortSummaries.length > 0) {
 		lines.push("Guarded auto-abort diagnostics (evidence-only, opt-in):");
 		for (const line of summary.autoAbortSummaries.slice(0, 3)) lines.push(`- ${line}`);
