@@ -3315,6 +3315,12 @@ function quickReviewerRunDefaultsFromOptions(options?: PluginOptions): {
 } {
 	const option = options?.[flowdeskQuickReviewerRunOption];
 	if (!isRecord(option)) return {};
+	const optionRoot =
+		typeof option.durableStateRoot === "string" &&
+		option.durableStateRoot.trim().length > 0
+			? option.durableStateRoot
+			: undefined;
+	const rootDir = optionRoot ?? durableStateRootFromOptions(options);
 	return {
 		...(typeof option.providerQualifiedModelId === "string" &&
 		option.providerQualifiedModelId.trim().length > 0
@@ -3328,10 +3334,7 @@ function quickReviewerRunDefaultsFromOptions(options?: PluginOptions): {
 		option.sourceLabel.trim().length > 0
 			? { sourceLabel: option.sourceLabel }
 			: {}),
-		...(typeof option.durableStateRoot === "string" &&
-		option.durableStateRoot.trim().length > 0
-			? { rootDir: option.durableStateRoot }
-			: {}),
+		...(rootDir === undefined ? {} : { rootDir }),
 	};
 }
 

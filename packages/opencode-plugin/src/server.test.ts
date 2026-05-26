@@ -1845,6 +1845,68 @@ test("quick reviewer run tool is absent by default and registers only with expli
 	assert.doesNotMatch(description, /paid provider/);
 });
 
+test("quick reviewer run persists launch evidence under top-level durableStateRoot", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-quick-reviewer-root-"));
+	try {
+		const dummyClient = {
+			session: {
+				create() {
+					return Promise.resolve({ id: "parent-quick-root-1" });
+				},
+				prompt() {
+					return Promise.resolve({ info: { id: "message-quick-root-1" } });
+				},
+				messages() {
+					return Promise.resolve([]);
+				},
+			},
+		};
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskQuickReviewerRunOption]: {
+					enabled: true,
+					providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+					runtimeAgent: "reviewer-gpt-frontier",
+				},
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const quickTool = hooks.tool?.[flowdeskQuickReviewerRunToolName];
+		assert.ok(quickTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await quickTool.execute(
+					{
+						prompt: "Review this content",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "quick_reviewer_run_incomplete");
+		assert.equal(typeof result.workflowId, "string");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: String(result.workflowId),
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.filter(
+				(entry) => entry.evidenceClass === "runtime_lane_launch_plan",
+			).length,
+			3,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("managed fallback regate tool persists regate plan as durable evidence when opt-in is set", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-fallback-regate-persist-"));
 	try {
