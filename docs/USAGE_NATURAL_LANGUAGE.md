@@ -64,7 +64,7 @@ The user does not need to attach a code snippet. If no snippet is supplied, the 
 
 ## Tool 2: `flowdesk_provider_usage_live`
 
-Live per-provider remaining quota for Claude OAuth, OpenAI/Codex, and Gemini Code Assist. Reads OAuth credentials and provider rate-limit/quota APIs directly.
+Live per-provider remaining quota for Claude OAuth, OpenAI/Codex, and Gemini Code Assist. When a durable state root is configured, FlowDesk first tries to reuse fresh `flowdesk.usage_snapshot.v1` evidence within its `freshness_ttl`; otherwise it reads OAuth credentials and provider rate-limit/quota APIs directly.
 
 ### Trigger phrases
 
@@ -89,8 +89,10 @@ The tool description also instructs the assistant to call this tool BEFORE start
           "providers": ["claude", "openai", "gemini"],
           "claudeOAuthUsage": true,
           "codexLiveUsage": true,
-          "geminiQuota": true
-        }
+          "geminiQuota": true,
+          "persistSnapshots": true
+        },
+        "durableStateRoot": "/Users/<you>/.flowdesk"
       }
     ]
   ]
@@ -120,7 +122,9 @@ The tool description also instructs the assistant to call this tool BEFORE start
 
 Per-provider row: `providerFamily`, `remainingPercent`, `resetBucket`, `resetTime`, `alertLevel`, `recommendation`, `dispatchability`, `freshness`, `uncertaintyFlags`.
 
-Top-level: `worstAlertLevel`, `overallRecommendation`, `authority.providerUsageAcquired`.
+Top-level: `worstAlertLevel`, `overallRecommendation`, optional `snapshotReuse` (`reusedEvidenceIds`, `skippedReasons`), optional `snapshotPersistence`, and `authority.providerUsageAcquired`.
+
+`persistSnapshots=true` is still opt-in. Snapshot reuse can read existing durable usage snapshots when `durableStateRoot`/`providerUsageLive.durableStateRootDir` is configured, but new provider-native results are only saved when persistence is enabled.
 
 ## Tool 3: `flowdesk_status_live`
 
