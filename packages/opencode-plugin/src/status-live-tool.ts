@@ -10,6 +10,7 @@ import {
 	projectFlowDeskLaneStallV1,
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
+import { backfillTerminalAgentTaskFailedLanesV1 } from "./stall-recovery.js";
 
 const FLOWDESK_LANE_STALL_TERMINAL_STATES = new Set([
 	"complete",
@@ -414,6 +415,11 @@ export async function executeFlowDeskStatusLiveV1(input: {
 
 	const workflows: FlowDeskStatusLiveWorkflowEvidenceSummaryV1[] = [];
 	for (const workflowId of workflowIds) {
+		backfillTerminalAgentTaskFailedLanesV1({
+			workflowId,
+			rootDir,
+			now: new Date(observedAt),
+		});
 		const reload = reloadFlowDeskSessionEvidenceV1({
 			workflowId,
 			rootDir,

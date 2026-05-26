@@ -8,8 +8,11 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
+	projectFlowDeskLaneStallV1,
 	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskReviewerLaneContextV1,
+	type FlowDeskAgentTaskContextV1,
+	type FlowDeskTaskFailedV1,
 	type FlowDeskPendingRetryPlanV1,
 	type FlowDeskRetryExecutedV1,
 	type FlowDeskRetryFailedV1,
@@ -20,6 +23,7 @@ import {
 	computeGuardSignOffHmacV1,
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
+	backfillTerminalAgentTaskFailedLanesV1,
 	reconcileStalePendingRetryPlansV1,
 	isAutoAbortEnabledV1,
 	verifyGuardSignOffHmacV1,
@@ -382,6 +386,65 @@ function writePendingRetryPlanEvidence(
 	assert.equal(applied.ok, true, applied.errors.join("\n"));
 }
 
+function agentTaskContextRecord(overrides: Partial<FlowDeskAgentTaskContextV1> = {}): FlowDeskAgentTaskContextV1 {
+	return {
+		schema_version: "flowdesk.agent_task_context.v1",
+		workflow_id: "workflow-agent-task-123",
+		lane_id: "lane-agent-task-123",
+		task_id: "task-agent-123",
+		agent_ref: "agent-general-123",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		parent_session_ref: "ses-parent-agent-123",
+		prompt_text: "Do the generic agent task.",
+		prompt_text_truncated: false,
+		prompt_text_sha256: "promptsha256",
+		redaction_version: "v1",
+		created_at: "2026-05-26T10:00:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function taskFailedRecord(overrides: Partial<FlowDeskTaskFailedV1> = {}): FlowDeskTaskFailedV1 {
+	return {
+		schema_version: "flowdesk.task_failed.v1",
+		workflow_id: "workflow-agent-task-123",
+		lane_id: "lane-agent-task-123",
+		task_id: "task-agent-123",
+		agent_ref: "agent-general-123",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		failure_category: "no_response",
+		redacted_reason: "lane launched but no assistant response text found",
+		created_at: "2026-05-26T10:02:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function writeAgentTaskContext(rootDir: string, record: FlowDeskAgentTaskContextV1, evidenceId = "agent-task-context-001"): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writeTaskFailed(rootDir: string, record: FlowDeskTaskFailedV1, evidenceId = "task-failed-001"): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
 /** Helper to set up a rootDir with aborted lane lifecycle + guard sign-off + reviewer_lane_context. */
 function withTempRoot(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
@@ -408,6 +471,113 @@ const retryConfig = {
 	maxAutoRetries: 1,
 	guardHmacKey: guardKey,
 };
+
+test("agent-task backfill terminalizes stale legacy failed lane without context", () => {
+	const rootDir = withTempRoot("flowdesk-agent-task-backfill-legacy-");
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			agent_ref: "agent-general-123",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running",
+			updated_at: "2026-05-26T10:01:00.000Z",
+			spawned_by: undefined,
+		}),
+		"lifecycle-agent-task-running-001",
+	);
+	writeTaskFailed(
+		rootDir,
+		taskFailedRecord({
+			failure_category: "sdk_create_failed",
+			redacted_reason: "legacy task failed after launch failure",
+		}),
+	);
+
+	const result = backfillTerminalAgentTaskFailedLanesV1({
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		now: new Date("2026-05-26T10:05:00.000Z"),
+	});
+
+	assert.equal(result.status, "backfill_completed");
+	assert.equal(result.lanesTerminalized, 1);
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-agent-task-123" });
+	assert.equal(reload.ok, true);
+	assert.equal(
+		reload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "lane_lifecycle" &&
+				entry.record.lane_id === "lane-agent-task-123" &&
+				entry.record.state === "invocation_failed" &&
+				entry.record.dispatch_authority_enabled === false &&
+				entry.record.providerCall === false &&
+				entry.record.actualLaneLaunch === false &&
+				entry.record.runtimeExecution === false,
+		),
+		true,
+	);
+});
+
+test("agent-task backfill uses agent_task_context and no_response maps to no_output", () => {
+	const rootDir = withTempRoot("flowdesk-agent-task-backfill-context-");
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			agent_ref: "agent-old-123",
+			provider_qualified_model_id: "openai/old-model",
+			parent_session_ref: "ses-old-parent-123",
+			state: "created",
+			updated_at: "2026-05-26T10:01:00.000Z",
+		}),
+		"lifecycle-agent-task-created-001",
+	);
+	writeAgentTaskContext(
+		rootDir,
+		agentTaskContextRecord({
+			agent_ref: "agent-general-123",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_session_ref: "ses-parent-agent-123",
+		}),
+	);
+	writeTaskFailed(rootDir, taskFailedRecord({ failure_category: "no_response" }));
+
+	const result = backfillTerminalAgentTaskFailedLanesV1({
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		now: new Date("2026-05-26T10:05:00.000Z"),
+	});
+
+	assert.equal(result.status, "backfill_completed");
+	assert.equal(result.lanesTerminalized, 1);
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-agent-task-123" });
+	assert.equal(reload.ok, true);
+	const terminal = reload.entries.find(
+		(entry) =>
+			entry.evidenceClass === "lane_lifecycle" &&
+			entry.record.lane_id === "lane-agent-task-123" &&
+			entry.record.state === "no_output",
+	)?.record as Record<string, unknown> | undefined;
+	assert.ok(terminal);
+	assert.equal(terminal.agent_ref, "agent-general-123");
+	assert.equal(terminal.provider_qualified_model_id, "openai/gpt-5.5");
+	assert.equal(terminal.parent_session_ref, "ses-parent-agent-123");
+	assert.equal(terminal.output_ref, undefined);
+	const projection = projectFlowDeskLaneStallV1({
+		workflowId: "workflow-agent-task-123",
+		reload,
+		observedAt: "2026-05-26T10:10:00.000Z",
+		stallThresholdMs: 60_000,
+	});
+	const laneProjection = projection.entries.find(
+		(entry) => entry.laneId === "lane-agent-task-123",
+	);
+	assert.equal(laneProjection?.classification, "terminal");
+	assert.equal(projection.totalStalledLanes, 0);
+});
 
 // ---------------------------------------------------------------------------
 // Conformance fixtures

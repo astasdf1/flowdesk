@@ -64,6 +64,8 @@ Generic agent task dispatch tool (`flowdesk_agent_task_run`) was implemented 202
 
 Generic agent task stall cleanup was patched on 2026-05-27: `executeFlowDeskAgentTaskV1` now writes terminal `lane_lifecycle` evidence for task success and failure paths so completed, launch-failed, and no-response lanes do not remain indefinitely `running` in status/watchdog projections. The patch also adds `flowdesk.agent_task_context.v1` evidence for retry/context recovery with bounded prompt text, prompt hash, concrete agent/model refs, parent session ref, and disabled dispatch authority. Verification passed with `npm run typecheck`, full `npm test` (592/592), and `npm run build --workspace @flowdesk/opencode-plugin`.
 
+Agent-task recovery backfill was extended on 2026-05-27: added a safe local cleanup helper for legacy generic agent-task lanes that already have `task_failed.v1` evidence while latest `lane_lifecycle` is still `created`/`running`; status reload and the watchdog cycle invoke it before stall projection, writing terminal `no_output` for `no_response` failures and `invocation_failed` otherwise, while preserving all runtime/dispatch authority flags as false. Regression tests cover stale legacy cleanup, `flowdesk.agent_task_context.v1` fallback of agent/model/parent refs, and no-response cleanup projecting as terminal with zero stalled lanes. Verification passed with `npm run typecheck`, full `npm test` (594/594), and `npm run build --workspace @flowdesk/opencode-plugin`.
+
 The full multi-release roadmap is roughly one quarter complete because Releases 2-4 are intentionally unstarted.
 
 ## Release 2/2.5 Implementation Confidence and Uncertainty Policy

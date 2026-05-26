@@ -8,10 +8,10 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.1.8` is the latest published release on npm:
+Version `0.1.12` is the latest published release on npm:
 
 ```bash
-npm install @flowdesk/core@^0.1.8 @flowdesk/opencode-plugin@^0.1.8
+npm install @flowdesk/core@^0.1.12 @flowdesk/opencode-plugin@^0.1.12
 ```
 
 Add the plugin to your OpenCode config. The plugin entry must point at the
@@ -46,7 +46,7 @@ opt-in set for the description-driven natural-language tools is:
 }
 ```
 
-Release 1 is intentionally conservative. It provides a default-on, non-dispatch command-backed plugin path: planning records, guarded dry-run, deterministic fake-runtime output, status, recovery, usage/provider diagnostics, redacted debug export, bootstrap installation, and visible chat steering. It does **not** perform real provider dispatch by default. The `flowdesk_quick_reviewer_run` helper is separate: it can launch real reviewer lanes only after the user opts into `quickReviewerRun.enabled=true` in plugin config and the tool call carries `developerModeAcknowledged=true` plus `allowProviderCall=true`.
+Release 1 is intentionally conservative. It provides a default-on, non-dispatch command-backed plugin path: planning records, guarded dry-run, deterministic fake-runtime output, status, recovery, usage/provider diagnostics, redacted debug export, bootstrap installation, and visible chat steering. It does **not** perform real provider dispatch by default. The opt-in natural-language tools are separate: `flowdesk_quick_reviewer_run` and `flowdesk_agent_task_run` can launch real provider-backed reviewer/task lanes only after the relevant plugin option is enabled and each tool call carries `developerModeAcknowledged=true` plus `allowProviderCall=true`.
 
 The current public package is best understood as the base harness: contracts, validators, command tools, status surfaces, evidence persistence scaffolding, and safety gates needed before real usage-based model selection can become production behavior.
 
@@ -98,15 +98,17 @@ The preview path writes nothing. Installation requires re-running with the exact
 
 FlowDesk Guard is the only dispatch authority. Status, audit, runtime echo, provider health, usage snapshots, hook observations, reviewer outputs, lane summaries, and scores are evidence or diagnostics; they are not approval.
 
-Release 1 does not claim:
+Release 1 default behavior does not claim:
 
 - real OpenCode provider dispatch by default,
 - automatic provider/model fallback,
-- actual OpenCode subtask/model/provider lane launch,
+- actual OpenCode subtask/model/provider lane launch by default,
 - hard chat cancellation or hard no-reply control,
 - hidden prompt-prefix takeover,
 - score-based approval,
 - or community telemetry upload.
+
+Explicit opt-in helpers such as `flowdesk_quick_reviewer_run` and `flowdesk_agent_task_run` are provider-calling developer-mode tools. They are not default Release 1 dispatch authority, and their evidence cannot by itself approve production dispatch.
 
 `opencode run` is not a FlowDesk production orchestration path. It is allowed only for smoke tests, diagnostics, compatibility probes, or fake-runtime harnesses.
 
@@ -117,33 +119,34 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
 - [x] **Phase 0: Bootstrap workspace (100%)**
   - Workspace, packages, build/test scripts, docs, and no-OMO/no-production-dispatch scaffolding exist.
 
-- [x] **Phase 1: Core contracts (about 90%)**
-  - Release 1 contracts, validators, schema artifacts, fixtures, Guard/fake-runtime/status/retry/audit/state tests, lane observability contracts, and inert later-release reviewer-lane scaffolding exist.
-  - Remaining: product hardening for persisted lane/delegation contracts beyond the current Release 1 state path.
+- [x] **Phase 1: Core contracts (about 97%)**
+  - Release 1 contracts, validators, schema artifacts, fixtures, Guard/fake-runtime/status/retry/audit/state tests, durable evidence, lane lifecycle/heartbeat/stall contracts, retry/abort/task-result evidence, and later-release reviewer-lane scaffolding exist.
+  - Remaining: final product hardening around persisted lane/delegation contracts and broader live conformance evidence.
 
-- [x] **Phase 2: Policy, usage, and audit (about 74%)**
-  - Policy/effective-policy contracts, non-dispatch permissions, provider health and usage fail-closed helpers, redacted audit/debug write intents, durable session evidence, and provider-native collector logic for Claude, Codex/OpenAI, and Gemini Code Assist exist.
-  - Remaining: broader production config loading, live collector integration, provider-health expansion, and debug bundle completion.
+- [x] **Phase 2: Policy, usage, and audit (about 86%)**
+  - Policy/effective-policy contracts, non-dispatch permissions, provider health and usage fail-closed helpers, redacted audit/debug write intents, durable session evidence, provider-native collector logic, and live usage collection for Claude, OpenAI/Codex, and Gemini Code Assist exist.
+  - Remaining: provider-health expansion, richer debug bundles, and production-path evidence polish.
 
-- [x] **Phase 3: OpenCode plugin command path (about 90%)**
+- [x] **Phase 3: OpenCode plugin command path (about 95%)**
   - `@flowdesk/opencode-plugin`, command-backed handlers, `/flowdesk-*` command files, bootstrap installer, safe local tools, chat intake/steering, pending confirmation behavior, status/recovery/diagnostics, and Release 1 production-eligible non-dispatch registration exist.
-  - Packages are published as `@flowdesk/core@0.1.8` and `@flowdesk/opencode-plugin@0.1.8`.
+  - Packages are published as `@flowdesk/core@0.1.12` and `@flowdesk/opencode-plugin@0.1.12`.
   - Remaining: user-facing hardening and continued proof that default behavior stays non-dispatch.
 
-- [ ] **Phase 4: OpenCode conformance (about 54%)**
-  - Evidence exists for OpenCode 1.14.x plugin loading, schema conversion, command/chat smoke tests, SDK source surfaces, `prompt`/`promptAsync` subtask inputs, session children metadata, and auth-plugin sanitizer requirements.
-  - Remaining: actual runtime lane lifecycle proof, command alias proof, blocking/no-reply proof, trusted runtime echo and telemetry proof, and broader pinned-version conformance.
+- [ ] **Phase 4: OpenCode conformance (about 58%)**
+  - Evidence exists for OpenCode 1.14.x/1.15.x plugin loading, schema conversion, command/chat smoke tests, SDK source surfaces, prompt/promptAsync lane launch, session children metadata, reviewer verdict observation, and auth-plugin sanitizer requirements.
+  - Remaining: command alias proof, optional hook-level blocking/no-reply proof if OpenCode exposes it, stronger runtime echo/telemetry proof, and broader pinned-version conformance.
 
-- [ ] **Phase 5: Managed dispatch beta (about 46%)**
-  - Core fail-closed managed-dispatch gate evaluator, evidence contracts, durable session-evidence persistence, doctor-visible production enablement diagnostics, usage-authority validation, provider-native collector logic, and an opt-in injected SDK adapter boundary exist.
-  - Remaining: configured verification production integration, sanitizer-backed external auth/provider policy, release approval, and actual runtime lane conformance before dispatch-capable behavior can be claimed.
+- [ ] **Phase 5: Managed dispatch beta (about 73%)**
+  - Core fail-closed managed-dispatch gates, durable pre-call/idempotency evidence, opt-in injected SDK adapter boundaries, runtime lane launch/lifecycle materialization, quick reviewer execution, typed verdict acceptance/linkage, fallback regate planning, controlled external-write adapters, and doctor-visible production enablement diagnostics exist.
+  - Remaining: release approval, stronger production conformance, default-dispatch promotion criteria, and broader provider/auth policy proof before dispatch-capable behavior can be claimed.
 
-- [ ] **Phase 6: Managed chat and recovery (about 50%)**
-  - Conservative chat routing, visible FlowDesk suggestions, confirmation-before-run behavior, pending approval state, retry/abort/resume/usage/export-debug diagnostics, and duplicate steering suppression exist.
-  - Remaining: intent detector split, durable suggestion preferences, broader abnormal-use recovery UX, and blocking chat conformance.
+- [ ] **Phase 6: Managed chat and recovery (about 65%)**
+  - Conservative chat routing, visible FlowDesk suggestions, confirmation-before-run behavior, pending approval state, retry/abort/resume/usage/export-debug diagnostics, duplicate steering suppression, heartbeat stall projection, evidence-only guarded auto-abort, guarded auto-retry, watchdog trigger, and SDK-scoped session controls exist.
+  - Remaining: intent detector split, broader abnormal-use recovery UX, continuation supervision, and hook-level blocking/no-reply only if OpenCode exposes a supported boundary.
 
-- [ ] **Phase 7: Operational intelligence (0%)**
-  - Planned only. This is where advisory proposal optimization, multi-perspective reviewer fan-out, score ledgers, and richer orchestration policies belong.
+- [ ] **Phase 7: Operational intelligence (about 14%)**
+  - Advisory-output firewall contracts, exact-model availability cache planning, selected-cache fan-out planning, prompt-backed provider acquisition, quick reviewer fan-out, and opt-in agent task execution exist.
+  - Remaining: advisory evaluation, score ledgers, reference packs, production model-selection policy, and live connector execution.
 
 - [ ] **Phase 8: Federated score registry (0%)**
   - Planned only. Any shared score/telemetry system must be explicit opt-in, revocable, redacted, and advisory-only.
