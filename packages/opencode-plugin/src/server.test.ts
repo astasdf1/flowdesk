@@ -5352,6 +5352,94 @@ test("status live tool exposes a lane heartbeat stall projection for the request
 	}
 });
 
+test("status live tool keeps terminal lifecycle when same-time running evidence is also present", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-terminal-tie-"));
+	try {
+		const workflowId = "workflow-status-live-terminal-tie";
+		const tieAt = new Date(Date.now() - 10 * 60_000).toISOString();
+		const baseLane = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-status-live-terminal-tie",
+			workflow_id: workflowId,
+			attempt_id: "attempt-status-live-terminal-tie",
+			parent_session_ref: "ses-status-live-terminal-tie-parent",
+			child_session_ref: "ses-status-live-terminal-tie-child",
+			message_ref: "msg-status-live-terminal-tie",
+			agent_ref: "agent-reviewer-status-live-terminal-tie",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: tieAt,
+			updated_at: tieAt,
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const completeIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-complete-status-live-terminal-tie",
+			record: {
+				...baseLane,
+				state: "complete" as const,
+				verdict_ref: "verdict-status-live-terminal-tie",
+				output_ref: "output-status-live-terminal-tie",
+				runtime_echo_ref: "runtime-echo-status-live-terminal-tie",
+				telemetry_ref: "telemetry-status-live-terminal-tie",
+			},
+		});
+		assert.equal(completeIntent.ok, true, completeIntent.errors.join("; "));
+		const runningIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-running-status-live-terminal-tie",
+			record: {
+				...baseLane,
+				state: "running" as const,
+			},
+		});
+		assert.equal(runningIntent.ok, true, runningIntent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			completeIntent.writeIntent as never,
+			runningIntent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const result = JSON.parse(
+			toolOutput(await statusTool.execute({ workflowId }, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "status_live_collected");
+		assert.equal(result.worstLaneStallClassification, "terminal");
+		assert.equal(result.totalStalledLaneCount, 0);
+		const workflows = result.workflows as Array<Record<string, unknown>>;
+		assert.equal(workflows.length, 1);
+		const workflow = workflows[0];
+		assert.equal(workflow.worstLaneStallClassification, "terminal");
+		assert.equal(workflow.stalledLaneCount, 0);
+		const projection = workflow.laneStallProjection as Record<string, unknown>;
+		const entries = projection.entries as Array<Record<string, unknown>>;
+		assert.equal(entries.length, 1);
+		assert.equal(entries[0].classification, "terminal");
+		assert.equal(entries[0].lifecycleState, "complete");
+		assert.equal(
+			entries[0].lastSignalEvidenceId,
+			"lifecycle-complete-status-live-terminal-tie",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("status live tool description mentions lane heartbeat stall projection vocabulary", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-status-live-desc-"));
 	try {
@@ -5861,6 +5949,135 @@ test("chat.message stall alert surfaces progressing-late lanes only when include
 		assert.match(serialized, /1 progressing-late/);
 		assert.match(serialized, /- \/flowdesk-status/);
 		assert.equal(/noReply|cancel|stop/.test(serialized), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("chat.message appended parts carry opencode 1.x TextPart schema fields (id, sessionID, messageID)", async () => {
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskNaturalLanguageRoutingOption]: true,
+	})) as ChatMessageHooks;
+	assert.ok(hooks["chat.message"]);
+
+	const steeringOutput = {
+		parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
+	};
+	await hooks["chat.message"](
+		{
+			messageID: "msg_part_schema_steering",
+			sessionID: "ses_part_schema_steering",
+		},
+		steeringOutput,
+	);
+	assert.equal(steeringOutput.parts.length, 2);
+	const steeringAppended = steeringOutput.parts[1] as Record<string, unknown>;
+	assert.equal(steeringAppended.type, "text");
+	assert.equal(typeof steeringAppended.text, "string");
+	assert.equal(steeringAppended.sessionID, "ses_part_schema_steering");
+	assert.equal(steeringAppended.messageID, "msg_part_schema_steering");
+	assert.equal(typeof steeringAppended.id, "string");
+	assert.match(String(steeringAppended.id), /^prt_[0-9a-f]+$/);
+
+	const original = steeringOutput.parts[0] as Record<string, unknown>;
+	assert.equal(original.id, undefined);
+	assert.equal(original.sessionID, undefined);
+	assert.equal(original.messageID, undefined);
+});
+
+test("chat.message stall alert appended parts carry opencode 1.x TextPart schema fields and unique ids", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-stall-part-schema-"));
+	try {
+		const workflowId = "workflow-chat-stall-part-schema";
+		const observedAtMs = Date.now();
+		const stalledLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-stall-part-schema",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-stall-part-schema",
+			parent_session_ref: "ses-chat-stall-part-schema-parent",
+			agent_ref: "agent-chat-stall-part-schema",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+			updated_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-stall-part-schema",
+			record: stalledLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			intent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true },
+			},
+		)) as ChatMessageHooks;
+		assert.ok(hooks["chat.message"]);
+
+		const continueChatOutput = {
+			parts: [{ type: "text", text: "오늘 날씨 이야기" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{
+				messageID: "msg_stall_part_schema_continue",
+				sessionID: "ses_stall_part_schema_continue",
+			},
+			continueChatOutput,
+		);
+		assert.equal(continueChatOutput.parts.length, 2);
+		const continueAppended = continueChatOutput.parts[1] as Record<
+			string,
+			unknown
+		>;
+		assert.equal(continueAppended.type, "text");
+		assert.match(String(continueAppended.text), /Stalled lanes detected/);
+		assert.equal(continueAppended.sessionID, "ses_stall_part_schema_continue");
+		assert.equal(continueAppended.messageID, "msg_stall_part_schema_continue");
+		assert.match(String(continueAppended.id), /^prt_[0-9a-f]+$/);
+
+		const planOutput = {
+			parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{
+				messageID: "msg_stall_part_schema_plan",
+				sessionID: "ses_stall_part_schema_plan",
+			},
+			planOutput,
+		);
+		assert.equal(planOutput.parts.length, 3);
+		const planSteering = planOutput.parts[1] as Record<string, unknown>;
+		const planStallCard = planOutput.parts[2] as Record<string, unknown>;
+		for (const part of [planSteering, planStallCard]) {
+			assert.equal(part.type, "text");
+			assert.equal(typeof part.text, "string");
+			assert.equal(part.sessionID, "ses_stall_part_schema_plan");
+			assert.equal(part.messageID, "msg_stall_part_schema_plan");
+			assert.match(String(part.id), /^prt_[0-9a-f]+$/);
+		}
+		assert.notEqual(
+			planSteering.id,
+			planStallCard.id,
+			"steering and stall card parts must have unique ids",
+		);
+		assert.match(String(planSteering.text), /Suggested next step:/);
+		assert.match(String(planStallCard.text), /Stalled lanes detected/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

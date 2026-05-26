@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import {
@@ -1814,6 +1815,17 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		output: FlowDeskChatMessageOutput,
 	): Promise<void> {
 		const inputRecord = isRecord(input) ? input : {};
+		const partSessionID =
+			typeof inputRecord.sessionID === "string" ? inputRecord.sessionID : "";
+		const partMessageID =
+			typeof inputRecord.messageID === "string" ? inputRecord.messageID : "";
+		const buildTextPart = (text: string) => ({
+			id: `prt_${randomUUID().replaceAll("-", "")}`,
+			sessionID: partSessionID,
+			messageID: partMessageID,
+			type: "text" as const,
+			text,
+		});
 		const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
 		const preview = previewNaturalLanguageRouting(request, session);
 		const nowMs = clockMs(now);
@@ -1854,10 +1866,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 					nowMs - previous > flowdeskChatSuggestionDuplicateWindowMs
 				) {
 					if (!Array.isArray(output.parts)) output.parts = [];
-					output.parts.push({
-						type: "text",
-						text: stallAlertText(stallSummary),
-					});
+					output.parts.push(buildTextPart(stallAlertText(stallSummary)));
 				}
 			}
 			return;
@@ -1890,7 +1899,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		}
 		const result = evaluateNaturalLanguageRouting(request, session);
 		if (!Array.isArray(output.parts)) output.parts = [];
-		output.parts.push({ type: "text", text: steeringText(result) });
+		output.parts.push(buildTextPart(steeringText(result)));
 		if (shouldAppendStallCard && stallSummary !== undefined) {
 			const key = stallAlertDuplicateKey(request, stallSummary);
 			const previous = recentStallAlerts.get(key);
@@ -1899,10 +1908,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				previous === undefined ||
 				nowMs - previous > flowdeskChatSuggestionDuplicateWindowMs
 			)
-				output.parts.push({
-					type: "text",
-					text: stallAlertText(stallSummary),
-				});
+				output.parts.push(buildTextPart(stallAlertText(stallSummary)));
 		}
 	};
 }

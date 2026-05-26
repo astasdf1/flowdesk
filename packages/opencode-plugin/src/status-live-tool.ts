@@ -11,6 +11,108 @@ import {
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
 
+const FLOWDESK_LANE_STALL_TERMINAL_STATES = new Set([
+	"complete",
+	"incomplete",
+	"no_output",
+	"missing_verdict",
+	"tool_calls_only_no_verdict",
+	"aborted",
+	"timeout",
+	"late_output",
+	"orphaned",
+	"invocation_failed",
+]);
+
+function laneLifecycleStateIsTerminal(state: string): boolean {
+	return FLOWDESK_LANE_STALL_TERMINAL_STATES.has(state);
+}
+
+function getLaneLifecycleRecordField(
+	record: Record<string, unknown>,
+	field: "lane_id" | "state" | "updated_at" | "created_at",
+): string | undefined {
+	const value = record[field];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function collectLatestTerminalLifecycleSnapshotByLane(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): Map<
+	string,
+	{ laneId: string; state: string; evidenceId: string; updatedAtMs: number; updatedAt: string }
+> {
+	const byLane = new Map<
+		string,
+		{ laneId: string; state: string; evidenceId: string; updatedAtMs: number; updatedAt: string }
+	>();
+	for (const entry of reload.entries) {
+		if (entry.evidenceClass !== "lane_lifecycle") continue;
+		const laneId = getLaneLifecycleRecordField(
+			entry.record,
+			"lane_id",
+		);
+		const state = getLaneLifecycleRecordField(entry.record, "state");
+		if (laneId === undefined || state === undefined) continue;
+		if (!laneLifecycleStateIsTerminal(state)) continue;
+		const updatedAt =
+			getLaneLifecycleRecordField(entry.record, "updated_at") ??
+			getLaneLifecycleRecordField(entry.record, "created_at");
+		if (updatedAt === undefined) continue;
+		const updatedAtMs = Date.parse(updatedAt);
+		if (!Number.isFinite(updatedAtMs)) continue;
+		const current = {
+			laneId,
+			state,
+			evidenceId: entry.evidenceId,
+			updatedAt,
+			updatedAtMs,
+		};
+		const existing = byLane.get(laneId);
+		if (
+			existing === undefined ||
+			updatedAtMs > existing.updatedAtMs ||
+			(updatedAtMs === existing.updatedAtMs &&
+				current.evidenceId > existing.evidenceId)
+		) {
+			byLane.set(laneId, current);
+		}
+	}
+	return byLane;
+}
+
+function pruneNonTerminalLifecycleSnapshotsNoLongerValid(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): FlowDeskSessionEvidenceReloadResultV1 {
+	const latestTerminalByLane = collectLatestTerminalLifecycleSnapshotByLane(reload);
+	if (latestTerminalByLane.size === 0) return reload;
+
+	const entries = reload.entries.filter((entry) => {
+		if (entry.evidenceClass !== "lane_lifecycle") return true;
+		const laneId = getLaneLifecycleRecordField(entry.record, "lane_id");
+		const state = getLaneLifecycleRecordField(entry.record, "state");
+		if (laneId === undefined || state === undefined) return true;
+		if (!laneLifecycleStateIsTerminal(state)) {
+			const terminal = latestTerminalByLane.get(laneId);
+			if (terminal === undefined) return true;
+			const updatedAt =
+				getLaneLifecycleRecordField(entry.record, "updated_at") ??
+				getLaneLifecycleRecordField(entry.record, "created_at");
+			if (updatedAt === undefined) return true;
+			const updatedAtMs = Date.parse(updatedAt);
+			if (!Number.isFinite(updatedAtMs)) return true;
+			// If a terminal lifecycle state for the lane is present at the same time
+			// or later, keep the terminal signal and do not let stale active states
+			// dominate projections.
+			if (updatedAtMs <= terminal.updatedAtMs) return false;
+		}
+		return true;
+	});
+
+	if (entries.length === reload.entries.length) return reload;
+	return { ...reload, entries };
+}
+
 export interface FlowDeskStatusLiveConfigV1 {
 	rootDir: string;
 	maxWorkflows?: number;
@@ -316,9 +418,10 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			rootDir,
 		});
 		const summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
+		const projectionReload = pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload);
 		const projection = projectFlowDeskLaneStallV1({
 			workflowId,
-			reload,
+			reload: projectionReload,
 			observedAt,
 			...(input.config.laneHeartbeatLateThresholdMs === undefined
 				? {}
