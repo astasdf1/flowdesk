@@ -3,8 +3,8 @@ import type {
 	FlowDeskSessionEvidenceReloadResultV1,
 } from "./session-evidence.js";
 
-export const FLOWDESK_LANE_HEARTBEAT_DEFAULT_LATE_MS = 2 * 60 * 1000;
-export const FLOWDESK_LANE_HEARTBEAT_DEFAULT_STALL_MS = 5 * 60 * 1000;
+export const FLOWDESK_LANE_HEARTBEAT_DEFAULT_LATE_MS = 1 * 60 * 1000;
+export const FLOWDESK_LANE_HEARTBEAT_DEFAULT_STALL_MS = 3 * 60 * 1000;
 export const FLOWDESK_LANE_HEARTBEAT_MIN_LATE_MS = 10_000;
 
 const ACTIVE_LIFECYCLE_STATES = new Set([

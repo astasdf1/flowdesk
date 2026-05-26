@@ -152,10 +152,10 @@ test("stall projection flags expected_next_heartbeat_at as overdue when observed
 	});
 	assert.equal(projection.entries.length, 1);
 	const entry = projection.entries[0];
-	// 90s since last heartbeat is below the default 2-minute late threshold,
-	// so the classification stays progressing_normal even though the heartbeat's
-	// own expected_next interval (30s) has already passed.
-	assert.equal(entry.classification, "progressing_normal");
+	// 90s since last heartbeat exceeds the default 1-minute late threshold,
+	// so the classification is progressing_late. The heartbeat's own expected_next
+	// interval (30s) has also already passed, so overdue hint is true.
+	assert.equal(entry.classification, "progressing_late");
 	assert.equal(entry.lastSignalSource, "lane_heartbeat");
 	assert.equal(entry.expectedNextHeartbeatOverdue, true);
 	assert.ok((entry.secondsPastExpectedNextHeartbeat ?? 0) > 0);

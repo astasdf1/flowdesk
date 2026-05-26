@@ -3566,7 +3566,7 @@ function watchdogConfigFromOptions(options: PluginOptions | undefined): FlowDesk
 	return {
 		enabled: true,
 		intervalMs: Math.max(10_000, typeof w.intervalMs === "number" ? w.intervalMs : 30_000),
-		stallThresholdMs: typeof w.stallThresholdMs === "number" ? w.stallThresholdMs : 300_000,
+		stallThresholdMs: typeof w.stallThresholdMs === "number" ? w.stallThresholdMs : 3 * 60_000,
 		mcpTriggerEnabled: w.mcpTriggerEnabled === true,
 	};
 }
