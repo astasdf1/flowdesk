@@ -35,14 +35,16 @@ export interface FlowDeskRelease1BootstrapInstallRequestV1 {
 }
 
 export interface FlowDeskRelease1BootstrapInstallResultV1 extends ValidationResult {
-  profileRootDir?: string;
-  durableStateRootDir?: string;
-  commandMaterialization?: FlowDeskPortableCommandMaterializationResultV1;
-  bootstrapArtifactRefs?: string[];
-  bootstrapArtifactsWritten: number;
-  commandFilesWritten: number;
-  aliasFilesWritten: 0;
-  doctorHandoffRef?: string;
+	profileRootDir?: string;
+	durableStateRootDir?: string;
+	commandMaterialization?: FlowDeskPortableCommandMaterializationResultV1;
+	agentProfileFilesWritten: number;
+	profileConfigUpdated: boolean;
+	bootstrapArtifactRefs?: string[];
+	bootstrapArtifactsWritten: number;
+	commandFilesWritten: number;
+	aliasFilesWritten: 0;
+	doctorHandoffRef?: string;
   productionRegistrationEligible: false;
   commandAliasEligible: false;
   dispatchApprovalEligible: false;
@@ -51,8 +53,9 @@ export interface FlowDeskRelease1BootstrapInstallResultV1 extends ValidationResu
   providerCall: false;
   runtimeExecution: false;
   fallbackAuthority: false;
-  hardCancelOrNoReplyAuthority: false;
-  rollbackCommandRefs?: string[];
+	hardCancelOrNoReplyAuthority: false;
+	rollbackCommandRefs?: string[];
+	rollbackProfileRefs?: string[];
 }
 
 export interface FlowDeskRelease1BootstrapTypedConfirmationInputV1 {
@@ -100,8 +103,8 @@ interface FlowDeskBootstrapConfirmationLedgerLocation {
   ledgerDir: string;
 }
 
-function resultBase(): Pick<FlowDeskRelease1BootstrapInstallResultV1, "bootstrapArtifactsWritten" | "commandFilesWritten" | "aliasFilesWritten"> & typeof disabledBootstrapInstallAuthority {
-  return { bootstrapArtifactsWritten: 0, commandFilesWritten: 0, aliasFilesWritten: 0, ...disabledBootstrapInstallAuthority };
+function resultBase(): Pick<FlowDeskRelease1BootstrapInstallResultV1, "agentProfileFilesWritten" | "profileConfigUpdated" | "bootstrapArtifactsWritten" | "commandFilesWritten" | "aliasFilesWritten"> & typeof disabledBootstrapInstallAuthority {
+	return { agentProfileFilesWritten: 0, profileConfigUpdated: false, bootstrapArtifactsWritten: 0, commandFilesWritten: 0, aliasFilesWritten: 0, ...disabledBootstrapInstallAuthority };
 }
 
 function expectedTypedPhrase(targetProfileRef: string, profileRootRef: string, confirmationRef: string, installPlanId: string): string {
@@ -384,13 +387,13 @@ function markDurableConfirmationLedgerConsumed(request: FlowDeskRelease1Bootstra
 }
 
 function installPlan(nowIso: string, targetProfileRef: string, typedConfirmationRef: string, installPlanId: string, rollbackPlanId: string): FlowDeskBootstrapInstallPlanV1 {
-  return {
-    schema_version: "flowdesk.bootstrap_install_plan.v1",
-    install_plan_id: installPlanId,
-    created_at: nowIso,
-    target_profile_ref: targetProfileRef,
-    release_mode: "release1",
-    planned_phases: ["preflight", "command_generation", "doctor_handoff"],
+	return {
+		schema_version: "flowdesk.bootstrap_install_plan.v1",
+		install_plan_id: installPlanId,
+		created_at: nowIso,
+		target_profile_ref: targetProfileRef,
+		release_mode: "release1",
+		planned_phases: ["preflight", "profile_mutation", "command_generation", "doctor_handoff"],
     requires_typed_confirmation: true,
     confirmation_ref: typedConfirmationRef,
     package_ref: "package-flowdesk-opencode-plugin",
@@ -456,6 +459,144 @@ function rollbackCommandFiles(profileRootDir: string, refs: readonly string[] | 
   return removed;
 }
 
+const flowDeskMainAgentName = "flowdesk-main";
+const flowDeskMainAgentRef = "agent/flowdesk-main.md";
+
+interface FlowDeskMainAgentMaterializationRollbackState {
+	agentPath: string;
+	agentExisted: boolean;
+	previousAgentText?: string;
+	configPath: string;
+	configExisted: boolean;
+	previousConfigText?: string;
+}
+
+interface FlowDeskMainAgentMaterializationResult extends ValidationResult {
+	profileRootDir?: string;
+	writtenProfileRefs?: string[];
+	agentProfileFilesWritten: number;
+	profileConfigUpdated: boolean;
+	rollbackState?: FlowDeskMainAgentMaterializationRollbackState;
+}
+
+function flowDeskMainAgentMarkdown(): string {
+	return `---
+description: Primary FlowDesk coordinator for normal OpenCode work. Routes work through FlowDesk workflows, keeps main context small, and treats raw subtask/background paths as untracked unless FlowDesk owns them.
+mode: primary
+model: openai/gpt-5.3-codex-spark
+permission:
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  todowrite: allow
+  bash: allow
+  task: allow
+  question: allow
+  skill: allow
+  webfetch: allow
+  lsp: allow
+  external_directory:
+    "*": allow
+---
+
+You are the FlowDesk primary coordinator for OpenCode.
+
+Operational rules:
+
+1. Treat normal work as a FlowDesk workflow first: intake, plan/update workflow state, run only command-backed or explicitly enabled FlowDesk lanes, then summarize results for the user.
+2. Keep the main-agent role small: workflow author, FlowDesk lane/sub-agent dispatcher, result summarizer, Guard handoff, and safe next-action presenter.
+3. Do not make the main session perform broad repository reading, large searches, multi-file investigation, or long review. Delegate that work to a FlowDesk-owned lane/sub-agent when available.
+4. If only the raw OpenCode \`task\`/background path is available, use it sparingly and treat it as untracked unless FlowDesk durable evidence and a result-retrieval surface are both available.
+5. For user requests that imply planning, review, run, status, diagnosis, install, or recovery, operate through FlowDesk commands and lanes first (/flowdesk-*), then summarize results.
+6. If a sub-agent returns an empty result, tool-only transcript, timeout, aborted execution, or no final verdict, classify it as incomplete. Do not count it as success, approval, or review completion.
+7. During delegated work, keep main context compact: ask for short findings, file/line references, decisions, blockers, and next actions; avoid copying full logs, prompts, transcripts, or large file contents into main context.
+8. Before launching or continuing any long-running lane, make progress visible through FlowDesk status, lifecycle, heartbeat, or checkpoint evidence when the tool surface exists. If no FlowDesk lane owns the work, say it is outside FlowDesk stall monitoring.
+9. Do not use OMO, OMC, Sisyphus, oh-my-openagent, or nested \`opencode run\` paths.
+10. Do not claim that FlowDesk auto-retries, auto-aborts, auto-fallbacks, force-kills, or hard-cancels chat on stall unless a first-class FlowDesk/OpenCode control surface proves it. Surface /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, and /flowdesk-export-debug as safe next actions.
+11. Never persist or print raw provider tokens, auth payloads, raw prompts, transcripts, or debug bodies.
+`;
+}
+
+function readOptionalText(path: string): ValidationResult & { exists: boolean; text?: string } {
+	try {
+		return { ...valid(), exists: true, text: readFileSync(path, "utf8") };
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return { ...valid(), exists: false };
+		const message = error instanceof Error ? error.message : "unknown error";
+		return { ...invalid(`profile file read failed: ${message}`), exists: false };
+	}
+}
+
+function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMainAgentMaterializationResult {
+	const root = resolve(profileRootDir);
+	const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
+	const agentPath = resolve(root, flowDeskMainAgentRef);
+	const configPath = resolve(root, "opencode.json");
+	if (!agentPath.startsWith(rootPrefix) || !configPath.startsWith(rootPrefix)) {
+		return { ...invalid("FlowDesk main agent paths escape profile root"), agentProfileFilesWritten: 0, profileConfigUpdated: false };
+	}
+
+	const previousConfig = readOptionalText(configPath);
+	if (!previousConfig.ok) return { ...previousConfig, agentProfileFilesWritten: 0, profileConfigUpdated: false };
+	const previousAgent = readOptionalText(agentPath);
+	if (!previousAgent.ok) return { ...previousAgent, agentProfileFilesWritten: 0, profileConfigUpdated: false };
+
+	let config: Record<string, unknown>;
+	if (previousConfig.exists && previousConfig.text !== undefined) {
+		try {
+			const parsed = JSON.parse(previousConfig.text) as unknown;
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ...invalid("opencode.json must contain an object before FlowDesk main agent installation"), agentProfileFilesWritten: 0, profileConfigUpdated: false };
+			config = parsed as Record<string, unknown>;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "unknown error";
+			return { ...invalid(`opencode.json parse failed before FlowDesk main agent installation: ${message}`), agentProfileFilesWritten: 0, profileConfigUpdated: false };
+		}
+	} else {
+		config = { $schema: "https://opencode.ai/config.json" };
+	}
+	if (typeof config.$schema !== "string") config.$schema = "https://opencode.ai/config.json";
+	config.default_agent = flowDeskMainAgentName;
+
+	try {
+		mkdirSync(resolve(root, "agent"), { recursive: true });
+		writeFileSync(agentPath, flowDeskMainAgentMarkdown(), "utf8");
+		writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "unknown error";
+		return { ...invalid(`FlowDesk main agent profile write failed: ${message}`), agentProfileFilesWritten: 0, profileConfigUpdated: false };
+	}
+
+	return {
+		...valid(),
+		profileRootDir: root,
+		writtenProfileRefs: [flowDeskMainAgentRef, "opencode.json"],
+		agentProfileFilesWritten: 1,
+		profileConfigUpdated: true,
+		rollbackState: {
+			agentPath,
+			agentExisted: previousAgent.exists,
+			previousAgentText: previousAgent.text,
+			configPath,
+			configExisted: previousConfig.exists,
+			previousConfigText: previousConfig.text
+		}
+	};
+}
+
+function rollbackFlowDeskMainAgentProfile(state: FlowDeskMainAgentMaterializationRollbackState | undefined): string[] {
+	if (state === undefined) return [];
+	const rolledBack: string[] = [];
+	if (state.agentExisted && state.previousAgentText !== undefined) writeFileSync(state.agentPath, state.previousAgentText, "utf8");
+	else rmSync(state.agentPath, { force: true });
+	rolledBack.push(flowDeskMainAgentRef);
+	if (state.configExisted && state.previousConfigText !== undefined) writeFileSync(state.configPath, state.previousConfigText, "utf8");
+	else rmSync(state.configPath, { force: true });
+	rolledBack.push("opencode.json");
+	return rolledBack;
+}
+
 export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1BootstrapInstallRequestV1): FlowDeskRelease1BootstrapInstallResultV1 {
   const now = request.now ?? new Date();
   const nowIso = now.toISOString();
@@ -465,17 +606,25 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
   const durableConfirmationValidation = validateDurableConfirmationLedgerAvailable(request, nowIso);
   if (!durableConfirmationValidation.ok) return { ...durableConfirmationValidation, ...resultBase() };
 
-  const commandMaterialization = materializeFlowDeskPortableCommandFiles(request.profileRootDir);
-  if (!commandMaterialization.ok) {
-    const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
-    return { ...invalid(...commandMaterialization.errors), commandMaterialization, commandFilesWritten: 0, bootstrapArtifactsWritten: 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
-  }
+	const commandMaterialization = materializeFlowDeskPortableCommandFiles(request.profileRootDir);
+	if (!commandMaterialization.ok) {
+		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+		return { ...invalid(...commandMaterialization.errors), commandMaterialization, ...resultBase(), rollbackCommandRefs };
+	}
 
-  const ledgerClaim = claimPendingDurableConfirmationLedger(request, nowIso);
-  if (!ledgerClaim.ok) {
-    const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
-    return { ...invalid(...ledgerClaim.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, commandFilesWritten: 0, bootstrapArtifactsWritten: 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
-  }
+	const mainAgentMaterialization = materializeFlowDeskMainAgentProfile(request.profileRootDir);
+	if (!mainAgentMaterialization.ok) {
+		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+		const rollbackProfileRefs = rollbackFlowDeskMainAgentProfile(mainAgentMaterialization.rollbackState);
+		return { ...invalid(...mainAgentMaterialization.errors), commandMaterialization, ...resultBase(), rollbackCommandRefs, rollbackProfileRefs };
+	}
+
+	const ledgerClaim = claimPendingDurableConfirmationLedger(request, nowIso);
+	if (!ledgerClaim.ok) {
+		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+		const rollbackProfileRefs = rollbackFlowDeskMainAgentProfile(mainAgentMaterialization.rollbackState);
+		return { ...invalid(...ledgerClaim.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, ...resultBase(), rollbackCommandRefs, rollbackProfileRefs };
+	}
 
   const commandRefs = commandMaterialization.writtenCommandRefs?.map((ref) => `command-file-${ref.replace(/[^A-Za-z0-9_.:-]/g, "-")}`) ?? [];
   const artifacts = [
@@ -487,22 +636,25 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
   const prepared = artifacts.map((artifact) => prepareRedactedBootstrapArtifactWriteIntent(artifactIds.installPlanId, artifact));
   const prepareErrors = prepared.flatMap((entry) => entry.ok ? [] : entry.errors);
   const intents = prepared.map((entry) => entry.writeIntent).filter((intent): intent is NonNullable<typeof intent> => intent !== undefined);
-  if (prepareErrors.length > 0 || intents.length !== artifacts.length) {
-    const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
-    return { ...invalid(...(prepareErrors.length > 0 ? prepareErrors : ["bootstrap artifact preparation failed"])), commandMaterialization, commandFilesWritten: 0, bootstrapArtifactsWritten: 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
-  }
+	if (prepareErrors.length > 0 || intents.length !== artifacts.length) {
+		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+		const rollbackProfileRefs = rollbackFlowDeskMainAgentProfile(mainAgentMaterialization.rollbackState);
+		return { ...invalid(...(prepareErrors.length > 0 ? prepareErrors : ["bootstrap artifact preparation failed"])), commandMaterialization, ...resultBase(), rollbackCommandRefs, rollbackProfileRefs };
+	}
 
   const durable = applyBootstrapWriteIntentsToDurableState(request.durableStateRootDir, intents);
-  if (!durable.ok) {
-    const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
-    return { ...invalid(...durable.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, commandFilesWritten: 0, bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
-  }
+	if (!durable.ok) {
+		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+		const rollbackProfileRefs = rollbackFlowDeskMainAgentProfile(mainAgentMaterialization.rollbackState);
+		return { ...invalid(...durable.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, ...resultBase(), bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, rollbackCommandRefs, rollbackProfileRefs };
+	}
 
   const ledgerWrite = markDurableConfirmationLedgerConsumed(request, nowIso);
-  if (!ledgerWrite.ok) {
-    const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
-    return { ...invalid(...ledgerWrite.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, commandFilesWritten: 0, bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, aliasFilesWritten: 0, rollbackCommandRefs, ...disabledBootstrapInstallAuthority };
-  }
+	if (!ledgerWrite.ok) {
+		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
+		const rollbackProfileRefs = rollbackFlowDeskMainAgentProfile(mainAgentMaterialization.rollbackState);
+		return { ...invalid(...ledgerWrite.errors), commandMaterialization, profileRootDir: commandMaterialization.profileRootDir, durableStateRootDir: durable.rootDir, bootstrapArtifactRefs: durable.writtenPaths, ...resultBase(), bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0, rollbackCommandRefs, rollbackProfileRefs };
+	}
 
   consumedBootstrapConfirmationRefs.add(request.typedConfirmation.confirmationRef);
 
@@ -511,10 +663,12 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
     profileRootDir: commandMaterialization.profileRootDir,
     durableStateRootDir: durable.rootDir,
     commandMaterialization,
-    bootstrapArtifactRefs: durable.writtenPaths,
-    bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0,
-    commandFilesWritten: commandMaterialization.commandFilesWritten,
-    aliasFilesWritten: 0,
+		bootstrapArtifactRefs: durable.writtenPaths,
+		bootstrapArtifactsWritten: durable.writtenPaths?.length ?? 0,
+		commandFilesWritten: commandMaterialization.commandFilesWritten,
+		agentProfileFilesWritten: mainAgentMaterialization.agentProfileFilesWritten,
+		profileConfigUpdated: mainAgentMaterialization.profileConfigUpdated,
+		aliasFilesWritten: 0,
     doctorHandoffRef: artifactIds.handoffId,
     ...disabledBootstrapInstallAuthority
   };

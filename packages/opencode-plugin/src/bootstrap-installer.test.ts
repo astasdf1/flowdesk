@@ -72,10 +72,12 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
       now: new Date("2026-05-19T00:00:00.000Z")
     });
 
-    assert.equal(result.ok, true);
-    assert.equal(result.commandFilesWritten, 9);
-    assert.equal(result.aliasFilesWritten, 0);
-    assert.equal(result.bootstrapArtifactsWritten, 4);
+		assert.equal(result.ok, true);
+		assert.equal(result.commandFilesWritten, 9);
+		assert.equal(result.agentProfileFilesWritten, 1);
+		assert.equal(result.profileConfigUpdated, true);
+		assert.equal(result.aliasFilesWritten, 0);
+		assert.equal(result.bootstrapArtifactsWritten, 4);
     assert.equal(result.productionRegistrationEligible, false);
     assert.equal(result.commandAliasEligible, false);
     assert.equal(result.providerCall, false);
@@ -83,13 +85,23 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
     assert.equal(result.realOpenCodeDispatch, false);
     assert.equal(result.actualLaneLaunch, false);
 
-    for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
-      const commandFile = join(profileRoot, "commands", `${commandName.slice(1)}.md`);
-      assert.equal(existsSync(commandFile), true, commandName);
-      assert.match(readFileSync(commandFile, "utf8"), new RegExp(commandName.replace("/", "\\/")));
-    }
+		for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
+			const commandFile = join(profileRoot, "commands", `${commandName.slice(1)}.md`);
+			assert.equal(existsSync(commandFile), true, commandName);
+			assert.match(readFileSync(commandFile, "utf8"), new RegExp(commandName.replace("/", "\\/")));
+		}
+		const mainAgent = readFileSync(join(profileRoot, "agent", "flowdesk-main.md"), "utf8");
+		assert.match(mainAgent, /mode: primary/);
+		assert.match(mainAgent, /permission:\n\s+read: allow/);
+		assert.match(mainAgent, /model: openai\/gpt-5\.3-codex-spark/);
+		assert.match(mainAgent, /FlowDesk workflow first/);
+		assert.match(mainAgent, /broad repository reading/);
+		assert.match(mainAgent, /sub-agent returns an empty result/);
+		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
+		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");
 
-    const bootstrapDir = join(durableRoot, ".flowdesk/bootstrap/install-plan-profile-release1");
+		const bootstrapDir = join(durableRoot, ".flowdesk/bootstrap/install-plan-profile-release1");
     assert.deepEqual(readdirSync(bootstrapDir).sort(), ["bootstrap-report", "bootstrap-install-plan", "command-generation-summary", "doctor-handoff"].sort());
     const report = JSON.parse(readFileSync(join(bootstrapDir, "bootstrap-report/report-profile-release1.json"), "utf8")) as Record<string, unknown>;
     assert.equal(report.schema_version, "flowdesk.bootstrap_report.v1");
@@ -272,13 +284,18 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
       now: new Date("2026-05-19T00:00:00.000Z")
     });
 
-    assert.equal(result.ok, false);
-    assert.equal(result.commandFilesWritten, 0);
-    assert.equal(result.bootstrapArtifactsWritten, 0);
-    assert.equal(result.rollbackCommandRefs?.length, 9);
-    for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
-      assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), false, commandName);
-    }
+		assert.equal(result.ok, false);
+		assert.equal(result.commandFilesWritten, 0);
+		assert.equal(result.agentProfileFilesWritten, 0);
+		assert.equal(result.profileConfigUpdated, false);
+		assert.equal(result.bootstrapArtifactsWritten, 0);
+		assert.equal(result.rollbackCommandRefs?.length, 9);
+		assert.deepEqual(result.rollbackProfileRefs?.sort(), ["agent/flowdesk-main.md", "opencode.json"].sort());
+		for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
+			assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), false, commandName);
+		}
+		assert.equal(existsSync(join(profileRoot, "agent", "flowdesk-main.md")), false);
+		assert.equal(existsSync(join(profileRoot, "opencode.json")), false);
     const rawLedger = readFileSync(ledgerPath(durableRoot, confirmation.confirmationRef), "utf8");
     const ledger = JSON.parse(rawLedger) as Record<string, unknown>;
     assert.equal(ledger.status, "pending");
