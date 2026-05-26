@@ -1872,7 +1872,9 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				recentStallAlerts.delete(key);
 		}
 		const stallResult = stallAlert
-			? await collectStallAlertResult(stallAlert, now)
+			? await collectStallAlertResult(stallAlert, now, {
+					currentSessionRef: partSessionID || request.session_ref,
+				})
 			: { status: "none" } as const;
 
 		let stallTextToAppend: string | undefined = undefined;
@@ -1982,6 +1984,9 @@ interface FlowDeskChatMessageStallSummaryV1 {
 	autoAbortSummaries?: string[];
 }
 
+type FlowDeskChatMessageWorkflowSummaryV1 =
+	FlowDeskChatMessageStallSummaryV1["workflowSummaries"][number];
+
 export type StallAlertResult =
 	| { status: "ok"; data: FlowDeskChatMessageStallSummaryV1 }
 	| { status: "unavailable" }
@@ -1997,6 +2002,26 @@ export function assertNever(x: never): never {
 type StatusLiveImpl = typeof executeFlowDeskStatusLiveV1;
 interface CollectStallAlertDeps {
 	statusLiveImpl?: StatusLiveImpl;
+	currentSessionRef?: string;
+}
+
+function sessionRefVariants(value: string | undefined): Set<string> {
+	const variants = new Set<string>();
+	if (value === undefined || value.trim().length === 0) return variants;
+	const token = safeToken(value, "session");
+	variants.add(token);
+	if (token.startsWith("ses_")) variants.add(`ses-${token.slice(4)}`);
+	if (token.startsWith("ses-")) variants.add(`ses_${token.slice(4)}`);
+	return variants;
+}
+
+function sessionRefsMatch(left: string | undefined, right: string | undefined): boolean {
+	const leftVariants = sessionRefVariants(left);
+	if (leftVariants.size === 0) return false;
+	for (const candidate of sessionRefVariants(right)) {
+		if (leftVariants.has(candidate)) return true;
+	}
+	return false;
 }
 
 function latestParentSessionRefForLane(
@@ -2063,28 +2088,58 @@ export async function collectStallAlertResult(
 		);
 		if (result.status !== "status_live_collected") return { status: "none" };
 		const autoAbortSummaries: string[] = [];
-		const workflowSummaries = await Promise.all(result.workflows
-			.filter(
-				(workflow) =>
-					(workflow.stalledLaneCount ?? 0) > 0 ||
-					(stallAlert.includeProgressingLate === true &&
-						(workflow.progressingLateLaneCount ?? 0) > 0) ||
-					(stallAlert.includeProgressCards === true &&
-						(workflow.laneProgressCards?.length ?? 0) > 0),
-			)
-			.slice(0, 3)
+		const currentSessionRef = deps.currentSessionRef;
+		const workflowSummariesWithEmpty: Array<
+			FlowDeskChatMessageWorkflowSummaryV1 | undefined
+		> = await Promise.all(result.workflows
 			.map(async (workflow) => {
-				const stalledEntry = workflow.laneStallProjection?.entries.find(
+				const parentRefCache = new Map<string, string | undefined>();
+				const latestParentRef = (laneId: string): string | undefined => {
+					if (!parentRefCache.has(laneId)) {
+						parentRefCache.set(
+							laneId,
+							latestParentSessionRefForLane(
+								stallAlert.rootDir,
+								workflow.workflowId,
+								laneId,
+							),
+						);
+					}
+					return parentRefCache.get(laneId);
+				};
+				const laneInCurrentSession = (laneId: string): boolean =>
+					currentSessionRef === undefined ||
+					sessionRefsMatch(latestParentRef(laneId), currentSessionRef);
+				const scopedEntries = (workflow.laneStallProjection?.entries ?? []).filter(
+					(entry) => laneInCurrentSession(entry.laneId),
+				);
+				const stalledEntry = scopedEntries.find(
 					(entry) => entry.classification === "stalled",
 				);
-				const lateEntry = workflow.laneStallProjection?.entries.find(
+				const lateEntry = scopedEntries.find(
 					(entry) => entry.classification === "progressing_late",
 				);
 				const primary = stalledEntry ?? lateEntry;
+				const scopedLaneCards = (workflow.laneProgressCards ?? []).filter(
+					(lane) =>
+						lane.classification !== "terminal" &&
+						laneInCurrentSession(lane.laneId),
+				);
+				const scopedStalledCount = scopedEntries.filter(
+					(entry) => entry.classification === "stalled",
+				).length;
+				const scopedLateCount = scopedEntries.filter(
+					(entry) => entry.classification === "progressing_late",
+				).length;
+				const shouldShowWorkflow =
+					scopedStalledCount > 0 ||
+					(stallAlert.includeProgressingLate === true && scopedLateCount > 0) ||
+					(stallAlert.includeProgressCards === true && scopedLaneCards.length > 0);
+				if (!shouldShowWorkflow) return undefined;
 			if (
 				stallAlert.guardedAutoAbort !== undefined &&
 				stalledEntry !== undefined &&
-				(workflow.stalledLaneCount ?? 0) > 0
+				scopedStalledCount > 0
 			) {
 				// Reconcile stale pending retry plans on each stall check
 				try {
@@ -2163,8 +2218,8 @@ export async function collectStallAlertResult(
 			}
 				return {
 					workflowId: workflow.workflowId,
-					stalledLaneCount: workflow.stalledLaneCount ?? 0,
-					lateLaneCount: workflow.progressingLateLaneCount ?? 0,
+					stalledLaneCount: scopedStalledCount,
+					lateLaneCount: scopedLateCount,
 					...(primary?.secondsSinceLastSignal === undefined
 						? {}
 						: { secondsSinceLastSignal: primary.secondsSinceLastSignal }),
@@ -2174,7 +2229,7 @@ export async function collectStallAlertResult(
 						: { failureHint: primary.failureHint }),
 					...(stallAlert.includeProgressCards === true
 						? {
-								laneCards: (workflow.laneProgressCards ?? [])
+								laneCards: scopedLaneCards
 									.slice(0, stallAlert.maxProgressCards ?? 3)
 									.map((lane) => ({
 										laneId: lane.laneId,
@@ -2190,15 +2245,35 @@ export async function collectStallAlertResult(
 						: {}),
 				};
 			}));
+		const workflowSummaries = workflowSummariesWithEmpty
+			.filter(
+				(summary): summary is FlowDeskChatMessageWorkflowSummaryV1 =>
+					summary !== undefined,
+			)
+			.slice(0, 3);
 		if (workflowSummaries.length === 0) {
 			return { status: "none" };
 		}
+		const scopedTotalStalled = workflowSummaries.reduce(
+			(sum, workflow) => sum + workflow.stalledLaneCount,
+			0,
+		);
+		const scopedTotalLate = workflowSummaries.reduce(
+			(sum, workflow) => sum + workflow.lateLaneCount,
+			0,
+		);
+		const scopedWorstClassification =
+			scopedTotalStalled > 0
+				? "stalled"
+				: scopedTotalLate > 0
+					? "progressing_late"
+					: (result.worstLaneStallClassification ?? "unknown");
 		return {
 			status: "ok",
 			data: {
-				worstClassification: result.worstLaneStallClassification ?? "unknown",
-				totalStalled: result.totalStalledLaneCount ?? 0,
-				totalLate: result.totalProgressingLateLaneCount ?? 0,
+				worstClassification: scopedWorstClassification,
+				totalStalled: scopedTotalStalled,
+				totalLate: scopedTotalLate,
 				workflowSummaries,
 				...(autoAbortSummaries.length === 0 ? {} : { autoAbortSummaries }),
 			}

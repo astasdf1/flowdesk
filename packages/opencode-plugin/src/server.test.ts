@@ -5926,7 +5926,7 @@ test("chat.message stall alert card appends safe next actions when stalled lanes
 		await hooks["chat.message"](
 			{
 				messageID: "message-stall-card-general",
-				sessionID: "session-stall-card",
+				sessionID: "ses-chat-stall-card-parent",
 			},
 			generalOutput,
 		);
@@ -5939,10 +5939,21 @@ test("chat.message stall alert card appends safe next actions when stalled lanes
 		const planOutput = {
 			parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
 		};
-		await hooks["chat.message"](
+		const planHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true },
+			},
+		)) as ChatMessageHooks;
+		const planChatMessage = planHooks["chat.message"];
+		assert.ok(planChatMessage);
+		await planChatMessage(
 			{
 				messageID: "message-stall-card-plan",
-				sessionID: "session-stall-card-second",
+				sessionID: "ses-chat-stall-card-parent",
 			},
 			planOutput,
 		);
@@ -6021,7 +6032,7 @@ test("chat.message guarded auto-abort opt-in writes warning then evidence-only a
 		)) as ChatMessageHooks;
 		assert.ok(hooks["chat.message"]);
 		const output = { parts: [{ type: "text", text: "hello" }] as unknown[] };
-		await hooks["chat.message"]({ messageID: "msg-auto-abort", sessionID: "ses-auto-abort" }, output);
+		await hooks["chat.message"]({ messageID: "msg-auto-abort", sessionID: "ses-chat-auto-abort-parent" }, output);
 		const serialized = JSON.stringify(output);
 		assert.match(serialized, /guarded auto-abort warning_issued/);
 		let reload = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
@@ -6042,7 +6053,7 @@ test("chat.message guarded auto-abort opt-in writes warning then evidence-only a
 			},
 		);
 		const expiredOutput = { parts: [{ type: "text", text: "hello again" }] as unknown[] };
-		await expiredHooks({ messageID: "msg-auto-abort-expired", sessionID: "ses-auto-abort-2" }, expiredOutput);
+		await expiredHooks({ messageID: "msg-auto-abort-expired", sessionID: "ses-chat-auto-abort-parent" }, expiredOutput);
 		assert.match(JSON.stringify(expiredOutput), /guarded auto-abort auto_abort_executed/);
 		reload = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
 		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "lane_lifecycle" && entry.record.state === "aborted"), true);
@@ -6103,7 +6114,7 @@ test("chat.message stall alert surfaces progressing-late lanes only when include
 		await defaultHooks["chat.message"](
 			{
 				messageID: "message-late-card-no-opt",
-				sessionID: "session-late-card-no-opt",
+				sessionID: "ses-chat-late-card-parent",
 			},
 			noLateOutput,
 		);
@@ -6134,7 +6145,7 @@ test("chat.message stall alert surfaces progressing-late lanes only when include
 		await lateHooks["chat.message"](
 			{
 				messageID: "message-late-card-opt-in",
-				sessionID: "session-late-card-opt-in",
+				sessionID: "ses-chat-late-card-parent",
 			},
 			lateOutput,
 		);
@@ -6223,7 +6234,7 @@ test("chat.message progress card surfaces active lanes when includeProgressCards
 			parts: [{ type: "text", text: "일반 대화" }] as unknown[],
 		};
 		await progressChatMessage(
-			{ messageID: "message-progress-card-opt", sessionID: "session-progress-card-opt" },
+			{ messageID: "message-progress-card-opt", sessionID: "ses-chat-progress-card-parent" },
 			progressOutput,
 		);
 		const serialized = JSON.stringify(progressOutput);
@@ -6235,6 +6246,130 @@ test("chat.message progress card surfaces active lanes when includeProgressCards
 		assert.match(serialized, /- \/flowdesk-status/);
 		assert.match(serialized, /native clickable task UI is not claimed/);
 		assert.equal(/noReply|cancel|stop/.test(serialized), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("chat.message progress card does not surface terminal-only lanes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-terminal-progress-card-"));
+	try {
+		const workflowId = "workflow-chat-terminal-progress-card";
+		const observedAtMs = Date.now();
+		const terminalLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-terminal-progress-card",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-terminal-progress-card",
+			parent_session_ref: "ses-chat-terminal-progress-card-parent",
+			agent_ref: "agent-chat-terminal-progress-card",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "incomplete" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 20_000).toISOString(),
+			updated_at: new Date(observedAtMs - 20_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-terminal-progress-card",
+			record: terminalLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [intent.writeIntent as never]).ok,
+			true,
+		);
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					includeProgressCards: true,
+				},
+			},
+		)) as ChatMessageHooks;
+		const chatMessage = hooks["chat.message"];
+		assert.ok(chatMessage);
+		const output = { parts: [{ type: "text", text: "일반 대화" }] as unknown[] };
+		await chatMessage(
+			{ messageID: "message-terminal-progress-card", sessionID: "session-terminal-progress-card" },
+			output,
+		);
+		const serialized = JSON.stringify(output);
+		assert.equal(serialized.includes("Lane progress:"), false);
+		assert.equal(serialized.includes("lane-chat-terminal-progress-card"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("chat.message progress card only surfaces lanes for the current session", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-session-scoped-progress-card-"));
+	try {
+		const workflowId = "workflow-chat-session-scoped-progress-card";
+		const observedAtMs = Date.now();
+		const otherSessionLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-other-session-progress-card",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-other-session-progress-card",
+			parent_session_ref: "ses-chat-other-session-parent",
+			agent_ref: "agent-chat-other-session-progress-card",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 20_000).toISOString(),
+			updated_at: new Date(observedAtMs - 20_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-other-session-progress-card",
+			record: otherSessionLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [intent.writeIntent as never]).ok,
+			true,
+		);
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					includeProgressCards: true,
+				},
+			},
+		)) as ChatMessageHooks;
+		const chatMessage = hooks["chat.message"];
+		assert.ok(chatMessage);
+		const output = { parts: [{ type: "text", text: "일반 대화" }] as unknown[] };
+		await chatMessage(
+			{ messageID: "message-session-scoped-progress-card", sessionID: "ses-chat-current-session-parent" },
+			output,
+		);
+		const serialized = JSON.stringify(output);
+		assert.equal(serialized.includes("Lane progress:"), false);
+		assert.equal(serialized.includes("lane-chat-other-session-progress-card"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -6322,7 +6457,7 @@ test("chat.message stall alert appended parts carry opencode 1.x TextPart schema
 		await hooks["chat.message"](
 			{
 				messageID: "msg_stall_part_schema_continue",
-				sessionID: "ses_stall_part_schema_continue",
+				sessionID: "ses-chat-stall-part-schema-parent",
 			},
 			continueChatOutput,
 		);
@@ -6333,17 +6468,28 @@ test("chat.message stall alert appended parts carry opencode 1.x TextPart schema
 		>;
 		assert.equal(continueAppended.type, "text");
 		assert.match(String(continueAppended.text), /Stalled lanes detected/);
-		assert.equal(continueAppended.sessionID, "ses_stall_part_schema_continue");
+		assert.equal(continueAppended.sessionID, "ses-chat-stall-part-schema-parent");
 		assert.equal(continueAppended.messageID, "msg_stall_part_schema_continue");
 		assert.match(String(continueAppended.id), /^prt_[0-9a-f]+$/);
 
 		const planOutput = {
 			parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
 		};
-		await hooks["chat.message"](
+		const planHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true },
+			},
+		)) as ChatMessageHooks;
+		const planChatMessage = planHooks["chat.message"];
+		assert.ok(planChatMessage);
+		await planChatMessage(
 			{
 				messageID: "msg_stall_part_schema_plan",
-				sessionID: "ses_stall_part_schema_plan",
+				sessionID: "ses-chat-stall-part-schema-parent",
 			},
 			planOutput,
 		);
@@ -6353,7 +6499,7 @@ test("chat.message stall alert appended parts carry opencode 1.x TextPart schema
 		for (const part of [planSteering, planStallCard]) {
 			assert.equal(part.type, "text");
 			assert.equal(typeof part.text, "string");
-			assert.equal(part.sessionID, "ses_stall_part_schema_plan");
+			assert.equal(part.sessionID, "ses-chat-stall-part-schema-parent");
 			assert.equal(part.messageID, "msg_stall_part_schema_plan");
 			assert.match(String(part.id), /^prt_[0-9a-f]+$/);
 		}
