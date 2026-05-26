@@ -54,6 +54,7 @@ import type {
 	FlowDeskCommandBackedHandlerResultV1,
 } from "./command-handlers.js";
 import { evaluateFlowDeskCommandBackedHandlerV1 } from "./command-handlers.js";
+import { validateAndAbortFlowDeskLaneEvidenceV1 } from "./stall-recovery.js";
 
 export const flowdeskLocalNonDispatchAdapterProfile =
 	"local_non_dispatch_command_adapter" as const;
@@ -1525,6 +1526,21 @@ function contextFor(
 		record,
 		parts,
 	);
+	const requestedLaneId =
+		toolName === "flowdesk_abort" && typeof record.lane_id === "string"
+			? record.lane_id
+			: undefined;
+	const laneAbortResult =
+		requestedLaneId !== undefined && state.durableStateRootDir !== undefined
+			? validateAndAbortFlowDeskLaneEvidenceV1({
+					rootDir: state.durableStateRootDir,
+					workflow_id: workflowIdFrom(record),
+					lane_id: requestedLaneId,
+					now: () => new Date(parts.nowMs),
+				})
+			: requestedLaneId !== undefined
+				? ({ status: "blocked", reason: "durable_state_root_missing" } as const)
+				: undefined;
 	return {
 		diagnostic: {
 			nowIso: parts.nowIso,
@@ -1541,6 +1557,11 @@ function contextFor(
 				? {}
 				: { reviewerFanoutPlan: fanoutDiagnostics.fanoutPlan }),
 			fallbackRegatePlan,
+			sdkSessionHealth: {
+				status: "unknown",
+				reason: "sdk_health_not_checked_non_dispatch_adapter",
+			},
+			laneAbortResult,
 		},
 	};
 }

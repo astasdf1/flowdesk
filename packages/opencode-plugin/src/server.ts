@@ -99,6 +99,13 @@ import {
 	type FlowDeskStatusLiveConfigV1,
 } from "./status-live-tool.js";
 import {
+	evaluateGuardedAutoAbortHookV1,
+	checkSdkSessionApiHealthV1,
+	type FlowDeskAutoAbortConfigV1,
+	type FlowDeskSdkSessionHealthV1,
+} from "./stall-recovery.js";
+import { withTimeout, FlowDeskTimeoutError } from "./shared/with-timeout.js";
+import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
 	getFlowDeskRelease1HandlerReadinessSummary,
 	getFlowDeskRelease1ProductionReadinessSummary,
@@ -1800,6 +1807,15 @@ export interface FlowDeskChatMessageStallAlertOptionsV1 {
 	laneHeartbeatLateThresholdMs?: number;
 	laneHeartbeatStallThresholdMs?: number;
 	includeProgressingLate?: boolean;
+	statusLiveTimeoutMs?: number;
+	guardedAutoAbort?: FlowDeskChatMessageGuardedAutoAbortOptionsV1;
+}
+
+export interface FlowDeskChatMessageGuardedAutoAbortOptionsV1
+	extends FlowDeskAutoAbortConfigV1 {
+	sdkSessionHealth?: FlowDeskSdkSessionHealthV1;
+	useLiveSdkSessionHealth?: boolean;
+	sdkClient?: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 }
 
 export function createFlowDeskNaturalLanguageChatMessageHook(
@@ -1843,32 +1859,52 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			)
 				recentStallAlerts.delete(key);
 		}
-		const stallSummary = stallAlert
-			? await collectStallAlertSummary(stallAlert, now)
-			: undefined;
-		const stalledAlertReady =
-			stallSummary !== undefined &&
-			stallSummary.worstClassification === "stalled" &&
-			stallSummary.totalStalled > 0;
-		const lateAlertReady =
-			stallSummary !== undefined &&
-			stallAlert?.includeProgressingLate === true &&
-			stallSummary.worstClassification === "progressing_late" &&
-			stallSummary.totalLate > 0;
-		const shouldAppendStallCard = stalledAlertReady || lateAlertReady;
-		if (preview.evaluation.response.route_decision === "continue_chat") {
-			if (shouldAppendStallCard && stallSummary !== undefined) {
-				const key = stallAlertDuplicateKey(request, stallSummary);
-				const previous = recentStallAlerts.get(key);
-				recentStallAlerts.set(key, nowMs);
+		const stallResult = stallAlert
+			? await collectStallAlertResult(stallAlert, now)
+			: { status: "none" } as const;
+
+		let stallTextToAppend: string | undefined = undefined;
+		let stallDedupKey: string | undefined = undefined;
+
+		if (stallResult.status === "unavailable") {
+			stallDedupKey = `${safeToken(request.session_ref, "session")}|stall-unavailable`;
+			stallTextToAppend =
+				"FlowDesk\nStall detection temporarily unavailable (status check timed out).\nSafe next actions:\n- /flowdesk-status\n- /flowdesk-doctor";
+		} else if (stallResult.status === "error") {
+			stallDedupKey = `${safeToken(request.session_ref, "session")}|stall-error`;
+			stallTextToAppend =
+				"FlowDesk\nStall detection encountered an error.\nRun /flowdesk-doctor to diagnose.";
+		} else if (stallResult.status === "ok") {
+			const summary = stallResult.data;
+			const stalledAlertReady =
+				summary.worstClassification === "stalled" &&
+				summary.totalStalled > 0;
+			const lateAlertReady =
+				stallAlert?.includeProgressingLate === true &&
+				summary.worstClassification === "progressing_late" &&
+				summary.totalLate > 0;
+			if (stalledAlertReady || lateAlertReady) {
+				stallDedupKey = stallAlertDuplicateKey(request, summary);
+				stallTextToAppend = stallAlertText(summary);
+			}
+		}
+
+		const appendStallCard = () => {
+			if (stallDedupKey && stallTextToAppend) {
+				const previous = recentStallAlerts.get(stallDedupKey);
+				recentStallAlerts.set(stallDedupKey, nowMs);
 				if (
 					previous === undefined ||
 					nowMs - previous > flowdeskChatSuggestionDuplicateWindowMs
 				) {
 					if (!Array.isArray(output.parts)) output.parts = [];
-					output.parts.push(buildTextPart(stallAlertText(stallSummary)));
+					output.parts.push(buildTextPart(stallTextToAppend));
 				}
 			}
+		};
+
+		if (preview.evaluation.response.route_decision === "continue_chat") {
+			appendStallCard();
 			return;
 		}
 		if (!mayCreatePendingConfirmation(preview)) {
@@ -1900,16 +1936,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		const result = evaluateNaturalLanguageRouting(request, session);
 		if (!Array.isArray(output.parts)) output.parts = [];
 		output.parts.push(buildTextPart(steeringText(result)));
-		if (shouldAppendStallCard && stallSummary !== undefined) {
-			const key = stallAlertDuplicateKey(request, stallSummary);
-			const previous = recentStallAlerts.get(key);
-			recentStallAlerts.set(key, nowMs);
-			if (
-				previous === undefined ||
-				nowMs - previous > flowdeskChatSuggestionDuplicateWindowMs
-			)
-				output.parts.push(buildTextPart(stallAlertText(stallSummary)));
-		}
+		appendStallCard();
 	};
 }
 
@@ -1925,12 +1952,58 @@ interface FlowDeskChatMessageStallSummaryV1 {
 		laneId?: string;
 		failureHint?: string;
 	}>;
+	autoAbortSummaries?: string[];
 }
 
-async function collectStallAlertSummary(
+export type StallAlertResult =
+	| { status: "ok"; data: FlowDeskChatMessageStallSummaryV1 }
+	| { status: "unavailable" }
+	| { status: "error" }
+	| { status: "none" };
+
+const ALLOWED_ERROR_NAMES = new Set(["FlowDeskDiskError", "FlowDeskStateError"]);
+
+export function assertNever(x: never): never {
+	throw new Error("Unexpected object: " + x);
+}
+
+type StatusLiveImpl = typeof executeFlowDeskStatusLiveV1;
+interface CollectStallAlertDeps {
+	statusLiveImpl?: StatusLiveImpl;
+}
+
+function latestParentSessionRefForLane(
+	rootDir: string,
+	workflowId: string,
+	laneId: string,
+): string | undefined {
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+	if (!reload.ok) return undefined;
+	let latest: { parentSessionRef: string; updatedAtMs: number } | undefined;
+	for (const entry of reload.entries) {
+		if (entry.evidenceClass !== "lane_lifecycle") continue;
+		const record = entry.record;
+		if (!isRecord(record)) continue;
+		if (record.lane_id !== laneId) continue;
+		if (typeof record.parent_session_ref !== "string") continue;
+		const updatedAt =
+			typeof record.updated_at === "string"
+				? Date.parse(record.updated_at)
+				: Number.NaN;
+		if (!Number.isFinite(updatedAt)) continue;
+		if (latest === undefined || updatedAt > latest.updatedAtMs) {
+			latest = { parentSessionRef: record.parent_session_ref, updatedAtMs: updatedAt };
+		}
+	}
+	return latest?.parentSessionRef;
+}
+
+export async function collectStallAlertResult(
 	stallAlert: FlowDeskChatMessageStallAlertOptionsV1,
 	clock: FlowDeskLocalClockV1,
-): Promise<FlowDeskChatMessageStallSummaryV1 | undefined> {
+	deps: CollectStallAlertDeps = {},
+): Promise<StallAlertResult> {
+	const statusLiveImpl = deps.statusLiveImpl ?? executeFlowDeskStatusLiveV1;
 	try {
 		const observedAt = (
 			typeof clock === "function" ? clock() : clock
@@ -1953,12 +2026,17 @@ async function collectStallAlertSummary(
 							stallAlert.laneHeartbeatStallThresholdMs,
 					}),
 		};
-		const result = await executeFlowDeskStatusLiveV1({
-			config,
-			now: () => new Date(observedAt),
-		});
-		if (result.status !== "status_live_collected") return undefined;
-		const workflowSummaries = result.workflows
+		const result = await withTimeout(
+			statusLiveImpl({
+				config,
+				now: () => new Date(observedAt),
+			}),
+			stallAlert.statusLiveTimeoutMs ?? 8_000,
+			"executeFlowDeskStatusLiveV1",
+		);
+		if (result.status !== "status_live_collected") return { status: "none" };
+		const autoAbortSummaries: string[] = [];
+		const workflowSummaries = await Promise.all(result.workflows
 			.filter(
 				(workflow) =>
 					(workflow.stalledLaneCount ?? 0) > 0 ||
@@ -1966,7 +2044,7 @@ async function collectStallAlertSummary(
 						(workflow.progressingLateLaneCount ?? 0) > 0),
 			)
 			.slice(0, 3)
-			.map((workflow) => {
+			.map(async (workflow) => {
 				const stalledEntry = workflow.laneStallProjection?.entries.find(
 					(entry) => entry.classification === "stalled",
 				);
@@ -1974,6 +2052,46 @@ async function collectStallAlertSummary(
 					(entry) => entry.classification === "progressing_late",
 				);
 				const primary = stalledEntry ?? lateEntry;
+				if (
+					stallAlert.guardedAutoAbort !== undefined &&
+					stalledEntry !== undefined &&
+					(workflow.stalledLaneCount ?? 0) > 0
+				) {
+					let sdkSessionHealth = stallAlert.guardedAutoAbort.sdkSessionHealth;
+					if (
+						sdkSessionHealth === undefined &&
+						stallAlert.guardedAutoAbort.useLiveSdkSessionHealth === true &&
+						stallAlert.guardedAutoAbort.sdkClient !== undefined
+					) {
+						const parentSessionRef = latestParentSessionRefForLane(
+							stallAlert.rootDir,
+							workflow.workflowId,
+							stalledEntry.laneId,
+						);
+						sdkSessionHealth = parentSessionRef === undefined
+							? { status: "unknown", reason: "parent_session_ref_missing" }
+							: await checkSdkSessionApiHealthV1(
+								stallAlert.guardedAutoAbort.sdkClient,
+								parentSessionRef,
+							);
+					}
+					const autoAbort = evaluateGuardedAutoAbortHookV1({
+						rootDir: stallAlert.rootDir,
+						workflow_id: workflow.workflowId,
+						lane_id: stalledEntry.laneId,
+						config: stallAlert.guardedAutoAbort,
+						stallConfirmed: true,
+						sdkSessionHealth:
+							sdkSessionHealth ?? {
+								status: "unknown",
+								reason: "sdk_session_health_not_supplied_to_chat_hook",
+							},
+						now: () => new Date(observedAt),
+					});
+					autoAbortSummaries.push(
+						`workflow ${workflow.workflowId} lane ${stalledEntry.laneId}: guarded auto-abort ${autoAbort.status}`,
+					);
+				}
 				return {
 					workflowId: workflow.workflowId,
 					stalledLaneCount: workflow.stalledLaneCount ?? 0,
@@ -1986,15 +2104,28 @@ async function collectStallAlertSummary(
 						? {}
 						: { failureHint: primary.failureHint }),
 				};
-			});
+			}));
+		if (workflowSummaries.length === 0) {
+			return { status: "none" };
+		}
 		return {
-			worstClassification: result.worstLaneStallClassification ?? "unknown",
-			totalStalled: result.totalStalledLaneCount ?? 0,
-			totalLate: result.totalProgressingLateLaneCount ?? 0,
-			workflowSummaries,
+			status: "ok",
+			data: {
+				worstClassification: result.worstLaneStallClassification ?? "unknown",
+				totalStalled: result.totalStalledLaneCount ?? 0,
+				totalLate: result.totalProgressingLateLaneCount ?? 0,
+				workflowSummaries,
+				...(autoAbortSummaries.length === 0 ? {} : { autoAbortSummaries }),
+			}
 		};
-	} catch {
-		return undefined;
+	} catch (error) {
+		if (error instanceof FlowDeskTimeoutError) {
+			return { status: "unavailable" };
+		}
+		const errorName = error instanceof Error ? error.name : "UnknownError";
+		const safeName = ALLOWED_ERROR_NAMES.has(errorName) ? errorName : "UnknownError";
+		process.stderr.write(`[flowdesk] collectStallAlertResult error: ${safeName}\n`);
+		return { status: "error" };
 	}
 }
 
@@ -2045,6 +2176,10 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 	lines.push(
 		"FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.",
 	);
+	if (summary.autoAbortSummaries !== undefined && summary.autoAbortSummaries.length > 0) {
+		lines.push("Guarded auto-abort diagnostics (evidence-only, opt-in):");
+		for (const line of summary.autoAbortSummaries.slice(0, 3)) lines.push(`- ${line}`);
+	}
 	lines.push("Safe next actions:");
 	for (const action of [
 		"/flowdesk-status",
@@ -3713,6 +3848,9 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const stallAlertOption = chatMessageStallAlertOptionsFrom(
 		options,
 		statusLiveConfig,
+		isRecord(input) && isManagedDispatchBetaClient(input.client)
+			? input.client
+			: undefined,
 	);
 	return {
 		tool: tools,
@@ -3731,6 +3869,7 @@ export const flowdeskChatMessageStallAlertOption =
 function chatMessageStallAlertOptionsFrom(
 	options: PluginOptions | undefined,
 	statusLiveConfig: FlowDeskStatusLiveConfigV1 | undefined,
+	sdkClient?: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 ): FlowDeskChatMessageStallAlertOptionsV1 | undefined {
 	const raw = options?.[flowdeskChatMessageStallAlertOption];
 	if (raw === false) return undefined;
@@ -3777,6 +3916,45 @@ function chatMessageStallAlertOptionsFrom(
 		typeof recordRaw.includeProgressingLate === "boolean"
 	)
 		config.includeProgressingLate = recordRaw.includeProgressingLate;
+	if (recordRaw !== undefined && isRecord(recordRaw.guardedAutoAbort)) {
+		const rawGuard = recordRaw.guardedAutoAbort;
+		const guardedAutoAbort: FlowDeskChatMessageGuardedAutoAbortOptionsV1 = {
+			autoAbortOnStall: rawGuard.autoAbortOnStall === true,
+		};
+		if (typeof rawGuard.preAbortWarningMs === "number" && rawGuard.preAbortWarningMs > 0)
+			guardedAutoAbort.preAbortWarningMs = Math.floor(rawGuard.preAbortWarningMs);
+		if (typeof rawGuard.guardSignOffPath === "string" && rawGuard.guardSignOffPath.trim().length > 0)
+			guardedAutoAbort.guardSignOffPath = rawGuard.guardSignOffPath;
+		if (typeof rawGuard.guardHmacKey === "string" && rawGuard.guardHmacKey.length > 0)
+			guardedAutoAbort.guardHmacKey = rawGuard.guardHmacKey;
+		if (typeof rawGuard.productionMode === "boolean")
+			guardedAutoAbort.productionMode = rawGuard.productionMode;
+		if (typeof rawGuard.useLiveSdkSessionHealth === "boolean")
+			guardedAutoAbort.useLiveSdkSessionHealth = rawGuard.useLiveSdkSessionHealth;
+		if (guardedAutoAbort.useLiveSdkSessionHealth === true && sdkClient !== undefined)
+			guardedAutoAbort.sdkClient = sdkClient;
+		if (isRecord(rawGuard.sdkSessionHealth)) {
+			const status = rawGuard.sdkSessionHealth.status;
+			if (status === "api_responsive") guardedAutoAbort.sdkSessionHealth = { status };
+			if (status === "api_timeout")
+				guardedAutoAbort.sdkSessionHealth = {
+					status,
+					reason:
+						typeof rawGuard.sdkSessionHealth.reason === "string"
+							? rawGuard.sdkSessionHealth.reason
+							: "configured_api_timeout",
+				};
+			if (status === "unknown")
+				guardedAutoAbort.sdkSessionHealth = {
+					status,
+					reason:
+						typeof rawGuard.sdkSessionHealth.reason === "string"
+							? rawGuard.sdkSessionHealth.reason
+							: "configured_unknown",
+				};
+		}
+		config.guardedAutoAbort = guardedAutoAbort;
+	}
 	return config;
 }
 

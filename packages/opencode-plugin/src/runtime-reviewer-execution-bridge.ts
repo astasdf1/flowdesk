@@ -354,6 +354,10 @@ export async function executeFlowDeskRuntimeReviewerExecutionBridgeV1(input: {
 		attemptId,
 		verdicts,
 		consumedApproval,
+		requiredPerspectives: expectations.map(
+			(expectation) =>
+				expectation.perspective as FlowDeskTopTierReviewPerspective,
+		),
 	});
 	const reloadedAfter = reloadFlowDeskSessionEvidenceV1({
 		workflowId,
@@ -365,6 +369,10 @@ export async function executeFlowDeskRuntimeReviewerExecutionBridgeV1(input: {
 		verdicts,
 		consumedApproval,
 		reloadedEvidence: reloadedAfter,
+		requiredPerspectives: expectations.map(
+			(expectation) =>
+				expectation.perspective as FlowDeskTopTierReviewPerspective,
+		),
 	});
 	return {
 		adapterProfile: "runtime_reviewer_execution_bridge",

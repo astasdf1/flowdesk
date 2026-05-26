@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -29,6 +30,7 @@ import { createFlowDeskLocalNonDispatchAdapterSession } from "./local-adapter.js
 import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskChatHookAuthorityProbeFromObservationV1,
 	createFlowDeskFds1SchemaConversionProbeTools,
+	createFlowDeskNaturalLanguageChatMessageHook,
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskChatIntakeToolName,
 	flowdeskChatMessageStallAlertOption,
@@ -57,8 +59,34 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskStatusLiveOption,
 	flowdeskStatusLiveToolName,
 } from "./server.js";
+import { computeGuardSignOffHmacV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
 const now = "2026-05-17T00:00:00.000Z";
+
+const stallRecoveryGuardKey = "test-stall-recovery-guard-key-32-bytes";
+const stallRecoveryGuardMarkdown = "# SDK surface verification\n\nP6 evidence-only auto-abort is safe.\n";
+
+function stallRecoveryGuardSignOff(): FlowDeskGuardSignOffV1 {
+	const unsigned = {
+		schema_version: "flowdesk.guard_sign_off.v1" as const,
+		sign_off_id: "guard-signoff-chat-stall-123",
+		created_at: "2026-05-17T00:00:00.000Z",
+		target_markdown_sha256: createHash("sha256")
+			.update(stallRecoveryGuardMarkdown, "utf8")
+			.digest("hex"),
+		p6_safe: true,
+		nonce: "nonce-chat-stall-123",
+		expires_at: "2026-12-31T00:00:00.000Z",
+		dispatch_authority_enabled: false as const,
+	};
+	return {
+		...unsigned,
+		hmac_sha256: computeGuardSignOffHmacV1({
+			unsignedSignOff: unsigned,
+			hmacKey: stallRecoveryGuardKey,
+		}),
+	};
+}
 
 function release1ProjectConfig(overrides: Record<string, unknown> = {}) {
 	return {
@@ -5918,6 +5946,103 @@ test("chat.message stall alert card appends safe next actions when stalled lanes
 		assert.match(planSerialized, /Suggested next step:/);
 		assert.match(planSerialized, /Stalled lanes detected/);
 		assert.equal(/noReply|cancel|stop/.test(planSerialized), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("chat.message guarded auto-abort opt-in writes warning then evidence-only abort", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-auto-abort-"));
+	try {
+		const workflowId = "workflow-quick-reviewer-chat-auto-abort";
+		const laneId = "lane-chat-auto-abort";
+		const observedAtMs = new Date(now).getTime();
+		const stalledLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: laneId,
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-auto-abort",
+			parent_session_ref: "ses-chat-auto-abort-parent",
+			agent_ref: "agent-chat-auto-abort",
+			provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+			updated_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+			spawned_by: "flowdesk" as const,
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-chat-auto-abort-running",
+			record: stalledLifecycle,
+		});
+		assert.equal(intent.ok, true, intent.errors.join("; "));
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [intent.writeIntent as never]).ok,
+			true,
+		);
+		const adrDir = join(root, "docs", "adr");
+		mkdirSync(adrDir, { recursive: true });
+		writeFileSync(join(adrDir, "0002-sdk-surface-verification.md"), stallRecoveryGuardMarkdown);
+		writeFileSync(
+			join(adrDir, "0002-sdk-surface-verification.guard_sign_off.json"),
+			JSON.stringify(stallRecoveryGuardSignOff(), undefined, 2),
+		);
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					guardedAutoAbort: {
+						autoAbortOnStall: true,
+						guardHmacKey: stallRecoveryGuardKey,
+						preAbortWarningMs: 10_000,
+						sdkSessionHealth: {
+							status: "api_timeout",
+							reason: "test timeout",
+						},
+					},
+				},
+			},
+		)) as ChatMessageHooks;
+		assert.ok(hooks["chat.message"]);
+		const output = { parts: [{ type: "text", text: "hello" }] as unknown[] };
+		await hooks["chat.message"]({ messageID: "msg-auto-abort", sessionID: "ses-auto-abort" }, output);
+		const serialized = JSON.stringify(output);
+		assert.match(serialized, /guarded auto-abort warning_issued/);
+		let reload = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "pending_abort_warning" && entry.record.status === "pending"), true);
+
+		const expiredHooks = createFlowDeskNaturalLanguageChatMessageHook(
+			() => new Date(Date.now() + 20_000),
+			undefined,
+			{
+				rootDir: root,
+				guardedAutoAbort: {
+					autoAbortOnStall: true,
+					guardHmacKey: stallRecoveryGuardKey,
+					preAbortWarningMs: 10_000,
+					sdkSessionHealth: { status: "api_timeout", reason: "test timeout" },
+				},
+			},
+		);
+		const expiredOutput = { parts: [{ type: "text", text: "hello again" }] as unknown[] };
+		await expiredHooks({ messageID: "msg-auto-abort-expired", sessionID: "ses-auto-abort-2" }, expiredOutput);
+		assert.match(JSON.stringify(expiredOutput), /guarded auto-abort auto_abort_executed/);
+		reload = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "lane_lifecycle" && entry.record.state === "aborted"), true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "pending_abort_warning" && entry.record.status === "executed"), true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

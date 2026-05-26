@@ -47,12 +47,14 @@ import {
 	reloadFlowDeskSessionEvidenceV1,
 	validateFlowDeskExactModelAvailabilityCacheAcquisitionPlanV1,
 	validateFlowDeskFallbackRegatePlanV1,
+	validateFlowDeskProductionApprovalSourceV1,
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
 	validateFlowDeskRuntimeLaneLaunchPlanV1,
 	validateFlowDeskSessionAbortDecisionV1,
 	validateNoForbiddenRawPayloads,
 	validateTopTierReviewVerdictV1,
+	FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES,
 } from "@flowdesk/core";
 
 export const flowdeskManagedDispatchBetaAdapterProfile =
@@ -2455,7 +2457,93 @@ export function prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1(input: {
 	attemptId: string;
 	verdicts: readonly FlowDeskTopTierReviewVerdictV1[];
 	consumedApproval: FlowDeskProductionApprovalSourceV1;
+	requiredPerspectives?: readonly FlowDeskTopTierReviewPerspective[];
 }): FlowDeskReviewerTypedVerdictAcceptanceAdapterResultV1 {
+	if (input.requiredPerspectives !== undefined) {
+		const errors: string[] = [];
+		const requiredPerspectives = [...input.requiredPerspectives];
+		if (requiredPerspectives.length === 0)
+			errors.push("required reviewer perspectives must be non-empty");
+		const canonical = new Set<string>(FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES);
+		const seenRequired = new Set<string>();
+		for (const [index, perspective] of requiredPerspectives.entries()) {
+			if (!canonical.has(perspective))
+				errors.push(`requiredPerspectives[${index}] is not canonical`);
+			if (seenRequired.has(perspective))
+				errors.push(`requiredPerspectives[${index}] must be distinct`);
+			seenRequired.add(perspective);
+		}
+		const approvalResult = validateFlowDeskProductionApprovalSourceV1(
+			input.consumedApproval,
+			input.workflowId,
+		);
+		errors.push(...approvalResult.errors);
+		if (input.consumedApproval.attempt_id !== input.attemptId)
+			errors.push("approval source attempt_id mismatch");
+		if (input.consumedApproval.consumed_by_attempt_id !== input.attemptId)
+			errors.push("approval source consumed_by_attempt_id mismatch");
+		if (input.consumedApproval.action_type !== "reviewer_fanout")
+			errors.push("approval source action_type mismatch");
+		const verdicts = Array.isArray(input.verdicts) ? input.verdicts : [];
+		if (!Array.isArray(input.verdicts)) errors.push("verdicts must be an array");
+		const seenVerdictIds = new Set<string>();
+		const seenPerspectives = new Set<string>();
+		for (const [index, verdict] of verdicts.entries()) {
+			const result = validateTopTierReviewVerdictV1(verdict);
+			errors.push(...result.errors.map((error) => `verdicts[${index}]: ${error}`));
+			const record = verdict as Partial<FlowDeskTopTierReviewVerdictV1>;
+			if (record.workflow_id !== input.workflowId)
+				errors.push(`verdicts[${index}] workflow_id mismatch`);
+			if (record.verdict_label !== "pass")
+				errors.push(`verdicts[${index}] verdict_label must be pass`);
+			if (record.uncertainty !== "low")
+				errors.push(`verdicts[${index}] uncertainty must be low`);
+			if (!Array.isArray(record.evidence_refs) || record.evidence_refs.length === 0)
+				errors.push(`verdicts[${index}] evidence_refs must be non-empty`);
+			if (typeof record.verdict_id === "string") {
+				if (seenVerdictIds.has(record.verdict_id))
+					errors.push(`verdicts[${index}] verdict_id must be distinct`);
+				seenVerdictIds.add(record.verdict_id);
+			}
+			if (typeof record.perspective === "string") {
+				if (seenPerspectives.has(record.perspective))
+					errors.push(`verdicts[${index}] perspective must be distinct`);
+				seenPerspectives.add(record.perspective);
+				if (!seenRequired.has(record.perspective))
+					errors.push(`verdicts[${index}] perspective was not requested`);
+			}
+		}
+		for (const perspective of requiredPerspectives) {
+			if (!seenPerspectives.has(perspective))
+				errors.push(`missing required reviewer perspective: ${perspective}`);
+		}
+		if (verdicts.length !== requiredPerspectives.length)
+			errors.push("verdicts must contain exactly the requested perspectives");
+		if (errors.length > 0) {
+			return {
+				adapterProfile: "reviewer_typed_verdict_acceptance_adapter",
+				status: "blocked_before_acceptance",
+				workflowId: input.workflowId,
+				attemptId: input.attemptId,
+				acceptedVerdictIds: [],
+				acceptedPerspectives: [],
+				redactedBlockReason:
+					errors.join(",") || "reviewer verdict acceptance blocked",
+				safeNextActions: ["/flowdesk-status"],
+				authority: reviewerTypedVerdictAuthority(false),
+			};
+		}
+		return {
+			adapterProfile: "reviewer_typed_verdict_acceptance_adapter",
+			status: "verdicts_accepted",
+			workflowId: input.workflowId,
+			attemptId: input.attemptId,
+			acceptedVerdictIds: verdicts.map((verdict) => verdict.verdict_id),
+			acceptedPerspectives: requiredPerspectives,
+			safeNextActions: ["/flowdesk-status", "/flowdesk-run"],
+			authority: reviewerTypedVerdictAuthority(true),
+		};
+	}
 	const promotion = promoteFlowDeskReviewerTypedVerdictsV1(input);
 	if (
 		!promotion.ok ||
@@ -2527,12 +2615,16 @@ export function prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1(input: {
 	verdicts: readonly FlowDeskTopTierReviewVerdictV1[];
 	consumedApproval: FlowDeskProductionApprovalSourceV1;
 	reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+	requiredPerspectives?: readonly FlowDeskTopTierReviewPerspective[];
 }): FlowDeskDurableReviewerVerdictLinkageAdapterResultV1 {
 	const acceptance = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
 		workflowId: input.workflowId,
 		attemptId: input.attemptId,
 		verdicts: input.verdicts,
 		consumedApproval: input.consumedApproval,
+		...(input.requiredPerspectives === undefined
+			? {}
+			: { requiredPerspectives: input.requiredPerspectives }),
 	});
 	if (acceptance.status !== "verdicts_accepted") {
 		return {

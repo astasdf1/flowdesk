@@ -43,6 +43,7 @@ import {
   validateSchemaArtifactValue
 } from "@flowdesk/core";
 import { getFlowDeskRelease1HandlerReadiness, getFlowDeskRelease1ProductionReadinessSummary } from "./tool-stubs.js";
+import type { FlowDeskLaneAbortHelperResultV1, FlowDeskSdkSessionHealthV1 } from "./stall-recovery.js";
 
 export type FlowDeskCommandBackedHandlerModeV1 = "command_backed_core_evaluator" | "command_backed_diagnostic_handler" | "missing_evaluator_input" | "request_schema_invalid" | "pending_confirmation_invalid" | "schema_only_pending";
 
@@ -66,6 +67,8 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
     reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
     fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
+    laneAbortResult?: FlowDeskLaneAbortHelperResultV1;
+    sdkSessionHealth?: FlowDeskSdkSessionHealthV1;
   };
 }
 
@@ -261,6 +264,16 @@ function fallbackRegateRefs(context: FlowDeskCommandBackedHandlerContextV1): str
   ];
 }
 
+function sdkSessionHealthRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const health = context.diagnostic?.sdkSessionHealth;
+  if (health === undefined) return ["sdk_session_api_health=not_checked", "sdk_session_abort_automation=disabled_release1"];
+  return [
+    `sdk_session_api_health=${health.status}`,
+    ...(health.status === "api_responsive" ? [] : [`sdk_session_api_reason=${health.reason}`]),
+    "sdk_session_abort_automation=disabled_release1"
+  ];
+}
+
 function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
@@ -268,9 +281,10 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const exactModelCacheRefs = exactModelAvailabilityCacheRefreshRefs(context);
   const fanoutRefs = reviewerFanoutRefs(context);
   const fallbackRefs = fallbackRegateRefs(context);
+  const sdkHealthRefs = sdkSessionHealthRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion, exact-model cache refresh, and reviewer fan-out planning are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion, exact-model cache refresh, reviewer fan-out planning, and SDK session health diagnostics are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
   ];
@@ -336,8 +350,31 @@ function evaluateResumeDiagnostic(request: FlowDeskResumeRequestV1): FlowDeskRes
   };
 }
 
-function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1): FlowDeskAbortResponseV1 {
-  void request;
+function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskAbortResponseV1 {
+  const laneAbortResult = context.diagnostic?.laneAbortResult;
+  if (request.lane_id !== undefined && laneAbortResult?.status === "aborted") {
+    return {
+      schema_version: "flowdesk.abort.response.v1",
+      ok: true,
+      status: "diagnostic_only",
+      safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+      user_message: `FlowDesk recorded lane abort lifecycle evidence for ${laneAbortResult.lane_id}; no SDK session abort, provider call, lane launch, hard chat cancellation, or no-reply authority was used.`,
+      cancellation_state: "cancel_observed",
+      remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+      lane_refs: [laneAbortResult.lifecycle_evidence_id]
+    };
+  }
+  if (request.lane_id !== undefined && laneAbortResult !== undefined) {
+    return {
+      schema_version: "flowdesk.abort.response.v1",
+      ok: false,
+      status: "blocked",
+      safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+      user_message: `FlowDesk did not abort lane ${request.lane_id}: ${laneAbortResult.reason}. No SDK session abort, provider call, lane launch, hard chat cancellation, or no-reply authority was used.`,
+      cancellation_state: "cancel_failed",
+      remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"]
+    };
+  }
   return {
     schema_version: "flowdesk.abort.response.v1",
     ok: false,
@@ -450,7 +487,7 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
   }
 
   if (toolName === "flowdesk_abort") {
-    const response = evaluateAbortDiagnostic(request as FlowDeskAbortRequestV1);
+    const response = evaluateAbortDiagnostic(request as FlowDeskAbortRequestV1, context);
     return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
   }
 

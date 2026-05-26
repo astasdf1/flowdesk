@@ -127,6 +127,8 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"controlled_redacted_audit_export_write",
 	"fallback_regate_plan",
 	"lane_heartbeat",
+	"pending_abort_warning",
+	"pending_abort_cancel",
 	"provider_usage_snapshot",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
@@ -160,6 +162,8 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 		"controlled-redacted-audit-export-write",
 	fallback_regate_plan: "fallback-regate-plan",
 	lane_heartbeat: "lane-heartbeat",
+	pending_abort_warning: "pending-abort-warning",
+	pending_abort_cancel: "pending-abort-cancel",
 	provider_usage_snapshot: "provider-usage-snapshot",
 };
 

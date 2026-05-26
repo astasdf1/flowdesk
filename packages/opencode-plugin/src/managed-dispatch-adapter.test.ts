@@ -1705,6 +1705,28 @@ test("reviewer typed verdict acceptance adapter accepts only canonical passing v
 	assert.equal(result.authority.runtimeExecution, false);
 });
 
+test("reviewer typed verdict acceptance adapter accepts explicit requested subset", () => {
+	const verdicts = canonicalReviewerVerdicts().filter(
+		(verdict) => verdict.perspective === "verification_implementation",
+	);
+	const result = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
+		workflowId: "workflow-123",
+		attemptId: "attempt-123",
+		verdicts: verdicts as unknown as FlowDeskTopTierReviewVerdictV1[],
+		consumedApproval: consumedReviewerFanoutApproval(),
+		requiredPerspectives: ["verification_implementation"],
+	});
+
+	assert.equal(result.status, "verdicts_accepted");
+	assert.deepEqual(result.acceptedVerdictIds, [
+		"verdict-verification-implementation",
+	]);
+	assert.deepEqual(result.acceptedPerspectives, [
+		"verification_implementation",
+	]);
+	assert.equal(result.authority.typedReviewerVerdictsAccepted, true);
+});
+
 test("durable reviewer verdict linkage adapter requires reloaded verdict and lifecycle evidence", async () => {
 	await withTempRoot((rootDir) => {
 		const verdicts = canonicalReviewerVerdicts();
@@ -1749,6 +1771,51 @@ test("durable reviewer verdict linkage adapter requires reloaded verdict and lif
 		assert.equal(result.authority.durableReviewerVerdictEvidenceLinked, true);
 		assert.equal(result.authority.providerCall, false);
 		assert.equal(result.authority.actualLaneLaunch, false);
+	});
+});
+
+test("durable reviewer verdict linkage adapter links explicit requested subset", async () => {
+	await withTempRoot((rootDir) => {
+		const verdicts = canonicalReviewerVerdicts().filter(
+			(verdict) => verdict.perspective === "verification_implementation",
+		);
+		const evidenceRecords = verdicts.flatMap((verdict) => [
+			verdict,
+			lifecycleForVerdict(verdict),
+		]);
+		const intents = evidenceRecords.map((record, index) => {
+			const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+				workflowId: "workflow-123",
+				evidenceId: `subset-reviewer-evidence-${index + 1}`,
+				record,
+			});
+			assert.equal(prepared.ok, true, prepared.errors.join("; "));
+			assert.ok(prepared.writeIntent);
+			return prepared.writeIntent;
+		});
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(
+			rootDir,
+			intents,
+		);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		const result = prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1({
+			workflowId: "workflow-123",
+			attemptId: "attempt-123",
+			verdicts: verdicts as unknown as FlowDeskTopTierReviewVerdictV1[],
+			consumedApproval: consumedReviewerFanoutApproval(),
+			reloadedEvidence: reloaded,
+			requiredPerspectives: ["verification_implementation"],
+		});
+		assert.equal(result.status, "durable_verdicts_accepted");
+		assert.deepEqual(result.linkedVerdictIds, [
+			"verdict-verification-implementation",
+		]);
+		assert.equal(result.linkedLifecycleRefs.length, 1);
+		assert.equal(result.authority.durableReviewerVerdictEvidenceLinked, true);
 	});
 });
 

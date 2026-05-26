@@ -47,6 +47,8 @@ export interface FlowDeskLaneLifecycleRecordV1 {
 	retry_count: number;
 	created_at: string;
 	updated_at: string;
+	spawned_by?: "flowdesk" | "user" | "external";
+	durability?: "best_effort_no_dir_fsync";
 	dispatch_authority_enabled: false;
 	providerCall: false;
 	actualLaneLaunch: false;
@@ -106,6 +108,8 @@ export function validateFlowDeskLaneLifecycleRecordV1(
 		"retry_count",
 		"created_at",
 		"updated_at",
+		"spawned_by",
+		"durability",
 		"dispatch_authority_enabled",
 		"providerCall",
 		"actualLaneLaunch",
@@ -147,6 +151,10 @@ export function validateFlowDeskLaneLifecycleRecordV1(
 		errors.push("lane lifecycle retry_count exceeds bounded retry budget");
 	if (record.state === "complete" && record.verdict_ref === undefined)
 		errors.push("complete lane lifecycle records require verdict_ref");
+	if (record.spawned_by !== undefined && !["flowdesk", "user", "external"].includes(record.spawned_by))
+		errors.push("spawned_by must be flowdesk, user, or external");
+	if (record.durability !== undefined && record.durability !== "best_effort_no_dir_fsync")
+		errors.push("durability must be best_effort_no_dir_fsync");
 	if (
 		record.state === "complete" &&
 		(record.child_session_ref === undefined ||

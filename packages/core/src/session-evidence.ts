@@ -21,6 +21,10 @@ import {
 	validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1,
 } from "./managed-dispatch-evidence-shape.js";
 import { validateFlowDeskPreDispatchAuditRecordV1 } from "./pre-dispatch-audit-record.js";
+import {
+	validateFlowDeskPendingAbortCancelV1,
+	validateFlowDeskPendingAbortWarningV1,
+} from "./pending-abort.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
@@ -99,6 +103,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.controlled_redacted_audit_export_write.v1",
 	fallback_regate_plan: "flowdesk.fallback_regate_plan.v1",
 	lane_heartbeat: "flowdesk.lane_heartbeat.v1",
+	pending_abort_warning: "flowdesk.pending_abort_warning.v1",
+	pending_abort_cancel: "flowdesk.pending_abort_cancel.v1",
 	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
 };
 
@@ -776,6 +782,10 @@ function validateEvidenceShape(
 		return validateFlowDeskLaneLifecycleRecordV1(record);
 	if (evidenceClass === "lane_heartbeat")
 		return validateFlowDeskLaneHeartbeatRecordV1(record);
+	if (evidenceClass === "pending_abort_warning")
+		return validateFlowDeskPendingAbortWarningV1(record);
+	if (evidenceClass === "pending_abort_cancel")
+		return validateFlowDeskPendingAbortCancelV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")

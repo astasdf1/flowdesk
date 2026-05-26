@@ -499,6 +499,7 @@ export interface FlowDeskAbortRequestV1 extends FlowDeskToolRequestEnvelopeV1 {
   schema_version: "flowdesk.abort.request.v1";
   workflow_id: OpaqueId;
   attempt_id?: OpaqueId;
+  lane_id?: OpaqueId;
   reason: string;
 }
 
