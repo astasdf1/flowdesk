@@ -103,8 +103,10 @@ import {
 	evaluateGuardedAutoRetryHookV1,
 	reconcileStalePendingRetryPlansV1,
 	checkSdkSessionApiHealthV1,
+	runFlowDeskWatchdogCycleV1,
 	type FlowDeskAutoAbortConfigV1,
 	type FlowDeskSdkSessionHealthV1,
+	type FlowDeskWatchdogConfigV1,
 } from "./stall-recovery.js";
 import type { FlowDeskAutoRetryResultV1 } from "@flowdesk/core";
 import { withTimeout, FlowDeskTimeoutError } from "./shared/with-timeout.js";
@@ -146,6 +148,8 @@ export const flowdeskQuickFallbackRunOption = "quickFallbackRun" as const;
 export const flowdeskLaneHeartbeatWriterOption = "laneHeartbeatWriter" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
+export const flowdeskWatchdogOption = "watchdog" as const;
+export const flowdeskWatchdogTriggerToolName = "flowdesk_watchdog_trigger" as const;
 export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
 export const flowdeskExactModelProviderAcquisitionLiveTestToolName =
@@ -3556,6 +3560,17 @@ function quickReviewerRunDefaultsFromOptions(options?: PluginOptions): {
 	};
 }
 
+function watchdogConfigFromOptions(options: PluginOptions | undefined): FlowDeskWatchdogConfigV1 | undefined {
+	const w = (options as Record<string, unknown> | undefined)?.[flowdeskWatchdogOption];
+	if (!isRecord(w) || w.enabled !== true) return undefined;
+	return {
+		enabled: true,
+		intervalMs: Math.max(10_000, typeof w.intervalMs === "number" ? w.intervalMs : 30_000),
+		stallThresholdMs: typeof w.stallThresholdMs === "number" ? w.stallThresholdMs : 300_000,
+		mcpTriggerEnabled: w.mcpTriggerEnabled === true,
+	};
+}
+
 const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const projectConfigLoad = loadProjectConfigFromOptions(options);
 	const naturalLanguageRoutingEnabled =
@@ -3887,6 +3902,105 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskLaneHeartbeatWriterOptInTools(laneHeartbeatWriterConfig),
 		);
+
+	// P8 Background Watchdog
+	const watchdogConfig = watchdogConfigFromOptions(options);
+	const chatStallAlertRaw = (options as Record<string, unknown> | undefined)?.[flowdeskChatMessageStallAlertOption];
+	const guardedAutoAbortForWatchdog = isRecord(chatStallAlertRaw) && isRecord(chatStallAlertRaw.guardedAutoAbort)
+		? (() => {
+				const raw = chatStallAlertRaw.guardedAutoAbort as Record<string, unknown>;
+				const cfg: FlowDeskAutoAbortConfigV1 = {
+					autoAbortOnStall: raw.autoAbortOnStall === true,
+				};
+				if (typeof raw.preAbortWarningMs === "number") cfg.preAbortWarningMs = Math.floor(raw.preAbortWarningMs);
+				if (typeof raw.guardSignOffPath === "string") cfg.guardSignOffPath = raw.guardSignOffPath;
+				if (typeof raw.guardHmacKey === "string") cfg.guardHmacKey = raw.guardHmacKey;
+				if (typeof raw.productionMode === "boolean") cfg.productionMode = raw.productionMode;
+				if (raw.autoRetryAfterAbort === true) cfg.autoRetryAfterAbort = true;
+				if (typeof raw.maxAutoRetries === "number") cfg.maxAutoRetries = Math.min(2, Math.max(1, Math.floor(raw.maxAutoRetries)));
+				return cfg;
+			})()
+		: undefined;
+	const durableStateRoot = durableStateRootFromOptions(options);
+	if (watchdogConfig?.enabled === true && guardedAutoAbortForWatchdog !== undefined && durableStateRoot !== undefined) {
+		const capturedClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+		const capturedParentSessionId = "";
+		const capturedRootDir = durableStateRoot;
+		const capturedConfig = guardedAutoAbortForWatchdog;
+
+		const watchdogInterval = setInterval(() => {
+			runFlowDeskWatchdogCycleV1({
+				config: capturedConfig,
+				rootDir: capturedRootDir,
+				client: capturedClient,
+				parentSessionId: capturedParentSessionId,
+				now: new Date(),
+			}).catch(() => {
+				// errors are swallowed — watchdog must not crash the plugin
+			});
+		}, watchdogConfig.intervalMs ?? 30_000);
+
+		// Allow the process to exit even if the interval is still active
+		watchdogInterval.unref();
+
+		process.once("exit", () => clearInterval(watchdogInterval));
+		process.once("SIGTERM", () => clearInterval(watchdogInterval));
+
+		if (watchdogConfig.mcpTriggerEnabled === true) {
+			tools[flowdeskWatchdogTriggerToolName] = tool({
+				description: "Trigger one watchdog cycle manually. Called by external flowdesk-watchdog process (Option A). Requires guardedAutoAbort config.",
+				args: { parentSessionId: tool.schema.string().optional() },
+				async execute(args) {
+					const psi = isRecord(args) && typeof args.parentSessionId === "string" ? args.parentSessionId : "";
+					const result = await runFlowDeskWatchdogCycleV1({
+						config: capturedConfig,
+						rootDir: capturedRootDir,
+						client: capturedClient,
+						parentSessionId: psi,
+						now: new Date(),
+					});
+					return JSON.stringify({
+						cycleAt: result.cycleAt,
+						guardValid: result.guardValid,
+						lanesChecked: result.lanesChecked,
+						lanesAborted: result.lanesAborted,
+						lanesRetried: result.lanesRetried,
+						lanesFailed: result.lanesFailed,
+						skippedReason: result.skippedReason,
+					});
+				},
+			});
+		}
+	} else if (watchdogConfig?.mcpTriggerEnabled === true && guardedAutoAbortForWatchdog !== undefined && durableStateRoot !== undefined) {
+		// mcpTriggerEnabled without setInterval (Option A standalone)
+		const capturedClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+		const capturedRootDir = durableStateRoot;
+		const capturedConfig = guardedAutoAbortForWatchdog;
+		tools[flowdeskWatchdogTriggerToolName] = tool({
+			description: "Trigger one watchdog cycle manually. Called by external flowdesk-watchdog process (Option A). Requires guardedAutoAbort config.",
+			args: { parentSessionId: tool.schema.string().optional() },
+			async execute(args) {
+				const psi = isRecord(args) && typeof args.parentSessionId === "string" ? args.parentSessionId : "";
+				const result = await runFlowDeskWatchdogCycleV1({
+					config: capturedConfig,
+					rootDir: capturedRootDir,
+					client: capturedClient,
+					parentSessionId: psi,
+					now: new Date(),
+				});
+				return JSON.stringify({
+					cycleAt: result.cycleAt,
+					guardValid: result.guardValid,
+					lanesChecked: result.lanesChecked,
+					lanesAborted: result.lanesAborted,
+					lanesRetried: result.lanesRetried,
+					lanesFailed: result.lanesFailed,
+					skippedReason: result.skippedReason,
+				});
+			},
+		});
+	}
+
 	if (!naturalLanguageRoutingEnabled) return { tool: tools };
 	const stallAlertOption = chatMessageStallAlertOptionsFrom(
 		options,

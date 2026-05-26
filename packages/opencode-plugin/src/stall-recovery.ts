@@ -2,6 +2,7 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
+	projectFlowDeskLaneStallV1,
 	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskPendingAbortCancelV1,
 	type FlowDeskPendingAbortWarningV1,
@@ -13,7 +14,7 @@ import {
 	type DisabledAutoRetryReason,
 } from "@flowdesk/core";
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	FlowDeskManagedDispatchBetaOpenCodeClientV1,
@@ -996,5 +997,203 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 		status: "retry_launched",
 		newLaneId,
 		pendingRetryEvidenceId,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// P8 Background Watchdog
+// ---------------------------------------------------------------------------
+
+export interface FlowDeskWatchdogConfigV1 {
+	enabled?: boolean;
+	intervalMs?: number;        // min 10_000, default 30_000
+	stallThresholdMs?: number;  // default 300_000 (5 min)
+	mcpTriggerEnabled?: boolean;
+}
+
+export interface FlowDeskWatchdogCycleResultV1 {
+	cycleAt: string;
+	guardValid: boolean;
+	lanesChecked: number;
+	lanesAborted: number;
+	lanesRetried: number;
+	lanesFailed: number;
+	skippedReason?: string;
+}
+
+// Module-level flag to prevent concurrent cycles
+let _isWatchdogCycleRunning = false;
+
+const FLOWDESK_SESSION_EVIDENCE_ROOT = ".flowdesk/sessions";
+
+function listWatchdogWorkflowIds(rootDir: string): string[] {
+	const sessionsDir = join(rootDir, FLOWDESK_SESSION_EVIDENCE_ROOT);
+	if (!existsSync(sessionsDir)) return [];
+	let entries: string[];
+	try {
+		entries = readdirSync(sessionsDir);
+	} catch {
+		return [];
+	}
+	const result: string[] = [];
+	for (const name of entries) {
+		const candidatePath = join(sessionsDir, name);
+		try {
+			const stat = statSync(candidatePath);
+			if (stat.isDirectory()) result.push(name);
+		} catch {
+			// skip unreadable entries
+		}
+	}
+	return result;
+}
+
+export async function runFlowDeskWatchdogCycleV1(input: {
+	config: FlowDeskAutoAbortConfigV1;
+	rootDir: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined;
+	parentSessionId: string;
+	now?: Date;
+}): Promise<FlowDeskWatchdogCycleResultV1> {
+	const cycleAt = (input.now ?? new Date()).toISOString();
+
+	// Check Guard HMAC first (before concurrency check per the plan spec)
+	const guardLoaded = loadGuardSignOffFromRoot(input.rootDir, input.config.guardSignOffPath);
+	if (guardLoaded === undefined) {
+		return {
+			cycleAt,
+			guardValid: false,
+			lanesChecked: 0,
+			lanesAborted: 0,
+			lanesRetried: 0,
+			lanesFailed: 0,
+			skippedReason: "guard_invalid",
+		};
+	}
+	const guardVerified = verifyGuardSignOffHmacV1({
+		signOff: guardLoaded.signOff,
+		markdownText: guardLoaded.markdownText,
+		hmacKey: input.config.guardHmacKey,
+		now: input.now,
+	});
+	if (!guardVerified.ok) {
+		return {
+			cycleAt,
+			guardValid: false,
+			lanesChecked: 0,
+			lanesAborted: 0,
+			lanesRetried: 0,
+			lanesFailed: 0,
+			skippedReason: "guard_invalid",
+		};
+	}
+
+	// Check concurrent execution flag
+	if (_isWatchdogCycleRunning) {
+		return {
+			cycleAt,
+			guardValid: true,
+			lanesChecked: 0,
+			lanesAborted: 0,
+			lanesRetried: 0,
+			lanesFailed: 0,
+			skippedReason: "cycle_already_running",
+		};
+	}
+
+	_isWatchdogCycleRunning = true;
+	let lanesChecked = 0;
+	let lanesAborted = 0;
+	let lanesRetried = 0;
+	let lanesFailed = 0;
+
+	try {
+		const workflowIds = listWatchdogWorkflowIds(input.rootDir);
+		const now = input.now ?? new Date();
+
+		for (const workflowId of workflowIds) {
+			// Reload evidence for this workflow
+			const reloaded = reloadFlowDeskSessionEvidenceV1({
+				rootDir: input.rootDir,
+				workflowId,
+			});
+			if (!reloaded.ok) continue;
+
+			// Run stall projection
+			const stallProjection = projectFlowDeskLaneStallV1({
+				workflowId,
+				reload: reloaded,
+				observedAt: now.toISOString(),
+			});
+
+			// Find stalled lanes
+			const stalledEntries = stallProjection.entries.filter(
+				(entry) => entry.classification === "stalled",
+			);
+
+			for (const stalledEntry of stalledEntries) {
+				lanesChecked++;
+				try {
+					// Run guarded auto-abort
+					const autoAbort = evaluateGuardedAutoAbortHookV1({
+						rootDir: input.rootDir,
+						workflow_id: workflowId,
+						lane_id: stalledEntry.laneId,
+						config: input.config,
+						stallConfirmed: true,
+						sdkSessionHealth: { status: "api_timeout", reason: "watchdog_cycle_stall_detected" },
+						now: () => now,
+						loadedSignOff: guardLoaded,
+					});
+
+					if (autoAbort.status === "auto_abort_executed") {
+						lanesAborted++;
+						// Run guarded auto-retry if configured
+						if (
+							input.config.autoRetryAfterAbort === true &&
+							input.client !== undefined
+						) {
+							try {
+								const retryResult = await evaluateGuardedAutoRetryHookV1({
+									config: input.config,
+									rootDir: input.rootDir,
+									workflowId,
+									laneId: stalledEntry.laneId,
+									abortEvidenceId: autoAbort.lifecycle_evidence_id,
+									client: input.client,
+									parentSessionId: input.parentSessionId,
+									now,
+								});
+								if (retryResult.status === "retry_launched") {
+									lanesRetried++;
+								} else if (
+									retryResult.status === "retry_failed" ||
+									retryResult.status === "auto_retry_disabled"
+								) {
+									// Not a failure of the watchdog cycle itself
+								}
+							} catch {
+								// Retry evaluation is best-effort; do not count as lanesFailed
+							}
+						}
+					} else if (autoAbort.status === "blocked") {
+						lanesFailed++;
+					}
+				} catch {
+					lanesFailed++;
+				}
+			}
+		}
+	} finally {
+		_isWatchdogCycleRunning = false;
+	}
+
+	return {
+		cycleAt,
+		guardValid: true,
+		lanesChecked,
+		lanesAborted,
+		lanesRetried,
+		lanesFailed,
 	};
 }

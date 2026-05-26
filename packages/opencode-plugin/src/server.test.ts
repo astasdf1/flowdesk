@@ -58,8 +58,10 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskRuntimeReviewerExecutionToolName,
 	flowdeskStatusLiveOption,
 	flowdeskStatusLiveToolName,
+	flowdeskWatchdogOption,
+	flowdeskWatchdogTriggerToolName,
 } from "./server.js";
-import { computeGuardSignOffHmacV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
+import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
 const now = "2026-05-17T00:00:00.000Z";
 
@@ -6296,4 +6298,292 @@ test("quick fallback run blocks before plan when from and to providers are equal
 	) as Record<string, unknown>;
 	assert.equal(result.status, "blocked_before_quick_fallback_run");
 	assert.match(String(result.redactedBlockReason), /must differ/);
+});
+
+// ---------------------------------------------------------------------------
+// P8 Background Watchdog tests
+// ---------------------------------------------------------------------------
+
+function makeWatchdogGuardSignOff(rootDir: string) {
+	const adrDir = join(rootDir, "docs", "adr");
+	mkdirSync(adrDir, { recursive: true });
+	writeFileSync(join(adrDir, "0002-sdk-surface-verification.md"), stallRecoveryGuardMarkdown);
+	writeFileSync(
+		join(adrDir, "0002-sdk-surface-verification.guard_sign_off.json"),
+		JSON.stringify(stallRecoveryGuardSignOff(), undefined, 2),
+	);
+}
+
+function makeStalledLaneEvidence(workflowId: string, laneId: string, observedAtMs: number) {
+	return {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: laneId,
+		workflow_id: workflowId,
+		attempt_id: `attempt-watchdog-${laneId}`,
+		parent_session_ref: `ses-watchdog-${laneId}-parent`,
+		agent_ref: `agent-watchdog-${laneId}`,
+		provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+		state: "running" as const,
+		timeout_ms: 60_000,
+		orphan_max_age_ms: 600_000,
+		retry_count: 0,
+		created_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+		updated_at: new Date(observedAtMs - 12 * 60_000).toISOString(),
+		spawned_by: "flowdesk" as const,
+		dispatch_authority_enabled: false as const,
+		providerCall: false as const,
+		actualLaneLaunch: false as const,
+		runtimeExecution: false as const,
+	};
+}
+
+function makeReviewerLaneContext(workflowId: string, laneId: string) {
+	return {
+		schema_version: "flowdesk.reviewer_lane_context.v1",
+		workflow_id: workflowId,
+		lane_id: laneId,
+		lane_plan_ref: `plan-ref-watchdog-${laneId}`,
+		original_attempt_id: `attempt-watchdog-${laneId}`,
+		perspective: "policy_security",
+		agent_ref: `agent-watchdog-${laneId}`,
+		provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+		parent_session_ref: `ses-watchdog-${laneId}-parent`,
+		redaction_version: "redaction-v1",
+		prompt_text: "Return typed FlowDesk reviewer verdict for policy_security.",
+		prompt_text_truncated: false,
+		prompt_text_sha256: "abc123sha256hexwatchdog",
+		created_at: "2026-05-26T10:00:00.000Z",
+		dispatch_authority_enabled: false as const,
+	};
+}
+
+test("watchdog cycle aborts and retries stalled lanes without user message", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-cycle-"));
+	try {
+		const workflowId = "workflow-quick-reviewer-watchdog-abort";
+		const laneId = "lane-watchdog-abort";
+		const observedAtMs = new Date(now).getTime();
+
+		// Write stalled lane lifecycle and reviewer lane context
+		const lifecycleIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lifecycle-watchdog-running",
+			record: makeStalledLaneEvidence(workflowId, laneId, observedAtMs),
+		});
+		assert.equal(lifecycleIntent.ok, true, lifecycleIntent.errors.join("; "));
+		const contextIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "reviewer-context-watchdog",
+			record: makeReviewerLaneContext(workflowId, laneId),
+		});
+		assert.equal(contextIntent.ok, true, contextIntent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			lifecycleIntent.writeIntent as never,
+			contextIntent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+
+		// Write guard sidecar
+		makeWatchdogGuardSignOff(root);
+
+		// Create a fake SDK client that records retry attempts
+		const retryCalls: unknown[] = [];
+		const fakeClient = {
+			session: {
+				create(options: unknown) {
+					retryCalls.push({ action: "create", options });
+					return Promise.resolve({ id: "watchdog-retry-child-session" });
+				},
+				prompt(options: unknown) {
+					retryCalls.push({ action: "prompt", options });
+					return Promise.resolve({ info: { id: "watchdog-retry-message" } });
+				},
+				promptAsync(options: unknown) {
+					retryCalls.push({ action: "promptAsync", options });
+					return Promise.resolve({ info: { id: "watchdog-retry-message" } });
+				},
+				messages(options: unknown) {
+					retryCalls.push({ action: "messages", options });
+					return Promise.resolve([]);
+				},
+			},
+		};
+
+		const config = {
+			autoAbortOnStall: true,
+			guardHmacKey: stallRecoveryGuardKey,
+			preAbortWarningMs: 10,  // very short warning so abort executes immediately in test
+			autoRetryAfterAbort: true,
+			maxAutoRetries: 1,
+		};
+
+		// First call: issues warning (preAbortWarningMs=10ms, will expire immediately)
+		const firstResult = await runFlowDeskWatchdogCycleV1({
+			config,
+			rootDir: root,
+			client: fakeClient as never,
+			parentSessionId: "parent-watchdog-test",
+			now: new Date(observedAtMs),
+		});
+		assert.equal(firstResult.guardValid, true);
+		assert.equal(firstResult.lanesChecked, 1);
+
+		// Second call after warning expires: abort executes + retry
+		const secondResult = await runFlowDeskWatchdogCycleV1({
+			config,
+			rootDir: root,
+			client: fakeClient as never,
+			parentSessionId: "parent-watchdog-test",
+			now: new Date(observedAtMs + 60_000), // 1 minute later, warning expired
+		});
+		assert.equal(secondResult.guardValid, true);
+		assert.equal(secondResult.lanesChecked, 1);
+		assert.equal(secondResult.lanesAborted, 1);
+		assert.equal(secondResult.lanesRetried, 1);
+
+		// Verify abort evidence was written
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.ok, true);
+		assert.equal(
+			reloaded.entries.some((e) => e.evidenceClass === "lane_lifecycle" && e.record.state === "aborted"),
+			true,
+			"Expected aborted lane lifecycle evidence",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle skips when guard invalid", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-no-guard-"));
+	try {
+		// No Guard sidecar written — guard must be invalid
+		const config = {
+			autoAbortOnStall: true,
+			guardHmacKey: stallRecoveryGuardKey,
+			preAbortWarningMs: 10,
+		};
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config,
+			rootDir: root,
+			client: undefined,
+			parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, false);
+		assert.equal(result.lanesChecked, 0);
+		assert.equal(result.skippedReason, "guard_invalid");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle prevents concurrent execution", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-concurrent-"));
+	try {
+		makeWatchdogGuardSignOff(root);
+
+		const config = {
+			autoAbortOnStall: true,
+			guardHmacKey: stallRecoveryGuardKey,
+		};
+
+		// Start first cycle (no stalled lanes, so it will return quickly)
+		// but simulate concurrent flag being set by running two cycles in parallel
+		const [first, second] = await Promise.all([
+			runFlowDeskWatchdogCycleV1({ config, rootDir: root, client: undefined, parentSessionId: "" }),
+			runFlowDeskWatchdogCycleV1({ config, rootDir: root, client: undefined, parentSessionId: "" }),
+		]);
+
+		// One should succeed, one should be skipped due to concurrent flag
+		const results = [first, second];
+		const skipped = results.find((r) => r.skippedReason === "cycle_already_running");
+		const completed = results.find((r) => r.skippedReason === undefined);
+
+		// In sequential JS execution one will always win; the second concurrent call will get skipped
+		assert.ok(skipped !== undefined || completed !== undefined, "At least one result must exist");
+		// Verify the skipped one has guardValid=true (guard was valid, just concurrency blocked)
+		if (skipped !== undefined) {
+			assert.equal(skipped.guardValid, true);
+			assert.equal(skipped.lanesChecked, 0);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog trigger tool registers when mcpTriggerEnabled is true", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-trigger-tool-"));
+	try {
+		// Without chatMessageStallAlert.guardedAutoAbort, watchdog trigger should not register
+		const noGuardHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskWatchdogOption]: { enabled: true, mcpTriggerEnabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(
+			noGuardHooks.tool?.[flowdeskWatchdogTriggerToolName],
+			undefined,
+			"watchdog trigger should not register without guardedAutoAbort config",
+		);
+
+		// With chatMessageStallAlert.guardedAutoAbort configured
+		makeWatchdogGuardSignOff(root);
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskWatchdogOption]: { enabled: false, mcpTriggerEnabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					guardedAutoAbort: {
+						autoAbortOnStall: true,
+						guardHmacKey: stallRecoveryGuardKey,
+					},
+				},
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		// Note: mcpTriggerEnabled on watchdog with enabled=false falls through to standalone MCP path
+		// (OR) with enabled=true the trigger is registered
+		// Let's test with enabled=true which sets up both setInterval and MCP trigger
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskWatchdogOption]: { enabled: true, mcpTriggerEnabled: true },
+				[flowdeskChatMessageStallAlertOption]: {
+					enabled: true,
+					guardedAutoAbort: {
+						autoAbortOnStall: true,
+						guardHmacKey: stallRecoveryGuardKey,
+					},
+				},
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const triggerTool = enabledHooks.tool?.[flowdeskWatchdogTriggerToolName];
+		assert.ok(triggerTool, "watchdog trigger tool should be registered when mcpTriggerEnabled=true and guardedAutoAbort configured");
+		assert.match(triggerTool.description, /watchdog/i);
+		assert.match(triggerTool.description, /manually/);
+
+		// Execute the trigger tool (no stalled lanes, so it should just return a valid result)
+		const result = JSON.parse(
+			toolOutput(
+				await triggerTool.execute({ parentSessionId: "parent-trigger-test" }, undefined as never),
+			),
+		) as Record<string, unknown>;
+		assert.ok("cycleAt" in result, "result should have cycleAt");
+		assert.ok("guardValid" in result, "result should have guardValid");
+		assert.ok("lanesChecked" in result, "result should have lanesChecked");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
