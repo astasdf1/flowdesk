@@ -94,6 +94,7 @@ import {
 	redactedRuntimeReviewerExecutionBlocked,
 	runtimeReviewerExecutionExpectationsFromValue,
 } from "./runtime-reviewer-execution-bridge.js";
+import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
 import {
 	executeFlowDeskStatusLiveV1,
 	type FlowDeskStatusLiveConfigV1,
@@ -167,6 +168,8 @@ export const flowdeskQuickFallbackRunToolName =
 	"flowdesk_quick_fallback_run" as const;
 export const flowdeskLaneHeartbeatWriterToolName =
 	"flowdesk_lane_heartbeat_record" as const;
+export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
+export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -2915,6 +2918,82 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 	};
 }
 
+export function createFlowDeskAgentTaskRunOptInTools(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined;
+	durableStateRoot: string | undefined;
+}): Record<string, FlowDeskOpenCodeTool> | undefined {
+	if (!input.client || !input.durableStateRoot) return undefined;
+	const client = input.client;
+	const rootDir = input.durableStateRoot;
+	return {
+		[flowdeskAgentTaskRunToolName]: tool({
+			description: [
+				"Run a single task on a specific agent and model, returning the result text.",
+				"Use this to delegate a well-defined subtask to a specific model (e.g. Claude Opus for security analysis, GPT for architecture review).",
+				"Requires developerModeAcknowledged=true and allowProviderCall=true per call.",
+				"WHEN TO USE: user asks to delegate a specific task to a specific model/agent.",
+				"WHEN NOT TO USE: multi-step workflows (use flowdesk_workflow_dispatch), code review (use flowdesk_quick_reviewer_run).",
+				"After calling, use flowdesk_status_live to check the lane status.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id (e.g. workflow-xxx)"),
+				taskDescription: tool.schema.string().max(20_000).describe("The task prompt to send to the agent"),
+				agentName: tool.schema.string().describe("Agent name (e.g. reviewer-claude-opus, reviewer-gpt-frontier)"),
+				providerQualifiedModelId: tool.schema.string().describe("Concrete model id (e.g. anthropic/claude-opus-4-7)"),
+				parentSessionId: tool.schema.string().optional().describe("Parent session id"),
+				developerModeAcknowledged: tool.schema.boolean(),
+				allowProviderCall: tool.schema.boolean(),
+			},
+			async execute(args, ctx) {
+				const record: Record<string, unknown> = isRecord(args) ? args : {};
+				if (record.developerModeAcknowledged !== true)
+					return JSON.stringify({ status: "blocked", reason: "developerModeAcknowledged must be true" });
+				if (record.allowProviderCall !== true)
+					return JSON.stringify({ status: "blocked", reason: "allowProviderCall must be true" });
+				const workflowId = typeof record.workflowId === "string" ? record.workflowId : undefined;
+				const taskDescription = typeof record.taskDescription === "string" ? record.taskDescription : undefined;
+				const agentName = typeof record.agentName === "string" ? record.agentName : undefined;
+				const providerQualifiedModelId = typeof record.providerQualifiedModelId === "string" ? record.providerQualifiedModelId : undefined;
+				if (!workflowId || !taskDescription || !agentName || !providerQualifiedModelId)
+					return JSON.stringify({ status: "blocked", reason: "workflowId, taskDescription, agentName, and providerQualifiedModelId are required" });
+				const ctxRecord: Record<string, unknown> = isRecord(ctx) ? ctx : {};
+				const parentSessionId =
+					typeof record.parentSessionId === "string" && record.parentSessionId.length > 0
+						? record.parentSessionId
+						: typeof ctxRecord.sessionID === "string" && ctxRecord.sessionID.length > 0
+							? ctxRecord.sessionID
+							: "";
+				const taskId = `task-${Date.now().toString(36)}`;
+				const laneId = `lane-task-${Date.now().toString(36)}`;
+				const result = await executeFlowDeskAgentTaskV1({
+					workflowId,
+					taskId,
+					laneId,
+					agentRef: `agent-${agentName}`,
+					providerQualifiedModelId,
+					promptText: taskDescription,
+					parentSessionId,
+					rootDir,
+					client,
+				});
+				return JSON.stringify({
+					workflowId,
+					laneId,
+					taskId,
+					status: result.status,
+					resultText: result.status === "task_completed" ? result.resultText.slice(0, 4_096) : undefined,
+					resultTruncated: result.status === "task_completed" && result.resultText.length > 4_096,
+					failureCategory: result.status === "task_failed" ? result.failureCategory : undefined,
+					redactedReason: result.status === "task_failed" ? result.redactedReason : undefined,
+					summaryForUser: result.status === "task_completed"
+						? `Task completed on ${agentName} (${providerQualifiedModelId}). Result: ${result.resultText.slice(0, 200)}${result.resultText.length > 200 ? "..." : ""}`
+						: `Task failed on ${agentName}: ${result.failureCategory}`,
+				});
+			},
+		}),
+	};
+}
+
 function redactedManagedFallbackRegateBlocked(reason: string) {
 	return {
 		adapterProfile: "managed_fallback_regate_orchestrator",
@@ -3239,6 +3318,11 @@ export function createFlowDeskQuickFallbackRunOptInTools(
 
 function isLaneHeartbeatWriterEnabled(options?: PluginOptions): boolean {
 	const value = options?.[flowdeskLaneHeartbeatWriterOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
+function isAgentTaskRunEnabled(options?: PluginOptions): boolean {
+	const value = (options as Record<string, unknown> | undefined)?.[flowdeskAgentTaskRunOption];
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
@@ -3902,6 +3986,16 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskLaneHeartbeatWriterOptInTools(laneHeartbeatWriterConfig),
 		);
+	const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
+	if (agentTaskRunEnabled) {
+		const agentTaskRunClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+		const agentTaskRunRoot = durableStateRootFromOptions(options);
+		const agentTaskRunTools = createFlowDeskAgentTaskRunOptInTools({
+			client: agentTaskRunClient,
+			durableStateRoot: agentTaskRunRoot,
+		});
+		if (agentTaskRunTools !== undefined) Object.assign(tools, agentTaskRunTools);
+	}
 
 	// P8 Background Watchdog
 	const watchdogConfig = watchdogConfigFromOptions(options);

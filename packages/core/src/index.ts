@@ -78,6 +78,7 @@ export * from "./session-evidence.js";
 export * from "./state-paths.js";
 export * from "./state-store.js";
 export * from "./status.js";
+export * from "./task-result.js";
 export * from "./tool-contract-fixtures.js";
 export * from "./top-tier-reviewer-lane-probe.js";
 export * from "./usage-health.js";

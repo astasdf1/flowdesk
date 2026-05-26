@@ -32,6 +32,8 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskFds1SchemaConversionProbeTools,
 	createFlowDeskNaturalLanguageChatMessageHook,
 	createFlowDeskLocalNonDispatchAdapterTools,
+	flowdeskAgentTaskRunOption,
+	flowdeskAgentTaskRunToolName,
 	flowdeskChatIntakeToolName,
 	flowdeskChatMessageStallAlertOption,
 	flowdeskDurableStateRootOption,
@@ -6583,6 +6585,203 @@ test("watchdog trigger tool registers when mcpTriggerEnabled is true", async () 
 		assert.ok("cycleAt" in result, "result should have cycleAt");
 		assert.ok("guardValid" in result, "result should have guardValid");
 		assert.ok("lanesChecked" in result, "result should have lanesChecked");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run tool is absent by default and registers only with explicit opt-in", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		defaultHooks.tool?.[flowdeskAgentTaskRunToolName],
+		undefined,
+	);
+
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-agent-task-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-agent-task-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	// Without client, tool should not register even with opt-in enabled
+	const enabledWithoutClientHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskAgentTaskRunOption]: { enabled: true },
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		enabledWithoutClientHooks.tool?.[flowdeskAgentTaskRunToolName],
+		undefined,
+		"tool should be absent without client even with opt-in",
+	);
+
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-absent-"));
+	try {
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = enabledHooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool, "tool should register with client and durableStateRoot");
+		assert.match(String(agentTool.description ?? ""), /delegate/i);
+		assert.match(String(agentTool.description ?? ""), /WHEN TO USE/);
+		assert.match(String(agentTool.description ?? ""), /WHEN NOT TO USE/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run blocks without developerModeAcknowledged", async () => {
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-agent-task-block-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-agent-task-block-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-block-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const blockedResult = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-test-1",
+						taskDescription: "Analyze this code for security issues.",
+						agentName: "reviewer-claude-opus",
+						providerQualifiedModelId: "claude/claude-opus-4-7",
+						developerModeAcknowledged: false,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(blockedResult.status, "blocked");
+		assert.match(String(blockedResult.reason), /developerModeAcknowledged/);
+
+		const blockedNoProvider = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-test-1",
+						taskDescription: "Analyze this code.",
+						agentName: "reviewer-claude-opus",
+						providerQualifiedModelId: "claude/claude-opus-4-7",
+						developerModeAcknowledged: true,
+						allowProviderCall: false,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(blockedNoProvider.status, "blocked");
+		assert.match(String(blockedNoProvider.reason), /allowProviderCall/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run executes task and returns result text", async () => {
+	const assistantText = "Analysis complete: no issues found";
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-agent-task-exec-1" });
+			},
+			prompt() {
+				return Promise.resolve([
+					{
+						role: "assistant",
+						parts: [{ type: "text", text: assistantText }],
+					},
+				]);
+			},
+			messages(options: unknown) {
+				void options;
+				return Promise.resolve([
+					{
+						role: "assistant",
+						parts: [{ type: "text", text: assistantText }],
+					},
+				]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-exec-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-exec-1",
+						taskDescription: "Analyze this code for security issues.",
+						agentName: "reviewer-claude-opus",
+						providerQualifiedModelId: "claude/claude-opus-4-7",
+						parentSessionId: "parent-agent-task-exec-1",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_completed");
+		assert.ok(typeof result.resultText === "string" && result.resultText.includes(assistantText.slice(0, 20)));
+		assert.ok(typeof result.summaryForUser === "string" && result.summaryForUser.length > 0);
+		assert.ok(typeof result.workflowId === "string");
+		assert.ok(typeof result.laneId === "string");
+		assert.ok(typeof result.taskId === "string");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

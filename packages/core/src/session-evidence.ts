@@ -31,6 +31,10 @@ import {
 	validateFlowDeskRetryExecutedV1,
 	validateFlowDeskRetryFailedV1,
 } from "./retry-plan.js";
+import {
+	validateFlowDeskTaskResultV1,
+	validateFlowDeskTaskFailedV1,
+} from "./task-result.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
@@ -116,6 +120,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	pending_retry_plan: "flowdesk.pending_retry_plan.v1",
 	retry_executed: "flowdesk.retry_executed.v1",
 	retry_failed: "flowdesk.retry_failed.v1",
+	task_result: "flowdesk.task_result.v1",
+	task_failed: "flowdesk.task_failed.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -804,6 +810,10 @@ function validateEvidenceShape(
 		return validateFlowDeskRetryExecutedV1(record);
 	if (evidenceClass === "retry_failed")
 		return validateFlowDeskRetryFailedV1(record);
+	if (evidenceClass === "task_result")
+		return validateFlowDeskTaskResultV1(record);
+	if (evidenceClass === "task_failed")
+		return validateFlowDeskTaskFailedV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")

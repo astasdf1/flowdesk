@@ -134,6 +134,8 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"pending_retry_plan",
 	"retry_executed",
 	"retry_failed",
+	"task_result",
+	"task_failed",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -173,6 +175,8 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	pending_retry_plan: "pending-retry-plan",
 	retry_executed: "retry-executed",
 	retry_failed: "retry-failed",
+	task_result: "task-result",
+	task_failed: "task-failed",
 };
 
 export function sessionEvidenceDirectoryPath(
