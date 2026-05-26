@@ -7,6 +7,9 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	collectManagedDispatchBetaUsageEvidenceV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
+	reloadFlowDeskSessionEvidenceV1,
+	type FlowDeskSessionEvidenceReloadEntryV1,
+	type FlowDeskUsageSnapshotV1,
 } from "@flowdesk/core";
 
 const defaultExecFile = (file: string, args: string[]): string =>
@@ -72,6 +75,14 @@ export interface FlowDeskProviderUsageLiveSnapshotPersistenceV1 {
 	skippedReasons: readonly string[];
 }
 
+export interface FlowDeskProviderUsageLiveSnapshotReuseV1 {
+	requested: boolean;
+	durableStateRootConfigured: boolean;
+	workflowId?: string;
+	reusedEvidenceIds: readonly string[];
+	skippedReasons: readonly string[];
+}
+
 export interface FlowDeskProviderUsageLiveResultV1 {
 	status:
 		| "provider_usage_live_collected"
@@ -83,6 +94,7 @@ export interface FlowDeskProviderUsageLiveResultV1 {
 	worstAlertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
 	overallRecommendation: string;
 	redactedBlockReason?: string;
+	snapshotReuse?: FlowDeskProviderUsageLiveSnapshotReuseV1;
 	snapshotPersistence?: FlowDeskProviderUsageLiveSnapshotPersistenceV1;
 	safeNextActions: readonly ("/flowdesk-doctor" | "/flowdesk-status")[];
 	authority: {
@@ -278,6 +290,83 @@ function rowFromCollectorResult(
 	};
 }
 
+function rowFromUsageSnapshot(
+	family: FlowDeskProviderUsageLiveProviderFamilyV1,
+	snapshot: FlowDeskUsageSnapshotV1,
+): FlowDeskProviderUsageLiveProviderRowV1 {
+	const remainingPercent = remainingPercentFromSnapshot(snapshot);
+	const alert = classifyUsageSnapshot(family, snapshot, remainingPercent);
+	return {
+		providerFamily: family,
+		ok: snapshot.dispatchability === "dispatchable" && snapshot.freshness === "fresh",
+		dispatchability: snapshot.dispatchability,
+		freshness: snapshot.freshness,
+		resetBucket: snapshot.reset_bucket,
+		resetTime: snapshot.reset_time,
+		remainingPercent,
+		alertLevel: alert.alertLevel,
+		recommendation: `${alert.recommendation} Reused a fresh durable usage snapshot to avoid another provider usage call.`,
+		uncertaintyFlags: [...snapshot.uncertainty_flags],
+		modelFamily: snapshot.model_family,
+		usageSnapshotRef: snapshot.snapshot_id,
+		providerHealthSnapshotRef: `cached-health-${snapshot.snapshot_id}`,
+		usageAuthorityAcquired: true,
+	};
+}
+
+function remainingPercentFromSnapshot(
+	snapshot: FlowDeskUsageSnapshotV1,
+): number | null {
+	const match = /^([0-9]+(?:\.[0-9]+)?)%/.exec(snapshot.reset_bucket);
+	if (match === null) return null;
+	const parsed = Number.parseFloat(match[1]);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
+function classifyUsageSnapshot(
+	family: FlowDeskProviderUsageLiveProviderFamilyV1,
+	snapshot: FlowDeskUsageSnapshotV1,
+	remaining: number | null,
+): {
+	alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	recommendation: string;
+} {
+	if (snapshot.freshness !== "fresh") {
+		return {
+			alertLevel: snapshot.freshness === "stale" ? "stale" : "unknown",
+			recommendation: `Provider usage snapshot for ${family} is ${snapshot.freshness}; refresh provider auth before relying on it.`,
+		};
+	}
+	if (remaining === null) {
+		return {
+			alertLevel: "unknown",
+			recommendation: `Provider usage snapshot for ${family} did not include a parseable remaining percentage; proceed with caution.`,
+		};
+	}
+	if (remaining <= 0) {
+		return {
+			alertLevel: "exhausted",
+			recommendation: `${family} bucket ${snapshot.reset_bucket} is exhausted; wait for reset at ${snapshot.reset_time} or switch providers.`,
+		};
+	}
+	if (remaining <= 10) {
+		return {
+			alertLevel: "critical",
+			recommendation: `${family} bucket ${snapshot.reset_bucket} is critically low (~${remaining.toFixed(1)}%). Avoid starting large work until reset at ${snapshot.reset_time}, or switch providers for big tasks.`,
+		};
+	}
+	if (remaining <= 30) {
+		return {
+			alertLevel: "warning",
+			recommendation: `${family} bucket ${snapshot.reset_bucket} is around ${remaining.toFixed(1)}%; keep heavier tasks short or stage them around the reset at ${snapshot.reset_time}.`,
+		};
+	}
+	return {
+		alertLevel: "ok",
+		recommendation: `${family} bucket ${snapshot.reset_bucket} has ${remaining.toFixed(1)}% remaining until reset at ${snapshot.reset_time}; safe to proceed with regular tasks.`,
+	};
+}
+
 export async function executeFlowDeskProviderUsageLiveV1(input: {
 	config: FlowDeskProviderUsageLiveConfigV1;
 	request?: FlowDeskProviderUsageLiveRequestV1;
@@ -317,12 +406,21 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		};
 	}
 
-	const acquisition = acquisitionConfigFromLive(input.config, families);
+	const snapshotReuse = loadFreshProviderUsageSnapshots(
+		input.config,
+		families,
+		observedAt,
+	);
+	const cachedByFamily = new Map(
+		snapshotReuse.cached.map((cached) => [cached.family, cached] as const),
+	);
+	const familiesToCollect = families.filter((family) => !cachedByFamily.has(family));
+	const acquisition = acquisitionConfigFromLive(input.config, familiesToCollect);
 	const collectorOptions: FlowDeskProviderUsageCollectorOptionsV1 = {
 		execFile: defaultExecFile,
 	};
 	const collectorResults = await Promise.all(
-		families.map(async (family) => {
+		familiesToCollect.map(async (family) => {
 			try {
 				const result = await collectManagedDispatchBetaUsageEvidenceV1(
 					targetFor(family, observedAt),
@@ -339,9 +437,12 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		}),
 	);
 
-	const providers = collectorResults.map(({ family, result }) =>
-		rowFromCollectorResult(family, result),
-	);
+	const providers = families.map((family) => {
+		const cached = cachedByFamily.get(family);
+		if (cached !== undefined) return rowFromUsageSnapshot(family, cached.snapshot);
+		const collected = collectorResults.find((result) => result.family === family);
+		return rowFromCollectorResult(family, collected?.result);
+	});
 	const anyAcquired = providers.some((row) => row.usageAuthorityAcquired);
 	const worstAlertLevel = computeWorstAlertLevel(providers);
 	const overallRecommendation = composeOverallRecommendation(
@@ -362,6 +463,7 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		providers,
 		worstAlertLevel,
 		overallRecommendation,
+		...(snapshotReuse.report !== undefined ? { snapshotReuse: snapshotReuse.report } : {}),
 		...(snapshotPersistence !== undefined
 			? { snapshotPersistence }
 			: {}),
@@ -377,6 +479,106 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 			providerUsageAcquired: anyAcquired,
 		},
 	};
+}
+
+function loadFreshProviderUsageSnapshots(
+	config: FlowDeskProviderUsageLiveConfigV1,
+	families: readonly FlowDeskProviderUsageLiveProviderFamilyV1[],
+	observedAt: string,
+): {
+	cached: Array<{
+		family: FlowDeskProviderUsageLiveProviderFamilyV1;
+		snapshot: FlowDeskUsageSnapshotV1;
+		evidenceId: string;
+	}>;
+	report?: FlowDeskProviderUsageLiveSnapshotReuseV1;
+} {
+	if (typeof config.durableStateRootDir !== "string" || config.durableStateRootDir.trim().length === 0)
+		return { cached: [] };
+	const workflowId = sanitizePersistWorkflowId(config.persistWorkflowId);
+	const reload = reloadFlowDeskSessionEvidenceV1({
+		rootDir: config.durableStateRootDir,
+		workflowId,
+	});
+	const skippedReasons: string[] = [];
+	if (!reload.ok) {
+		return {
+			cached: [],
+			report: {
+				requested: true,
+				durableStateRootConfigured: true,
+				workflowId,
+				reusedEvidenceIds: [],
+				skippedReasons: [`reload failed: ${reload.errors.join("; ")}`],
+			},
+		};
+	}
+	const cached: Array<{
+		family: FlowDeskProviderUsageLiveProviderFamilyV1;
+		snapshot: FlowDeskUsageSnapshotV1;
+		evidenceId: string;
+	}> = [];
+	for (const family of families) {
+		const entry = latestFreshUsageSnapshotEntry(reload.entries, family, observedAt);
+		if (entry === undefined) {
+			skippedReasons.push(`${family}: no fresh durable usage snapshot within TTL`);
+			continue;
+		}
+		cached.push({
+			family,
+			snapshot: entry.record as unknown as FlowDeskUsageSnapshotV1,
+			evidenceId: entry.evidenceId,
+		});
+	}
+	return {
+		cached,
+		report: {
+			requested: true,
+			durableStateRootConfigured: true,
+			workflowId,
+			reusedEvidenceIds: cached.map((entry) => entry.evidenceId),
+			skippedReasons,
+		},
+	};
+}
+
+function latestFreshUsageSnapshotEntry(
+	entries: readonly FlowDeskSessionEvidenceReloadEntryV1[],
+	family: FlowDeskProviderUsageLiveProviderFamilyV1,
+	observedAt: string,
+): FlowDeskSessionEvidenceReloadEntryV1 | undefined {
+	const candidates = entries
+		.filter((entry) => entry.evidenceClass === "provider_usage_snapshot")
+		.filter((entry) => entry.record.provider_family === family)
+		.filter((entry) => entry.record.freshness === "fresh")
+		.map((entry) => ({ entry, observedAtMs: snapshotObservedAtMs(entry) }))
+		.filter((item): item is { entry: FlowDeskSessionEvidenceReloadEntryV1; observedAtMs: number } => item.observedAtMs !== undefined)
+		.filter((item) => {
+			const ttlMinutes = typeof item.entry.record.freshness_ttl === "number" ? item.entry.record.freshness_ttl : 0;
+			return new Date(observedAt).getTime() - item.observedAtMs <= ttlMinutes * 60_000;
+		})
+		.sort((a, b) => b.observedAtMs - a.observedAtMs);
+	return candidates[0]?.entry;
+}
+
+function snapshotObservedAtMs(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+): number | undefined {
+	const fromEvidenceId = timestampFromUsageSnapshotId(entry.evidenceId);
+	if (fromEvidenceId !== undefined) return fromEvidenceId;
+	const snapshotId = entry.record.snapshot_id;
+	return typeof snapshotId === "string"
+		? timestampFromUsageSnapshotId(snapshotId)
+		: undefined;
+}
+
+function timestampFromUsageSnapshotId(value: string): number | undefined {
+	const match = /(\d{8}T\d{9}Z)$/.exec(value);
+	if (match === null) return undefined;
+	const stamp = match[1];
+	const iso = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}.${stamp.slice(15, 18)}Z`;
+	const parsed = Date.parse(iso);
+	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function persistProviderUsageSnapshots(

@@ -3,6 +3,10 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+	applyFlowDeskSessionEvidenceWriteIntentsV1,
+	prepareFlowDeskSessionEvidenceWriteIntentV1,
+} from "@flowdesk/core";
 import { executeFlowDeskProviderUsageLiveV1 } from "./provider-usage-live-tool.js";
 
 const fixedNow = () => new Date("2026-05-24T00:00:00.000Z");
@@ -122,6 +126,113 @@ test("provider usage live persistence reports durable root, workflow id, and an 
 			const stat = statSync(evidenceDir);
 			assert.equal(stat.isDirectory(), true);
 		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("provider usage live reuses a fresh durable snapshot before collecting provider usage", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-reuse-"));
+	try {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-provider-usage-live",
+			evidenceId: "provider-usage-snapshot-claude-20260524T000000000Z",
+			record: {
+				schema_version: "flowdesk.usage_snapshot.v1",
+				snapshot_id: "usage-live-claude-20260524T000000000Z",
+				provider_family: "claude",
+				model_family: "sonnet-4",
+				freshness: "fresh",
+				freshness_ttl: 5,
+				reset_time: "2026-05-24T05:00:00.000Z",
+				reset_bucket: "80% until reset",
+				dispatchability: "dispatchable",
+				uncertainty_flags: [],
+				source_ref: "usage-live-source-claude-20260524T000000000Z",
+			},
+		});
+		assert.equal(prepared.ok, true);
+		assert.ok(prepared.writeIntent);
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			prepared.writeIntent,
+		]);
+		assert.equal(applied.ok, true);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["claude"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "claude" },
+			now: fixedNow,
+		});
+
+		assert.equal(result.status, "provider_usage_live_collected");
+		assert.deepEqual(result.snapshotReuse?.reusedEvidenceIds, [
+			"provider-usage-snapshot-claude-20260524T000000000Z",
+		]);
+		assert.equal(result.providers.length, 1);
+		assert.equal(result.providers[0]?.providerFamily, "claude");
+		assert.equal(
+			result.providers[0]?.usageSnapshotRef,
+			"usage-live-claude-20260524T000000000Z",
+		);
+		assert.equal(result.providers[0]?.remainingPercent, 80);
+		assert.equal(result.providers[0]?.alertLevel, "ok");
+		assert.match(
+			result.providers[0]?.recommendation ?? "",
+			/Reused a fresh durable usage snapshot/i,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("provider usage live ignores expired durable snapshots", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-expired-"));
+	try {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-provider-usage-live",
+			evidenceId: "provider-usage-snapshot-claude-20260523T235000000Z",
+			record: {
+				schema_version: "flowdesk.usage_snapshot.v1",
+				snapshot_id: "usage-live-claude-20260523T235000000Z",
+				provider_family: "claude",
+				model_family: "sonnet-4",
+				freshness: "fresh",
+				freshness_ttl: 5,
+				reset_time: "2026-05-24T05:00:00.000Z",
+				reset_bucket: "80% until reset",
+				dispatchability: "dispatchable",
+				uncertainty_flags: [],
+				source_ref: "usage-live-source-claude-20260523T235000000Z",
+			},
+		});
+		assert.equal(prepared.ok, true);
+		assert.ok(prepared.writeIntent);
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent]).ok,
+			true,
+		);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["claude"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "claude" },
+			now: fixedNow,
+		});
+
+		assert.deepEqual(result.snapshotReuse?.reusedEvidenceIds, []);
+		assert.match(
+			result.snapshotReuse?.skippedReasons.join("|") ?? "",
+			/no fresh durable usage snapshot within TTL/i,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
