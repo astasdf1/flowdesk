@@ -496,6 +496,17 @@ const fakeSuccessClient = {
 	},
 };
 
+const fakeAgentTaskFailureClient = {
+	session: {
+		create: async () => ({ id: "ses-retry-child-failed-001" }),
+		messages: async () => ({ messages: [] }),
+		prompt: async () => ({}),
+		promptAsync: async () => ({}),
+		abort: async () => ({}),
+		children: async () => ({ sessions: [] }),
+	},
+};
+
 const retryConfig = {
 	autoAbortOnStall: true,
 	autoRetryAfterAbort: true as const,
@@ -852,6 +863,204 @@ test("guarded auto-retry disabled when context missing", async () => {
 
 	assert.equal(result.status, "auto_retry_disabled");
 	assert.equal("reason" in result && result.reason, "context_missing");
+});
+
+test("guarded auto-retry launches generic agent task from agent_task_context", async () => {
+	const rootDir = withTempRoot("flowdesk-auto-retry-agent-task-happy-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			agent_ref: "agent-general-123",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "aborted",
+			updated_at: "2026-05-26T10:05:00.000Z",
+		}),
+		"lifecycle-agent-task-aborted-001",
+	);
+	writeAgentTaskContext(rootDir, agentTaskContextRecord());
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		laneId: "lane-agent-task-123",
+		abortEvidenceId: "lifecycle-agent-task-aborted-001",
+		client: fakeSuccessClient,
+		parentSessionId: "unused-parent-for-agent-context",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "retry_launched", `expected retry_launched, got ${JSON.stringify(result)}`);
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-agent-task-123" });
+	assert.equal(reload.ok, true);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_executed.v1" &&
+				(e.record as Record<string, unknown>)?.retry_kind === "agent_task" &&
+				(e.record as Record<string, unknown>)?.task_id === "task-agent-123",
+		),
+		true,
+		"generic retry_executed evidence should be written",
+	);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.task_result.v1" &&
+				(e.record as Record<string, unknown>)?.lane_id === ("newLaneId" in result ? result.newLaneId : ""),
+		),
+		true,
+		"generic retry should write task_result for the new lane",
+	);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.pending_retry_plan.v1" &&
+				(e.record as Record<string, unknown>)?.status === "launched",
+		),
+		true,
+		"pending retry plan should be marked launched",
+	);
+});
+
+test("guarded auto-retry blocks generic lane when agent_task_context and reviewer context are missing", async () => {
+	const rootDir = withTempRoot("flowdesk-auto-retry-agent-task-ctx-missing-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			state: "aborted",
+			updated_at: "2026-05-26T10:05:00.000Z",
+		}),
+		"lifecycle-agent-task-aborted-001",
+	);
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		laneId: "lane-agent-task-123",
+		abortEvidenceId: "lifecycle-agent-task-aborted-001",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "context_missing");
+});
+
+test("guarded auto-retry cap prevents generic agent task retry", async () => {
+	const rootDir = withTempRoot("flowdesk-auto-retry-agent-task-cap-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			state: "aborted",
+			updated_at: "2026-05-26T10:05:00.000Z",
+		}),
+		"lifecycle-agent-task-aborted-001",
+	);
+	writeAgentTaskContext(rootDir, agentTaskContextRecord());
+	writeRetryExecutedEvidence(rootDir, {
+		schema_version: "flowdesk.retry_executed.v1",
+		workflow_id: "workflow-agent-task-123",
+		original_lane_id: "lane-agent-task-123",
+		new_lane_id: "lane-retry-agent-task-prev",
+		retry_attempt: 1,
+		retry_kind: "agent_task",
+		task_id: "task-agent-123",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		new_parent_session_ref: "ses-parent-agent-123",
+		created_at: "2026-05-26T10:03:00.000Z",
+		dispatch_authority_enabled: false,
+	});
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		laneId: "lane-agent-task-123",
+		abortEvidenceId: "lifecycle-agent-task-aborted-001",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "cap_reached");
+});
+
+test("guarded auto-retry records generic retry failure and terminal lifecycle", async () => {
+	const rootDir = withTempRoot("flowdesk-auto-retry-agent-task-failed-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({
+			workflow_id: "workflow-agent-task-123",
+			lane_id: "lane-agent-task-123",
+			agent_ref: "agent-general-123",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "aborted",
+			updated_at: "2026-05-26T10:05:00.000Z",
+		}),
+		"lifecycle-agent-task-aborted-001",
+	);
+	writeAgentTaskContext(rootDir, agentTaskContextRecord());
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-agent-task-123",
+		laneId: "lane-agent-task-123",
+		abortEvidenceId: "lifecycle-agent-task-aborted-001",
+		client: fakeAgentTaskFailureClient,
+		parentSessionId: "unused-parent-for-agent-context",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "retry_failed");
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-agent-task-123" });
+	assert.equal(reload.ok, true);
+	const newLaneId = reload.entries.find(
+		(e) => (e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1",
+	)?.record.new_lane_id as string | undefined;
+	assert.ok(newLaneId);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1" &&
+				(e.record as Record<string, unknown>)?.new_lane_id === newLaneId,
+		),
+		true,
+		"retry_failed evidence should be written for generic retry",
+	);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				e.evidenceClass === "lane_lifecycle" &&
+				(e.record as Record<string, unknown>)?.lane_id === newLaneId &&
+				(e.record as Record<string, unknown>)?.state === "no_output",
+		),
+		true,
+		"failed generic retry should write terminal lifecycle for the new lane",
+	);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.pending_retry_plan.v1" &&
+				(e.record as Record<string, unknown>)?.status === "failed",
+		),
+		true,
+		"pending retry plan should be marked failed",
+	);
 });
 
 test("guarded auto-retry emits retry_failed evidence when SDK unavailable", async () => {

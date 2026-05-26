@@ -74,10 +74,12 @@ export interface FlowDeskRetryExecutedV1 {
 	original_lane_id: string;
 	new_lane_id: string;
 	retry_attempt: number;
-	perspective: FlowDeskTopTierReviewPerspective;
+	retry_kind?: "reviewer_lane" | "agent_task";
+	perspective?: FlowDeskTopTierReviewPerspective;
+	task_id?: string;
 	provider_qualified_model_id: string;
 	new_parent_session_ref: string;
-	original_attempt_id: string;
+	original_attempt_id?: string;
 	created_at: string;
 	dispatch_authority_enabled: false;
 }
@@ -295,7 +297,9 @@ export function validateFlowDeskRetryExecutedV1(value: unknown): ValidationResul
 		"original_lane_id",
 		"new_lane_id",
 		"retry_attempt",
+		"retry_kind",
 		"perspective",
+		"task_id",
 		"provider_qualified_model_id",
 		"new_parent_session_ref",
 		"original_attempt_id",
@@ -309,11 +313,19 @@ export function validateFlowDeskRetryExecutedV1(value: unknown): ValidationResul
 	errors.push(...validateOpaqueId(record.new_lane_id, "new_lane_id").errors);
 	if (typeof record.retry_attempt !== "number" || !Number.isInteger(record.retry_attempt) || record.retry_attempt < 1)
 		errors.push("retry_attempt must be an integer >= 1");
-	if (!VALID_PERSPECTIVES.has(record.perspective ?? ""))
+	if (record.retry_kind !== undefined && record.retry_kind !== "reviewer_lane" && record.retry_kind !== "agent_task")
+		errors.push("retry_kind must be reviewer_lane or agent_task");
+	if (record.retry_kind === "agent_task") {
+		errors.push(...nonEmptyString(record.task_id, "task_id").errors);
+		if (record.perspective !== undefined)
+			errors.push("agent_task retry_executed must not include perspective");
+	} else if (!VALID_PERSPECTIVES.has(record.perspective ?? "")) {
 		errors.push("perspective must be a valid FlowDeskTopTierReviewPerspective");
+	}
 	errors.push(...nonEmptyString(record.provider_qualified_model_id, "provider_qualified_model_id").errors);
 	errors.push(...nonEmptyString(record.new_parent_session_ref, "new_parent_session_ref").errors);
-	errors.push(...nonEmptyString(record.original_attempt_id, "original_attempt_id").errors);
+	if (record.retry_kind !== "agent_task")
+		errors.push(...nonEmptyString(record.original_attempt_id, "original_attempt_id").errors);
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("retry executed record cannot enable dispatch authority");

@@ -30,6 +30,7 @@ import {
 	FlowDeskTimeoutError,
 	withTimeout,
 } from "./shared/with-timeout.js";
+import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
 
 export interface FlowDeskTimeoutConfig {
 	sessionReadMs?: number;
@@ -866,6 +867,26 @@ function buildRetryLaunchPlanFromContextV1(
 	};
 }
 
+function parentSessionIdFromRef(parentSessionRef: string): string | undefined {
+	return parentSessionRef.startsWith("ses-") && parentSessionRef.length > "ses-".length
+		? parentSessionRef.slice("ses-".length)
+		: undefined;
+}
+
+function writeRetryFailedV1(input: {
+	rootDir: string;
+	workflowId: string;
+	evidenceId: string;
+	record: FlowDeskRetryFailedV1;
+}): void {
+	writeEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: input.evidenceId,
+		record: input.record as unknown as Record<string, unknown>,
+	});
+}
+
 /**
  * Evaluate guarded auto-retry hook following the execution order from the design doc exactly.
  * Called after `evaluateGuardedAutoAbortHookV1` returns `auto_abort_executed`.
@@ -931,7 +952,8 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 		};
 	}
 
-	// Step 4: Load reviewer_lane_context.v1 for laneId
+	// Step 4: Load retry context for laneId. Reviewer context remains the
+	// preferred P7 path; generic agent tasks fall back to agent_task_context.v1.
 	const reloaded = reloadFlowDeskSessionEvidenceV1({
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,
@@ -939,22 +961,37 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 	if (!reloaded.ok) {
 		return { status: "auto_retry_disabled", reason: "context_missing" };
 	}
-	const contextEntry = reloaded.entries.find(
+	const reviewerContextEntry = reloaded.entries.find(
 		(e) => isReviewerLaneContext(e.record) && (e.record as FlowDeskReviewerLaneContextV1).lane_id === input.laneId,
 	);
+	const agentTaskContextEntry = reviewerContextEntry === undefined
+		? reloaded.entries.find(
+			(e) => isAgentTaskContext(e.record) && (e.record as FlowDeskAgentTaskContextV1).lane_id === input.laneId,
+		)
+		: undefined;
+	const contextEntry = reviewerContextEntry ?? agentTaskContextEntry;
 	if (contextEntry === undefined) {
 		return { status: "auto_retry_disabled", reason: "context_missing" };
 	}
-	const context = contextEntry.record as unknown as FlowDeskReviewerLaneContextV1;
+	const isAgentTaskRetry = reviewerContextEntry === undefined;
+	const reviewerContext = isAgentTaskRetry ? undefined : contextEntry.record as unknown as FlowDeskReviewerLaneContextV1;
+	const agentTaskContext = isAgentTaskRetry ? contextEntry.record as unknown as FlowDeskAgentTaskContextV1 : undefined;
+	const context = reviewerContext ?? agentTaskContext!;
 
 	// Step 5: Verify context.redaction_version present
 	if (!context.redaction_version || typeof context.redaction_version !== "string" || context.redaction_version.trim().length === 0) {
 		return { status: "auto_retry_disabled", reason: "context_redaction_invalid" };
 	}
 
-	// Step 6: Verify context.workflow_id === workflowId && context.perspective valid
+	// Step 6: Verify context.workflow_id === workflowId and context-specific invariants.
 	const VALID_PERSPECTIVES = new Set(["policy_security", "architecture", "verification_implementation"]);
-	if (context.workflow_id !== input.workflowId || !VALID_PERSPECTIVES.has(context.perspective)) {
+	if (context.workflow_id !== input.workflowId) {
+		return { status: "auto_retry_disabled", reason: "invariant_violated" };
+	}
+	if (reviewerContext !== undefined && !VALID_PERSPECTIVES.has(reviewerContext.perspective)) {
+		return { status: "auto_retry_disabled", reason: "invariant_violated" };
+	}
+	if (agentTaskContext !== undefined && agentTaskContext.prompt_text_truncated === true) {
 		return { status: "auto_retry_disabled", reason: "invariant_violated" };
 	}
 
@@ -1049,8 +1086,118 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 		};
 	}
 
+	if (agentTaskContext !== undefined) {
+		const retryParentSessionId = parentSessionIdFromRef(agentTaskContext.parent_session_ref);
+		if (retryParentSessionId === undefined) {
+			const failedId = `retry-failed-agent-task-parent-${safeToken(newLaneId)}-${retryToken}`;
+			writeRetryFailedV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				evidenceId: failedId,
+				record: {
+					schema_version: "flowdesk.retry_failed.v1",
+					workflow_id: input.workflowId,
+					original_lane_id: input.laneId,
+					new_lane_id: newLaneId,
+					retry_attempt: retryAttempt,
+					failure_category: "invariant_violated",
+					redacted_reason: "agent_task_context_parent_session_ref_invalid",
+					created_at: now.toISOString(),
+					dispatch_authority_enabled: false,
+				},
+			});
+			writeEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				evidenceId: `${pendingRetryEvidenceId}-failed`,
+				record: { ...pendingRecord, status: "failed" as const } as unknown as Record<string, unknown>,
+			});
+			return {
+				status: "retry_failed",
+				failureCategory: "invariant_violated",
+				redactedReason: "agent_task_context_parent_session_ref_invalid",
+			};
+		}
+
+		const taskResult = await executeFlowDeskAgentTaskV1({
+			workflowId: input.workflowId,
+			taskId: agentTaskContext.task_id,
+			laneId: newLaneId,
+			agentRef: agentTaskContext.agent_ref,
+			providerQualifiedModelId: agentTaskContext.provider_qualified_model_id,
+			promptText: agentTaskContext.prompt_text,
+			parentSessionId: retryParentSessionId,
+			rootDir: input.rootDir,
+			client: input.client,
+			timeoutMs: timeoutMs,
+		});
+
+		if (taskResult.status === "task_failed") {
+			const failedId = `retry-failed-agent-task-${safeToken(newLaneId)}-${retryToken}`;
+			writeRetryFailedV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				evidenceId: failedId,
+				record: {
+					schema_version: "flowdesk.retry_failed.v1",
+					workflow_id: input.workflowId,
+					original_lane_id: input.laneId,
+					new_lane_id: newLaneId,
+					retry_attempt: retryAttempt,
+					failure_category: taskResult.failureCategory === "no_response" ? "indeterminate_launch" : "sdk_create_failed",
+					redacted_reason: `agent_task_retry_${taskResult.failureCategory}`,
+					created_at: now.toISOString(),
+					dispatch_authority_enabled: false,
+				},
+			});
+			writeEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				evidenceId: `${pendingRetryEvidenceId}-failed`,
+				record: { ...pendingRecord, status: "failed" as const } as unknown as Record<string, unknown>,
+			});
+			return {
+				status: "retry_failed",
+				failureCategory: taskResult.failureCategory,
+				redactedReason: taskResult.redactedReason,
+			};
+		}
+
+		const executedId = `retry-executed-${safeToken(newLaneId)}-${retryToken}`;
+		const executedRecord: FlowDeskRetryExecutedV1 = {
+			schema_version: "flowdesk.retry_executed.v1",
+			workflow_id: input.workflowId,
+			original_lane_id: input.laneId,
+			new_lane_id: newLaneId,
+			retry_attempt: retryAttempt,
+			retry_kind: "agent_task",
+			task_id: agentTaskContext.task_id,
+			provider_qualified_model_id: agentTaskContext.provider_qualified_model_id,
+			new_parent_session_ref: agentTaskContext.parent_session_ref,
+			created_at: now.toISOString(),
+			dispatch_authority_enabled: false,
+		};
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: executedId,
+			record: executedRecord as unknown as Record<string, unknown>,
+		});
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: `${pendingRetryEvidenceId}-launched`,
+			record: { ...pendingRecord, status: "launched" as const } as unknown as Record<string, unknown>,
+		});
+		return {
+			status: "retry_launched",
+			newLaneId,
+			pendingRetryEvidenceId,
+		};
+	}
+
 	// Step 12: Call launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1
-	const launchPlan = buildRetryLaunchPlanFromContextV1(context, newLaneId, input.parentSessionId);
+	const launchPlan = buildRetryLaunchPlanFromContextV1(reviewerContext!, newLaneId, input.parentSessionId);
 
 	let launchResult: Awaited<ReturnType<typeof launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1>>;
 	try {
@@ -1060,7 +1207,7 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 			request: {
 				allowActualLaneLaunch: true,
 				parentSessionId: input.parentSessionId,
-				promptText: context.prompt_text,
+				promptText: reviewerContext!.prompt_text,
 				dispatchMethod: "prompt",
 			},
 		});
@@ -1148,10 +1295,11 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 		original_lane_id: input.laneId,
 		new_lane_id: newLaneId,
 		retry_attempt: retryAttempt,
-		perspective: context.perspective,
-		provider_qualified_model_id: context.provider_qualified_model_id,
+		retry_kind: "reviewer_lane",
+		perspective: reviewerContext!.perspective,
+		provider_qualified_model_id: reviewerContext!.provider_qualified_model_id,
 		new_parent_session_ref: newParentSessionRef,
-		original_attempt_id: context.original_attempt_id,
+		original_attempt_id: reviewerContext!.original_attempt_id,
 		created_at: now.toISOString(),
 		dispatch_authority_enabled: false,
 	};
