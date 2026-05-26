@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,12 +9,18 @@ import {
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
 	type FlowDeskLaneLifecycleRecordV1,
+	type FlowDeskReviewerLaneContextV1,
+	type FlowDeskPendingRetryPlanV1,
+	type FlowDeskRetryExecutedV1,
+	type FlowDeskRetryFailedV1,
 } from "@flowdesk/core";
 import { createFlowDeskLocalNonDispatchAdapterSession } from "./local-adapter.js";
 import { validateAndAbortFlowDeskLaneEvidenceV1 } from "./stall-recovery.js";
 import {
 	computeGuardSignOffHmacV1,
 	evaluateGuardedAutoAbortHookV1,
+	evaluateGuardedAutoRetryHookV1,
+	reconcileStalePendingRetryPlansV1,
 	isAutoAbortEnabledV1,
 	verifyGuardSignOffHmacV1,
 	type FlowDeskGuardSignOffV1,
@@ -278,4 +284,490 @@ test("guarded auto-abort stays manual when disabled, responsive, or legacy-owned
 		}).status,
 		"manual_recommended",
 	);
+});
+
+// ---------------------------------------------------------------------------
+// P7 Guarded Auto-Retry helpers
+// ---------------------------------------------------------------------------
+
+/** Write a guard sign-off sidecar pair into rootDir for the retry hook. */
+function writeGuardSignOff(rootDir: string, overrides: Partial<FlowDeskGuardSignOffV1> = {}): void {
+	const adrDir = join(rootDir, "docs", "adr");
+	mkdirSync(adrDir, { recursive: true });
+	const markdownPath = join(adrDir, "0002-sdk-surface-verification.md");
+	const jsonPath = join(adrDir, "0002-sdk-surface-verification.guard_sign_off.json");
+	writeFileSync(markdownPath, guardMarkdown, "utf8");
+	const signOff = signedGuardSignOff(overrides);
+	writeFileSync(jsonPath, JSON.stringify(signOff), "utf8");
+}
+
+function reviewerLaneContextRecord(overrides: Partial<FlowDeskReviewerLaneContextV1> = {}): FlowDeskReviewerLaneContextV1 {
+	return {
+		schema_version: "flowdesk.reviewer_lane_context.v1",
+		workflow_id: "workflow-quick-reviewer-123",
+		lane_id: "lane-quick-policy-security-123",
+		lane_plan_ref: "plan-ref-001",
+		perspective: "policy_security",
+		agent_ref: "agent-reviewer-gpt-frontier",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		parent_session_ref: "ses-parent-001",
+		original_attempt_id: "attempt-001",
+		prompt_text: "Review this code for security issues.",
+		prompt_text_truncated: false,
+		prompt_text_sha256: "abc123sha256hex",
+		redaction_version: "v1",
+		created_at: "2026-05-26T10:00:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function writeReviewerLaneContext(rootDir: string, record: FlowDeskReviewerLaneContextV1, evidenceId = "reviewer-lane-context-001"): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writeRetryExecutedEvidence(
+	rootDir: string,
+	record: FlowDeskRetryExecutedV1,
+	evidenceId = "retry-executed-001",
+): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writeRetryFailedEvidence(
+	rootDir: string,
+	record: FlowDeskRetryFailedV1,
+	evidenceId = "retry-failed-001",
+): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writePendingRetryPlanEvidence(
+	rootDir: string,
+	record: FlowDeskPendingRetryPlanV1,
+	evidenceId = "pending-retry-plan-001",
+): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record: record as unknown as Record<string, unknown>,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+/** Helper to set up a rootDir with aborted lane lifecycle + guard sign-off + reviewer_lane_context. */
+function withTempRoot(prefix: string): string {
+	return mkdtempSync(join(tmpdir(), prefix));
+}
+
+/**
+ * Fake SDK client that successfully creates a child session.
+ * Used for happy_path_single_retry.
+ */
+const fakeSuccessClient = {
+	session: {
+		create: async () => ({ id: "ses-retry-child-001" }),
+		messages: async () => ({ messages: [{ role: "assistant", parts: [{ type: "text", text: '{"schema_version":"flowdesk.top_tier_review_verdict.v1"}' }] }] }),
+		prompt: async () => ({}),
+		promptAsync: async () => ({}),
+		abort: async () => ({}),
+		children: async () => ({ sessions: [] }),
+	},
+};
+
+const retryConfig = {
+	autoAbortOnStall: true,
+	autoRetryAfterAbort: true as const,
+	maxAutoRetries: 1,
+	guardHmacKey: guardKey,
+};
+
+// ---------------------------------------------------------------------------
+// Conformance fixtures
+// ---------------------------------------------------------------------------
+
+test("guarded auto-retry launches reviewer lane after abort", async () => {
+	// happy_path_single_retry
+	const rootDir = withTempRoot("flowdesk-auto-retry-happy-");
+	writeGuardSignOff(rootDir);
+	// Write aborted lifecycle
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "retry_launched", `expected retry_launched, got ${JSON.stringify(result)}`);
+	assert.ok("newLaneId" in result && typeof result.newLaneId === "string");
+	assert.ok("pendingRetryEvidenceId" in result && typeof result.pendingRetryEvidenceId === "string");
+
+	// Verify retry_executed evidence written
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-quick-reviewer-123" });
+	assert.equal(reload.ok, true);
+	assert.equal(
+		reload.entries.some((e) => e.record && (e.record as Record<string, unknown>).schema_version === "flowdesk.retry_executed.v1"),
+		true,
+		"retry_executed.v1 evidence should be written",
+	);
+	// Verify pending_retry_plan exists with launched status
+	const launchedPlan = reload.entries.some(
+		(e) =>
+			(e.record as Record<string, unknown>)?.schema_version === "flowdesk.pending_retry_plan.v1" &&
+			(e.record as Record<string, unknown>)?.status === "launched",
+	);
+	assert.equal(launchedPlan, true, "pending_retry_plan with launched status should be written");
+});
+
+test("guarded auto-retry blocked when cap reached", async () => {
+	// cap_reached_after_one: seed retry_executed for the lane, verify auto_retry_disabled(cap_reached)
+	const rootDir = withTempRoot("flowdesk-auto-retry-cap-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+	// Seed one retry_executed for original lane (cap = 1 already used)
+	writeRetryExecutedEvidence(rootDir, {
+		schema_version: "flowdesk.retry_executed.v1",
+		workflow_id: "workflow-quick-reviewer-123",
+		original_lane_id: "lane-quick-policy-security-123",
+		new_lane_id: "lane-retry-previous-001",
+		retry_attempt: 1,
+		perspective: "policy_security",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		new_parent_session_ref: "ses-retry-child-prev",
+		original_attempt_id: "attempt-001",
+		created_at: "2026-05-26T10:03:00.000Z",
+		dispatch_authority_enabled: false,
+	});
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "cap_reached");
+
+	// Verify retry_failed(cap_reached) written
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-quick-reviewer-123" });
+	assert.equal(reload.ok, true);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1" &&
+				(e.record as Record<string, unknown>)?.failure_category === "cap_reached",
+		),
+		true,
+		"retry_failed(cap_reached) evidence should be written",
+	);
+});
+
+test("guarded auto-retry counts failed retries toward cap", async () => {
+	// cap_bypass_via_failures_blocked: seed retry_failed for the lane
+	const rootDir = withTempRoot("flowdesk-auto-retry-cap-via-failed-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+	// Seed one retry_failed for original lane — still counts toward cap
+	writeRetryFailedEvidence(rootDir, {
+		schema_version: "flowdesk.retry_failed.v1",
+		workflow_id: "workflow-quick-reviewer-123",
+		original_lane_id: "lane-quick-policy-security-123",
+		new_lane_id: "lane-retry-prev-failed",
+		retry_attempt: 1,
+		failure_category: "sdk_create_failed",
+		redacted_reason: "sdk_session_create_threw_previously",
+		created_at: "2026-05-26T10:03:00.000Z",
+		dispatch_authority_enabled: false,
+	});
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "cap_reached");
+});
+
+test("guarded auto-retry disabled when guard stale", async () => {
+	// guard_stale_blocks_retry: use expired guard sidecar
+	const rootDir = withTempRoot("flowdesk-auto-retry-guard-stale-");
+	// Write expired guard sign-off (expires_at in the past)
+	writeGuardSignOff(rootDir, { expires_at: "2026-05-26T09:00:00.000Z" });
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "guard_unverified");
+});
+
+test("guarded auto-retry disabled when context missing", async () => {
+	// context_missing_blocks: no reviewer_lane_context evidence
+	const rootDir = withTempRoot("flowdesk-auto-retry-ctx-missing-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	// No reviewer_lane_context written
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "context_missing");
+});
+
+test("guarded auto-retry emits retry_failed evidence when SDK unavailable", async () => {
+	// sdk_unavailable_emits_evidence: null client → retry_failed(sdk_unavailable) written, NOT silent skip
+	const rootDir = withTempRoot("flowdesk-auto-retry-sdk-unavail-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: undefined,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "retry_failed");
+	assert.equal("failureCategory" in result && result.failureCategory, "sdk_unavailable");
+
+	// Verify retry_failed(sdk_unavailable) evidence written — NOT a silent skip
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-quick-reviewer-123" });
+	assert.equal(reload.ok, true);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1" &&
+				(e.record as Record<string, unknown>)?.failure_category === "sdk_unavailable",
+		),
+		true,
+		"retry_failed(sdk_unavailable) evidence must be written (not a silent skip)",
+	);
+});
+
+test("guarded auto-retry blocked when concurrent retry in progress", async () => {
+	// concurrent_retry_blocked: seed pending_retry_plan(pending) for same lane
+	const rootDir = withTempRoot("flowdesk-auto-retry-concurrent-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(
+		rootDir,
+		lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }),
+		"lifecycle-aborted-123",
+	);
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+	// Seed an active pending_retry_plan for the same original lane
+	writePendingRetryPlanEvidence(rootDir, {
+		schema_version: "flowdesk.pending_retry_plan.v1",
+		workflow_id: "workflow-quick-reviewer-123",
+		original_lane_id: "lane-quick-policy-security-123",
+		new_lane_id: "lane-retry-concurrent-001",
+		retry_attempt: 1,
+		context_evidence_id: "reviewer-lane-context-001",
+		abort_evidence_id: "lifecycle-aborted-123",
+		status: "pending",
+		created_at: "2026-05-26T10:04:00.000Z",
+		expires_at: "2026-05-26T11:04:00.000Z",
+		dispatch_authority_enabled: false,
+	});
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	// The concurrent pending plan counts toward cap (retriesUsed=1 >= maxAutoRetries=1),
+	// so we get cap_reached rather than concurrent_retry_in_progress
+	// (per Step 7 checking cap before Step 8 checking concurrent)
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.ok(
+		("reason" in result && result.reason === "cap_reached") ||
+		("reason" in result && result.reason === "concurrent_retry_in_progress"),
+		`expected cap_reached or concurrent_retry_in_progress, got ${JSON.stringify(result)}`,
+	);
+});
+
+test("reconcile stale pending retry plans writes indeterminate failure", () => {
+	// crash_recovery_indeterminate: seed pending_retry_plan(launched) older than 10min with no terminal
+	const rootDir = withTempRoot("flowdesk-auto-retry-crash-recovery-");
+	// Write a launched pending_retry_plan created 11 minutes ago
+	const createdAt = new Date("2026-05-26T09:50:00.000Z");
+	const now = new Date("2026-05-26T10:01:00.000Z"); // 11 minutes later
+	writePendingRetryPlanEvidence(rootDir, {
+		schema_version: "flowdesk.pending_retry_plan.v1",
+		workflow_id: "workflow-quick-reviewer-123",
+		original_lane_id: "lane-quick-policy-security-123",
+		new_lane_id: "lane-retry-stale-launched-001",
+		retry_attempt: 1,
+		context_evidence_id: "reviewer-lane-context-001",
+		abort_evidence_id: "lifecycle-aborted-123",
+		status: "launched",
+		created_at: createdAt.toISOString(),
+		expires_at: "2026-05-26T11:00:00.000Z",
+		dispatch_authority_enabled: false,
+	});
+
+	// No retry_executed or retry_failed exists for new_lane_id
+	reconcileStalePendingRetryPlansV1({
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		now,
+		staleThresholdMs: 600_000, // 10 minutes
+	});
+
+	// Verify retry_failed(indeterminate_launch) written
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-quick-reviewer-123" });
+	assert.equal(reload.ok, true);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1" &&
+				(e.record as Record<string, unknown>)?.failure_category === "indeterminate_launch",
+		),
+		true,
+		"retry_failed(indeterminate_launch) evidence should be written after crash recovery",
+	);
+});
+
+test("guarded auto-retry not configured when autoRetryAfterAbort is false", async () => {
+	// Verify auto_retry_not_configured returned immediately when opt-in is false
+	const rootDir = withTempRoot("flowdesk-auto-retry-not-configured-");
+	writeGuardSignOff(rootDir);
+	writeLifecycle(rootDir, lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }));
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: { ...retryConfig, autoRetryAfterAbort: false },
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-aborted-123",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+	});
+
+	assert.equal(result.status, "auto_retry_not_configured");
+	assert.equal("reason" in result && result.reason, "opt_in_false");
+});
+
+test("guarded auto-retry blocked when lane not in aborted state", async () => {
+	// lane_not_terminal_aborted: seed running lifecycle only, verify disabled(lane_not_terminal_aborted)
+	const rootDir = withTempRoot("flowdesk-auto-retry-not-aborted-");
+	writeGuardSignOff(rootDir);
+	// Write lifecycle in "running" state — NOT aborted
+	writeLifecycle(rootDir, lifecycleRecord({ state: "running" }), "lifecycle-running-only");
+	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+
+	const result = await evaluateGuardedAutoRetryHookV1({
+		config: retryConfig,
+		rootDir,
+		workflowId: "workflow-quick-reviewer-123",
+		laneId: "lane-quick-policy-security-123",
+		abortEvidenceId: "lifecycle-running-only",
+		client: fakeSuccessClient,
+		parentSessionId: "parent-session-001",
+		now: new Date("2026-05-26T10:06:00.000Z"),
+	});
+
+	assert.equal(result.status, "auto_retry_disabled");
+	assert.equal("reason" in result && result.reason, "lane_not_terminal_aborted");
 });

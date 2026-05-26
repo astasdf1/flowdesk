@@ -166,6 +166,56 @@ test("quick reviewer run derives reviewer source labels from concrete bindings",
 	assert.equal(templateValidation.ok, true, templateValidation.errors.join("; "));
 });
 
+test("quick reviewer run completes a requested single-perspective subset", async () => {
+	const sessionMessages = new Map<string, unknown[]>();
+	let createdSessionId = "";
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create(options: { parentID?: string }) {
+					createdSessionId = options.parentID === undefined ? "parent-session-1" : "child-session-verification";
+					return { id: createdSessionId };
+				},
+				async prompt(options: { sessionID?: string; parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
+					const sessionId = String(options.sessionID ?? "child-session-verification");
+					const promptText = String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? "");
+					const template = JSON.parse(promptText.split("\n").at(-1) ?? "{}");
+					sessionMessages.set(sessionId, [
+						{
+							parts: [
+								{
+									type: "text",
+									text: JSON.stringify({ ...template, verdict_label: "pass", uncertainty: "low" }),
+								},
+							],
+						},
+					]);
+					return { id: "message-verification" };
+				},
+				async messages(options: { sessionID?: string; path?: { id?: string } }) {
+					return sessionMessages.get(String(options.sessionID ?? options.path?.id ?? "")) ?? [];
+				},
+			},
+		} as never,
+		prompt: "Review only this verification implementation detail.",
+		providerQualifiedModelId: "gemini/gemini-3.1-pro-preview",
+		runtimeAgent: "reviewer-gemini-pro",
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+		perspectives: ["verification_implementation"],
+	});
+
+	assert.equal(result.status, "quick_reviewer_run_completed");
+	assert.equal(result.acceptanceStatus, "verdicts_accepted");
+	assert.equal(result.durableLinkageStatus, "durable_verdicts_accepted");
+	assert.deepEqual(result.acceptedPerspectives, ["verification_implementation"]);
+	assert.equal(result.linkedVerdictCount, 1);
+	assert.equal(result.linkedLifecycleCount, 1);
+	assert.match(String(result.summaryForUser), /1\/1 perspectives accepted/);
+	assert.equal(createdSessionId, "child-session-verification");
+});
+
 test("quick reviewer run supports per-perspective multi-model bindings", async () => {
 	const prompts: string[] = [];
 	const promptOptions: Array<{ agent?: string; model?: Record<string, unknown> }> = [];

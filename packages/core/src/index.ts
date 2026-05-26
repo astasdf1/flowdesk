@@ -68,6 +68,7 @@ export * from "./redaction.js";
 export * from "./release1-contracts.js";
 export * from "./remote-write-connector-gate.js";
 export * from "./retry.js";
+export * from "./retry-plan.js";
 export * from "./reviewer-lane-conformance.js";
 export * from "./runtime-lane-productization.js";
 export * from "./sanitized-auth-capture.js";

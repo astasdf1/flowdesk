@@ -5,11 +5,22 @@ import {
 	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskPendingAbortCancelV1,
 	type FlowDeskPendingAbortWarningV1,
+	type FlowDeskReviewerLaneContextV1,
+	type FlowDeskPendingRetryPlanV1,
+	type FlowDeskRetryExecutedV1,
+	type FlowDeskRetryFailedV1,
+	type FlowDeskAutoRetryResultV1,
+	type DisabledAutoRetryReason,
 } from "@flowdesk/core";
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
+import type {
+	FlowDeskManagedDispatchBetaOpenCodeClientV1,
+} from "./managed-dispatch-adapter.js";
+import {
+	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
+} from "./managed-dispatch-adapter.js";
 import {
 	FLOWDESK_TIMEOUT_DEFAULTS,
 	FlowDeskTimeoutError,
@@ -96,6 +107,8 @@ export interface FlowDeskAutoAbortConfigV1 {
 	guardSignOffPath?: string;
 	guardHmacKey?: string;
 	productionMode?: boolean;
+	autoRetryAfterAbort?: boolean;
+	maxAutoRetries?: number;
 }
 
 export type FlowDeskAutoAbortEnablementV1 =
@@ -534,5 +547,454 @@ export function evaluateGuardedAutoAbortHookV1(input: {
 		warning_id: warningId,
 		expires_at: expiresAt.toISOString(),
 		cancel_command: pending.cancel_command,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// P7 Guarded Auto-Retry helpers
+// ---------------------------------------------------------------------------
+
+function isReviewerLaneContext(value: unknown): value is FlowDeskReviewerLaneContextV1 {
+	return isRecord(value) && value.schema_version === "flowdesk.reviewer_lane_context.v1";
+}
+
+function isPendingRetryPlan(value: unknown): value is FlowDeskPendingRetryPlanV1 {
+	return isRecord(value) && value.schema_version === "flowdesk.pending_retry_plan.v1";
+}
+
+function isRetryExecuted(value: unknown): value is FlowDeskRetryExecutedV1 {
+	return isRecord(value) && value.schema_version === "flowdesk.retry_executed.v1";
+}
+
+function isRetryFailed(value: unknown): value is FlowDeskRetryFailedV1 {
+	return isRecord(value) && value.schema_version === "flowdesk.retry_failed.v1";
+}
+
+/**
+ * On startup/reload: any `pending_retry_plan` in `launched` state with no matching
+ * `retry_executed` or `retry_failed` within 10 minutes of `created_at` is reconciled
+ * as `retry_failed(indeterminate_launch)`.
+ */
+export function reconcileStalePendingRetryPlansV1(input: {
+	rootDir: string;
+	workflowId: string;
+	now?: Date;
+	staleThresholdMs?: number;
+}): void {
+	const now = input.now ?? new Date();
+	const staleThresholdMs = input.staleThresholdMs ?? 600_000; // 10 minutes default
+	const reloaded = reloadFlowDeskSessionEvidenceV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+	});
+	if (!reloaded.ok) return;
+
+	for (const entry of reloaded.entries) {
+		if (!isPendingRetryPlan(entry.record)) continue;
+		const plan = entry.record;
+		if (plan.status !== "launched") continue;
+		// Check if stale: created_at + staleThresholdMs < now
+		const createdAtMs = Date.parse(plan.created_at);
+		if (!Number.isFinite(createdAtMs)) continue;
+		if (now.getTime() < createdAtMs + staleThresholdMs) continue;
+		// Check if any terminal evidence exists for new_lane_id
+		const hasTerminal = reloaded.entries.some((e) => {
+			if (isRetryExecuted(e.record) && e.record.new_lane_id === plan.new_lane_id) return true;
+			if (isRetryFailed(e.record) && e.record.new_lane_id === plan.new_lane_id) return true;
+			return false;
+		});
+		if (hasTerminal) continue;
+		// Write retry_failed(indeterminate_launch)
+		const failedId = `retry-failed-indeterminate-${safeToken(plan.new_lane_id)}-${timestampToken(now)}`;
+		const failedRecord: FlowDeskRetryFailedV1 = {
+			schema_version: "flowdesk.retry_failed.v1",
+			workflow_id: plan.workflow_id,
+			original_lane_id: plan.original_lane_id,
+			new_lane_id: plan.new_lane_id,
+			retry_attempt: plan.retry_attempt,
+			failure_category: "indeterminate_launch",
+			redacted_reason: "pending_retry_plan launched state stale without terminal evidence",
+			created_at: now.toISOString(),
+			dispatch_authority_enabled: false,
+		};
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: failedId,
+			record: failedRecord as unknown as Record<string, unknown>,
+		});
+	}
+}
+
+/**
+ * Build a minimal FlowDeskRuntimeLaneLaunchPlanV1-compatible structure
+ * from reviewer lane context evidence, for use in retry launch.
+ */
+function buildRetryLaunchPlanFromContextV1(
+	context: FlowDeskReviewerLaneContextV1,
+	newLaneId: string,
+	parentSessionId: string,
+): {
+	schema_version: "flowdesk.runtime_lane_launch_plan.v1";
+	ok: boolean;
+	errors: string[];
+	launch_request_id: string;
+	workflow_id: string;
+	attempt_id: string;
+	lane_id: string;
+	state: "launch_ready";
+	blocked_labels: string[];
+	parent_session_ref: string;
+	agent_ref: string;
+	provider_qualified_model_id: string;
+	launch_reason: string;
+	pre_launch_audit_ref: string;
+	lane_launch_approval_ref: string;
+	durable_evidence_root_ref: string;
+	lifecycle_evidence_class: "lane_lifecycle";
+	exact_binding_confirmed: true;
+	sdk_client_required: true;
+	launch_attempted: false;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+} {
+	const token = timestampToken(new Date());
+	return {
+		schema_version: "flowdesk.runtime_lane_launch_plan.v1",
+		ok: true,
+		errors: [],
+		launch_request_id: `launch-request-retry-${context.perspective}-${token}`,
+		workflow_id: context.workflow_id,
+		attempt_id: context.original_attempt_id,
+		lane_id: newLaneId,
+		state: "launch_ready",
+		blocked_labels: [],
+		parent_session_ref: `ses-${parentSessionId}`,
+		agent_ref: context.agent_ref,
+		provider_qualified_model_id: context.provider_qualified_model_id,
+		launch_reason: "reviewer_fanout",
+		pre_launch_audit_ref: `audit-retry-pre-launch-${context.perspective}-${token}`,
+		lane_launch_approval_ref: `approval-retry-lane-launch-${context.perspective}-${token}`,
+		durable_evidence_root_ref: `evidence-root-retry-${token}`,
+		lifecycle_evidence_class: "lane_lifecycle",
+		exact_binding_confirmed: true,
+		sdk_client_required: true,
+		launch_attempted: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+}
+
+/**
+ * Evaluate guarded auto-retry hook following the execution order from the design doc exactly.
+ * Called after `evaluateGuardedAutoAbortHookV1` returns `auto_abort_executed`.
+ */
+export async function evaluateGuardedAutoRetryHookV1(input: {
+	config: FlowDeskAutoAbortConfigV1;
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	abortEvidenceId: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined;
+	parentSessionId: string;
+	timeoutMs?: number;
+	abortSignal?: AbortSignal;
+	now?: Date;
+}): Promise<FlowDeskAutoRetryResultV1> {
+	const now = input.now ?? new Date();
+	const maxAutoRetries = Math.min(2, Math.max(1, input.config.maxAutoRetries ?? 1));
+	const timeoutMs = input.timeoutMs ?? 30_000;
+
+	// Step 1: Check opt-in
+	if (input.config.autoRetryAfterAbort !== true) {
+		return { status: "auto_retry_not_configured", reason: "opt_in_false" };
+	}
+
+	// Step 2: Re-verify Guard HMAC
+	const guardLoaded = loadGuardSignOffFromRoot(input.rootDir, input.config.guardSignOffPath);
+	if (guardLoaded === undefined) {
+		return { status: "auto_retry_disabled", reason: "guard_unverified" };
+	}
+	const guardVerified = verifyGuardSignOffHmacV1({
+		signOff: guardLoaded.signOff,
+		markdownText: guardLoaded.markdownText,
+		hmacKey: input.config.guardHmacKey,
+		now,
+	});
+	if (!guardVerified.ok) {
+		return { status: "auto_retry_disabled", reason: "guard_unverified" };
+	}
+
+	// Step 3: Check SDK client availability
+	if (input.client === undefined || typeof input.client.session?.create !== "function") {
+		const failedId = `retry-failed-sdk-unavailable-${safeToken(input.laneId)}-${timestampToken(now)}`;
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: failedId,
+			record: {
+				schema_version: "flowdesk.retry_failed.v1",
+				workflow_id: input.workflowId,
+				original_lane_id: input.laneId,
+				retry_attempt: 1,
+				failure_category: "sdk_unavailable",
+				redacted_reason: "sdk_client_missing_or_session_create_unavailable",
+				created_at: now.toISOString(),
+				dispatch_authority_enabled: false,
+			} satisfies FlowDeskRetryFailedV1 as unknown as Record<string, unknown>,
+		});
+		return {
+			status: "retry_failed",
+			failureCategory: "sdk_unavailable",
+			redactedReason: "sdk_client_missing_or_session_create_unavailable",
+		};
+	}
+
+	// Step 4: Load reviewer_lane_context.v1 for laneId
+	const reloaded = reloadFlowDeskSessionEvidenceV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+	});
+	if (!reloaded.ok) {
+		return { status: "auto_retry_disabled", reason: "context_missing" };
+	}
+	const contextEntry = reloaded.entries.find(
+		(e) => isReviewerLaneContext(e.record) && (e.record as FlowDeskReviewerLaneContextV1).lane_id === input.laneId,
+	);
+	if (contextEntry === undefined) {
+		return { status: "auto_retry_disabled", reason: "context_missing" };
+	}
+	const context = contextEntry.record as unknown as FlowDeskReviewerLaneContextV1;
+
+	// Step 5: Verify context.redaction_version present
+	if (!context.redaction_version || typeof context.redaction_version !== "string" || context.redaction_version.trim().length === 0) {
+		return { status: "auto_retry_disabled", reason: "context_redaction_invalid" };
+	}
+
+	// Step 6: Verify context.workflow_id === workflowId && context.perspective valid
+	const VALID_PERSPECTIVES = new Set(["policy_security", "architecture", "verification_implementation"]);
+	if (context.workflow_id !== input.workflowId || !VALID_PERSPECTIVES.has(context.perspective)) {
+		return { status: "auto_retry_disabled", reason: "invariant_violated" };
+	}
+
+	// Step 7: Count cap — retry_executed + retry_failed + pending_retry_plan(pending|launched) for laneId
+	const retryExecutedCount = reloaded.entries.filter(
+		(e) => isRetryExecuted(e.record) && (e.record as FlowDeskRetryExecutedV1).original_lane_id === input.laneId,
+	).length;
+	const retryFailedCount = reloaded.entries.filter(
+		(e) => isRetryFailed(e.record) && (e.record as FlowDeskRetryFailedV1).original_lane_id === input.laneId,
+	).length;
+	const pendingActiveCount = reloaded.entries.filter((e) => {
+		if (!isPendingRetryPlan(e.record)) return false;
+		const plan = e.record as unknown as FlowDeskPendingRetryPlanV1;
+		return plan.original_lane_id === input.laneId && (plan.status === "pending" || plan.status === "launched");
+	}).length;
+	const retriesUsed = retryExecutedCount + retryFailedCount + pendingActiveCount;
+
+	if (retriesUsed >= maxAutoRetries) {
+		const capFailedId = `retry-failed-cap-${safeToken(input.laneId)}-${timestampToken(now)}`;
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: capFailedId,
+			record: {
+				schema_version: "flowdesk.retry_failed.v1",
+				workflow_id: input.workflowId,
+				original_lane_id: input.laneId,
+				retry_attempt: retriesUsed + 1,
+				failure_category: "cap_reached",
+				redacted_reason: `retry_cap_reached(max=${maxAutoRetries},used=${retriesUsed})`,
+				created_at: now.toISOString(),
+				dispatch_authority_enabled: false,
+			} satisfies FlowDeskRetryFailedV1 as unknown as Record<string, unknown>,
+		});
+		return { status: "auto_retry_disabled", reason: "cap_reached", retriesUsed };
+	}
+
+	// Step 8: Check no pending_retry_plan(pending|launched) already exists for laneId
+	if (pendingActiveCount > 0) {
+		return { status: "auto_retry_disabled", reason: "concurrent_retry_in_progress" };
+	}
+
+	// Step 9: Verify lane_lifecycle terminal state = aborted for laneId (monotonic check)
+	const lifecycleEntries = reloaded.entries.filter(
+		(e) => e.evidenceClass === "lane_lifecycle" && isRecord(e.record) && (e.record as Record<string, unknown>).lane_id === input.laneId,
+	);
+	if (lifecycleEntries.length === 0) {
+		return { status: "auto_retry_disabled", reason: "lane_not_terminal_aborted" };
+	}
+	const latestLifecycle = lifecycleEntries
+		.map((e) => e.record as unknown as FlowDeskLaneLifecycleRecordV1)
+		.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0]!;
+	if (latestLifecycle.state !== "aborted") {
+		return { status: "auto_retry_disabled", reason: "lane_not_terminal_aborted" };
+	}
+
+	// Step 10: Generate newLaneId and pendingRetryEvidenceId
+	const retryAttempt = retriesUsed + 1;
+	const retryToken = timestampToken(now);
+	const newLaneId = `lane-retry-${safeToken(input.laneId)}-${retryToken}`;
+	const pendingRetryEvidenceId = `pending-retry-${safeToken(input.laneId)}-${retryToken}`;
+
+	// Step 11: Write pending_retry_plan.v1(status=pending) — IDEMPOTENCY FENCE — before any SDK call
+	const guardSignOffExpiry = guardLoaded.signOff && isRecord(guardLoaded.signOff) && typeof (guardLoaded.signOff as Record<string, unknown>).expires_at === "string"
+		? Date.parse((guardLoaded.signOff as Record<string, unknown>).expires_at as string)
+		: now.getTime() + 30 * 24 * 60 * 60 * 1000; // 30 days default
+	const pendingExpiresAt = new Date(Math.min(guardSignOffExpiry, now.getTime() + 60 * 60 * 1000)); // 1h max
+	const pendingRecord: FlowDeskPendingRetryPlanV1 = {
+		schema_version: "flowdesk.pending_retry_plan.v1",
+		workflow_id: input.workflowId,
+		original_lane_id: input.laneId,
+		new_lane_id: newLaneId,
+		retry_attempt: retryAttempt,
+		context_evidence_id: contextEntry.evidenceId,
+		abort_evidence_id: input.abortEvidenceId,
+		status: "pending",
+		created_at: now.toISOString(),
+		expires_at: pendingExpiresAt.toISOString(),
+		dispatch_authority_enabled: false,
+	};
+	const pendingWritten = writeEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: pendingRetryEvidenceId,
+		record: pendingRecord as unknown as Record<string, unknown>,
+	});
+	if (!pendingWritten) {
+		return {
+			status: "retry_failed",
+			failureCategory: "invariant_violated",
+			redactedReason: "pending_retry_plan_write_failed",
+		};
+	}
+
+	// Step 12: Call launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1
+	const launchPlan = buildRetryLaunchPlanFromContextV1(context, newLaneId, input.parentSessionId);
+
+	let launchResult: Awaited<ReturnType<typeof launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1>>;
+	try {
+		const launchPromise = launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client: input.client,
+			launchPlan: launchPlan as unknown as import("@flowdesk/core").FlowDeskRuntimeLaneLaunchPlanV1,
+			request: {
+				allowActualLaneLaunch: true,
+				parentSessionId: input.parentSessionId,
+				promptText: context.prompt_text,
+				dispatchMethod: "prompt",
+			},
+		});
+		launchResult = await withTimeout(launchPromise, timeoutMs, "retry_lane_launch");
+	} catch (launchErr) {
+		// SDK call itself threw — treat as sdk_create_failed
+		const failedId = `retry-failed-launch-err-${safeToken(newLaneId)}-${retryToken}`;
+		const failedRecord: FlowDeskRetryFailedV1 = {
+			schema_version: "flowdesk.retry_failed.v1",
+			workflow_id: input.workflowId,
+			original_lane_id: input.laneId,
+			new_lane_id: newLaneId,
+			retry_attempt: retryAttempt,
+			failure_category: "sdk_create_failed",
+			redacted_reason: "sdk_launch_threw_exception",
+			created_at: now.toISOString(),
+			dispatch_authority_enabled: false,
+		};
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: failedId,
+			record: failedRecord as unknown as Record<string, unknown>,
+		});
+		// Update pending plan to failed
+		const failedPendingRecord = { ...pendingRecord, status: "failed" as const };
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: `${pendingRetryEvidenceId}-failed`,
+			record: failedPendingRecord as unknown as Record<string, unknown>,
+		});
+		return {
+			status: "retry_failed",
+			failureCategory: "sdk_create_failed",
+			redactedReason: "sdk_launch_threw_exception",
+		};
+	}
+
+	// Step 13/14: Handle session.create success but promptAsync rejection, or create failure
+	if (launchResult.status !== "lane_launch_started") {
+		const isCreateAttempted = launchResult.createAttempted;
+		const failureCategory: FlowDeskRetryFailedV1["failure_category"] = isCreateAttempted
+			? "sdk_prompt_rejected"
+			: "sdk_create_failed";
+		const failedId = `retry-failed-${failureCategory}-${safeToken(newLaneId)}-${retryToken}`;
+		const failedRecord: FlowDeskRetryFailedV1 = {
+			schema_version: "flowdesk.retry_failed.v1",
+			workflow_id: input.workflowId,
+			original_lane_id: input.laneId,
+			new_lane_id: newLaneId,
+			retry_attempt: retryAttempt,
+			failure_category: failureCategory,
+			redacted_reason: `sdk_launch_${launchResult.status}`,
+			created_at: now.toISOString(),
+			dispatch_authority_enabled: false,
+		};
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: failedId,
+			record: failedRecord as unknown as Record<string, unknown>,
+		});
+		// Update pending plan to failed
+		const failedPendingRecord = { ...pendingRecord, status: "failed" as const };
+		writeEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: `${pendingRetryEvidenceId}-failed`,
+			record: failedPendingRecord as unknown as Record<string, unknown>,
+		});
+		return {
+			status: "retry_failed",
+			failureCategory,
+			redactedReason: `sdk_launch_${launchResult.status}`,
+		};
+	}
+
+	// Step 15: Full success — write retry_executed.v1 + update pending to launched
+	const newParentSessionRef = launchResult.childSessionRef ?? `ses-${input.parentSessionId}`;
+	const executedId = `retry-executed-${safeToken(newLaneId)}-${retryToken}`;
+	const executedRecord: FlowDeskRetryExecutedV1 = {
+		schema_version: "flowdesk.retry_executed.v1",
+		workflow_id: input.workflowId,
+		original_lane_id: input.laneId,
+		new_lane_id: newLaneId,
+		retry_attempt: retryAttempt,
+		perspective: context.perspective,
+		provider_qualified_model_id: context.provider_qualified_model_id,
+		new_parent_session_ref: newParentSessionRef,
+		original_attempt_id: context.original_attempt_id,
+		created_at: now.toISOString(),
+		dispatch_authority_enabled: false,
+	};
+	writeEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: executedId,
+		record: executedRecord as unknown as Record<string, unknown>,
+	});
+	// Update pending plan to launched
+	const launchedPendingRecord = { ...pendingRecord, status: "launched" as const };
+	writeEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: `${pendingRetryEvidenceId}-launched`,
+		record: launchedPendingRecord as unknown as Record<string, unknown>,
+	});
+	return {
+		status: "retry_launched",
+		newLaneId,
+		pendingRetryEvidenceId,
 	};
 }

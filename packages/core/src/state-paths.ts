@@ -130,6 +130,10 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"pending_abort_warning",
 	"pending_abort_cancel",
 	"provider_usage_snapshot",
+	"reviewer_lane_context",
+	"pending_retry_plan",
+	"retry_executed",
+	"retry_failed",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -165,6 +169,10 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	pending_abort_warning: "pending-abort-warning",
 	pending_abort_cancel: "pending-abort-cancel",
 	provider_usage_snapshot: "provider-usage-snapshot",
+	reviewer_lane_context: "reviewer-lane-context",
+	pending_retry_plan: "pending-retry-plan",
+	retry_executed: "retry-executed",
+	retry_failed: "retry-failed",
 };
 
 export function sessionEvidenceDirectoryPath(

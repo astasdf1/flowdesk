@@ -100,10 +100,13 @@ import {
 } from "./status-live-tool.js";
 import {
 	evaluateGuardedAutoAbortHookV1,
+	evaluateGuardedAutoRetryHookV1,
+	reconcileStalePendingRetryPlansV1,
 	checkSdkSessionApiHealthV1,
 	type FlowDeskAutoAbortConfigV1,
 	type FlowDeskSdkSessionHealthV1,
 } from "./stall-recovery.js";
+import type { FlowDeskAutoRetryResultV1 } from "@flowdesk/core";
 import { withTimeout, FlowDeskTimeoutError } from "./shared/with-timeout.js";
 import {
 	FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS,
@@ -2052,46 +2055,86 @@ export async function collectStallAlertResult(
 					(entry) => entry.classification === "progressing_late",
 				);
 				const primary = stalledEntry ?? lateEntry;
-				if (
-					stallAlert.guardedAutoAbort !== undefined &&
-					stalledEntry !== undefined &&
-					(workflow.stalledLaneCount ?? 0) > 0
-				) {
-					let sdkSessionHealth = stallAlert.guardedAutoAbort.sdkSessionHealth;
-					if (
-						sdkSessionHealth === undefined &&
-						stallAlert.guardedAutoAbort.useLiveSdkSessionHealth === true &&
-						stallAlert.guardedAutoAbort.sdkClient !== undefined
-					) {
-						const parentSessionRef = latestParentSessionRefForLane(
-							stallAlert.rootDir,
-							workflow.workflowId,
-							stalledEntry.laneId,
-						);
-						sdkSessionHealth = parentSessionRef === undefined
-							? { status: "unknown", reason: "parent_session_ref_missing" }
-							: await checkSdkSessionApiHealthV1(
-								stallAlert.guardedAutoAbort.sdkClient,
-								parentSessionRef,
-							);
-					}
-					const autoAbort = evaluateGuardedAutoAbortHookV1({
+			if (
+				stallAlert.guardedAutoAbort !== undefined &&
+				stalledEntry !== undefined &&
+				(workflow.stalledLaneCount ?? 0) > 0
+			) {
+				// Reconcile stale pending retry plans on each stall check
+				try {
+					reconcileStalePendingRetryPlansV1({
 						rootDir: stallAlert.rootDir,
-						workflow_id: workflow.workflowId,
-						lane_id: stalledEntry.laneId,
-						config: stallAlert.guardedAutoAbort,
-						stallConfirmed: true,
-						sdkSessionHealth:
-							sdkSessionHealth ?? {
-								status: "unknown",
-								reason: "sdk_session_health_not_supplied_to_chat_hook",
-							},
-						now: () => new Date(observedAt),
+						workflowId: workflow.workflowId,
+						now: new Date(observedAt),
 					});
-					autoAbortSummaries.push(
-						`workflow ${workflow.workflowId} lane ${stalledEntry.laneId}: guarded auto-abort ${autoAbort.status}`,
-					);
+				} catch {
+					// Reconciliation is best-effort
 				}
+
+				let sdkSessionHealth = stallAlert.guardedAutoAbort.sdkSessionHealth;
+				if (
+					sdkSessionHealth === undefined &&
+					stallAlert.guardedAutoAbort.useLiveSdkSessionHealth === true &&
+					stallAlert.guardedAutoAbort.sdkClient !== undefined
+				) {
+					const parentSessionRef = latestParentSessionRefForLane(
+						stallAlert.rootDir,
+						workflow.workflowId,
+						stalledEntry.laneId,
+					);
+					sdkSessionHealth = parentSessionRef === undefined
+						? { status: "unknown", reason: "parent_session_ref_missing" }
+						: await checkSdkSessionApiHealthV1(
+							stallAlert.guardedAutoAbort.sdkClient,
+							parentSessionRef,
+						);
+				}
+				const autoAbort = evaluateGuardedAutoAbortHookV1({
+					rootDir: stallAlert.rootDir,
+					workflow_id: workflow.workflowId,
+					lane_id: stalledEntry.laneId,
+					config: stallAlert.guardedAutoAbort,
+					stallConfirmed: true,
+					sdkSessionHealth:
+						sdkSessionHealth ?? {
+							status: "unknown",
+							reason: "sdk_session_health_not_supplied_to_chat_hook",
+						},
+					now: () => new Date(observedAt),
+				});
+				autoAbortSummaries.push(
+					`workflow ${workflow.workflowId} lane ${stalledEntry.laneId}: guarded auto-abort ${autoAbort.status}`,
+				);
+
+				// After auto-abort, evaluate guarded auto-retry if configured
+				if (
+					autoAbort.status === "auto_abort_executed" &&
+					stallAlert.guardedAutoAbort.autoRetryAfterAbort === true &&
+					stallAlert.guardedAutoAbort.sdkClient !== undefined
+				) {
+					let retryResult: FlowDeskAutoRetryResultV1 | undefined;
+					try {
+						retryResult = await evaluateGuardedAutoRetryHookV1({
+							config: stallAlert.guardedAutoAbort,
+							rootDir: stallAlert.rootDir,
+							workflowId: workflow.workflowId,
+							laneId: stalledEntry.laneId,
+							abortEvidenceId: autoAbort.lifecycle_evidence_id,
+							client: stallAlert.guardedAutoAbort.sdkClient,
+							parentSessionId: stalledEntry.laneId,
+							timeoutMs: 30_000,
+							now: new Date(observedAt),
+						});
+					} catch {
+						// Retry evaluation is best-effort
+					}
+					if (retryResult !== undefined) {
+						autoAbortSummaries.push(
+							`workflow ${workflow.workflowId} lane ${stalledEntry.laneId}: guarded auto-retry ${retryResult.status}`,
+						);
+					}
+				}
+			}
 				return {
 					workflowId: workflow.workflowId,
 					stalledLaneCount: workflow.stalledLaneCount ?? 0,
@@ -3929,6 +3972,10 @@ function chatMessageStallAlertOptionsFrom(
 			guardedAutoAbort.guardHmacKey = rawGuard.guardHmacKey;
 		if (typeof rawGuard.productionMode === "boolean")
 			guardedAutoAbort.productionMode = rawGuard.productionMode;
+		if (rawGuard.autoRetryAfterAbort === true)
+			guardedAutoAbort.autoRetryAfterAbort = true;
+		if (typeof rawGuard.maxAutoRetries === "number")
+			guardedAutoAbort.maxAutoRetries = Math.min(2, Math.max(1, Math.floor(rawGuard.maxAutoRetries)));
 		if (typeof rawGuard.useLiveSdkSessionHealth === "boolean")
 			guardedAutoAbort.useLiveSdkSessionHealth = rawGuard.useLiveSdkSessionHealth;
 		if (guardedAutoAbort.useLiveSdkSessionHealth === true && sdkClient !== undefined)

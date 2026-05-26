@@ -25,6 +25,12 @@ import {
 	validateFlowDeskPendingAbortCancelV1,
 	validateFlowDeskPendingAbortWarningV1,
 } from "./pending-abort.js";
+import {
+	validateFlowDeskReviewerLaneContextV1,
+	validateFlowDeskPendingRetryPlanV1,
+	validateFlowDeskRetryExecutedV1,
+	validateFlowDeskRetryFailedV1,
+} from "./retry-plan.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
@@ -106,6 +112,10 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	pending_abort_warning: "flowdesk.pending_abort_warning.v1",
 	pending_abort_cancel: "flowdesk.pending_abort_cancel.v1",
 	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
+	reviewer_lane_context: "flowdesk.reviewer_lane_context.v1",
+	pending_retry_plan: "flowdesk.pending_retry_plan.v1",
+	retry_executed: "flowdesk.retry_executed.v1",
+	retry_failed: "flowdesk.retry_failed.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -786,6 +796,14 @@ function validateEvidenceShape(
 		return validateFlowDeskPendingAbortWarningV1(record);
 	if (evidenceClass === "pending_abort_cancel")
 		return validateFlowDeskPendingAbortCancelV1(record);
+	if (evidenceClass === "reviewer_lane_context")
+		return validateFlowDeskReviewerLaneContextV1(record);
+	if (evidenceClass === "pending_retry_plan")
+		return validateFlowDeskPendingRetryPlanV1(record);
+	if (evidenceClass === "retry_executed")
+		return validateFlowDeskRetryExecutedV1(record);
+	if (evidenceClass === "retry_failed")
+		return validateFlowDeskRetryFailedV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")

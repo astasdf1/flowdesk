@@ -1,11 +1,15 @@
 import {
 	type FlowDeskProductionApprovalSourceV1,
+	type FlowDeskReviewerLaneContextV1,
 	type FlowDeskRuntimeLaneLaunchPlanV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
 	type FlowDeskTopTierReviewPerspective,
 	type FlowDeskTopTierReviewVerdictV1,
+	applyFlowDeskSessionEvidenceWriteIntentsV1,
+	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
+import { createHash } from "node:crypto";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 import {
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
@@ -240,6 +244,49 @@ export async function executeFlowDeskRuntimeReviewerExecutionBridgeV1(input: {
 					progressSummaryLabel: `reviewer lane ${expectation.perspective} launch heartbeat`,
 				});
 				writeAttempted = writeAttempted || heartbeat.writeAttempted;
+
+				// Write reviewer_lane_context.v1 for auto-retry support (auxiliary — must not fail launch)
+				try {
+					const fullPromptText = expectation.promptText;
+					const fullPromptSha256 = createHash("sha256")
+						.update(fullPromptText, "utf8")
+						.digest("hex");
+					const truncated = fullPromptText.length > 8192;
+					const promptTextToStore = truncated
+						? fullPromptText.slice(0, 8192)
+						: fullPromptText;
+					const contextEvidenceId = `reviewer-lane-context-${laneId}-${observedAt.replace(/[^0-9A-Za-z]/g, "")}`;
+					const contextRecord: FlowDeskReviewerLaneContextV1 = {
+						schema_version: "flowdesk.reviewer_lane_context.v1",
+						workflow_id: workflowId,
+						lane_id: laneId,
+						lane_plan_ref: expectation.lanePlanRef,
+						perspective: expectation.perspective as FlowDeskTopTierReviewPerspective,
+						agent_ref: agentRef,
+						provider_qualified_model_id: providerQualifiedModelId,
+						parent_session_ref: parentSessionRef,
+						original_attempt_id: attemptId,
+						prompt_text: promptTextToStore,
+						prompt_text_truncated: truncated,
+						prompt_text_sha256: fullPromptSha256,
+						redaction_version: "v1",
+						created_at: observedAt,
+						dispatch_authority_enabled: false,
+					};
+					const contextPrepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+						workflowId,
+						evidenceId: contextEvidenceId,
+						record: contextRecord as unknown as Record<string, unknown>,
+					});
+					if (contextPrepared.ok && contextPrepared.writeIntent !== undefined) {
+						applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [contextPrepared.writeIntent]);
+					}
+				} catch (contextErr) {
+					// Auxiliary write — do not fail lane launch
+					process.stderr.write(
+						`[flowdesk] reviewer_lane_context write failed (non-fatal): ${contextErr instanceof Error ? contextErr.message : "unknown"}\n`,
+					);
+				}
 			}
 		}
 		if (launchResult.status !== "lane_launch_started") {
