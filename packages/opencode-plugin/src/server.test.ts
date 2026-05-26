@@ -1823,6 +1823,7 @@ test("quick reviewer run tool is absent by default and registers only with expli
 		),
 	) as Record<string, unknown>;
 	assert.equal(blocked.status, "blocked_before_quick_reviewer_run");
+	assert.match(String(blocked.summaryForUser), /blocked before launch/);
 	assert.match(
 		String(blocked.redactedBlockReason),
 		/developerModeAcknowledged/,
@@ -1890,6 +1891,7 @@ test("quick reviewer run persists launch evidence under top-level durableStateRo
 			),
 		) as Record<string, unknown>;
 		assert.equal(result.status, "quick_reviewer_run_incomplete");
+		assert.match(String(result.summaryForUser), /FlowDesk quick reviewer incomplete/);
 		assert.equal(typeof result.workflowId, "string");
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
 			workflowId: String(result.workflowId),

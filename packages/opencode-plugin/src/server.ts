@@ -2531,6 +2531,7 @@ function redactedQuickReviewerRunBlocked(reason: string) {
 		laneCount: 0,
 		lanes: [],
 		redactedBlockReason: reason,
+		summaryForUser: `FlowDesk quick reviewer blocked before launch: ${reason}. Safe next actions: /flowdesk-status.`,
 		safeNextActions: ["/flowdesk-status"],
 		authority: {
 			realOpenCodeDispatch: false,
@@ -2567,6 +2568,7 @@ function redactedQuickReviewerRunToolResult(
 		linkedLifecycleCount: result.linkedLifecycleCount,
 		acceptedPerspectives: result.acceptedPerspectives,
 		redactedBlockReason: result.redactedBlockReason,
+		summaryForUser: result.summaryForUser,
 		safeNextActions: result.safeNextActions,
 		authority: result.authority,
 	};
