@@ -86,6 +86,58 @@ interface LifecycleSnapshot {
 	expectedNextHeartbeatAt?: string;
 }
 
+function pickLatestSnapshotForLane(
+	entries: FlowDeskSessionEvidenceReloadEntryV1[],
+	workflowId: string,
+	accept: (entry: LifecycleSnapshot) => boolean,
+): Map<string, LifecycleSnapshot> {
+	const selected = new Map<string, LifecycleSnapshot>();
+	for (const entry of entries) {
+		let snapshot: LifecycleSnapshot | undefined;
+		if (isLifecycleEntry(entry)) {
+			snapshot = lifecycleSnapshotFromEntry(entry, workflowId);
+		} else if (isHeartbeatEntry(entry)) {
+			snapshot = heartbeatSnapshotFromEntry(entry, workflowId);
+		}
+		if (snapshot === undefined || !accept(snapshot)) continue;
+		const previous = selected.get(snapshot.laneId);
+		if (previous === undefined || shouldPreferSnapshot(snapshot, previous)) {
+			selected.set(snapshot.laneId, snapshot);
+		}
+	}
+	return selected;
+}
+
+function isTerminalLifecycleState(snapshot: LifecycleSnapshot): boolean {
+	return TERMINAL_LIFECYCLE_STATES.has(snapshot.state);
+}
+
+function lifecyclePriority(state: string): number {
+	if (TERMINAL_LIFECYCLE_STATES.has(state)) return 3;
+	if (ACTIVE_LIFECYCLE_STATES.has(state)) return 2;
+	return 1;
+}
+
+function shouldPreferSnapshot(
+	current: LifecycleSnapshot,
+	previous: LifecycleSnapshot,
+): boolean {
+	if (current.updatedAtMs !== previous.updatedAtMs)
+		return current.updatedAtMs > previous.updatedAtMs;
+	const currentPriority = lifecyclePriority(current.state);
+	const previousPriority = lifecyclePriority(previous.state);
+	if (currentPriority !== previousPriority) return currentPriority > previousPriority;
+	if (current.signalSource !== previous.signalSource)
+		return current.signalSource === "lane_lifecycle";
+	if (
+		current.signalSource === "lane_heartbeat" &&
+		current.heartbeatSeq !== undefined &&
+		previous.heartbeatSeq !== undefined
+	)
+		return current.heartbeatSeq > previous.heartbeatSeq;
+	return current.evidenceId > previous.evidenceId;
+}
+
 function getStringField(
 	record: Record<string, unknown>,
 	key: string,
@@ -167,18 +219,28 @@ function pickLatestLifecyclePerLane(
 	reload: FlowDeskSessionEvidenceReloadResultV1,
 	workflowId: string,
 ): Map<string, LifecycleSnapshot> {
-	const latestByLane = new Map<string, LifecycleSnapshot>();
-	for (const entry of reload.entries) {
-		let snapshot: LifecycleSnapshot | undefined;
-		if (isLifecycleEntry(entry))
-			snapshot = lifecycleSnapshotFromEntry(entry, workflowId);
-		else if (isHeartbeatEntry(entry))
-			snapshot = heartbeatSnapshotFromEntry(entry, workflowId);
-		if (snapshot === undefined) continue;
-		const previous = latestByLane.get(snapshot.laneId);
-		if (previous === undefined || snapshot.updatedAtMs > previous.updatedAtMs)
-			latestByLane.set(snapshot.laneId, snapshot);
+	const latestByLane = pickLatestSnapshotForLane(
+		reload.entries,
+		workflowId,
+		() => true,
+	);
+
+	// Safety pass: avoid stale active states being surfaced when a terminal
+	// lifecycle evidence exists for the same lane with same-or-newer timestamp.
+	const latestTerminalByLane = pickLatestSnapshotForLane(
+		reload.entries,
+		workflowId,
+		isTerminalLifecycleState,
+	);
+	for (const [laneId, terminalSnapshot] of latestTerminalByLane) {
+		const activeSnapshot = latestByLane.get(laneId);
+		if (
+			activeSnapshot !== undefined &&
+			shouldPreferSnapshot(terminalSnapshot, activeSnapshot)
+		)
+			latestByLane.set(laneId, terminalSnapshot);
 	}
+
 	return latestByLane;
 }
 

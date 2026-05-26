@@ -187,6 +187,66 @@ test("lane stall projection keeps only the latest lifecycle per lane id", () => 
 	assert.equal(result.entries[0].lastSignalEvidenceId, "lifecycle-recent");
 });
 
+test("lane stall projection prefers terminal completion when timestamps tie", () => {
+	const tieAt = new Date(observedAtMs - 30_000).toISOString();
+	const completeTie = entry(
+		lifecycle({
+			lane_id: "lane-tie",
+			state: "complete",
+			updated_at: tieAt,
+		}),
+		"lane-complete-tie",
+	);
+	const runningTie = entry(
+		lifecycle({
+			lane_id: "lane-tie",
+			state: "running",
+			updated_at: tieAt,
+		}),
+		"lane-running-tie",
+	);
+	const result = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload: reload([runningTie, completeTie]),
+	});
+	assert.equal(result.entries.length, 1);
+	assert.equal(result.entries[0].classification, "terminal");
+	assert.equal(result.entries[0].lifecycleState, "complete");
+	assert.equal(result.entries[0].lastSignalEvidenceId, "lane-complete-tie");
+	assert.equal(result.totalTerminalLanes, 1);
+});
+
+test("lane stall projection keeps terminal state when complete record appears before running", () => {
+	const tieAt = new Date(observedAtMs - 30_000).toISOString();
+	const completeTie = entry(
+		lifecycle({
+			lane_id: "lane-stale-order",
+			state: "complete",
+			updated_at: tieAt,
+		}),
+		"lane-complete-prior",
+	);
+	const runningTie = entry(
+		lifecycle({
+			lane_id: "lane-stale-order",
+			state: "running",
+			updated_at: tieAt,
+		}),
+		"lane-running-after",
+	);
+	const result = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload: reload([completeTie, runningTie]),
+	});
+	assert.equal(result.entries.length, 1);
+	assert.equal(result.entries[0].classification, "terminal");
+	assert.equal(result.entries[0].lifecycleState, "complete");
+	assert.equal(result.entries[0].lastSignalEvidenceId, "lane-complete-prior");
+	assert.equal(result.totalTerminalLanes, 1);
+});
+
 test("lane stall projection attaches a failure hint for invocation_failed lanes", () => {
 	const result = projectFlowDeskLaneStallV1({
 		workflowId,
