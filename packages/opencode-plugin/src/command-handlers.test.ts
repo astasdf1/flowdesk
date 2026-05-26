@@ -504,7 +504,7 @@ function reviewerFanoutPlan(
 		planned_perspectives: [],
 		runtime_lane_launch_requests: [],
 		max_concurrent_lane_count: 3,
-		same_model_stagger_ms: 3000,
+		same_model_stagger_ms: 1,
 		lane_launch_schedule: [],
 		runtime_launch_plan_required: true,
 		lane_launch_approval_required: true,

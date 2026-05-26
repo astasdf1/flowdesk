@@ -886,10 +886,10 @@ test("reviewer fanout plan deterministically materializes launch requests withou
 		1,
 	);
 	assert.equal(plan.max_concurrent_lane_count, 1);
-	assert.equal(plan.same_model_stagger_ms, 3000);
+	assert.equal(plan.same_model_stagger_ms, 1);
 	assert.deepEqual(
 		plan.lane_launch_schedule.map((entry) => entry.launch_delay_ms),
-		[0, 3000, 6000],
+		[0, 1, 2],
 	);
 	assert.equal(plan.launch_attempted, false);
 	assert.equal(plan.approval_inferred, false);

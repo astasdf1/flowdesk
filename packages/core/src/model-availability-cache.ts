@@ -1288,7 +1288,7 @@ export function planFlowDeskReviewerFanoutV1(input: {
 	const timeoutMs = input.timeoutMs ?? 30000;
 	const orphanMaxAgeMs = input.orphanMaxAgeMs ?? 60000;
 	const retryBudget = input.retryBudget ?? 1;
-	const sameModelStaggerMs = input.sameModelStaggerMs ?? 3000;
+	const sameModelStaggerMs = input.sameModelStaggerMs ?? 1;
 	if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 600000) errors.push("timeout_ms must be bounded");
 	if (!Number.isInteger(orphanMaxAgeMs) || orphanMaxAgeMs < 0 || orphanMaxAgeMs > 3600000)
 		errors.push("orphan_max_age_ms must be bounded");

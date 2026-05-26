@@ -201,11 +201,11 @@ function reviewerFanoutPlanRecord(overrides: Record<string, unknown> = {}) {
     planned_perspectives: [...fanoutPerspectives],
     runtime_lane_launch_requests: runtimeRequests,
     max_concurrent_lane_count: 1,
-    same_model_stagger_ms: 3000,
-    lane_launch_schedule: runtimeRequests.map((request, index) => ({
+		same_model_stagger_ms: 1,
+		lane_launch_schedule: runtimeRequests.map((request, index) => ({
 			lane_id: request.lane_id,
 			provider_qualified_model_id: request.provider_qualified_model_id,
-			launch_delay_ms: index * 3000
+			launch_delay_ms: index * 1
 		})),
     runtime_launch_plan_required: true,
     lane_launch_approval_required: true,
