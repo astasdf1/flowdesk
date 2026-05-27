@@ -79,7 +79,7 @@ function signedGuardSignOff(overrides: Partial<FlowDeskGuardSignOffV1> = {}): Fl
 		target_markdown_sha256: createHash("sha256").update(guardMarkdown, "utf8").digest("hex"),
 		p6_safe: true,
 		nonce: "nonce-p6-123",
-		expires_at: "2026-05-27T10:00:00.000Z",
+		// No expires_at — permanent guard (matches real active sidecar)
 		dispatch_authority_enabled: false as const,
 		...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== "hmac_sha256")),
 	};
