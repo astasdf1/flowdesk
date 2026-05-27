@@ -1674,6 +1674,56 @@ test("reviewer verdict persistence writes nothing for missing or invalid observa
 	});
 });
 
+test("injected sdk reviewer verdict observation extracts verdict from markdown code fence", async () => {
+	const verdict = typedReviewerVerdict();
+	const fencedText = `Here is the verdict:\n\`\`\`json\n${JSON.stringify(verdict)}\n\`\`\`\n`;
+	const result = await observeInjectedSdkReviewerVerdictV1({
+		client: observingClient(
+			[],
+			[
+				{
+					info: { id: "message-verdict-fenced" },
+					parts: [{ type: "text", text: fencedText }],
+				},
+			],
+		).client,
+		request: {
+			sessionId: "child-session-123",
+			workflowId: "workflow-123",
+			lanePlanRef: "lane-plan-123",
+			bindingRef: "binding-reviewer-123",
+			perspective: "policy_security",
+		},
+	});
+	assert.equal(result.status, "verdict_observed");
+	assert.equal(result.verdictId, "verdict-policy-security");
+});
+
+test("injected sdk reviewer verdict observation extracts verdict from preamble text", async () => {
+	const verdict = typedReviewerVerdict();
+	const preambleText = `After reviewing the code, here is my assessment:\n\n${JSON.stringify(verdict)}\n\nEnd of review.`;
+	const result = await observeInjectedSdkReviewerVerdictV1({
+		client: observingClient(
+			[],
+			[
+				{
+					info: { id: "message-verdict-preamble" },
+					parts: [{ type: "text", text: preambleText }],
+				},
+			],
+		).client,
+		request: {
+			sessionId: "child-session-123",
+			workflowId: "workflow-123",
+			lanePlanRef: "lane-plan-123",
+			bindingRef: "binding-reviewer-123",
+			perspective: "policy_security",
+		},
+	});
+	assert.equal(result.status, "verdict_observed");
+	assert.equal(result.verdictId, "verdict-policy-security");
+});
+
 test("reviewer typed verdict acceptance adapter accepts only canonical passing verdicts", () => {
 	const result = prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1({
 		workflowId: "workflow-123",

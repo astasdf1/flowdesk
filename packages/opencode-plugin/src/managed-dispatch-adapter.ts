@@ -3257,6 +3257,40 @@ function messageRole(message: unknown): string | undefined {
 	return typeof info?.role === "string" ? info.role : undefined;
 }
 
+function extractJsonBlocksFromText(raw: string): string[] {
+	const results: string[] = [];
+	// 1. Raw bare JSON object: starts with { ends with }
+	if (raw.startsWith("{") && raw.endsWith("}")) {
+		results.push(raw);
+		return results;
+	}
+	// 2. Markdown code fence: ```json\n{...}\n``` or ```\n{...}\n```
+	const fencePattern = /```(?:json)?\s*\n?(\{[\s\S]*?\})\s*\n?```/g;
+	for (const match of raw.matchAll(fencePattern)) {
+		if (match[1]) results.push(match[1].trim());
+	}
+	if (results.length > 0) return results;
+	// 3. Last {...} block in text (handles preamble like "Here is the verdict: {...}")
+	let depth = 0;
+	let start = -1;
+	let lastBlock: string | undefined;
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		if (ch === "{") {
+			if (depth === 0) start = i;
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0 && start !== -1) {
+				lastBlock = raw.slice(start, i + 1).trim();
+				start = -1;
+			}
+		}
+	}
+	if (lastBlock !== undefined) results.push(lastBlock);
+	return results;
+}
+
 function messageTextCandidates(message: unknown): string[] {
 	const record = asRecord(message);
 	const info = asRecord(record?.info);
@@ -3274,9 +3308,9 @@ function messageTextCandidates(message: unknown): string[] {
 					: typeof partRecord?.content === "string"
 						? partRecord.content
 						: undefined;
-			return text === undefined || text.length > 20_000 ? [] : [text.trim()];
-		})
-		.filter((text) => text.startsWith("{") && text.endsWith("}"));
+			if (text === undefined || text.length > 20_000) return [];
+			return extractJsonBlocksFromText(text.trim());
+		});
 }
 
 function directVerdictCandidate(message: unknown): unknown | undefined {

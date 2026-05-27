@@ -3306,6 +3306,34 @@ function isProviderUsageLiveEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
+/**
+ * Returns true when OpenCode auth store has a google/gemini OAuth record that
+ * FlowDesk's Gemini usage collector can auto-detect (via opencode-gemini-auth login),
+ * without requiring explicit geminiOAuthClientId/Secret config.
+ */
+function geminiOAuthAutoDetectAvailable(homeDir?: string): boolean {
+	try {
+		const home = homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? "";
+		if (!home) return false;
+		const xdgData = process.env.XDG_DATA_HOME
+			? join(process.env.XDG_DATA_HOME, "opencode")
+			: join(home, ".local", "share", "opencode");
+		const authPath = join(xdgData, "auth.json");
+		const raw = readFileSync(authPath, "utf8");
+		const parsed = JSON.parse(raw) as unknown;
+		if (typeof parsed !== "object" || parsed === null) return false;
+		const db = parsed as Record<string, unknown>;
+		const entry = db.google ?? db.gemini;
+		if (typeof entry !== "object" || entry === null) return false;
+		const rec = entry as Record<string, unknown>;
+		return rec.type === "oauth" &&
+			(typeof rec.access === "string" && rec.access.length > 0 ||
+				typeof rec.refresh === "string" && rec.refresh.length > 0);
+	} catch {
+		return false;
+	}
+}
+
 function providerUsageLiveConfigFromOptions(
 	options?: PluginOptions,
 ): FlowDeskProviderUsageLiveConfigV1 | undefined {
@@ -4097,16 +4125,18 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 								"string",
 						persistWorkflowId:
 							providerUsageLiveConfigForDoctor?.persistWorkflowId,
-						geminiOAuthConfigured:
-							providerUsageLiveConfigForDoctor !== undefined &&
-							((providerUsageLiveConfigForDoctor.geminiOAuthClientId !==
-								undefined &&
-								providerUsageLiveConfigForDoctor.geminiOAuthClientSecret !==
-									undefined) ||
-								typeof process.env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID ===
-									"string" ||
-								typeof process.env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET ===
-									"string"),
+					geminiOAuthConfigured:
+						providerUsageLiveConfigForDoctor !== undefined &&
+						(
+							// Explicit inline config
+							(providerUsageLiveConfigForDoctor.geminiOAuthClientId !== undefined &&
+								providerUsageLiveConfigForDoctor.geminiOAuthClientSecret !== undefined) ||
+							// Explicit env vars
+							typeof process.env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID === "string" ||
+							typeof process.env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET === "string" ||
+							// Auto-detect: OpenCode auth store (opencode-gemini-auth login)
+							geminiOAuthAutoDetectAvailable(providerUsageLiveConfigForDoctor.homeDir)
+						),
 						hint:
 							isProviderUsageLiveEnabled(options) &&
 							providerUsageLiveConfigForDoctor === undefined
