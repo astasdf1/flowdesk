@@ -243,14 +243,30 @@ async function extractAssistantTextFromResponse(
 
 function isProcessOnlyAssistantOutput(text: string): boolean {
 	const normalized = text.trim().toLowerCase();
-	return normalized.length === 0 || [
+	if (normalized.length === 0) return true;
+	// Detect thinking/planning narration without a concrete deliverable.
+	// Only flag when the ENTIRE text is narration (no JSON object or substantial content).
+	const hasJson = normalized.includes("{") && normalized.includes("}");
+	if (hasJson) return false; // JSON present → treat as real output
+	const processFragments = [
 		"working",
 		"thinking",
 		"i'll take a look",
 		"i will take a look",
 		"let me inspect",
 		"i'm going to inspect",
-	].some((fragment) => normalized.includes(fragment));
+		"i need to",
+		"i should",
+		"let me",
+		"determining",
+		"i'm going to",
+		"i am going to",
+		"planning to",
+		"will analyze",
+		"will focus",
+		"focused on",
+	];
+	return processFragments.some((fragment) => normalized.includes(fragment));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

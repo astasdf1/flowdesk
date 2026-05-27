@@ -49,14 +49,27 @@ interface ParsedTask {
 }
 
 function parseTasks(raw: unknown): { ok: boolean; tasks: ParsedTask[]; error?: string } {
-	if (!raw || typeof raw !== "object" || !("tasks" in raw)) return { ok: false, tasks: [], error: "missing tasks field" };
-	const arr = (raw as Record<string, unknown>).tasks;
-	if (!Array.isArray(arr) || arr.length === 0) return { ok: false, tasks: [], error: "tasks must be a non-empty array" };
+	if (!raw) return { ok: false, tasks: [], error: "no JSON found" };
+	// Support: array directly, { tasks: [...] }, { task_list: [...] }, { plan: { tasks: [...] } }
+	let arr: unknown = undefined;
+	if (Array.isArray(raw)) {
+		arr = raw;
+	} else if (typeof raw === "object" && raw !== null) {
+		const r = raw as Record<string, unknown>;
+		arr = Array.isArray(r.tasks) ? r.tasks
+			: Array.isArray(r.task_list) ? r.task_list
+			: Array.isArray(r.plan_tasks) ? r.plan_tasks
+			: typeof r.plan === "object" && r.plan !== null && Array.isArray((r.plan as Record<string, unknown>).tasks)
+				? (r.plan as Record<string, unknown>).tasks
+			: undefined;
+	}
+	if (!arr || !Array.isArray(arr)) return { ok: false, tasks: [], error: "missing tasks field" };
+	const taskArr = arr as unknown[];
 	const seen = new Set<string>();
 	const rawIdMap = new Map<string, string>(); // raw LLM id → normalized safe id
 	const tasks: ParsedTask[] = [];
-	for (let idx = 0; idx < arr.length; idx++) {
-		const item = arr[idx];
+	for (let idx = 0; idx < taskArr.length; idx++) {
+		const item = taskArr[idx];
 		if (!item || typeof item !== "object") return { ok: false, tasks: [], error: "task must be an object" };
 		const t = item as Record<string, unknown>;
 		const rawId = typeof t.task_id === "string" ? t.task_id.trim() : "";
@@ -151,10 +164,17 @@ export async function executeFlowDeskWorkflowAuthorToolV1(input: {
 	const taskGraphId = randomId("task-graph");
 
 	const promptText = [
-		"You are a task planner. Analyze the goal below and return ONLY a valid JSON object with a 'tasks' array.",
-		"Each task: { task_id: string, title: string (≤80 chars), summary: string (≤300 chars), agent_role: one of [implementation, review, verification, security, architecture, documentation, migration], depends_on: string[] }",
-		"Rules: unique task_ids starting with 'task-', dependencies must exist, no cycles, no raw code, no provider calls, 2–6 tasks.",
-		`Goal: ${input.goalSummary.slice(0, 500)}`,
+		"OUTPUT ONLY: Return a single raw JSON object. No thinking. No prose. No code fence. No explanation.",
+		"The JSON must have exactly this structure:",
+		'{"tasks":[{"task_id":"task-1","title":"Short title here","summary":"What this task does","agent_role":"implementation","depends_on":[]},{"task_id":"task-2","title":"Second task","summary":"What this task does","agent_role":"review","depends_on":["task-1"]}]}',
+		"Rules:",
+		"- Use exactly task-1, task-2, task-3, task-4 as task_ids (2 to 4 tasks)",
+		"- agent_role must be one of: implementation, review, verification, security, architecture, documentation, migration",
+		"- depends_on contains task_ids that must complete first (empty array if none)",
+		"- title max 80 chars, summary max 300 chars",
+		"- Start your response with { and end with }",
+		"",
+		`GOAL: ${input.goalSummary.slice(0, 400)}`,
 	].join("\n");
 
 	const taskResult = await executeFlowDeskAgentTaskV1({
