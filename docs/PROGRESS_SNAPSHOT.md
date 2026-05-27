@@ -339,3 +339,5 @@ If a Release 2/2.5 feature works in practice but a conformance proof is incomple
 178. Phase 5 Multi-task Dev Scheduler was added on 2026-05-27. `executeFlowDeskWorkflowSchedulerV1` executes tasks sequentially based on `task_graph.v1` dependencies and `task_model_selection.v1` models. It preserves Release 1 non-dispatch authority constraints by using `executeFlowDeskAgentTaskV1` directly.
 
 179. Phase 6 Result Synthesis evidence slice was added on 2026-05-27. `workflow_synthesis_result.v1` records task graph aggregation results without storing raw payloads, providing synthesis summary diagnostics and safe next actions while keeping default dispatch/write authority false. It is wired into session evidence reload and projected correctly in `status_live`.
+
+180. Usage auto-refresh on stale chat input was added on 2026-05-27. The `chat.message` hook now triggers `flowdesk_provider_usage_live` automatically if a usage query is detected and the existing sidebar usage cache is missing or older than 3 minutes. This keeps the provider usage display up to date when requested without relying on background polling.
