@@ -902,6 +902,10 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 	timeoutMs?: number;
 	abortSignal?: AbortSignal;
 	now?: Date;
+	/** Override nudge quiet period — for testing only */
+	_nudgeQuietPeriodMs?: number;
+	/** Override messages poll timeout — for testing only */
+	_messagesTimeoutMs?: number;
 }): Promise<FlowDeskAutoRetryResultV1> {
 	const now = input.now ?? new Date();
 	const maxAutoRetries = Math.min(2, Math.max(1, input.config.maxAutoRetries ?? 1));
@@ -1130,6 +1134,8 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 			rootDir: input.rootDir,
 			client: input.client,
 			timeoutMs: timeoutMs,
+			_nudgeQuietPeriodMs: input._nudgeQuietPeriodMs,
+			_messagesTimeoutMs: input._messagesTimeoutMs,
 		});
 
 		if (taskResult.status === "task_failed") {
@@ -1378,6 +1384,10 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined;
 	parentSessionId: string;
 	now?: Date;
+	/** Override nudge quiet period — for testing only */
+	_nudgeQuietPeriodMs?: number;
+	/** Override messages poll timeout — for testing only */
+	_messagesTimeoutMs?: number;
 }): Promise<FlowDeskWatchdogCycleResultV1> {
 	const cycleAt = (input.now ?? new Date()).toISOString();
 
@@ -1483,16 +1493,18 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 							input.client !== undefined
 						) {
 							try {
-								const retryResult = await evaluateGuardedAutoRetryHookV1({
-									config: input.config,
-									rootDir: input.rootDir,
-									workflowId,
-									laneId: stalledEntry.laneId,
-									abortEvidenceId: autoAbort.lifecycle_evidence_id,
-									client: input.client,
-									parentSessionId: input.parentSessionId,
-									now,
-								});
+							const retryResult = await evaluateGuardedAutoRetryHookV1({
+								config: input.config,
+								rootDir: input.rootDir,
+								workflowId,
+								laneId: stalledEntry.laneId,
+								abortEvidenceId: autoAbort.lifecycle_evidence_id,
+								client: input.client,
+								parentSessionId: input.parentSessionId,
+								now,
+								_nudgeQuietPeriodMs: input._nudgeQuietPeriodMs,
+								_messagesTimeoutMs: input._messagesTimeoutMs,
+							});
 								if (retryResult.status === "retry_launched") {
 									lanesRetried++;
 								} else if (

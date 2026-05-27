@@ -689,7 +689,7 @@ test("guarded auto-retry launches reviewer lane after abort", async () => {
 	);
 	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -746,7 +746,7 @@ test("guarded auto-retry blocked when cap reached", async () => {
 		dispatch_authority_enabled: false,
 	});
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -797,7 +797,7 @@ test("guarded auto-retry counts failed retries toward cap", async () => {
 		dispatch_authority_enabled: false,
 	});
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -824,7 +824,7 @@ test("guarded auto-retry disabled when guard stale", async () => {
 	);
 	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -850,7 +850,7 @@ test("guarded auto-retry disabled when context missing", async () => {
 	);
 	// No reviewer_lane_context written
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -882,7 +882,7 @@ test("guarded auto-retry launches generic agent task from agent_task_context", a
 	);
 	writeAgentTaskContext(rootDir, agentTaskContextRecord());
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-agent-task-123",
@@ -940,7 +940,7 @@ test("guarded auto-retry blocks generic lane when agent_task_context and reviewe
 		"lifecycle-agent-task-aborted-001",
 	);
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-agent-task-123",
@@ -983,7 +983,7 @@ test("guarded auto-retry cap prevents generic agent task retry", async () => {
 		dispatch_authority_enabled: false,
 	});
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-agent-task-123",
@@ -1015,7 +1015,7 @@ test("guarded auto-retry records generic retry failure and terminal lifecycle", 
 	);
 	writeAgentTaskContext(rootDir, agentTaskContextRecord());
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-agent-task-123",
@@ -1074,7 +1074,7 @@ test("guarded auto-retry emits retry_failed evidence when SDK unavailable", asyn
 	);
 	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -1127,7 +1127,7 @@ test("guarded auto-retry blocked when concurrent retry in progress", async () =>
 		dispatch_authority_enabled: false,
 	});
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -1197,7 +1197,7 @@ test("guarded auto-retry not configured when autoRetryAfterAbort is false", asyn
 	writeGuardSignOff(rootDir);
 	writeLifecycle(rootDir, lifecycleRecord({ state: "aborted", updated_at: "2026-05-26T10:05:00.000Z" }));
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: { ...retryConfig, autoRetryAfterAbort: false },
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",
@@ -1219,7 +1219,7 @@ test("guarded auto-retry blocked when lane not in aborted state", async () => {
 	writeLifecycle(rootDir, lifecycleRecord({ state: "running" }), "lifecycle-running-only");
 	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
 
-	const result = await evaluateGuardedAutoRetryHookV1({
+	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
 		config: retryConfig,
 		rootDir,
 		workflowId: "workflow-quick-reviewer-123",

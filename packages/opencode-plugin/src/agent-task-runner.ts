@@ -30,6 +30,10 @@ export interface FlowDeskAgentTaskInputV1 {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	timeoutMs?: number;
 	outputContract?: "final_assistant_text";
+	/** Override quiet period before nudge — for testing only */
+	_nudgeQuietPeriodMs?: number;
+	/** Override messages poll timeout — for testing only (default 3000ms in prod) */
+	_messagesTimeoutMs?: number;
 }
 
 export type FlowDeskAgentTaskResultV1 =
@@ -72,33 +76,77 @@ function agentTaskLaunchPlan(input: {
 	};
 }
 
-/** Inactivity-based timeout: if no new message activity for `inactivityTimeoutMs`, give up.
- *  Heartbeat is recorded every `heartbeatIntervalMs` while waiting. */
+/** Bounded nudge text — versioned constant, never echoes user input */
+const AGENT_TASK_NUDGE_TEXT = "Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
+
+/**
+ * Polls `session.messages` with a per-call 3-second cap so it works whether the SDK
+ * uses snapshot (returns immediately) or long-poll (blocks until output) semantics.
+ *
+ * Heartbeat: fires every `quietPeriodMs` of silence — only when inactive.
+ * Nudge:     after `quietPeriodMs` of silence, sends a bounded prompt to the child
+ *            session asking for the final answer. Max `maxNudges` nudges total.
+ *            After exhausting nudges with no response, returns undefined.
+ */
 async function extractAssistantTextFromResponse(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	opts?: {
-		inactivityTimeoutMs?: number;
-		heartbeatIntervalMs?: number;
+		quietPeriodMs?: number;          // silence before heartbeat / nudge (default 30s)
+		maxNudges?: number;              // max nudge attempts (default 2)
+		runtimeModel?: string;           // OpenCode runtime model id for nudge prompt
+		agentName?: string;              // agent name for nudge prompt
+		messagesTimeoutMs?: number;      // per-call cap for session.messages (default 3000ms)
 		heartbeatFn?: (elapsedMs: number) => void;
 	},
 ): Promise<string | undefined> {
 	const messages = client.session.messages;
 	if (messages === undefined) return undefined;
 
-	const inactivityTimeoutMs = opts?.inactivityTimeoutMs ?? 60_000;
-	const heartbeatIntervalMs = opts?.heartbeatIntervalMs ?? 30_000;
-	const pollIntervalMs = 3_000;
+	const quietPeriodMs = opts?.quietPeriodMs ?? 30_000;
+	const maxNudges = opts?.maxNudges ?? 2;
+	const MESSAGES_TIMEOUT_MS = opts?.messagesTimeoutMs ?? 3_000; // per-call cap — handles both snapshot and long-poll
 
 	const method = messages as (options: unknown) => unknown | Promise<unknown>;
-	const callMessages = async (): Promise<unknown> => {
-		const current = await method.call(client.session, { sessionID: childSessionId });
-		if (isSdkErrorResponse(current))
-			return method.call(client.session, { path: { id: childSessionId } });
-		return current;
+
+	/**
+	 * Call session.messages with a ceiling timeout so we can check inactivity periodically.
+	 * This handles both snapshot APIs (return immediately) and long-poll APIs
+	 * (block until LLM produces output). With the timeout, a long-poll call that
+	 * hasn't returned after MESSAGES_TIMEOUT_MS resolves as null so we can
+	 * check the inactivity clock and possibly send a nudge.
+	 */
+	const callMessages = (): Promise<unknown | null> => {
+		const messagePromise = (async () => {
+			const current = await method.call(client.session, { sessionID: childSessionId });
+			if (isSdkErrorResponse(current))
+				return method.call(client.session, { path: { id: childSessionId } });
+			return current;
+		})();
+		// Only race against timeout when the API might block (MESSAGES_TIMEOUT_MS > 0)
+		if (MESSAGES_TIMEOUT_MS <= 0) return messagePromise;
+		return Promise.race([
+			messagePromise,
+			new Promise<null>(resolve => setTimeout(() => resolve(null), MESSAGES_TIMEOUT_MS)),
+		]);
+	};
+
+	/** Send a nudge to the child session */
+	const sendNudge = async (): Promise<void> => {
+		const promptFn = client.session.prompt ?? client.session.promptAsync;
+		if (promptFn === undefined) return;
+		try {
+			await (promptFn as (o: unknown) => unknown).call(client.session, {
+				sessionID: childSessionId,
+				...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
+				...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
+				parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
+			});
+		} catch { /* nudge is best-effort */ }
 	};
 
 	const extractText = (response: unknown): string | undefined => {
+		if (response === null) return undefined; // timed-out poll cycle
 		const data = asResponseData(response);
 		const record = asRecord(data);
 		const items = Array.isArray(data)
@@ -132,39 +180,62 @@ async function extractAssistantTextFromResponse(
 	let lastActivityMs = startMs;
 	let lastSignature = "";
 	let lastHeartbeatMs = startMs;
+	let nudgeCount = 0;
 
 	try {
 		while (true) {
 			const response = await callMessages();
-			const data = asResponseData(response);
-			const record = asRecord(data);
-			const items = Array.isArray(data) ? data
-				: Array.isArray(record?.items) ? record.items
-				: Array.isArray(record?.messages) ? record.messages : [];
-			const sig = `${items.length}:${extractText(response)?.length ?? 0}`;
-
 			const nowMs = Date.now();
+
+			// Build signature (null response = timeout, no change)
+			const sig = response === null ? lastSignature : (() => {
+				const data = asResponseData(response);
+				const record = asRecord(data);
+				const items = Array.isArray(data) ? data
+					: Array.isArray(record?.items) ? record.items
+					: Array.isArray(record?.messages) ? record.messages : [];
+				return `${items.length}:${extractText(response)?.length ?? 0}`;
+			})();
+
 			if (sig !== lastSignature) {
-				// Activity detected — update timestamp, no heartbeat needed
+				// New activity — reset all inactivity clocks
 				lastSignature = sig;
 				lastActivityMs = nowMs;
-				lastHeartbeatMs = nowMs; // reset heartbeat clock too
-			} else {
-				// No activity — emit heartbeat only when inactive for heartbeatIntervalMs
-				if (nowMs - lastHeartbeatMs >= heartbeatIntervalMs) {
-					lastHeartbeatMs = nowMs;
-					opts?.heartbeatFn?.(nowMs - startMs);
-				}
+				lastHeartbeatMs = nowMs;
 			}
 
+			// Check for final text — return immediately if found
 			const text = extractText(response);
 			if (text !== undefined && text.trim().length > 0) return text;
 
-			// Inactivity timeout: no new messages for inactivityTimeoutMs
-			if (nowMs - lastActivityMs >= inactivityTimeoutMs) return undefined;
+			const silenceMs = nowMs - lastActivityMs;
 
-			await new Promise<void>((r) => setTimeout(r, pollIntervalMs));
+			if (silenceMs >= quietPeriodMs) {
+				// Emit heartbeat on first quiet-period expiry of each silence window
+				if (nowMs - lastHeartbeatMs >= quietPeriodMs) {
+					lastHeartbeatMs = nowMs;
+					opts?.heartbeatFn?.(nowMs - startMs);
+				}
+
+				// Send nudge after quiet period
+			if (nudgeCount < maxNudges) {
+				nudgeCount++;
+				await sendNudge();
+				// Reset activity clock after nudge — give a fresh quiet window
+				lastActivityMs = Date.now();
+				lastHeartbeatMs = lastActivityMs;
+			} else {
+				// Exhausted all nudges with no response
+				return undefined;
+			}
+		} else {
+			// No activity and not yet at quiet period — yield to event loop before next poll.
+			// Sleep for up to 1s or quietPeriodMs/10, whichever is smaller, to avoid tight loops
+			// while still being responsive when messages arrive quickly (snapshot mode).
+			const yieldMs = Math.max(10, Math.min(1_000, Math.floor(quietPeriodMs / 10)));
+			await new Promise<void>(resolve => setTimeout(resolve, yieldMs));
 		}
+	}
 	} catch {
 		return undefined;
 	}
@@ -412,9 +483,16 @@ export async function executeFlowDeskAgentTaskV1(
 
 	let resultText: string | undefined;
 	if (childSessionId !== undefined) {
+		const runtimeModel = launchResult.status === "lane_launch_started" && typeof launchResult.model === "string"
+			? launchResult.model : undefined;
+		const agentName = launchResult.status === "lane_launch_started" && typeof launchResult.agent === "string"
+			? launchResult.agent : undefined;
 		resultText = await extractAssistantTextFromResponse(input.client, childSessionId, {
-			inactivityTimeoutMs: 60_000,
-			heartbeatIntervalMs: 30_000,
+			quietPeriodMs: input._nudgeQuietPeriodMs ?? 30_000,
+			maxNudges: 2,
+			runtimeModel,
+			agentName,
+			messagesTimeoutMs: input._messagesTimeoutMs,
 			heartbeatFn: (elapsedMs) => {
 				recordFlowDeskLaneHeartbeatV1({
 					rootDir: input.rootDir,
@@ -426,7 +504,7 @@ export async function executeFlowDeskAgentTaskV1(
 					providerQualifiedModelId: input.providerQualifiedModelId,
 					state: "running",
 					observedAt: new Date().toISOString(),
-					progressSummaryLabel: `agent task alive elapsed=${Math.floor(elapsedMs / 1000)}s`,
+					progressSummaryLabel: `agent task waiting for response elapsed=${Math.floor(elapsedMs / 1000)}s`,
 				});
 			},
 		});

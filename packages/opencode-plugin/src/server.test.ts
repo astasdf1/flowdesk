@@ -7290,6 +7290,8 @@ test("watchdog cycle aborts and retries stalled lanes without user message", asy
 			client: fakeClient as never,
 			parentSessionId: "parent-watchdog-test",
 			now: new Date(observedAtMs),
+			_nudgeQuietPeriodMs: 100,
+			_messagesTimeoutMs: 0,
 		});
 		assert.equal(firstResult.guardValid, true);
 		assert.equal(firstResult.lanesChecked, 1);
@@ -7301,6 +7303,8 @@ test("watchdog cycle aborts and retries stalled lanes without user message", asy
 			client: fakeClient as never,
 			parentSessionId: "parent-watchdog-test",
 			now: new Date(observedAtMs + 60_000), // 1 minute later, warning expired
+			_nudgeQuietPeriodMs: 100,
+			_messagesTimeoutMs: 0,
 		});
 		assert.equal(secondResult.guardValid, true);
 		assert.equal(secondResult.lanesChecked, 1);
@@ -7635,6 +7639,8 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 						parentSessionId: "parent-agent-task-exec-1",
 						developerModeAcknowledged: true,
 						allowProviderCall: true,
+						_nudgeQuietPeriodMs: 100,
+						_messagesTimeoutMs: 0,
 					},
 					undefined as never,
 				),
@@ -7714,6 +7720,8 @@ test("flowdesk_agent_task_run writes terminal no_output lifecycle when no respon
 						parentSessionId: "parent-agent-task-no-response-1",
 						developerModeAcknowledged: true,
 						allowProviderCall: true,
+						_nudgeQuietPeriodMs: 100,
+						_messagesTimeoutMs: 0,
 					},
 					undefined as never,
 				),
@@ -7791,6 +7799,8 @@ test("flowdesk_agent_task_run reads current SDK messages response shapes", async
 						parentSessionId: "parent-agent-task-current-sdk-1",
 						developerModeAcknowledged: true,
 						allowProviderCall: true,
+						_nudgeQuietPeriodMs: 100,
+						_messagesTimeoutMs: 0,
 					},
 					undefined as never,
 				),

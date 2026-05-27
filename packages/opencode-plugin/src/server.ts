@@ -3126,6 +3126,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				parentSessionId: tool.schema.string().optional().describe("Parent session id"),
 				developerModeAcknowledged: tool.schema.boolean(),
 				allowProviderCall: tool.schema.boolean(),
+				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Seconds of silence before sending a nudge prompt (default 30000ms). Applies to both the task agent and the calling session."),
 			},
 			async execute(args, ctx) {
 				const record: Record<string, unknown> = isRecord(args) ? args : {};
@@ -3146,6 +3147,8 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 						: typeof ctxRecord.sessionID === "string" && ctxRecord.sessionID.length > 0
 							? ctxRecord.sessionID
 							: "";
+				const nudgeQuietPeriodMs = typeof record.nudgeQuietPeriodMs === "number" && record.nudgeQuietPeriodMs > 0
+					? Math.floor(record.nudgeQuietPeriodMs) : undefined;
 				const taskId = `task-${Date.now().toString(36)}`;
 				const laneId = `lane-task-${Date.now().toString(36)}`;
 				const result = await executeFlowDeskAgentTaskV1({
@@ -3158,6 +3161,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					parentSessionId,
 					rootDir,
 					client,
+					_nudgeQuietPeriodMs: nudgeQuietPeriodMs,
 				});
 				return JSON.stringify({
 					workflowId,
