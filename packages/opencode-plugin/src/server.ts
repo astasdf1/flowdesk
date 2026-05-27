@@ -111,6 +111,7 @@ import {
 	executeFlowDeskWorkflowDispatchToolV1,
 	type FlowDeskWorkflowDispatchToolConfigV1,
 } from "./workflow-dispatch-tool.js";
+import { executeFlowDeskWorkflowOrchestratorV1 } from "./workflow-orchestrator.js";
 import {
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
@@ -3590,6 +3591,72 @@ function controlledWriteApplyConfigFromOptions(
 	return { durableStateRoot, workspaceRoot };
 }
 
+export const flowdeskOrchestrateToolName = "flowdesk_orchestrate" as const;
+export const flowdeskOrchestrateOption = "workflowOrchestrate" as const;
+
+interface FlowDeskOrchestrateToolConfigV1 {
+	rootDir: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+}
+
+function orchestrateToolConfigFromOptions(input: unknown, options?: PluginOptions): FlowDeskOrchestrateToolConfigV1 | undefined {
+	const value = options?.[flowdeskOrchestrateOption];
+	if (!isRecord(value) || value.enabled !== true || value.devBetaActualLaneLaunch !== true) return undefined;
+	const explicitRoot = typeof value.rootDir === "string" && value.rootDir.trim().length > 0 ? value.rootDir : undefined;
+	const rootDir = explicitRoot ?? durableStateRootFromOptions(options);
+	if (rootDir === undefined) return undefined;
+	const client = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+	return client === undefined ? undefined : { rootDir, client };
+}
+
+function createFlowDeskOrchestrateOptInTools(
+	config: FlowDeskOrchestrateToolConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskOrchestrateToolName]: tool({
+			description: [
+				"Run a full FlowDesk multi-task orchestration: Author → Assign → Schedule → Synthesize.",
+				"WHEN TO USE: the user gives a natural-language goal that requires decomposing into multiple tasks, assigning agents/models based on provider usage, executing them in dependency order, and aggregating results.",
+				"INVOKE WITH: goalSummary (clear bounded goal text), parentSessionId, and optional workflowId.",
+				"AFTER CALLING: surface summaryForUser and report synthesisId, taskCount, conflictDetected. All authority flags remain false.",
+				"WHEN NOT TO USE: simple single-task requests, status checks, usage queries, or review fan-out.",
+			].join(" "),
+			args: {
+				goalSummary: tool.schema.string().describe("Bounded natural-language goal for the workflow. Max 500 chars."),
+				parentSessionId: tool.schema.string().describe("Current OpenCode session id (ses-...)."),
+				workflowId: tool.schema.string().optional().describe("Optional stable workflow id. Auto-generated when omitted."),
+				providerQualifiedModelId: tool.schema.string().optional().describe("Concrete provider/model id for author and synthesis calls. Defaults to openai/gpt-5.5."),
+				agentName: tool.schema.string().optional().describe("Agent name for author and synthesis calls. Defaults to reviewer-gpt-frontier."),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to allow provider calls."),
+				allowProviderCall: tool.schema.boolean().describe("Must be true to allow provider calls."),
+				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual lane launch."),
+			},
+			async execute(input) {
+				if (!isRecord(input)) return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "invalid input", safeNextActions: ["/flowdesk-doctor"] });
+				if (input.developerModeAcknowledged !== true || input.allowProviderCall !== true || input.allowActualLaneLaunch !== true)
+					return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "developerModeAcknowledged, allowProviderCall, and allowActualLaneLaunch must all be true", safeNextActions: ["/flowdesk-doctor"] });
+				const goalSummary = typeof input.goalSummary === "string" ? input.goalSummary.slice(0, 500) : "";
+				if (!goalSummary.trim()) return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "goalSummary is required", safeNextActions: ["/flowdesk-doctor"] });
+				const parentSessionId = typeof input.parentSessionId === "string" ? input.parentSessionId : "";
+				if (!parentSessionId.trim()) return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "parentSessionId is required", safeNextActions: ["/flowdesk-doctor"] });
+				const providerQualifiedModelId = typeof input.providerQualifiedModelId === "string" ? input.providerQualifiedModelId : "openai/gpt-5.5";
+				const agentName = typeof input.agentName === "string" ? input.agentName : "reviewer-gpt-frontier";
+				const workflowId = typeof input.workflowId === "string" ? input.workflowId : undefined;
+				const result = await executeFlowDeskWorkflowOrchestratorV1({
+					workflowId,
+					goalSummary,
+					parentSessionId,
+					rootDir: config.rootDir,
+					client: config.client,
+					providerQualifiedModelId,
+					agentName,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 export function createFlowDeskWorkflowDispatchPlanOptInTools(
 	config: FlowDeskWorkflowDispatchPlanToolConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
@@ -4437,6 +4504,9 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		});
 		if (agentTaskRunTools !== undefined) Object.assign(tools, agentTaskRunTools);
 	}
+	const orchestrateConfig = orchestrateToolConfigFromOptions(input, options);
+	if (orchestrateConfig !== undefined)
+		Object.assign(tools, createFlowDeskOrchestrateOptInTools(orchestrateConfig));
 
 	// P8 Background Watchdog
 	const watchdogConfig = watchdogConfigFromOptions(options);
