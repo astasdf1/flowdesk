@@ -90,6 +90,18 @@ interface ProviderBucket {
   uncertainty: UsageUncertainty;
 }
 
+interface GeminiOAuthCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: number;
+  projectId?: string;
+}
+
+interface GeminiOAuthClientCredentials {
+  clientId: string;
+  clientSecret: string;
+}
+
 interface ProviderCollection {
   providerFamily: CollectorProviderFamily;
   modelFamily: string;
@@ -301,19 +313,21 @@ async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionC
   if (!fetcher) return refusedCollection("gemini", "gemini", "fetch is unavailable");
   const homeDir = normalizeHomeDir(acquisition.homeDir, options.env);
   const filesystem = options.filesystem ?? defaultFilesystem;
+  const openCodeCreds = readOpenCodeGeminiOAuthCredentials(homeDir, options.env, filesystem);
   const credsPath = geminiCredentialPaths(homeDir, options.env).find((candidate) => filesystem.exists(candidate));
-  if (!credsPath) return refusedCollection("gemini", "gemini", "gemini auth evidence is missing");
+  if (!credsPath && !openCodeCreds) return refusedCollection("gemini", "gemini", "gemini auth evidence is missing");
   try {
-    const creds = JSON.parse(filesystem.readFile(credsPath)) as unknown;
-    const credsRecord = isRecord(creds) ? creds : {};
-    const refreshToken = stringField(credsRecord, "refresh_token");
-    const cachedAccessToken = stringField(credsRecord, "access_token");
-    const cachedExpiryRaw = credsRecord.expiry_date;
-    const cachedExpiryMs = typeof cachedExpiryRaw === "number" ? cachedExpiryRaw : typeof cachedExpiryRaw === "string" ? Number.parseInt(cachedExpiryRaw, 10) : NaN;
+    const geminiCliCreds = credsPath ? readGeminiCliOAuthCredentials(credsPath, filesystem) : null;
+    const selectedCreds = selectGeminiOAuthCredentials(openCodeCreds, geminiCliCreds, observedAt);
+    if (!selectedCreds) return refusedCollection("gemini", "gemini", "gemini auth evidence is missing");
+    const refreshToken = selectedCreds.refreshToken;
+    const cachedAccessToken = selectedCreds.accessToken;
+    const cachedExpiryMs = selectedCreds.expiresAt ?? NaN;
     const cachedTokenStillValid = cachedAccessToken !== "" && Number.isFinite(cachedExpiryMs) && cachedExpiryMs > observedAt + 5 * 60_000;
     const env = options.env ?? {};
-    const clientId = firstNonEmpty(acquisition.geminiOAuthClientId, env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID);
-    const clientSecret = firstNonEmpty(acquisition.geminiOAuthClientSecret, env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET);
+    const inferredClient = readOpenCodeGeminiAuthOAuthClient(homeDir, env, filesystem);
+    const clientId = firstNonEmpty(acquisition.geminiOAuthClientId, env.FLOWDESK_GEMINI_OAUTH_CLIENT_ID, inferredClient?.clientId);
+    const clientSecret = firstNonEmpty(acquisition.geminiOAuthClientSecret, env.FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET, inferredClient?.clientSecret);
     let accessToken = "";
     if (cachedTokenStillValid) {
       accessToken = cachedAccessToken;
@@ -329,7 +343,7 @@ async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionC
       if (!clientId || !clientSecret) return refusedCollection("gemini", "gemini", "gemini oauth client evidence is missing and cached access token is expired");
       return refusedCollection("gemini", "gemini", "gemini token refresh failed");
     }
-    let projectId = firstNonEmpty(env.GOOGLE_CLOUD_PROJECT, env.GOOGLE_CLOUD_PROJECT_ID, acquisition.geminiProjectId);
+    let projectId = firstNonEmpty(env.GOOGLE_CLOUD_PROJECT, env.GOOGLE_CLOUD_PROJECT_ID, acquisition.geminiProjectId, selectedCreds.projectId);
     const details = await codeAssistPost("loadCodeAssist", { cloudaicompanionProject: projectId, metadata: { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI", duetProject: projectId } }, accessToken, fetcher);
     projectId = firstNonEmpty(projectId, stringField(details, "cloudaicompanionProject"));
     if (!projectId) return refusedCollection("gemini", "gemini", "gemini project boundary is missing");
@@ -339,6 +353,78 @@ async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionC
   } catch {
     return refusedCollection("gemini", "gemini", "gemini usage collection failed");
   }
+}
+
+function readGeminiCliOAuthCredentials(credsPath: string, filesystem: FlowDeskProviderUsageFileSystemV1): GeminiOAuthCredentials | null {
+  try {
+    const creds = JSON.parse(filesystem.readFile(credsPath)) as unknown;
+    const record = isRecord(creds) ? creds : {};
+    const refreshToken = stringField(record, "refresh_token");
+    const accessToken = stringField(record, "access_token");
+    const expiryRaw = record.expiry_date;
+    const expiresAt = typeof expiryRaw === "number" ? expiryRaw : typeof expiryRaw === "string" ? Number.parseInt(expiryRaw, 10) : undefined;
+    if (!refreshToken && !accessToken) return null;
+    return { accessToken, refreshToken, ...(expiresAt === undefined || !Number.isFinite(expiresAt) ? {} : { expiresAt }) };
+  } catch {
+    return null;
+  }
+}
+
+function readOpenCodeGeminiOAuthCredentials(homeDir: string, env: Record<string, string | undefined> | undefined, filesystem: FlowDeskProviderUsageFileSystemV1): GeminiOAuthCredentials | null {
+  const fromEnv = authRecordFromOpenCodeAuthContent(env?.OPENCODE_AUTH_CONTENT);
+  if (fromEnv) return fromEnv;
+  for (const authPath of openCodeAuthPaths(homeDir, env)) {
+    if (!filesystem.exists(authPath)) continue;
+    try {
+      const parsed = JSON.parse(filesystem.readFile(authPath)) as unknown;
+      const fromFile = authRecordFromOpenCodeAuthDatabase(parsed);
+      if (fromFile) return fromFile;
+    } catch {}
+  }
+  return null;
+}
+
+function authRecordFromOpenCodeAuthContent(value: string | undefined): GeminiOAuthCredentials | null {
+  if (!value) return null;
+  try {
+    return authRecordFromOpenCodeAuthDatabase(JSON.parse(value) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function authRecordFromOpenCodeAuthDatabase(value: unknown): GeminiOAuthCredentials | null {
+  if (!isRecord(value)) return null;
+  return openCodeGeminiAuthRecordToCredentials(value.google) ?? openCodeGeminiAuthRecordToCredentials(value.gemini);
+}
+
+function openCodeGeminiAuthRecordToCredentials(value: unknown): GeminiOAuthCredentials | null {
+  if (!isRecord(value) || value.type !== "oauth") return null;
+  const accessToken = stringField(value, "access");
+  const expiresAt = numberField(value, "expires");
+  const refresh = stringField(value, "refresh");
+  const [refreshToken = "", projectId = "", managedProjectId = ""] = refresh.split("|", 3);
+  if (!refreshToken && !accessToken) return null;
+  return { accessToken, refreshToken, ...(expiresAt === undefined ? {} : { expiresAt }), ...(firstNonEmpty(projectId, managedProjectId) ? { projectId: firstNonEmpty(projectId, managedProjectId) } : {}) };
+}
+
+function selectGeminiOAuthCredentials(openCodeCreds: GeminiOAuthCredentials | null, geminiCliCreds: GeminiOAuthCredentials | null, observedAt: number): GeminiOAuthCredentials | null {
+  const candidates = [openCodeCreds, geminiCliCreds].filter((candidate): candidate is GeminiOAuthCredentials => candidate !== null);
+  const fresh = candidates.find((candidate) => candidate.accessToken && candidate.expiresAt !== undefined && candidate.expiresAt > observedAt + 5 * 60_000);
+  return fresh ?? candidates.find((candidate) => candidate.refreshToken) ?? candidates[0] ?? null;
+}
+
+function readOpenCodeGeminiAuthOAuthClient(homeDir: string, env: Record<string, string | undefined>, filesystem: FlowDeskProviderUsageFileSystemV1): GeminiOAuthClientCredentials | null {
+  for (const candidate of openCodeGeminiAuthPackageEntrypoints(homeDir, env)) {
+    if (!filesystem.exists(candidate)) continue;
+    try {
+      const source = filesystem.readFile(candidate);
+      const clientId = source.match(/GEMINI_CLIENT_ID\s*=\s*["']([^"']+)["']/)?.[1] ?? "";
+      const clientSecret = source.match(/GEMINI_CLIENT_SECRET\s*=\s*["']([^"']+)["']/)?.[1] ?? "";
+      if (clientId && clientSecret) return { clientId, clientSecret };
+    } catch {}
+  }
+  return null;
 }
 
 function availableCollection(providerFamily: CollectorProviderFamily, modelFamily: string, authProfile: string, accountBoundary: string, providerBucket: ProviderBucket): ProviderCollection {
@@ -598,6 +684,20 @@ function codexConfigDirs(homeDir: string, env: Record<string, string | undefined
 function geminiCredentialPaths(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
   const geminiHome = env?.GEMINI_CLI_HOME;
   return uniqueNonEmpty([geminiHome ? path.join(geminiHome, ".gemini", "oauth_creds.json") : undefined, geminiHome ? path.join(geminiHome, "oauth_creds.json") : undefined, path.join(homeDir, ".gemini", "oauth_creds.json")]);
+}
+
+function openCodeAuthPaths(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
+  const dataHome = firstNonEmpty(env?.OPENCODE_DATA_DIR, env?.XDG_DATA_HOME ? path.join(env.XDG_DATA_HOME, "opencode") : undefined, path.join(homeDir, ".local", "share", "opencode"));
+  return uniqueNonEmpty([dataHome ? path.join(dataHome, "auth.json") : undefined]);
+}
+
+function openCodeGeminiAuthPackageEntrypoints(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
+  const cacheHome = firstNonEmpty(env?.OPENCODE_CACHE_DIR, env?.XDG_CACHE_HOME ? path.join(env.XDG_CACHE_HOME, "opencode") : undefined, path.join(homeDir, ".cache", "opencode"));
+  return uniqueNonEmpty([
+    cacheHome ? path.join(cacheHome, "packages", "opencode-gemini-auth@latest", "node_modules", "opencode-gemini-auth", "dist", "index.js") : undefined,
+    cacheHome ? path.join(cacheHome, "packages", "opencode-gemini-auth@latest", "dist", "index.js") : undefined,
+    cacheHome ? path.join(cacheHome, "packages", "opencode-gemini-auth", "node_modules", "opencode-gemini-auth", "dist", "index.js") : undefined,
+  ]);
 }
 
 function claudeKeychainServiceName(env: Record<string, string | undefined> | undefined): string {

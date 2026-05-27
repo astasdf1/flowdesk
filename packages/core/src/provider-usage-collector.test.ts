@@ -228,6 +228,83 @@ test("Gemini Code Assist collector uses cached access_token when not expired wit
   assert.equal(firstAuthHeader, "Bearer cached-access-token-still-valid");
 });
 
+test("Gemini Code Assist collector uses OpenCode google OAuth auth when logged in", async () => {
+  const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
+  const futureExpiry = observedAtMs + 30 * 60_000;
+  const filesystem = memoryFilesystem({
+    "/home/test/.local/share/opencode/auth.json": JSON.stringify({
+      google: {
+        type: "oauth",
+        access: "opencode-access-token-still-valid",
+        refresh: "opencode-refresh-token|configured-project|managed-project",
+        expires: futureExpiry,
+      },
+    }),
+  });
+  let firstAuthHeader = "";
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url, init: FlowDeskProviderUsageFetchRequestV1) => {
+    if (url === "https://oauth2.googleapis.com/token") throw new Error("token refresh should not run");
+    if (url.endsWith(":loadCodeAssist")) {
+      firstAuthHeader = init.headers.Authorization ?? "";
+      assert.match(init.body ?? "", /configured-project/);
+      return response({ cloudaicompanionProject: "managed-project" });
+    }
+    assert.match(init.body ?? "", /configured-project/);
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-24T02:00:00.000Z" }] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(
+    target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
+    { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
+    { filesystem, fetch: fetcher, now: () => observedAtMs },
+  );
+
+  assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+  assert.equal(firstAuthHeader, "Bearer opencode-access-token-still-valid");
+});
+
+test("Gemini Code Assist collector refreshes OpenCode OAuth using cached opencode-gemini-auth client", async () => {
+  const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
+  const pastExpiry = observedAtMs - 60_000;
+  const filesystem = memoryFilesystem({
+    "/home/test/.local/share/opencode/auth.json": JSON.stringify({
+      google: {
+        type: "oauth",
+        access: "expired-opencode-access-token",
+        refresh: "opencode-refresh-token|configured-project|managed-project",
+        expires: pastExpiry,
+      },
+    }),
+    "/home/test/.cache/opencode/packages/opencode-gemini-auth@latest/node_modules/opencode-gemini-auth/dist/index.js": 'var GEMINI_CLIENT_ID = "client-from-package"; var GEMINI_CLIENT_SECRET = "secret-from-package";',
+  });
+  let tokenRefreshBody = "";
+  let firstAuthHeader = "";
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url, init: FlowDeskProviderUsageFetchRequestV1) => {
+    if (url === "https://oauth2.googleapis.com/token") {
+      tokenRefreshBody = init.body ?? "";
+      return response({ access_token: "refreshed-access-token" });
+    }
+    if (url.endsWith(":loadCodeAssist")) {
+      firstAuthHeader = init.headers.Authorization ?? "";
+      return response({ cloudaicompanionProject: "managed-project" });
+    }
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-24T02:00:00.000Z" }] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(
+    target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
+    { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
+    { filesystem, fetch: fetcher, now: () => observedAtMs },
+  );
+
+  assertCollectorEvidenceValid(result);
+  assert.match(tokenRefreshBody, /client_id=client-from-package/);
+  assert.match(tokenRefreshBody, /client_secret=secret-from-package/);
+  assert.match(tokenRefreshBody, /refresh_token=opencode-refresh-token/);
+  assert.equal(firstAuthHeader, "Bearer refreshed-access-token");
+});
+
 test("Gemini Code Assist collector falls closed when cached token is expired and no client id/secret is configured", async () => {
   const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
   const pastExpiry = observedAtMs - 60_000;

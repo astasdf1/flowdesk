@@ -105,7 +105,7 @@ The tool description also instructs the assistant to call this tool BEFORE start
 |---|---|---|
 | `claude` | `~/.claude/.credentials.json` or macOS keychain `Claude Code-credentials` | Same path Claude Code uses; if missing, `alertLevel=unknown`. |
 | `openai` | `~/.codex/auth.json` | Same path Codex CLI uses. |
-| `gemini` | `~/.gemini/oauth_creds.json` + Gemini OAuth client id/secret | OAuth client id/secret come from the env vars `FLOWDESK_GEMINI_OAUTH_CLIENT_ID` and `FLOWDESK_GEMINI_OAUTH_CLIENT_SECRET`, or from inline `providerUsageLive.geminiOAuthClientId/Secret` config. |
+| `gemini` | OpenCode `google` OAuth auth or `~/.gemini/oauth_creds.json` | FlowDesk first reuses the same OpenCode auth written by `opencode-gemini-auth` when the user logs into Gemini/Google in OpenCode, then falls back to Gemini CLI credentials. If an access token is expired, it can refresh with explicitly configured `FLOWDESK_GEMINI_OAUTH_CLIENT_ID`/`SECRET` or by reading the locally cached `opencode-gemini-auth` package OAuth client metadata; no manual FlowDesk config is needed when the user is already logged in and the auth package is cached. |
 
 ### Alert levels
 

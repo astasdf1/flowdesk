@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -104,6 +111,8 @@ test("provider usage live persistence reports durable root, workflow id, and an 
 			now: fixedNow,
 		});
 		assert.equal(result.status, "provider_usage_live_collected");
+		assert.ok(result.sidebarCachePersistence);
+		assert.equal(result.sidebarCachePersistence?.persisted, true);
 		assert.ok(result.snapshotPersistence);
 		assert.equal(result.snapshotPersistence?.requested, true);
 		assert.equal(
@@ -126,6 +135,11 @@ test("provider usage live persistence reports durable root, workflow id, and an 
 			const stat = statSync(evidenceDir);
 			assert.equal(stat.isDirectory(), true);
 		}
+		const sidebarCache = JSON.parse(
+			readFileSync(join(root, ".flowdesk/ui/provider-usage-sidebar.json"), "utf8"),
+		) as Record<string, unknown>;
+		assert.equal(sidebarCache.schema_version, "flowdesk.provider_usage_sidebar_cache.v1");
+		assert.equal(Array.isArray(sidebarCache.providers), true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -185,6 +199,99 @@ test("provider usage live reuses a fresh durable snapshot before collecting prov
 			result.providers[0]?.recommendation ?? "",
 			/Reused a fresh durable usage snapshot/i,
 		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("provider usage live preserves sidebar cache percent when reusing bucket-label snapshot", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-sidebar-reuse-"));
+	try {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-provider-usage-live",
+			evidenceId: "provider-usage-snapshot-claude-20260524T000000000Z",
+			record: {
+				schema_version: "flowdesk.usage_snapshot.v1",
+				snapshot_id: "usage-live-claude-20260524T000000000Z",
+				provider_family: "claude",
+				model_family: "sonnet-4",
+				freshness: "fresh",
+				freshness_ttl: 5,
+				reset_time: "2026-05-24T05:00:00.000Z",
+				reset_bucket: "claude-5h",
+				dispatchability: "dispatchable",
+				uncertainty_flags: [],
+				source_ref: "usage-live-source-claude-20260524T000000000Z",
+			},
+		});
+		assert.equal(prepared.ok, true);
+		assert.ok(prepared.writeIntent);
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent]).ok,
+			true,
+		);
+
+		const uiDir = join(root, ".flowdesk/ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-24T00:00:00.000Z",
+					expires_at: "2026-05-24T00:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "claude",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							resetBucket: "claude-5h",
+							resetTime: "2026-05-24T05:00:00.000Z",
+							remainingPercent: 77,
+							alertLevel: "ok",
+							usageSnapshotRef: "usage-live-claude-20260524T000000000Z",
+							uncertaintyFlags: [],
+						},
+					],
+					authority: {
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						actualLaneLaunch: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["claude"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistSidebarCache: true,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "claude" },
+			now: fixedNow,
+		});
+
+		assert.deepEqual(result.snapshotReuse?.reusedEvidenceIds, [
+			"provider-usage-snapshot-claude-20260524T000000000Z",
+		]);
+		assert.equal(result.providers[0]?.remainingPercent, 77);
+		assert.equal(result.providers[0]?.alertLevel, "ok");
+		assert.match(result.providers[0]?.recommendation ?? "", /preserved 77\.0%/i);
+		const rewritten = JSON.parse(
+			readFileSync(join(uiDir, "provider-usage-sidebar.json"), "utf8"),
+		) as { providers?: Array<{ remainingPercent?: unknown; alertLevel?: unknown }> };
+		assert.equal(rewritten.providers?.[0]?.remainingPercent, 77);
+		assert.equal(rewritten.providers?.[0]?.alertLevel, "ok");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

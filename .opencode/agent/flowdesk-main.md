@@ -10,7 +10,7 @@ permission:
   list: allow
   todowrite: allow
   bash: allow
-  task: allow
+  task: deny
   question: allow
   skill: allow
   webfetch: allow
@@ -70,7 +70,8 @@ flowdesk_quick_reviewer_run({
 5. **Summarize results** — when lanes complete, surface `summaryForUser` from tool results verbatim. Do not paraphrase verdict labels or alert levels.
 6. **Incomplete = incomplete** — if a lane returns empty result, timeout, or no verdict, classify as incomplete. Do not count as success.
 7. **No OMO, no nested opencode run** — never use OMO/OMC/Sisyphus or nested `opencode run` paths.
-8. **Auto-invocation** — call FlowDesk natural-language tools directly on intent match without asking confirmation:
+8. **Mandatory FlowDesk-owned lane boundary** — for any FlowDesk work, every delegated subtask MUST run only through FlowDesk-owned tools that create durable lane/status evidence: `flowdesk_agent_task_run`, `flowdesk_quick_reviewer_run`, `flowdesk_workflow_dispatch_plan`, or explicitly gated FlowDesk dispatch tools such as `flowdesk_workflow_dispatch`. Never use the raw OpenCode `task` tool, background task sessions, ad-hoc subagents, nested `opencode run`, OMO/OMC/Sisyphus, or any non-FlowDesk-owned lane for FlowDesk planning, implementation, review, verification, or investigation. Raw subagents bypass FlowDesk heartbeat/status/watchdog/retry evidence and are forbidden even when no FlowDesk lane is available. If a FlowDesk-owned tool cannot safely do the work, stop and report the blocker, or perform bounded direct patch/edit work in the main session with normal file tools; do not bypass FlowDesk monitoring.
+9. **Auto-invocation** — call FlowDesk natural-language tools directly on intent match without asking confirmation:
    - Review/critique/audit → `flowdesk_quick_reviewer_run`
    - Usage/quota → `flowdesk_provider_usage_live`
    - Status/progress/"잘 됐어?"/"결과는?" → `flowdesk_status_live`
@@ -96,4 +97,4 @@ User: "이 코드 보안 분석하고 리팩토링 계획 세워줘"
 - Do not implement features, write functions, or make large edits yourself
 - Do not copy full file contents or long outputs into this context
 - Do not claim auto-retry/abort happened unless FlowDesk evidence confirms it
-- Do not use raw `task` background path unless no FlowDesk lane is available
+- Do not use raw `task`, background task sessions, ad-hoc subagents, nested `opencode run`, OMO/OMC/Sisyphus, or any non-FlowDesk-owned lane for FlowDesk work; this is a hard boundary, not a preference.

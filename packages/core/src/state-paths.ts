@@ -138,6 +138,10 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"retry_failed",
 	"task_result",
 	"task_failed",
+	"workflow_authoring_result",
+	"task_graph",
+	"task_agent_assignment",
+	"task_model_selection",
 	"workflow_dispatch_plan",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
@@ -182,6 +186,10 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	retry_failed: "retry-failed",
 	task_result: "task-result",
 	task_failed: "task-failed",
+	workflow_authoring_result: "workflow-authoring-result",
+	task_graph: "task-graph",
+	task_agent_assignment: "task-agent-assignment",
+	task_model_selection: "task-model-selection",
 	workflow_dispatch_plan: "workflow-dispatch-plan",
 };
 

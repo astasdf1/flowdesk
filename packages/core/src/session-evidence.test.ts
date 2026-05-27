@@ -563,6 +563,108 @@ function workflowDispatchPlanRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function workflowAuthoringResultRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.workflow_authoring_result.v1",
+    workflow_id: workflowId,
+    authoring_result_id: "authoring-result-1",
+    goal_summary: "Prepare a bounded documentation update",
+    scope_summary: "Planning-only durable evidence records",
+    output_summary: "A task graph and assignment selection summary",
+    risk_summary: "Malformed evidence could block reload",
+    status: "authored",
+    created_at: now,
+    evidence_refs: ["task-graph-1"],
+    release_gate: "release1_planning_only",
+    dispatch_authority_enabled: false,
+    provider_call_made: false,
+    runtime_execution: false,
+    actual_lane_launch: false,
+    write_authority_enabled: false,
+    redaction_version: "v1",
+    ...overrides
+  };
+}
+
+function taskGraphRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.task_graph.v1",
+    workflow_id: workflowId,
+    task_graph_id: "task-graph-1",
+    nodes: [{ task_id: "task-docs-1", title: "Review docs", summary: "Summarize bounded documentation update" }],
+    edges: [],
+    graph_summary: "One documentation planning task",
+    created_at: now,
+    release_gate: "release1_planning_only",
+    dispatch_authority_enabled: false,
+    provider_call_made: false,
+    runtime_execution: false,
+    actual_lane_launch: false,
+    write_authority_enabled: false,
+    redaction_version: "v1",
+    ...overrides
+  };
+}
+
+function taskAgentAssignmentRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.task_agent_assignment.v1",
+    workflow_id: workflowId,
+    task_id: "task-docs-1",
+    assignment_id: "assignment-docs-1",
+    agent_role: "documentation",
+    agent_role_ref: "agent-role-docs",
+    selected_agent_ref: "agent-docs",
+    selected_profile_ref: "profile-readonly",
+    compatibility_status: "compatible",
+    fit_label: "documentation planning fit",
+    registry_evidence_ref: "registry-evidence-1",
+    profile_evidence_ref: "profile-evidence-1",
+    blocked_labels: [],
+    created_at: now,
+    release_gate: "release1_planning_only",
+    dispatch_authority_enabled: false,
+    provider_call_made: false,
+    runtime_execution: false,
+    actual_lane_launch: false,
+    write_authority_enabled: false,
+    redaction_version: "v1",
+    ...overrides
+  };
+}
+
+function taskModelSelectionRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.task_model_selection.v1",
+    workflow_id: workflowId,
+    task_id: "task-docs-1",
+    selection_id: "selection-docs-1",
+    provider_family: "openai",
+    provider_qualified_model_id: "openai/gpt-5.5",
+    usage_snapshot_ref: "usage-snapshot-1",
+    usage_snapshot_freshness: "fresh",
+    provider_health_ref: "provider-health-1",
+    provider_health_label: "ok",
+    exact_model_availability_ref: "model-availability-1",
+    exact_model_availability_label: "available",
+    fit_label: "documentation planning fit",
+    performance_label: "balanced",
+    selection_status: "selected",
+    blocked_labels: [],
+    fallback_allowed: false,
+    reselection_allowed: false,
+    created_at: now,
+    release_gate: "release1_planning_only",
+    dispatch_authority_enabled: false,
+    provider_call_made: false,
+    runtime_execution: false,
+    actual_lane_launch: false,
+    write_authority_enabled: false,
+    redaction_version: "v1",
+    ...overrides
+  };
+}
+
 test("session evidence path builders produce per-class relative paths", () => {
   for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
     const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
@@ -626,7 +728,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord(), controlledWorkspaceFileWriteRecord(), workflowDispatchPlanRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord(), controlledWorkspaceFileWriteRecord(), workflowAuthoringResultRecord(), taskGraphRecord(), taskAgentAssignmentRecord(), taskModelSelectionRecord(), workflowDispatchPlanRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -636,14 +738,43 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 19);
+    assert.equal(applied.writtenPaths.length, 23);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 19);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write", "controlled_workspace_file_write", "workflow_dispatch_plan"]));
+    assert.equal(reloaded.entries.length, 23);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write", "controlled_workspace_file_write", "workflow_authoring_result", "task_graph", "task_agent_assignment", "task_model_selection", "workflow_dispatch_plan"]));
+  });
+});
+
+test("session evidence reload validates first planning evidence slice", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "workflow_authoring_result", "authoring-good"), JSON.stringify(workflowAuthoringResultRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "task_graph", "graph-good"), JSON.stringify(taskGraphRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "task_agent_assignment", "assignment-good"), JSON.stringify(taskAgentAssignmentRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "task_model_selection", "selection-good"), JSON.stringify(taskModelSelectionRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "task_model_selection", "selection-forged"), JSON.stringify(taskModelSelectionRecord({ fallback_allowed: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "task_graph", "graph-cycle"), JSON.stringify(taskGraphRecord({
+      nodes: [
+        { task_id: "task-a", title: "A", summary: "First planning task" },
+        { task_id: "task-b", title: "B", summary: "Second planning task" }
+      ],
+      edges: [
+        { from_task_id: "task-a", to_task_id: "task-b", relation: "depends_on" },
+        { from_task_id: "task-b", to_task_id: "task-a", relation: "depends_on" }
+      ]
+    })));
+
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 4);
+    assert.deepEqual(new Set(result.entries.map((entry) => entry.evidenceClass)), new Set(["workflow_authoring_result", "task_graph", "task_agent_assignment", "task_model_selection"]));
+    assert.equal(result.blocked.length, 2);
+    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /fallback_allowed must be false|cycle/);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
   });
 });
 

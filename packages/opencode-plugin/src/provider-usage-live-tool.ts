@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import {
 	type FlowDeskProviderUsageAcquisitionConfigV1,
 	type FlowDeskProviderUsageCollectorOptionsV1,
@@ -33,6 +35,7 @@ export interface FlowDeskProviderUsageLiveConfigV1 {
 	geminiOAuthClientSecret?: string;
 	geminiProjectId?: string;
 	persistSnapshots?: boolean;
+	persistSidebarCache?: boolean;
 	durableStateRootDir?: string;
 	persistWorkflowId?: string;
 }
@@ -83,6 +86,14 @@ export interface FlowDeskProviderUsageLiveSnapshotReuseV1 {
 	skippedReasons: readonly string[];
 }
 
+export interface FlowDeskProviderUsageLiveSidebarCachePersistenceV1 {
+	requested: boolean;
+	durableStateRootConfigured: boolean;
+	cachePathRef?: string;
+	persisted: boolean;
+	skippedReasons: readonly string[];
+}
+
 export interface FlowDeskProviderUsageLiveResultV1 {
 	status:
 		| "provider_usage_live_collected"
@@ -96,6 +107,7 @@ export interface FlowDeskProviderUsageLiveResultV1 {
 	redactedBlockReason?: string;
 	snapshotReuse?: FlowDeskProviderUsageLiveSnapshotReuseV1;
 	snapshotPersistence?: FlowDeskProviderUsageLiveSnapshotPersistenceV1;
+	sidebarCachePersistence?: FlowDeskProviderUsageLiveSidebarCachePersistenceV1;
 	safeNextActions: readonly ("/flowdesk-doctor" | "/flowdesk-status")[];
 	authority: {
 		realOpenCodeDispatch: false;
@@ -437,12 +449,17 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		}),
 	);
 
-	const providers = families.map((family) => {
+	const providerRows = families.map((family) => {
 		const cached = cachedByFamily.get(family);
 		if (cached !== undefined) return rowFromUsageSnapshot(family, cached.snapshot);
 		const collected = collectorResults.find((result) => result.family === family);
 		return rowFromCollectorResult(family, collected?.result);
 	});
+	const providers = enrichProviderRowsFromReusableSidebarCache(
+		input.config,
+		providerRows,
+		observedAt,
+	);
 	const anyAcquired = providers.some((row) => row.usageAuthorityAcquired);
 	const worstAlertLevel = computeWorstAlertLevel(providers);
 	const overallRecommendation = composeOverallRecommendation(
@@ -452,6 +469,11 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 	const snapshotPersistence = persistProviderUsageSnapshots(
 		input.config,
 		collectorResults,
+		observedAt,
+	);
+	const sidebarCachePersistence = persistProviderUsageSidebarCache(
+		input.config,
+		providers,
 		observedAt,
 	);
 
@@ -467,6 +489,9 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		...(snapshotPersistence !== undefined
 			? { snapshotPersistence }
 			: {}),
+		...(sidebarCachePersistence !== undefined
+			? { sidebarCachePersistence }
+			: {}),
 		safeNextActions: safeNextActions(),
 		authority: {
 			realOpenCodeDispatch: false,
@@ -479,6 +504,193 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 			providerUsageAcquired: anyAcquired,
 		},
 	};
+}
+
+interface ReusableSidebarCacheUsageRow {
+	providerFamily: FlowDeskProviderUsageLiveProviderFamilyV1;
+	usageSnapshotRef: string;
+	remainingPercent: number;
+}
+
+function alertLevelForRemainingPercent(
+	freshness: FlowDeskProviderUsageLiveProviderRowV1["freshness"],
+	remainingPercent: number | null,
+): FlowDeskProviderUsageLiveAlertLevelV1 {
+	if (freshness !== "fresh") return freshness === "stale" ? "stale" : "unknown";
+	if (remainingPercent === null) return "unknown";
+	if (remainingPercent <= 0) return "exhausted";
+	if (remainingPercent <= 10) return "critical";
+	if (remainingPercent <= 30) return "warning";
+	return "ok";
+}
+
+function loadReusableSidebarCacheUsageRows(
+	config: FlowDeskProviderUsageLiveConfigV1,
+	observedAt: string,
+): Map<string, ReusableSidebarCacheUsageRow> {
+	const rows = new Map<string, ReusableSidebarCacheUsageRow>();
+	if (
+		typeof config.durableStateRootDir !== "string" ||
+		config.durableStateRootDir.trim().length === 0
+	)
+		return rows;
+
+	const root = resolve(config.durableStateRootDir);
+	const dir = resolve(root, ".flowdesk", "ui");
+	if (dir !== root && !dir.startsWith(`${root}${sep}`)) return rows;
+
+	try {
+		const parsed = JSON.parse(
+			readFileSync(join(dir, "provider-usage-sidebar.json"), "utf8"),
+		) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+			return rows;
+		const cache = parsed as Record<string, unknown>;
+		if (cache.schema_version !== "flowdesk.provider_usage_sidebar_cache.v1")
+			return rows;
+		const expiresAt =
+			typeof cache.expires_at === "string"
+				? Date.parse(cache.expires_at)
+				: Number.NaN;
+		if (!Number.isFinite(expiresAt) || expiresAt <= Date.parse(observedAt))
+			return rows;
+		if (!Array.isArray(cache.providers)) return rows;
+
+		for (const item of cache.providers) {
+			if (typeof item !== "object" || item === null || Array.isArray(item))
+				continue;
+			const row = item as Record<string, unknown>;
+			if (typeof row.providerFamily !== "string" || !isProviderFamily(row.providerFamily))
+				continue;
+			if (typeof row.usageSnapshotRef !== "string") continue;
+			if (
+				typeof row.remainingPercent !== "number" ||
+				!Number.isFinite(row.remainingPercent)
+			)
+				continue;
+			rows.set(row.usageSnapshotRef, {
+				providerFamily: row.providerFamily,
+				usageSnapshotRef: row.usageSnapshotRef,
+				remainingPercent: row.remainingPercent,
+			});
+		}
+	} catch {
+		return rows;
+	}
+
+	return rows;
+}
+
+function enrichProviderRowsFromReusableSidebarCache(
+	config: FlowDeskProviderUsageLiveConfigV1,
+	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[],
+	observedAt: string,
+): readonly FlowDeskProviderUsageLiveProviderRowV1[] {
+	const reusable = loadReusableSidebarCacheUsageRows(config, observedAt);
+	if (reusable.size === 0) return providers;
+
+	return providers.map((row) => {
+		if (row.remainingPercent !== null || row.usageSnapshotRef === undefined)
+			return row;
+		const cached = reusable.get(row.usageSnapshotRef);
+		if (cached === undefined || cached.providerFamily !== row.providerFamily)
+			return row;
+		const alertLevel = alertLevelForRemainingPercent(
+			row.freshness,
+			cached.remainingPercent,
+		);
+		return {
+			...row,
+			remainingPercent: cached.remainingPercent,
+			alertLevel,
+			recommendation: `${row.providerFamily} reused a fresh durable usage snapshot and preserved ${cached.remainingPercent.toFixed(1)}% remaining from the previous fresh sidebar cache for the same usage snapshot.`,
+		};
+	});
+}
+
+function persistProviderUsageSidebarCache(
+	config: FlowDeskProviderUsageLiveConfigV1,
+	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[],
+	observedAt: string,
+): FlowDeskProviderUsageLiveSidebarCachePersistenceV1 | undefined {
+	if (config.persistSidebarCache !== true && config.persistSnapshots !== true)
+		return undefined;
+	if (
+		typeof config.durableStateRootDir !== "string" ||
+		config.durableStateRootDir.trim().length === 0
+	) {
+		return {
+			requested: true,
+			durableStateRootConfigured: false,
+			persisted: false,
+			skippedReasons: [
+				"provider usage sidebar cache requested but no durable state root configured",
+			],
+		};
+	}
+	const root = resolve(config.durableStateRootDir);
+	const dir = resolve(root, ".flowdesk", "ui");
+	if (dir !== root && !dir.startsWith(`${root}${sep}`)) {
+		return {
+			requested: true,
+			durableStateRootConfigured: true,
+			persisted: false,
+			skippedReasons: ["resolved sidebar cache path escapes durable root"],
+		};
+	}
+	const cachePath = join(dir, "provider-usage-sidebar.json");
+	const tempPath = join(dir, `provider-usage-sidebar.${observedAt.replace(/[^0-9A-Za-z]/g, "")}.tmp`);
+	const record = {
+		schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+		observed_at: observedAt,
+		expires_at: new Date(Date.parse(observedAt) + 5 * 60_000).toISOString(),
+		providers: providers.map((row) => ({
+			providerFamily: row.providerFamily,
+			connected:
+				row.dispatchability === "dispatchable" &&
+				row.freshness === "fresh" &&
+				row.usageAuthorityAcquired === true,
+			dispatchability: row.dispatchability,
+			freshness: row.freshness,
+			...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
+			...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
+			remainingPercent: row.remainingPercent,
+			alertLevel: row.alertLevel,
+			...(row.modelFamily === undefined ? {} : { modelFamily: row.modelFamily }),
+			...(row.redactedReason === undefined ? {} : { redactedReason: row.redactedReason }),
+			...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
+			uncertaintyFlags: [...row.uncertaintyFlags],
+		})),
+		safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
+		authority: {
+			realOpenCodeDispatch: false,
+			providerCall: false,
+			runtimeExecution: false,
+			actualLaneLaunch: false,
+			fallbackAuthority: false,
+			hardCancelOrNoReplyAuthority: false,
+		},
+	};
+	try {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(tempPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+		renameSync(tempPath, cachePath);
+		return {
+			requested: true,
+			durableStateRootConfigured: true,
+			cachePathRef: ".flowdesk/ui/provider-usage-sidebar.json",
+			persisted: true,
+			skippedReasons: [],
+		};
+	} catch {
+		return {
+			requested: true,
+			durableStateRootConfigured: true,
+			cachePathRef: ".flowdesk/ui/provider-usage-sidebar.json",
+			persisted: false,
+			skippedReasons: ["failed to write sidebar cache"],
+		};
+	}
 }
 
 function loadFreshProviderUsageSnapshots(

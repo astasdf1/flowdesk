@@ -37,6 +37,10 @@ import {
 	validateFlowDeskTaskResultV1,
 	validateFlowDeskTaskFailedV1,
 } from "./task-result.js";
+import { validateFlowDeskTaskAgentAssignmentV1 } from "./task-agent-assignment.js";
+import { validateFlowDeskTaskGraphV1 } from "./task-graph.js";
+import { validateFlowDeskTaskModelSelectionV1 } from "./task-model-selection.js";
+import { validateFlowDeskWorkflowAuthoringResultV1 } from "./workflow-authoring-result.js";
 import { validateFlowDeskWorkflowDispatchPlanV1 } from "./workflow-dispatch-plan.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
@@ -128,6 +132,10 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	retry_failed: "flowdesk.retry_failed.v1",
 	task_result: "flowdesk.task_result.v1",
 	task_failed: "flowdesk.task_failed.v1",
+	workflow_authoring_result: "flowdesk.workflow_authoring_result.v1",
+	task_graph: "flowdesk.task_graph.v1",
+	task_agent_assignment: "flowdesk.task_agent_assignment.v1",
+	task_model_selection: "flowdesk.task_model_selection.v1",
 	workflow_dispatch_plan: "flowdesk.workflow_dispatch_plan.v1",
 };
 
@@ -823,6 +831,14 @@ function validateEvidenceShape(
 		return validateFlowDeskTaskResultV1(record);
 	if (evidenceClass === "task_failed")
 		return validateFlowDeskTaskFailedV1(record);
+	if (evidenceClass === "workflow_authoring_result")
+		return validateFlowDeskWorkflowAuthoringResultV1(record);
+	if (evidenceClass === "task_graph")
+		return validateFlowDeskTaskGraphV1(record);
+	if (evidenceClass === "task_agent_assignment")
+		return validateFlowDeskTaskAgentAssignmentV1(record);
+	if (evidenceClass === "task_model_selection")
+		return validateFlowDeskTaskModelSelectionV1(record);
 	if (evidenceClass === "workflow_dispatch_plan")
 		return validateFlowDeskWorkflowDispatchPlanV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")

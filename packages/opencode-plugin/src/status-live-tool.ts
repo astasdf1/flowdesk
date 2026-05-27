@@ -145,6 +145,13 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestProviderUsageFreshness?: string;
 	latestProviderUsageResetBucket?: string;
 	providerUsageSnapshotCount?: number;
+	latestWorkflowAuthoringStatus?: string;
+	latestWorkflowAuthoringGoalSummary?: string;
+	latestTaskGraphTaskCount?: number;
+	latestTaskGraphEdgeCount?: number;
+	latestTaskAgentAssignmentCount?: number;
+	latestTaskModelSelectionStatus?: string;
+	latestTaskModelSelectionBlockedLabels?: readonly string[];
 	latestWorkflowDispatchPlanRevisionId?: string;
 	latestWorkflowDispatchPlanTaskCount?: number;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
@@ -271,6 +278,13 @@ function summarizeWorkflow(
 	const laneLifecycleStates: string[] = [];
 	let regatePlanState: string | undefined;
 	let providerAcquisitionStatus: string | undefined;
+	let workflowAuthoringStatus: string | undefined;
+	let workflowAuthoringGoalSummary: string | undefined;
+	let taskGraphTaskCount: number | undefined;
+	let taskGraphEdgeCount: number | undefined;
+	let taskAgentAssignmentCount: number | undefined;
+	let taskModelSelectionStatus: string | undefined;
+	let taskModelSelectionBlockedLabels: string[] | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
 
@@ -323,6 +337,37 @@ function summarizeWorkflow(
 					providerAcquisitionStatus = acquisitionStatus;
 			}
 		}
+		if (evidenceClass === "workflow_authoring_result") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				workflowAuthoringStatus = getStringField(last.record, "status");
+				workflowAuthoringGoalSummary = getStringField(last.record, "goal_summary");
+			}
+		}
+		if (evidenceClass === "task_graph") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				const nodes = last.record.nodes;
+				const edges = last.record.edges;
+				if (Array.isArray(nodes)) taskGraphTaskCount = nodes.length;
+				if (Array.isArray(edges)) taskGraphEdgeCount = edges.length;
+			}
+		}
+		if (evidenceClass === "task_agent_assignment") {
+			taskAgentAssignmentCount = classEntries.length;
+		}
+		if (evidenceClass === "task_model_selection") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				taskModelSelectionStatus = getStringField(last.record, "selection_status");
+				const blockedLabels = last.record.blocked_labels;
+				if (Array.isArray(blockedLabels)) {
+					taskModelSelectionBlockedLabels = blockedLabels.filter(
+						(label): label is string => typeof label === "string",
+					);
+				}
+			}
+		}
 		if (evidenceClass === "workflow_dispatch_plan") {
 			const last = classEntries[classEntries.length - 1];
 			if (last !== undefined) {
@@ -368,6 +413,27 @@ function summarizeWorkflow(
 			: {}),
 		...(providerUsageSummary.count > 0
 			? { providerUsageSnapshotCount: providerUsageSummary.count }
+			: {}),
+		...(workflowAuthoringStatus !== undefined
+			? { latestWorkflowAuthoringStatus: workflowAuthoringStatus }
+			: {}),
+		...(workflowAuthoringGoalSummary !== undefined
+			? { latestWorkflowAuthoringGoalSummary: workflowAuthoringGoalSummary }
+			: {}),
+		...(taskGraphTaskCount !== undefined
+			? { latestTaskGraphTaskCount: taskGraphTaskCount }
+			: {}),
+		...(taskGraphEdgeCount !== undefined
+			? { latestTaskGraphEdgeCount: taskGraphEdgeCount }
+			: {}),
+		...(taskAgentAssignmentCount !== undefined
+			? { latestTaskAgentAssignmentCount: taskAgentAssignmentCount }
+			: {}),
+		...(taskModelSelectionStatus !== undefined
+			? { latestTaskModelSelectionStatus: taskModelSelectionStatus }
+			: {}),
+		...(taskModelSelectionBlockedLabels !== undefined
+			? { latestTaskModelSelectionBlockedLabels: taskModelSelectionBlockedLabels }
 			: {}),
 		...(workflowDispatchPlanRevisionId !== undefined
 			? {
@@ -679,7 +745,9 @@ function buildStatusLiveSummaryForUser(input: {
 		const planText =
 			workflow.latestWorkflowDispatchPlanRevisionId !== undefined
 				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}`
-				: "workflow_plan=(none)";
+				: workflow.latestTaskGraphTaskCount !== undefined
+					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}`
+					: "workflow_plan=(none)";
 		const classification = workflow.worstLaneStallClassification ?? "unknown";
 		const lanePreview = (workflow.laneProgressCards ?? [])
 			.slice(0, 2)
