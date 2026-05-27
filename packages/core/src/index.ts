@@ -25,6 +25,7 @@ export function canUseRealDispatchInRelease1(): false {
 }
 
 export * from "./agent-profiles.js";
+export * from "./agent-registry.js";
 export * from "./audit.js";
 export * from "./authority-promotion.js";
 export * from "./bootstrap-foundation.js";
@@ -37,6 +38,7 @@ export * from "./config-policy.js";
 export * from "./connector-profile.js";
 export * from "./controlled-conformance-doc-write.js";
 export * from "./controlled-redacted-audit-export-write.js";
+export * from "./controlled-workspace-file-write.js";
 export * from "./core-completion-safety-contracts.js";
 export * from "./dispatch-attempt-manifest.js";
 export * from "./dispatch-idempotency.js";
@@ -83,3 +85,4 @@ export * from "./tool-contract-fixtures.js";
 export * from "./top-tier-reviewer-lane-probe.js";
 export * from "./usage-health.js";
 export * from "./validators.js";
+export * from "./workflow-dispatch-plan.js";

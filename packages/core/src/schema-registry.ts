@@ -178,6 +178,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.guard_approved_dispatch.v1", "guard-approved-dispatch", "GuardApprovedDispatchV1", "guard"),
   artifactEntry("flowdesk.runtime_capability_metadata.v1", "runtime-capability-metadata", "FlowDeskRuntimeCapabilityMetadataV1", "runtime"),
   artifactEntry("flowdesk.workflow_plan.v1", "workflow-plan", "FlowDeskWorkflowPlanV1", "workflow"),
+  artifactEntry("flowdesk.workflow_dispatch_plan.v1", "workflow-dispatch-plan", "FlowDeskWorkflowDispatchPlanV1", "workflow"),
   artifactEntry("flowdesk.top_tier_reviewer_binding.v1", "top-tier-reviewer-binding", "FlowDeskTopTierReviewerBindingV1", "later_release"),
   artifactEntry("flowdesk.top_tier_reviewer_lane_plan.v1", "top-tier-reviewer-lane-plan", "FlowDeskTopTierReviewerLanePlanV1", "later_release"),
   artifactEntry("flowdesk.top_tier_review_binding_inventory.v1", "top-tier-review-binding-inventory", "FlowDeskTopTierReviewBindingInventoryV1", "later_release"),

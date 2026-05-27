@@ -604,6 +604,7 @@ export interface FlowDeskInjectedSdkReviewerVerdictObservationRequestV1 {
 	bindingRef: string;
 	perspective: FlowDeskTopTierReviewPerspective;
 	directory?: string;
+	messagesResponse?: unknown;
 }
 
 export interface FlowDeskInjectedSdkReviewerVerdictObservationResultV1 {
@@ -3196,7 +3197,8 @@ function arrayData(value: unknown): unknown[] {
 	const data = responseData(value);
 	if (Array.isArray(data)) return data;
 	const record = asRecord(data);
-	return Array.isArray(record?.items) ? record.items : [];
+	if (Array.isArray(record?.items)) return record.items;
+	return Array.isArray(record?.messages) ? record.messages : [];
 }
 
 function modelRef(value: unknown): string | undefined {
@@ -3249,23 +3251,55 @@ function lifecycleMessageRefFrom(value: string | undefined): string | undefined 
 	return value;
 }
 
-function messageTextCandidates(value: unknown): string[] {
-	return arrayData(value).flatMap((message) => {
-		const record = asRecord(message);
-		const parts = Array.isArray(record?.parts) ? record.parts : [];
-		return parts
-			.flatMap((part) => {
-				const partRecord = asRecord(part);
-				const text =
-					typeof partRecord?.text === "string"
-						? partRecord.text
-						: typeof partRecord?.content === "string"
-							? partRecord.content
-							: undefined;
-				return text === undefined || text.length > 20_000 ? [] : [text.trim()];
-			})
-			.filter((text) => text.startsWith("{") && text.endsWith("}"));
-	});
+function messageRole(message: unknown): string | undefined {
+	const record = asRecord(message);
+	const info = asRecord(record?.info) ?? record;
+	return typeof info?.role === "string" ? info.role : undefined;
+}
+
+function messageTextCandidates(message: unknown): string[] {
+	const record = asRecord(message);
+	const info = asRecord(record?.info);
+	const parts = Array.isArray(record?.parts)
+		? record.parts
+		: Array.isArray(info?.parts)
+			? info.parts
+			: [];
+	return parts
+		.flatMap((part) => {
+			const partRecord = asRecord(part);
+			const text =
+				typeof partRecord?.text === "string"
+					? partRecord.text
+					: typeof partRecord?.content === "string"
+						? partRecord.content
+						: undefined;
+			return text === undefined || text.length > 20_000 ? [] : [text.trim()];
+		})
+		.filter((text) => text.startsWith("{") && text.endsWith("}"));
+}
+
+function directVerdictCandidate(message: unknown): unknown | undefined {
+	return asRecord(message)?.schema_version === "flowdesk.top_tier_review_verdict.v1"
+		? message
+		: undefined;
+}
+
+function topTierVerdictCandidates(messagesResponse: unknown): unknown[] {
+	const messages = arrayData(messagesResponse);
+	const candidates: unknown[] = [];
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		const parsed = messageTextCandidates(message)
+			.map(parseJsonCandidate)
+			.filter((candidate) => candidate !== undefined);
+		if (messageRole(message) === "assistant") candidates.push(...parsed);
+		const direct = directVerdictCandidate(message);
+		if (direct !== undefined) candidates.push(direct);
+		if (messageRole(message) !== "assistant") candidates.push(...parsed);
+	}
+	const topLevel = directVerdictCandidate(responseData(messagesResponse));
+	return topLevel === undefined ? candidates : [...candidates, topLevel];
 }
 
 function parseJsonCandidate(text: string): unknown | undefined {
@@ -3276,17 +3310,6 @@ function parseJsonCandidate(text: string): unknown | undefined {
 	}
 }
 
-function topTierVerdictCandidates(messagesResponse: unknown): unknown[] {
-	const direct = arrayData(messagesResponse).filter(
-		(message) =>
-			asRecord(message)?.schema_version ===
-			"flowdesk.top_tier_review_verdict.v1",
-	);
-	const parsed = messageTextCandidates(messagesResponse)
-		.map(parseJsonCandidate)
-		.filter((candidate) => candidate !== undefined);
-	return [...direct, ...parsed];
-}
 
 function verdictMatchesRequest(
 	verdict: FlowDeskTopTierReviewVerdictV1,
@@ -3331,7 +3354,7 @@ export async function observeInjectedSdkReviewerVerdictV1(input: {
 		};
 	}
 	try {
-		const messagesResponse = await callSdkWithLegacyFallback(
+		const messagesResponse = input.request.messagesResponse ?? await callSdkWithLegacyFallback(
 			messages as (options: unknown) => unknown | Promise<unknown>,
 			input.client.session,
 			{
@@ -3373,7 +3396,7 @@ export async function observeInjectedSdkReviewerVerdictV1(input: {
 			...base,
 			status: errors.length > 0 ? "invalid_verdict" : "missing_verdict",
 			observationAttempted: true,
-			redactedErrors: [...new Set(errors)],
+			redactedErrors: [...new Set(errors)].slice(0, 8).map((error) => error.slice(0, 200)),
 		};
 	} catch {
 		return {

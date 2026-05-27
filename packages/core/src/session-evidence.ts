@@ -10,6 +10,7 @@ import {
 import { dirname, resolve, sep } from "node:path";
 import { validateFlowDeskControlledConformanceDocWriteRecordV1 } from "./controlled-conformance-doc-write.js";
 import { validateFlowDeskControlledRedactedAuditExportWriteRecordV1 } from "./controlled-redacted-audit-export-write.js";
+import { validateFlowDeskControlledWorkspaceFileWriteRecordV1 } from "./controlled-workspace-file-write.js";
 import { validateFlowDeskDispatchIdempotencySnapshotV1 } from "./dispatch-idempotency.js";
 import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
 import { validateFlowDeskFallbackRegatePlanV1 } from "./fallback-regate-plan.js";
@@ -36,6 +37,7 @@ import {
 	validateFlowDeskTaskResultV1,
 	validateFlowDeskTaskFailedV1,
 } from "./task-result.js";
+import { validateFlowDeskWorkflowDispatchPlanV1 } from "./workflow-dispatch-plan.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
@@ -112,6 +114,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 		"flowdesk.controlled_conformance_doc_write.v1",
 	controlled_redacted_audit_export_write:
 		"flowdesk.controlled_redacted_audit_export_write.v1",
+	controlled_workspace_file_write:
+		"flowdesk.controlled_workspace_file_write.v1",
 	fallback_regate_plan: "flowdesk.fallback_regate_plan.v1",
 	lane_heartbeat: "flowdesk.lane_heartbeat.v1",
 	pending_abort_warning: "flowdesk.pending_abort_warning.v1",
@@ -124,6 +128,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	retry_failed: "flowdesk.retry_failed.v1",
 	task_result: "flowdesk.task_result.v1",
 	task_failed: "flowdesk.task_failed.v1",
+	workflow_dispatch_plan: "flowdesk.workflow_dispatch_plan.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -818,12 +823,16 @@ function validateEvidenceShape(
 		return validateFlowDeskTaskResultV1(record);
 	if (evidenceClass === "task_failed")
 		return validateFlowDeskTaskFailedV1(record);
+	if (evidenceClass === "workflow_dispatch_plan")
+		return validateFlowDeskWorkflowDispatchPlanV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")
 		return validateFlowDeskControlledConformanceDocWriteRecordV1(record);
 	if (evidenceClass === "controlled_redacted_audit_export_write")
 		return validateFlowDeskControlledRedactedAuditExportWriteRecordV1(record);
+	if (evidenceClass === "controlled_workspace_file_write")
+		return validateFlowDeskControlledWorkspaceFileWriteRecordV1(record);
 	if (evidenceClass === "fallback_regate_plan")
 		return validateFlowDeskFallbackRegatePlanV1(record);
 	if (evidenceClass === "provider_usage_snapshot")

@@ -125,6 +125,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"reviewer_lane_conformance",
 	"controlled_conformance_doc_write",
 	"controlled_redacted_audit_export_write",
+	"controlled_workspace_file_write",
 	"fallback_regate_plan",
 	"lane_heartbeat",
 	"pending_abort_warning",
@@ -137,6 +138,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"retry_failed",
 	"task_result",
 	"task_failed",
+	"workflow_dispatch_plan",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -167,6 +169,7 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	controlled_conformance_doc_write: "controlled-conformance-doc-write",
 	controlled_redacted_audit_export_write:
 		"controlled-redacted-audit-export-write",
+	controlled_workspace_file_write: "controlled-workspace-file-write",
 	fallback_regate_plan: "fallback-regate-plan",
 	lane_heartbeat: "lane-heartbeat",
 	pending_abort_warning: "pending-abort-warning",
@@ -179,6 +182,7 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	retry_failed: "retry-failed",
 	task_result: "task-result",
 	task_failed: "task-failed",
+	workflow_dispatch_plan: "workflow-dispatch-plan",
 };
 
 export function sessionEvidenceDirectoryPath(

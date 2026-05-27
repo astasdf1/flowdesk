@@ -12,7 +12,10 @@ import {
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 } from "@flowdesk/core";
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
-import { executeFlowDeskRuntimeReviewerExecutionBridgeV1 } from "./runtime-reviewer-execution-bridge.js";
+import {
+	executeFlowDeskRuntimeReviewerExecutionBridgeV1,
+	type FlowDeskReviewerLaneCompletionWaitOptionsV1,
+} from "./runtime-reviewer-execution-bridge.js";
 
 export interface FlowDeskQuickReviewerRunRequestV1 {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
@@ -30,6 +33,7 @@ export interface FlowDeskQuickReviewerRunRequestV1 {
 	observedAt?: string;
 	sourceLabel?: string;
 	title?: string;
+	completionWait?: FlowDeskReviewerLaneCompletionWaitOptionsV1;
 }
 
 export interface FlowDeskQuickReviewerRunBindingV1 {
@@ -131,6 +135,17 @@ function buildQuickReviewerSummaryForUser(input: {
 const DEFAULT_TITLE = "FlowDesk quick reviewer run";
 const DEFAULT_SOURCE_LABEL = "gpt_frontier";
 
+export function normalizeQuickReviewerSourceLabelV1(value: string | undefined): string {
+	const normalized = (value ?? "")
+		.toLowerCase()
+		.replace(/[^a-z0-9_]+/g, "_")
+		.replace(/_+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 64);
+	if (normalized.length === 0) return DEFAULT_SOURCE_LABEL;
+	return /^[a-z]/.test(normalized) ? normalized : `reviewer_${normalized}`.slice(0, 64);
+}
+
 function defaultSourceLabelForReviewer(input: {
 	providerQualifiedModelId: string;
 	runtimeAgent: string;
@@ -141,7 +156,7 @@ function defaultSourceLabelForReviewer(input: {
 	if (binding.includes("gemini")) return "gemini_pro";
 	if (binding.includes("gpt") || binding.includes("openai"))
 		return "gpt_frontier";
-	return DEFAULT_SOURCE_LABEL;
+	return normalizeQuickReviewerSourceLabelV1(DEFAULT_SOURCE_LABEL);
 }
 
 function blocked(input: {
@@ -267,12 +282,13 @@ function resolveQuickReviewerBindings(input: {
 			perspective,
 			providerQualifiedModelId: providerQualifiedModelId as string,
 			runtimeAgent: runtimeAgent as string,
-			sourceLabel:
+			sourceLabel: normalizeQuickReviewerSourceLabelV1(
 				sourceLabel ??
-				defaultSourceLabelForReviewer({
+					defaultSourceLabelForReviewer({
 					providerQualifiedModelId: providerQualifiedModelId as string,
 					runtimeAgent: runtimeAgent as string,
-				}),
+					}),
+			),
 		});
 	}
 	return {
@@ -313,14 +329,14 @@ function quickReviewerPrompt(input: {
 				finding_id: `finding-${input.perspective}-1`,
 				severity: "info",
 				category: "conformance",
-				summary_label: "Replace this placeholder with the most important review finding, or remove this finding if there are no findings.",
+				summary_label: "review_finding_summary",
 				evidence_refs: [input.evidenceRef],
-				required_fix_label: "Replace this placeholder with the required fix, or remove this finding if no fix is required.",
+				required_fix_label: "none",
 			},
 		],
 		evidence_refs: [input.evidenceRef],
 		uncertainty: "medium",
-		required_fixes: ["Replace this placeholder with a required fix, or remove it if no fix is required."],
+		required_fixes: [],
 		verdict_label: "inconclusive",
 		safe_next_actions: ["/flowdesk-status"],
 		dispatch_authority_enabled: false,
@@ -333,7 +349,7 @@ function quickReviewerPrompt(input: {
 		input.prompt,
 		"Return exactly one JSON object as a single message with no markdown, no prose, no code fence, and no fields removed.",
 		"Choose verdict_label neutrally from pass, changes_required, blocked, or inconclusive based only on the evidence you reviewed. Do not preserve the placeholder verdict_label if your review supports a clearer verdict.",
-		"Update uncertainty, findings, and required_fixes to match your review. Remove placeholder findings or required fixes when they do not apply. Preserve every binding field exactly as written.",
+		"Update uncertainty, findings, and required_fixes to match your review. Every finding kept in findings must include required_fix_label. If no fix is needed for a kept finding, set required_fix_label to none. If there are no findings, return findings as an empty array and required_fixes as an empty array. Preserve every binding field exactly as written.",
 		JSON.stringify(expected),
 	].join("\n");
 }
@@ -603,6 +619,7 @@ export async function executeFlowDeskQuickReviewerRunV1(
 			consumedReviewerFanoutApproval:
 				consumedApproval as unknown as Record<string, unknown>,
 			verdictExpectations,
+			...(input.completionWait === undefined ? {} : { completionWait: input.completionWait }),
 		},
 	});
 	const lanes: FlowDeskQuickReviewerRunLaneSummaryV1[] = Array.isArray(

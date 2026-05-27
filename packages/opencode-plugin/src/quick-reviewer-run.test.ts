@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateTopTierReviewVerdictV1 } from "@flowdesk/core";
-import { executeFlowDeskQuickReviewerRunV1 } from "./quick-reviewer-run.js";
+import { reloadFlowDeskSessionEvidenceV1, validateTopTierReviewVerdictV1 } from "@flowdesk/core";
+import { executeFlowDeskQuickReviewerRunV1, normalizeQuickReviewerSourceLabelV1 } from "./quick-reviewer-run.js";
 
 function neverCalledClient() {
 	return {
@@ -131,9 +131,40 @@ test("quick reviewer run prompt starts from a neutral verdict template", async (
 	assert.match(prompts[0], /verdict_label":"inconclusive"/);
 	assert.match(prompts[0], /Choose verdict_label neutrally/);
 	assert.doesNotMatch(prompts[0], /If you find a real issue change only verdict_label/);
+	assert.doesNotMatch(prompts[0], /Replace this placeholder/);
+	assert.match(prompts[0], /required_fix_label/);
 	const template = JSON.parse(prompts[0].split("\n").at(-1) ?? "{}");
+	assert.equal(template.findings[0].required_fix_label, "none");
 	const templateValidation = validateTopTierReviewVerdictV1(template);
 	assert.equal(templateValidation.ok, true, templateValidation.errors.join("; "));
+});
+
+test("quick reviewer run sanitizes explicit reviewer source labels", async () => {
+	const prompts: string[] = [];
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create() {
+					return { id: "child-session-1" };
+				},
+				async prompt(options: { parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
+					prompts.push(String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? ""));
+					return { id: "child-session-1" };
+				},
+			},
+		} as never,
+		prompt: "Review this change neutrally.",
+		providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+		runtimeAgent: "reviewer-gpt-frontier",
+		sourceLabel: "55 GPT-Frontier!!",
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+		perspectives: ["architecture"],
+	});
+	assert.equal(result.status, "quick_reviewer_run_incomplete");
+	assert.equal(normalizeQuickReviewerSourceLabelV1("!!!"), "gpt_frontier");
+	assert.equal(JSON.parse(prompts[0].split("\n").at(-1) ?? "{}").source, "reviewer_55_gpt_frontier");
 });
 
 test("quick reviewer run derives reviewer source labels from concrete bindings", async () => {
@@ -182,6 +213,7 @@ test("quick reviewer run completes a requested single-perspective subset", async
 					const template = JSON.parse(promptText.split("\n").at(-1) ?? "{}");
 					sessionMessages.set(sessionId, [
 						{
+							info: { role: "assistant" },
 							parts: [
 								{
 									type: "text",
@@ -204,6 +236,7 @@ test("quick reviewer run completes a requested single-perspective subset", async
 		developerModeAcknowledged: true,
 		parentSessionId: "parent-session-1",
 		perspectives: ["verification_implementation"],
+		completionWait: { pollIntervalMs: 25, maxWaitMs: 500, quietPeriodMs: 0, stableSampleCount: 2 },
 	});
 
 	assert.equal(result.status, "quick_reviewer_run_completed");
@@ -214,6 +247,74 @@ test("quick reviewer run completes a requested single-perspective subset", async
 	assert.equal(result.linkedLifecycleCount, 1);
 	assert.match(String(result.summaryForUser), /1\/1 perspectives accepted/);
 	assert.equal(createdSessionId, "child-session-verification");
+});
+
+test("quick reviewer run waits for final assistant JSON instead of earlier prose", async () => {
+	const sessionMessages = new Map<string, unknown[]>();
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create(options: { parentID?: string }) {
+					return { id: options.parentID === undefined ? "parent-session-1" : "child-session-architecture" };
+				},
+				async prompt(options: { sessionID?: string; parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
+					const sessionId = String(options.sessionID ?? "child-session-architecture");
+					const promptText = String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? "");
+					const template = JSON.parse(promptText.split("\n").at(-1) ?? "{}");
+					sessionMessages.set(sessionId, [
+						{ info: { role: "assistant" }, parts: [{ type: "text", text: "I will inspect this now." }] },
+						{ info: { role: "assistant" }, parts: [{ type: "text", text: JSON.stringify({ ...template, verdict_label: "pass", uncertainty: "low", findings: [], required_fixes: [] }) }] },
+					]);
+					return { id: "message-architecture" };
+				},
+				async messages(options: { sessionID?: string; path?: { id?: string } }) {
+					return sessionMessages.get(String(options.sessionID ?? options.path?.id ?? "")) ?? [];
+				},
+			},
+		} as never,
+		prompt: "Review architecture.",
+		providerQualifiedModelId: "openai/gpt-5.5",
+		runtimeAgent: "reviewer-gpt-frontier",
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+		perspectives: ["architecture"],
+		completionWait: { pollIntervalMs: 25, maxWaitMs: 500, quietPeriodMs: 0, stableSampleCount: 2 },
+	});
+	assert.equal(result.status, "quick_reviewer_run_completed");
+	assert.deepEqual(result.acceptedPerspectives, ["architecture"]);
+});
+
+test("quick reviewer run terminalizes completion timeout lanes", async () => {
+	const result = await executeFlowDeskQuickReviewerRunV1({
+		client: {
+			session: {
+				async create(options: { parentID?: string }) {
+					return { id: options.parentID === undefined ? "parent-session-1" : "child-session-timeout" };
+				},
+				async prompt() {
+					return { id: "message-timeout" };
+				},
+				async messages() {
+					return [];
+				},
+			},
+		} as never,
+		prompt: "Review but never answer.",
+		providerQualifiedModelId: "openai/gpt-5.5",
+		runtimeAgent: "reviewer-gpt-frontier",
+		allowProviderCall: true,
+		developerModeAcknowledged: true,
+		parentSessionId: "parent-session-1",
+		perspectives: ["architecture"],
+		completionWait: { pollIntervalMs: 25, maxWaitMs: 75, quietPeriodMs: 0, stableSampleCount: 2 },
+	});
+	assert.equal(result.status, "quick_reviewer_run_incomplete");
+	assert.equal(result.lanes[0].observationStatus, "completion_timeout");
+	assert.equal(result.lanes[0].completeLifecycle, "timeout");
+	const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: String(result.workflowId), rootDir: String(result.rootDir) });
+	assert.equal(reloaded.ok, true);
+	assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "lane_lifecycle" && entry.record.state === "timeout"));
 });
 
 test("quick reviewer run supports per-perspective multi-model bindings", async () => {

@@ -96,9 +96,21 @@ import {
 } from "./runtime-reviewer-execution-bridge.js";
 import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
 import {
+	executeFlowDeskControlledWriteApplyToolV1,
+	type FlowDeskControlledWriteApplyToolConfigV1,
+} from "./controlled-write-tool.js";
+import {
 	executeFlowDeskStatusLiveV1,
 	type FlowDeskStatusLiveConfigV1,
 } from "./status-live-tool.js";
+import {
+	executeFlowDeskWorkflowDispatchPlanToolV1,
+	type FlowDeskWorkflowDispatchPlanToolConfigV1,
+} from "./workflow-dispatch-plan-tool.js";
+import {
+	executeFlowDeskWorkflowDispatchToolV1,
+	type FlowDeskWorkflowDispatchToolConfigV1,
+} from "./workflow-dispatch-tool.js";
 import {
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
@@ -147,6 +159,11 @@ export const flowdeskProviderUsageLiveOption = "providerUsageLive" as const;
 export const flowdeskStatusLiveOption = "statusLive" as const;
 export const flowdeskQuickFallbackRunOption = "quickFallbackRun" as const;
 export const flowdeskLaneHeartbeatWriterOption = "laneHeartbeatWriter" as const;
+export const flowdeskWorkflowDispatchPlanToolOption =
+	"workflowDispatchPlanTool" as const;
+export const flowdeskWorkflowDispatchOption = "workflowDispatch" as const;
+export const flowdeskControlledWriteApplyOption =
+	"controlledWriteApply" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskWatchdogOption = "watchdog" as const;
@@ -168,6 +185,12 @@ export const flowdeskQuickFallbackRunToolName =
 	"flowdesk_quick_fallback_run" as const;
 export const flowdeskLaneHeartbeatWriterToolName =
 	"flowdesk_lane_heartbeat_record" as const;
+export const flowdeskWorkflowDispatchPlanToolName =
+	"flowdesk_workflow_dispatch_plan" as const;
+export const flowdeskWorkflowDispatchToolName =
+	"flowdesk_workflow_dispatch" as const;
+export const flowdeskControlledWriteApplyToolName =
+	"flowdesk_controlled_write_apply" as const;
 export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
 
@@ -3461,6 +3484,192 @@ function isLaneHeartbeatWriterEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
+function isWorkflowDispatchPlanToolEnabled(options?: PluginOptions): boolean {
+	const value = options?.[flowdeskWorkflowDispatchPlanToolOption];
+	return value === true || (isRecord(value) && value.enabled === true);
+}
+
+function workflowDispatchPlanToolConfigFromOptions(
+	options?: PluginOptions,
+): FlowDeskWorkflowDispatchPlanToolConfigV1 | undefined {
+	const value = options?.[flowdeskWorkflowDispatchPlanToolOption];
+	const enabledFromBool = value === true;
+	const enabledFromRecord = isRecord(value) && value.enabled === true;
+	if (!enabledFromBool && !enabledFromRecord) return undefined;
+	const explicitRoot =
+		isRecord(value) &&
+		typeof value.rootDir === "string" &&
+		value.rootDir.trim().length > 0
+			? value.rootDir
+			: undefined;
+	const rootDir = explicitRoot ?? durableStateRootFromOptions(options);
+	return rootDir === undefined ? undefined : { rootDir };
+}
+
+function workflowDispatchToolConfigFromOptions(input: unknown, options?: PluginOptions): FlowDeskWorkflowDispatchToolConfigV1 | undefined {
+	const value = options?.[flowdeskWorkflowDispatchOption];
+	if (!isRecord(value) || value.enabled !== true || value.devBetaActualLaneLaunch !== true) return undefined;
+	const explicitRoot = typeof value.rootDir === "string" && value.rootDir.trim().length > 0 ? value.rootDir : undefined;
+	const rootDir = explicitRoot ?? durableStateRootFromOptions(options);
+	if (rootDir === undefined) return undefined;
+	const client = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+	return client === undefined ? undefined : { rootDir, client };
+}
+
+function controlledWriteApplyConfigFromOptions(
+	input: unknown,
+	options?: PluginOptions,
+): FlowDeskControlledWriteApplyToolConfigV1 | undefined {
+	const value = options?.[flowdeskControlledWriteApplyOption];
+	if (!isRecord(value) || value.enabled !== true || value.devBetaControlledWriteApply !== true)
+		return undefined;
+	const explicitRoot =
+		typeof value.rootDir === "string" && value.rootDir.trim().length > 0
+			? value.rootDir
+			: undefined;
+	const durableStateRoot = explicitRoot ?? durableStateRootFromOptions(options);
+	if (durableStateRoot === undefined) return undefined;
+	const optionWorkspaceRoot =
+		typeof value.workspaceRoot === "string" && value.workspaceRoot.trim().length > 0
+			? value.workspaceRoot
+			: undefined;
+	const inputWorkspaceRoot =
+		isRecord(input) && typeof input.workspace === "string" && input.workspace.trim().length > 0
+			? input.workspace
+			: isRecord(input) && typeof input.directory === "string" && input.directory.trim().length > 0
+				? input.directory
+				: undefined;
+	const workspaceRoot = optionWorkspaceRoot ?? inputWorkspaceRoot ?? process.cwd();
+	return { durableStateRoot, workspaceRoot };
+}
+
+export function createFlowDeskWorkflowDispatchPlanOptInTools(
+	config: FlowDeskWorkflowDispatchPlanToolConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskWorkflowDispatchPlanToolName]: tool({
+			description: [
+				"Build and persist a FlowDesk planning-only workflow dispatch plan using flowdesk.workflow_dispatch_plan.v1 evidence. This optional tool never opens dispatch authority, never calls providers, never executes runtime work, never launches lanes, and never performs fallback or reselection.",
+				"WHEN TO USE: the user explicitly asks to plan a multi-role or multi-task FlowDesk workflow and durable planning evidence is useful before any later guarded command-backed step.",
+				"WHEN NOT TO USE: ordinary chat, provider usage questions, status checks, code review fan-out, fallback/retry requests, or any request to actually dispatch, run, launch, execute, switch providers, or call a model.",
+				"INVOKE WITH: optional workflowId, goalSummary, optional selectedAgentRoles, and tasks[] with agentRole plus summary/title labels. The configured server durable state root is used; do not pass user filesystem paths.",
+				"AFTER CALLING: surface summaryForUser and safeNextActions. On blocked_before_workflow_dispatch_plan, report redactedBlockReason. Never claim dispatch/provider/runtime/lane/fallback authority.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema
+					.string()
+					.optional()
+					.describe(
+						"Optional workflow id to bind the durable planning evidence to. Auto-generated when omitted.",
+					),
+				goalSummary: tool.schema
+					.string()
+					.describe("Bounded redacted summary of the workflow planning goal."),
+				selectedAgentRoles: tool.schema
+					.array(tool.schema.string())
+					.optional()
+					.describe(
+						"Optional FlowDesk role categories to include in the planning evidence.",
+					),
+				tasks: tool.schema
+					.array(
+						tool.schema.object({
+							agentRole: tool.schema.string(),
+							title: tool.schema.string().optional(),
+							summary: tool.schema.string(),
+							agentRoleRef: tool.schema.string().optional(),
+							dependsOnTaskIds: tool.schema.array(tool.schema.string()).optional(),
+						}),
+					)
+					.describe(
+						"One or more planning-only task labels with agentRole and summary. No raw prompts or provider payloads.",
+					),
+			},
+			async execute(input) {
+				const result = executeFlowDeskWorkflowDispatchPlanToolV1({
+					config,
+					rawInput: input,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
+export function createFlowDeskWorkflowDispatchOptInTools(
+	config: FlowDeskWorkflowDispatchToolConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskWorkflowDispatchToolName]: tool({
+			description: [
+				"Run one explicit dev-mode FlowDesk workflow task through the injected OpenCode SDK client. This optional beta tool is disabled by default and requires workflowDispatch.enabled=true plus workflowDispatch.devBetaActualLaneLaunch=true, durableStateRoot, developerModeAcknowledged=true, allowProviderCall=true, and allowActualLaneLaunch=true. It persists non-authorizing workflow_dispatch_plan evidence, launches exactly one lane through executeFlowDeskAgentTaskV1, and verifies terminal task evidence.",
+				"WHEN TO USE: only when the user explicitly asks for dev-mode actual one-task workflow dispatch and understands this makes a provider/runtime call.",
+				"WHEN NOT TO USE: default Release 1 workflows, planning-only requests, fallback/reselection, provider switching, controlled write/apply, ordinary chat, status, usage, or review fan-out.",
+				"INVOKE WITH: optional workflowId, goalSummary, parentSessionId, one task with agentRole, summary, promptText, agentName, providerQualifiedModelId, optional outputContractRef=contract-task-result-v1, and the three explicit allow flags. Do not pass raw transcripts, provider payloads, write/apply instructions, fallback wording, or filesystem paths.",
+				"AFTER CALLING: surface summaryForUser, ids, safeNextActions, and authority. Never claim default dispatch authority, write authority, fallback authority, hard chat cancellation, or default Release 1 dispatch enablement.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema.string().optional().describe("Optional workflow id. Auto-generated when omitted."),
+				goalSummary: tool.schema.string().describe("Bounded redacted summary of the one-task dev-mode workflow goal."),
+				parentSessionId: tool.schema.string().describe("Existing OpenCode parent session id. Required; no unrelated silent parent session is created."),
+				task: tool.schema.object({
+					agentRole: tool.schema.string().describe("FlowDesk role category for the single task."),
+					summary: tool.schema.string().describe("Bounded task summary label for evidence."),
+					promptText: tool.schema.string().describe("Bounded prompt text for the one launched lane."),
+					agentName: tool.schema.string().describe("OpenCode agent name or agent-* ref for the lane."),
+					providerQualifiedModelId: tool.schema.string().describe("Concrete provider/model id such as openai/gpt-5.5."),
+					outputContractRef: tool.schema.string().optional().describe("Optional; only contract-task-result-v1 is supported in this pass."),
+				}),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev-mode beta lane launch."),
+				allowProviderCall: tool.schema.boolean().describe("Must be true to allow the provider call for this one lane."),
+				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual one-lane runtime launch."),
+			},
+			async execute(input) {
+				const result = await executeFlowDeskWorkflowDispatchToolV1({
+					config,
+					rawInput: input,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
+export function createFlowDeskControlledWriteApplyOptInTools(
+	config: FlowDeskControlledWriteApplyToolConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskControlledWriteApplyToolName]: tool({
+			description: [
+				"Apply one complete-file replacement through the FlowDesk dev/beta controlled write path. This optional tool is disabled by default and requires controlledWriteApply.enabled=true plus controlledWriteApply.devBetaControlledWriteApply=true, durableStateRoot, developerModeAcknowledged=true, userApprovalRef, allowControlledWrite=true, and a workspace-relative target path.",
+				"WHEN TO USE: only when the user explicitly approves a bounded local workspace file replacement in dev mode and the current file hash is known or the caller explicitly sets allowMissingExpectedHashForDevMode=true.",
+				"WHEN NOT TO USE: default Release 1 workflows, model-generated automatic apply, provider/runtime dispatch, fallback/reselection, remote writes, shell execution, absolute paths, path traversal, symlink targets, binary content, or hidden injection.",
+				"INVOKE WITH: workflowId, targetFilePath relative to the workspace root, expectedSha256 or expectedContentSha256 when available, replacementText, reasonSummary, developerModeAcknowledged=true, bounded userApprovalRef, and allowControlledWrite=true. Never pass raw transcripts, prompts, provider payloads, secrets, absolute paths, or shell output.",
+				"AFTER CALLING: surface summaryForUser, targetFilePath, ledgerEntryId, hashes, safeNextActions, and authority. Never claim default Release 1 write authority, dispatch authority, provider calls, runtime execution, fallback authority, or hard chat cancellation.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema.string().describe("Stable FlowDesk workflow id for durable ledger evidence."),
+				targetFilePath: tool.schema.string().describe("Workspace-relative target file path only. Absolute paths and traversal are rejected."),
+				expectedSha256: tool.schema.string().optional().describe("Optional sha256-<hex> hash of the current target file content."),
+				expectedContentSha256: tool.schema.string().optional().describe("Optional sha256-<hex> hash alias for the current target file content."),
+				allowMissingExpectedHashForDevMode: tool.schema.boolean().optional().describe("Must be true to proceed without an expected current-content hash."),
+				replacementText: tool.schema.string().describe("Complete replacement file text, bounded and non-binary."),
+				reasonSummary: tool.schema.string().describe("Bounded redacted reason for the controlled write."),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev/beta controlled write authority."),
+				userApprovalRef: tool.schema.string().describe("Bounded opaque user approval reference for this write."),
+				allowControlledWrite: tool.schema.boolean().describe("Must be true to permit this one controlled local write."),
+			},
+			async execute(input) {
+				const result = executeFlowDeskControlledWriteApplyToolV1({
+					config,
+					rawInput: input,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 function isAgentTaskRunEnabled(options?: PluginOptions): boolean {
 	const value = (options as Record<string, unknown> | undefined)?.[flowdeskAgentTaskRunOption];
 	return value === true || (isRecord(value) && value.enabled === true);
@@ -3862,6 +4071,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				)
 					? laneHeartbeatWriterConfigFromOptions(options)
 					: undefined;
+				const workflowDispatchPlanConfigForDoctor =
+					isWorkflowDispatchPlanToolEnabled(options)
+						? workflowDispatchPlanToolConfigFromOptions(options)
+						: undefined;
 				const quickReviewerRunRegistered =
 					isQuickReviewerRunEnabled(options) &&
 					quickReviewerRunClientFrom(input, options) !== undefined;
@@ -3937,6 +4150,25 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							isLaneHeartbeatWriterEnabled(options) &&
 							laneHeartbeatWriterConfigForDoctor === undefined
 								? "laneHeartbeatWriter.enabled=true but no durable state root resolved; set laneHeartbeatWriter.rootDir or top-level durableStateRoot"
+								: undefined,
+					},
+					workflowDispatchPlanTool: {
+						enabled: isWorkflowDispatchPlanToolEnabled(options),
+						registered: workflowDispatchPlanConfigForDoctor !== undefined,
+						rootDir: workflowDispatchPlanConfigForDoctor?.rootDir,
+						persistsWorkflowDispatchPlanEvidence:
+							workflowDispatchPlanConfigForDoctor !== undefined,
+						authority: {
+							realOpenCodeDispatch: false,
+							providerCall: false,
+							runtimeExecution: false,
+							actualLaneLaunch: false,
+							fallbackAuthority: false,
+						},
+						hint:
+							isWorkflowDispatchPlanToolEnabled(options) &&
+							workflowDispatchPlanConfigForDoctor === undefined
+								? "workflowDispatchPlanTool.enabled=true but no durable state root resolved; set workflowDispatchPlanTool.rootDir or top-level durableStateRoot"
 								: undefined,
 					},
 					chatMessageStallAlert: {
@@ -4125,6 +4357,26 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		Object.assign(
 			tools,
 			createFlowDeskLaneHeartbeatWriterOptInTools(laneHeartbeatWriterConfig),
+		);
+	const workflowDispatchPlanConfig = isWorkflowDispatchPlanToolEnabled(options)
+		? workflowDispatchPlanToolConfigFromOptions(options)
+		: undefined;
+	if (workflowDispatchPlanConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskWorkflowDispatchPlanOptInTools(workflowDispatchPlanConfig),
+		);
+	const workflowDispatchConfig = workflowDispatchToolConfigFromOptions(input, options);
+	if (workflowDispatchConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskWorkflowDispatchOptInTools(workflowDispatchConfig),
+		);
+	const controlledWriteApplyConfig = controlledWriteApplyConfigFromOptions(input, options);
+	if (controlledWriteApplyConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskControlledWriteApplyOptInTools(controlledWriteApplyConfig),
 		);
 	const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
 	if (agentTaskRunEnabled) {

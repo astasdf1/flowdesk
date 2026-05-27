@@ -29,6 +29,7 @@ export interface FlowDeskAgentTaskInputV1 {
 	rootDir: string;
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	timeoutMs?: number;
+	outputContract?: "final_assistant_text";
 }
 
 export type FlowDeskAgentTaskResultV1 =
@@ -91,10 +92,11 @@ function extractAssistantTextFromResponse(client: FlowDeskManagedDispatchBetaOpe
 					: Array.isArray(record?.messages)
 						? record.messages
 						: [];
-			for (const message of items) {
-				const record = asRecord(message);
-				const info = asRecord(record?.info) ?? record;
-				if (info?.role !== "assistant") continue;
+				for (let index = items.length - 1; index >= 0; index -= 1) {
+					const message = items[index];
+					const record = asRecord(message);
+					const info = asRecord(record?.info) ?? record;
+					if (info?.role !== "assistant") continue;
 				const parts = Array.isArray(record?.parts)
 					? record.parts
 					: Array.isArray(info?.parts)
@@ -116,6 +118,18 @@ function extractAssistantTextFromResponse(client: FlowDeskManagedDispatchBetaOpe
 			return undefined;
 		}
 	})();
+}
+
+function isProcessOnlyAssistantOutput(text: string): boolean {
+	const normalized = text.trim().toLowerCase();
+	return normalized.length === 0 || [
+		"working",
+		"thinking",
+		"i'll take a look",
+		"i will take a look",
+		"let me inspect",
+		"i'm going to inspect",
+	].some((fragment) => normalized.includes(fragment));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -351,9 +365,14 @@ export async function executeFlowDeskAgentTaskV1(
 		resultText = await extractAssistantTextFromResponse(input.client, childSessionId);
 	}
 
-	if (resultText === undefined) {
+	if (resultText === undefined || (input.outputContract === "final_assistant_text" && isProcessOnlyAssistantOutput(resultText))) {
 		// No response text - write task_failed
 		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}`;
+		const failureCategory = resultText === undefined ? "no_response" : "contract_not_satisfied";
+		const evidenceFailureCategory = resultText === undefined ? "no_response" : "unknown";
+		const redactedReason = resultText === undefined
+			? "lane launched but no assistant response text found"
+			: "lane launched but final assistant response did not satisfy requested output contract";
 		const taskFailedRecord: FlowDeskTaskFailedV1 = {
 			schema_version: "flowdesk.task_failed.v1",
 			workflow_id: input.workflowId,
@@ -361,8 +380,8 @@ export async function executeFlowDeskAgentTaskV1(
 			task_id: input.taskId,
 			agent_ref: input.agentRef,
 			provider_qualified_model_id: input.providerQualifiedModelId,
-			failure_category: "no_response",
-			redacted_reason: "lane launched but no assistant response text found",
+			failure_category: evidenceFailureCategory,
+			redacted_reason: redactedReason,
 			created_at: observedAt,
 			dispatch_authority_enabled: false,
 		};
@@ -382,7 +401,7 @@ export async function executeFlowDeskAgentTaskV1(
 			messageRef: launchResult.messageRef?.startsWith("msg-") ? launchResult.messageRef : undefined,
 			agentRef: input.agentRef,
 			providerQualifiedModelId: input.providerQualifiedModelId,
-			state: "no_output",
+			state: resultText === undefined ? "no_output" : "incomplete",
 			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
 			createdAt: observedAt,
 			updatedAt: new Date().toISOString(),
@@ -390,8 +409,8 @@ export async function executeFlowDeskAgentTaskV1(
 		});
 		return {
 			status: "task_failed",
-			failureCategory: "no_response",
-			redactedReason: "lane launched but no assistant response text found",
+			failureCategory,
+			redactedReason,
 			laneId: input.laneId,
 		};
 	}

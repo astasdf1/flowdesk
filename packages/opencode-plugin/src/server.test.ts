@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +35,8 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskAgentTaskRunOption,
 	flowdeskAgentTaskRunToolName,
+	flowdeskControlledWriteApplyOption,
+	flowdeskControlledWriteApplyToolName,
 	flowdeskChatIntakeToolName,
 	flowdeskChatMessageStallAlertOption,
 	flowdeskDurableStateRootOption,
@@ -62,6 +65,10 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskStatusLiveToolName,
 	flowdeskWatchdogOption,
 	flowdeskWatchdogTriggerToolName,
+	flowdeskWorkflowDispatchOption,
+	flowdeskWorkflowDispatchPlanToolName,
+	flowdeskWorkflowDispatchPlanToolOption,
+	flowdeskWorkflowDispatchToolName,
 } from "./server.js";
 import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
@@ -1985,6 +1992,626 @@ test("managed fallback regate tool persists regate plan as durable evidence when
 		assert.equal(persisted.evidenceId, "regate-plan-evidence-1");
 		assert.equal(persisted.record.state, "full_regate_required");
 		assert.equal(persisted.record.dispatch_authority_enabled, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("workflow dispatch plan tool is absent by default and requires opt-in durable root", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		defaultHooks.tool?.[flowdeskWorkflowDispatchPlanToolName],
+		undefined,
+	);
+
+	const missingRootHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskWorkflowDispatchPlanToolOption]: { enabled: true },
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(
+		missingRootHooks.tool?.[flowdeskWorkflowDispatchPlanToolName],
+		undefined,
+	);
+});
+
+test("workflow dispatch plan tool persists planning evidence with authority disabled", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-plan-tool-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskWorkflowDispatchPlanToolOption]: { enabled: true },
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const planTool = hooks.tool?.[flowdeskWorkflowDispatchPlanToolName];
+		assert.ok(planTool);
+		const result = JSON.parse(
+			toolOutput(
+				await planTool.execute(
+					{
+						workflowId: "workflow-tool-plan-1",
+						goalSummary: "Plan a bounded implementation workflow.",
+						selectedAgentRoles: ["implementation", "verification"],
+						tasks: [
+							{
+								agentRole: "implementation",
+								title: "Implement tool",
+								summary: "Add the opt-in planning-only server tool.",
+							},
+							{
+								agentRole: "verification",
+								title: "Verify evidence",
+								summary: "Check durable evidence and authority flags.",
+							},
+						],
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "workflow_dispatch_plan_recorded");
+		assert.equal(result.workflowId, "workflow-tool-plan-1");
+		assert.equal(result.taskCount, 2);
+		assert.match(String(result.summaryForUser), /Planning only/);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(authority.toolAuthority, false);
+		assert.equal(authority.dispatchAuthorityEnabled, false);
+		assert.equal(authority.workflowDispatchPlanPersisted, true);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-tool-plan-1",
+			rootDir: root,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		const persisted = reloaded.entries.find(
+			(entry) => entry.evidenceClass === "workflow_dispatch_plan",
+		);
+		assert.ok(persisted);
+		assert.equal(persisted.record.dispatch_authority_enabled, false);
+		assert.equal(persisted.record.provider_call_made, false);
+		assert.equal(persisted.record.runtime_execution, false);
+		assert.equal(persisted.record.actual_lane_launch, false);
+
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const statusResult = JSON.parse(
+			toolOutput(
+				await statusTool.execute(
+					{ workflowId: "workflow-tool-plan-1" },
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		const workflow = (statusResult.workflows as Record<string, unknown>[])[0];
+		assert.ok(workflow);
+		const evidenceCounts = workflow.evidenceCounts as Record<string, unknown>;
+		assert.equal(evidenceCounts.workflow_dispatch_plan, 1);
+		assert.equal(workflow.latestWorkflowDispatchPlanTaskCount, 2);
+		assert.match(String(statusResult.summaryForUser), /workflow_plan=/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("workflow dispatch plan tool blocks authority-smuggling input", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-plan-block-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskWorkflowDispatchPlanToolOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const planTool = hooks.tool?.[flowdeskWorkflowDispatchPlanToolName];
+		assert.ok(planTool);
+		const flagged = JSON.parse(
+			toolOutput(
+				await planTool.execute(
+					{
+						goalSummary: "Plan a bounded implementation workflow.",
+						providerCall: true,
+						tasks: [
+							{
+								agentRole: "implementation",
+								summary: "Add planning evidence.",
+							},
+						],
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(flagged.status, "blocked_before_workflow_dispatch_plan");
+		assert.match(String(flagged.redactedBlockReason), /authority fields/);
+		const textSmuggling = JSON.parse(
+			toolOutput(
+				await planTool.execute(
+					{
+						goalSummary: "Plan real dispatch for this workflow.",
+						tasks: [
+							{
+								agentRole: "implementation",
+								summary: "Add planning evidence.",
+							},
+						],
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(textSmuggling.status, "blocked_before_workflow_dispatch_plan");
+		assert.match(String(textSmuggling.redactedBlockReason), /authority-smuggling/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function workflowDispatchFakeClient(outputText: string, counters: { create: number; prompt: number; messages: number }) {
+	const sessionMessages = new Map<string, unknown[]>();
+	return {
+		session: {
+			async create(options: { parentID?: string }) {
+				counters.create += 1;
+				return { id: options.parentID === undefined ? "parent-session-1" : "child-session-1" };
+			},
+			async prompt(options: { sessionID?: string }) {
+				counters.prompt += 1;
+				const sessionId = String(options.sessionID ?? "child-session-1");
+				sessionMessages.set(sessionId, [
+					{
+						id: "msg-workflow-dispatch-1",
+						info: { role: "assistant" },
+						parts: [{ type: "text", text: outputText }],
+					},
+				]);
+				return { id: "msg-workflow-dispatch-1" };
+			},
+			async messages(options: { sessionID?: string; path?: { id?: string } }) {
+				counters.messages += 1;
+				return sessionMessages.get(String(options.sessionID ?? options.path?.id ?? "")) ?? [];
+			},
+		},
+	};
+}
+
+test("workflow dispatch tool is absent by default and requires opt-in root and client", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-dispatch-registration-"));
+	try {
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(defaultHooks.tool?.[flowdeskWorkflowDispatchToolName], undefined);
+
+		const noRootHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskWorkflowDispatchOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(noRootHooks.tool?.[flowdeskWorkflowDispatchToolName], undefined);
+
+		const noClientHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskWorkflowDispatchOption]: { enabled: true, devBetaActualLaneLaunch: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(noClientHooks.tool?.[flowdeskWorkflowDispatchToolName], undefined);
+
+		const noDevBetaHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskWorkflowDispatchOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(noDevBetaHooks.tool?.[flowdeskWorkflowDispatchToolName], undefined);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function sha256Text(value: string): string {
+	return `sha256-${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+test("controlled write apply tool is absent by default and requires explicit opt-in root", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-registration-"));
+	const workspace = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-workspace-"));
+	try {
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(defaultHooks.tool?.[flowdeskControlledWriteApplyToolName], undefined);
+
+		const noRootHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true },
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(noRootHooks.tool?.[flowdeskControlledWriteApplyToolName], undefined);
+
+		const noDevBetaHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(noDevBetaHooks.tool?.[flowdeskControlledWriteApplyToolName], undefined);
+
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.ok(enabledHooks.tool?.[flowdeskControlledWriteApplyToolName]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+test("controlled write apply blocks missing approvals, unsafe paths, hash mismatch, and symlink escape", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-blocks-"));
+	const workspace = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-workspace-"));
+	const outside = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-outside-"));
+	try {
+		writeFileSync(join(workspace, "note.txt"), "before\n", "utf8");
+		symlinkSync(outside, join(workspace, "linked"));
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const writeTool = hooks.tool?.[flowdeskControlledWriteApplyToolName];
+		assert.ok(writeTool);
+		const base = {
+			workflowId: "workflow-controlled-write-blocks-1",
+			targetFilePath: "note.txt",
+			expectedSha256: sha256Text("before\n"),
+			replacementText: "after\n",
+			reasonSummary: "Apply approved dev beta replacement.",
+			developerModeAcknowledged: true,
+			userApprovalRef: "approval-controlled-write-1",
+			allowControlledWrite: true,
+		};
+
+		for (const [request, reason] of [
+			[{ ...base, developerModeAcknowledged: false }, /developerModeAcknowledged=true/],
+			[{ ...base, allowControlledWrite: false }, /allowControlledWrite=true/],
+			[{ ...base, userApprovalRef: "" }, /userApprovalRef/],
+			[{ ...base, expectedSha256: undefined, allowMissingExpectedHashForDevMode: false }, /expectedSha256/],
+			[{ ...base, targetFilePath: "../escape.txt" }, /relative workspace file path/],
+			[{ ...base, targetFilePath: join(workspace, "note.txt") }, /relative workspace file path/],
+			[{ ...base, targetFilePath: "linked/escape.txt", allowMissingExpectedHashForDevMode: true, expectedSha256: undefined }, /symlink/],
+			[{ ...base, expectedSha256: sha256Text("different\n") }, /hash mismatch/],
+		] as const) {
+			const result = JSON.parse(toolOutput(await writeTool.execute(request, undefined as never))) as Record<string, unknown>;
+			assert.equal(result.status, "blocked_before_controlled_write");
+			assert.match(String(result.redactedBlockReason), reason);
+			const authority = result.authority as Record<string, unknown>;
+			assert.equal(authority.realOpenCodeDispatch, false);
+			assert.equal(authority.providerCall, false);
+			assert.equal(authority.runtimeExecution, false);
+			assert.equal(authority.actualLaneLaunch, false);
+			assert.equal(authority.fallbackAuthority, false);
+		}
+		assert.equal(readFileSync(join(workspace, "note.txt"), "utf8"), "before\n");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(workspace, { recursive: true, force: true });
+		rmSync(outside, { recursive: true, force: true });
+	}
+});
+
+test("controlled write apply updates file and records durable ledger evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-success-"));
+	const workspace = mkdtempSync(join(tmpdir(), "flowdesk-controlled-write-workspace-"));
+	try {
+		writeFileSync(join(workspace, "note.txt"), "before\n", "utf8");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const writeTool = hooks.tool?.[flowdeskControlledWriteApplyToolName];
+		assert.ok(writeTool);
+		const result = JSON.parse(
+			toolOutput(
+				await writeTool.execute(
+					{
+						workflowId: "workflow-controlled-write-success-1",
+						targetFilePath: "note.txt",
+						expectedContentSha256: sha256Text("before\n"),
+						replacementText: "after\n",
+						reasonSummary: "Apply approved dev beta replacement.",
+						developerModeAcknowledged: true,
+						userApprovalRef: "approval-controlled-write-1",
+						allowControlledWrite: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "controlled_write_applied");
+		assert.equal(readFileSync(join(workspace, "note.txt"), "utf8"), "after\n");
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.controlledExternalWriteAuthorized, true);
+		assert.equal(authority.defaultRelease1WriteAuthority, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.ledgerEvidenceReloaded, true);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-controlled-write-success-1", rootDir: root });
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.ok(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "controlled_workspace_file_write" &&
+					entry.record.target_file_path === "note.txt" &&
+					entry.record.replacement_content_sha256_ref === sha256Text("after\n") &&
+					entry.record.realOpenCodeDispatch === false &&
+					entry.record.providerCall === false,
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+test("workflow dispatch tool completes one fake SDK task and preserves default authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-dispatch-success-"));
+	const counters = { create: 0, prompt: 0, messages: 0 };
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("Final bounded task result.", counters) } as never,
+			{
+				[flowdeskWorkflowDispatchOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const dispatchTool = hooks.tool?.[flowdeskWorkflowDispatchToolName];
+		assert.ok(dispatchTool);
+		const result = JSON.parse(
+			toolOutput(
+				await dispatchTool.execute(
+					{
+						workflowId: "workflow-dispatch-e2e-1",
+						goalSummary: "Run a bounded implementation task.",
+						parentSessionId: "parent-session-1",
+						task: {
+							agentRole: "implementation",
+							summary: "Produce a bounded implementation result.",
+							promptText: "Return a concise implementation result.",
+							agentName: "flowdesk-code-backend",
+							providerQualifiedModelId: "openai/gpt-5.5",
+						},
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+						allowActualLaneLaunch: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "workflow_dispatch_completed");
+		assert.equal(result.workflowId, "workflow-dispatch-e2e-1");
+		assert.equal(counters.create, 1);
+		assert.equal(counters.prompt, 1);
+		assert.ok(counters.messages >= 1);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, true);
+		assert.equal(authority.runtimeExecution, true);
+		assert.equal(authority.actualLaneLaunch, true);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.dispatchAuthorityEnabled, false);
+		assert.equal(authority.defaultRelease1DispatchAuthority, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.workflowDispatchPlanPersisted, true);
+		assert.equal(typeof result.laneId, "string");
+		assert.equal(typeof result.taskId, "string");
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-dispatch-e2e-1", rootDir: root });
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.ok(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "workflow_dispatch_plan" &&
+					Array.isArray(entry.record.tasks) &&
+					entry.record.tasks.some(
+						(task) =>
+							typeof task === "object" &&
+							task !== null &&
+							(task as Record<string, unknown>).task_id === result.taskId,
+					),
+			),
+		);
+		assert.ok(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "task_result" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.task_id === result.taskId &&
+					entry.record.dispatch_authority_enabled === false,
+			),
+		);
+		assert.ok(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.state === "incomplete" &&
+					entry.record.dispatch_authority_enabled === false,
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("workflow dispatch tool terminalizes process-only output as task_failed", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-dispatch-process-only-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("Working", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskWorkflowDispatchOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const dispatchTool = hooks.tool?.[flowdeskWorkflowDispatchToolName];
+		assert.ok(dispatchTool);
+		const result = JSON.parse(
+			toolOutput(
+				await dispatchTool.execute(
+					{
+						workflowId: "workflow-dispatch-process-only-1",
+						goalSummary: "Run a bounded implementation task.",
+						parentSessionId: "parent-session-1",
+						task: {
+							agentRole: "implementation",
+							summary: "Produce a bounded implementation result.",
+							promptText: "Return a concise implementation result.",
+							agentName: "flowdesk-code-backend",
+							providerQualifiedModelId: "openai/gpt-5.5",
+						},
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+						allowActualLaneLaunch: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "workflow_dispatch_incomplete");
+		assert.match(String(result.redactedBlockReason), /output contract/);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-dispatch-process-only-1", rootDir: root });
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(typeof result.laneId, "string");
+		assert.equal(typeof result.taskId, "string");
+		assert.ok(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "task_failed" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.task_id === result.taskId &&
+					entry.record.dispatch_authority_enabled === false,
+			),
+		);
+		assert.ok(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.state === "incomplete" &&
+					entry.record.dispatch_authority_enabled === false,
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("workflow dispatch tool blocks missing flags, invalid roles, fallback, and write wording before SDK calls", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-dispatch-blocks-"));
+	const counters = { create: 0, prompt: 0, messages: 0 };
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("Final bounded task result.", counters) } as never,
+			{
+				[flowdeskWorkflowDispatchOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const dispatchTool = hooks.tool?.[flowdeskWorkflowDispatchToolName];
+		assert.ok(dispatchTool);
+		const base = {
+			workflowId: "workflow-dispatch-blocked-1",
+			goalSummary: "Run a bounded implementation task.",
+			parentSessionId: "parent-session-1",
+			task: {
+				agentRole: "implementation",
+				summary: "Produce a bounded implementation result.",
+				promptText: "Return a concise implementation result.",
+				agentName: "flowdesk-code-backend",
+				providerQualifiedModelId: "openai/gpt-5.5",
+			},
+			developerModeAcknowledged: true,
+			allowProviderCall: true,
+			allowActualLaneLaunch: true,
+		};
+
+		for (const [request, reason] of [
+			[{ ...base, developerModeAcknowledged: false }, /developerModeAcknowledged=true/],
+			[{ ...base, allowProviderCall: false }, /allowProviderCall=true/],
+			[{ ...base, allowActualLaneLaunch: false }, /allowActualLaneLaunch=true/],
+			[{ ...base, task: { ...base.task, agentRole: "backend-code" } }, /agent_role is not a registered/],
+			[{ ...base, goalSummary: "Fallback to another provider if blocked." }, /fallback\/reselection/],
+			[{ ...base, task: { ...base.task, promptText: "Apply changes to files." } }, /write\/apply/],
+		] as const) {
+			const result = JSON.parse(toolOutput(await dispatchTool.execute(request, undefined as never))) as Record<string, unknown>;
+			assert.equal(result.status, "blocked_before_workflow_dispatch");
+			assert.match(String(result.redactedBlockReason), reason);
+		}
+		assert.equal(counters.create, 0);
+		assert.equal(counters.prompt, 0);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -496,6 +496,73 @@ function controlledRedactedAuditExportWriteRecord(overrides: Record<string, unkn
   };
 }
 
+function controlledWorkspaceFileWriteRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.controlled_workspace_file_write.v1",
+    ledger_entry_id: "controlled-workspace-write-1",
+    workflow_id: workflowId,
+    user_approval_ref: "approval-user-1",
+    target_file_path: "docs/example.md",
+    expected_content_sha256_ref: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    previous_content_sha256_ref: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    replacement_content_sha256_ref: "sha256-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    reason_summary: "Apply explicitly approved dev beta file replacement.",
+    materialized_at: "2026-05-19T00:04:00.000Z",
+    dev_beta_explicit_opt_in: true,
+    developer_mode_acknowledged: true,
+    allow_controlled_write: true,
+    local_only: true,
+    writeAttempted: true,
+    remoteWriteAttempted: false,
+    githubWriteAttempted: false,
+    connectorWriteAttempted: false,
+    storageWriteAttempted: false,
+    databaseWriteAttempted: false,
+    urlWriteAttempted: false,
+    rawPathWriteAttempted: false,
+    dispatch_authority_enabled: false,
+    realOpenCodeDispatch: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    fallbackAuthority: false,
+    toolAuthority: false,
+    hardCancelOrNoReplyAuthority: false,
+    ...overrides
+  };
+}
+
+function workflowDispatchPlanRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.workflow_dispatch_plan.v1",
+    workflow_id: workflowId,
+    plan_revision_id: "plan-revision-1",
+    requested_goal_summary: "Prepare a bounded documentation update",
+    selected_agent_roles: [{ agent_role: "documentation", agent_role_ref: "agent-docs" }],
+    tasks: [{
+      task_id: "task-docs-1",
+      title: "Review documentation notes",
+      summary: "Summarize the bounded documentation change needed for the release note",
+      agent_role: "documentation",
+      agent_role_ref: "agent-docs"
+    }],
+    task_graph_summary: "One documentation task with no dependencies",
+    model_selection_diagnostics: {
+      diagnostic_refs: ["diagnostic-plan-1"],
+      diagnostic_labels: ["planning_only"],
+      scoring_authority_enabled: false,
+      fallback_or_reselection_allowed: false
+    },
+    release_gate: "release1_planning_only",
+    dispatch_authority_enabled: false,
+    provider_call_made: false,
+    runtime_execution: false,
+    actual_lane_launch: false,
+    redaction_version: "v1",
+    ...overrides
+  };
+}
+
 test("session evidence path builders produce per-class relative paths", () => {
   for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
     const dir = sessionEvidenceDirectoryPath(workflowId, evidenceClass);
@@ -559,7 +626,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord(), controlledWorkspaceFileWriteRecord(), workflowDispatchPlanRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -569,14 +636,32 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 17);
+    assert.equal(applied.writtenPaths.length, 19);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 17);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write"]));
+    assert.equal(reloaded.entries.length, 19);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write", "controlled_workspace_file_write", "workflow_dispatch_plan"]));
+  });
+});
+
+test("session evidence reload validates workflow dispatch planning evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "workflow_dispatch_plan", "workflow-plan-good"), JSON.stringify(workflowDispatchPlanRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "workflow_dispatch_plan", "workflow-plan-forged"), JSON.stringify(workflowDispatchPlanRecord({ provider_call_made: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "workflow_dispatch_plan", "workflow-plan-copy"), JSON.stringify(workflowDispatchPlanRecord({ workflow_id: "workflow-other" })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "workflow_dispatch_plan");
+    assert.equal(result.blocked.length, 2);
+    const reasons = result.blocked.map((entry) => entry.reason).join("|");
+    assert.match(reasons, /provider_call_made must be false/);
+    assert.match(reasons, /workflow_id mismatch/);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
   });
 });
 
@@ -951,6 +1036,20 @@ test("session evidence reload validates controlled redacted audit export write e
     assert.equal(result.blocked.length, 2);
     const reasons = result.blocked.map((entry) => entry.reason).join("|");
     assert.match(reasons, /cannot enable external|artifact_path/);
+  });
+});
+
+test("session evidence reload validates controlled workspace file write evidence", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_workspace_file_write", "controlled-workspace-write-good"), JSON.stringify(controlledWorkspaceFileWriteRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_workspace_file_write", "controlled-workspace-write-forged"), JSON.stringify(controlledWorkspaceFileWriteRecord({ providerCall: true })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "controlled_workspace_file_write", "controlled-workspace-write-path"), JSON.stringify(controlledWorkspaceFileWriteRecord({ target_file_path: "../escape.md" })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "controlled_workspace_file_write");
+    assert.equal(result.blocked.length, 2);
+    const reasons = result.blocked.map((entry) => entry.reason).join("|");
+    assert.match(reasons, /cannot enable external|traversal/);
   });
 });
 

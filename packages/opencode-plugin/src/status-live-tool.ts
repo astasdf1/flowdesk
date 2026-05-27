@@ -145,6 +145,8 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestProviderUsageFreshness?: string;
 	latestProviderUsageResetBucket?: string;
 	providerUsageSnapshotCount?: number;
+	latestWorkflowDispatchPlanRevisionId?: string;
+	latestWorkflowDispatchPlanTaskCount?: number;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
 	stalledLaneCount?: number;
@@ -269,6 +271,8 @@ function summarizeWorkflow(
 	const laneLifecycleStates: string[] = [];
 	let regatePlanState: string | undefined;
 	let providerAcquisitionStatus: string | undefined;
+	let workflowDispatchPlanRevisionId: string | undefined;
+	let workflowDispatchPlanTaskCount: number | undefined;
 
 	for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
 		const classEntries = reload.entries.filter(
@@ -319,6 +323,17 @@ function summarizeWorkflow(
 					providerAcquisitionStatus = acquisitionStatus;
 			}
 		}
+		if (evidenceClass === "workflow_dispatch_plan") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				workflowDispatchPlanRevisionId = getStringField(
+					last.record,
+					"plan_revision_id",
+				);
+				const tasks = last.record.tasks;
+				if (Array.isArray(tasks)) workflowDispatchPlanTaskCount = tasks.length;
+			}
+		}
 	}
 
 	const providerUsageSummary = summarizeLatestProviderUsageSnapshot(
@@ -353,6 +368,15 @@ function summarizeWorkflow(
 			: {}),
 		...(providerUsageSummary.count > 0
 			? { providerUsageSnapshotCount: providerUsageSummary.count }
+			: {}),
+		...(workflowDispatchPlanRevisionId !== undefined
+			? {
+					latestWorkflowDispatchPlanRevisionId:
+						workflowDispatchPlanRevisionId,
+				}
+			: {}),
+		...(workflowDispatchPlanTaskCount !== undefined
+			? { latestWorkflowDispatchPlanTaskCount: workflowDispatchPlanTaskCount }
 			: {}),
 	};
 }
@@ -652,6 +676,10 @@ function buildStatusLiveSummaryForUser(input: {
 			lifecycleStates.length > 0
 				? `lifecycle=${lifecycleStates.slice(0, 3).join("/")}`
 				: "lifecycle=(none)";
+		const planText =
+			workflow.latestWorkflowDispatchPlanRevisionId !== undefined
+				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}`
+				: "workflow_plan=(none)";
 		const classification = workflow.worstLaneStallClassification ?? "unknown";
 		const lanePreview = (workflow.laneProgressCards ?? [])
 			.slice(0, 2)
@@ -664,7 +692,7 @@ function buildStatusLiveSummaryForUser(input: {
 			})
 			.join(", ");
 		const laneText = lanePreview.length > 0 ? `, lanes=${lanePreview}` : "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}${laneText}`;
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");
