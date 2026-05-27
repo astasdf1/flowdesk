@@ -72,52 +72,101 @@ function agentTaskLaunchPlan(input: {
 	};
 }
 
-function extractAssistantTextFromResponse(client: FlowDeskManagedDispatchBetaOpenCodeClientV1, childSessionId: string): Promise<string | undefined> | string | undefined {
-	// We extract response text via messages API
+/** Inactivity-based timeout: if no new message activity for `inactivityTimeoutMs`, give up.
+ *  Heartbeat is recorded every `heartbeatIntervalMs` while waiting. */
+async function extractAssistantTextFromResponse(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	opts?: {
+		inactivityTimeoutMs?: number;
+		heartbeatIntervalMs?: number;
+		heartbeatFn?: (elapsedMs: number) => void;
+	},
+): Promise<string | undefined> {
 	const messages = client.session.messages;
 	if (messages === undefined) return undefined;
-	return (async () => {
-		try {
-			const method = messages as (options: unknown) => unknown | Promise<unknown>;
-			const current = await method.call(client.session, { sessionID: childSessionId });
-			const response = isSdkErrorResponse(current)
-				? await method.call(client.session, { path: { id: childSessionId } })
-				: current;
+
+	const inactivityTimeoutMs = opts?.inactivityTimeoutMs ?? 60_000;
+	const heartbeatIntervalMs = opts?.heartbeatIntervalMs ?? 30_000;
+	const pollIntervalMs = 3_000;
+
+	const method = messages as (options: unknown) => unknown | Promise<unknown>;
+	const callMessages = async (): Promise<unknown> => {
+		const current = await method.call(client.session, { sessionID: childSessionId });
+		if (isSdkErrorResponse(current))
+			return method.call(client.session, { path: { id: childSessionId } });
+		return current;
+	};
+
+	const extractText = (response: unknown): string | undefined => {
+		const data = asResponseData(response);
+		const record = asRecord(data);
+		const items = Array.isArray(data)
+			? data
+			: Array.isArray(record?.items)
+				? record.items
+				: Array.isArray(record?.messages)
+					? record.messages
+					: [];
+		for (let i = items.length - 1; i >= 0; i--) {
+			const msg = items[i];
+			const msgRec = asRecord(msg);
+			const info = asRecord(msgRec?.info) ?? msgRec;
+			if (info?.role !== "assistant") continue;
+			const parts = Array.isArray(msgRec?.parts)
+				? msgRec.parts
+				: Array.isArray(info?.parts)
+					? info.parts
+					: [];
+			for (const part of parts) {
+				const p = asRecord(part);
+				const text = typeof p?.text === "string" ? p.text
+					: typeof p?.content === "string" ? p.content : undefined;
+				if (typeof text === "string" && text.trim().length > 0) return text;
+			}
+		}
+		return undefined;
+	};
+
+	const startMs = Date.now();
+	let lastActivityMs = startMs;
+	let lastSignature = "";
+	let lastHeartbeatMs = startMs;
+
+	try {
+		while (true) {
+			const nowMs = Date.now();
+
+			// Emit heartbeat every heartbeatIntervalMs
+			if (nowMs - lastHeartbeatMs >= heartbeatIntervalMs) {
+				lastHeartbeatMs = nowMs;
+				opts?.heartbeatFn?.(nowMs - startMs);
+			}
+
+			const response = await callMessages();
 			const data = asResponseData(response);
 			const record = asRecord(data);
-			const items = Array.isArray(data)
-				? data
-				: Array.isArray(record?.items)
-					? record.items
-					: Array.isArray(record?.messages)
-						? record.messages
-						: [];
-				for (let index = items.length - 1; index >= 0; index -= 1) {
-					const message = items[index];
-					const record = asRecord(message);
-					const info = asRecord(record?.info) ?? record;
-					if (info?.role !== "assistant") continue;
-				const parts = Array.isArray(record?.parts)
-					? record.parts
-					: Array.isArray(info?.parts)
-						? info.parts
-						: [];
-				for (const part of parts) {
-					const partRecord = asRecord(part);
-					const text =
-						typeof partRecord?.text === "string"
-							? partRecord.text
-							: typeof partRecord?.content === "string"
-								? partRecord.content
-								: undefined;
-					if (typeof text === "string" && text.trim().length > 0) return text;
-				}
+			const items = Array.isArray(data) ? data
+				: Array.isArray(record?.items) ? record.items
+				: Array.isArray(record?.messages) ? record.messages : [];
+			const sig = `${items.length}:${extractText(response)?.length ?? 0}`;
+
+			if (sig !== lastSignature) {
+				lastSignature = sig;
+				lastActivityMs = Date.now();
 			}
-			return undefined;
-		} catch {
-			return undefined;
+
+			const text = extractText(response);
+			if (text !== undefined && text.trim().length > 0) return text;
+
+			// Inactivity timeout: no new messages for inactivityTimeoutMs
+			if (Date.now() - lastActivityMs >= inactivityTimeoutMs) return undefined;
+
+			await new Promise<void>((r) => setTimeout(r, pollIntervalMs));
 		}
-	})();
+	} catch {
+		return undefined;
+	}
 }
 
 function isProcessOnlyAssistantOutput(text: string): boolean {
@@ -362,7 +411,24 @@ export async function executeFlowDeskAgentTaskV1(
 
 	let resultText: string | undefined;
 	if (childSessionId !== undefined) {
-		resultText = await extractAssistantTextFromResponse(input.client, childSessionId);
+		resultText = await extractAssistantTextFromResponse(input.client, childSessionId, {
+			inactivityTimeoutMs: 60_000,
+			heartbeatIntervalMs: 30_000,
+			heartbeatFn: (elapsedMs) => {
+				recordFlowDeskLaneHeartbeatV1({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					attemptId,
+					laneId: input.laneId,
+					parentSessionRef,
+					agentRef: input.agentRef,
+					providerQualifiedModelId: input.providerQualifiedModelId,
+					state: "running",
+					observedAt: new Date().toISOString(),
+					progressSummaryLabel: `agent task alive elapsed=${Math.floor(elapsedMs / 1000)}s`,
+				});
+			},
+		});
 	}
 
 	if (resultText === undefined || (input.outputContract === "final_assistant_text" && isProcessOnlyAssistantOutput(resultText))) {
