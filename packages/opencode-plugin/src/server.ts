@@ -1883,8 +1883,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
 		const preview = previewNaturalLanguageRouting(request, session);
 		const nowMs = clockMs(now);
-		const usagePattern = /\b(usage|quota|limit|rate[\s_-]*limit|reset(?:s)?|remaining|budget|credits?|tokens? left|how (?:much|many) (?:tokens?|requests?|usage|left|remaining))\b|(?:사용량|잔량|남은\s*(?:사용량|토큰|요청|쿼터|크레딧|예산)|남은(?:거|것)?\s*얼마|얼마\s*남(?:았|아|아서)|쿼터|한도|리셋|사용\s*가능량|쓸\s*수\s*있|토큰\s*남은|크레딧)/i;
-		if (usagePattern.test(request.intake_summary) && providerUsageLiveConfig?.durableStateRootDir && nowMs - lastUsageRefreshAttemptAtMs > 30_000) {
+		if (providerUsageLiveConfig?.durableStateRootDir && nowMs - lastUsageRefreshAttemptAtMs > 30_000) {
 			lastUsageRefreshAttemptAtMs = nowMs;
 			let isStale = false;
 			try {
