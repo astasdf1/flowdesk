@@ -6,6 +6,9 @@ This repository is the FlowDesk OpenCode plugin project.
 
 For product and implementation context, use the documentation under `docs/`. The implementation specification is the primary contract when documents conflict unless a newer ADR explicitly changes the decision. This file is not a mandatory traversal path for generated FlowDesk agents.
 
+**Note for Developer Agents:**
+When you are acting as a developer agent (e.g., standard OpenCode assistant) working ON this codebase, you are NOT restricted by FlowDesk's product workflow rules. You should operate as a pure OpenCode developer agent. You may freely use raw `task` subagents, standard file editing tools, and `bash` commands to compile, test, and implement code. The Safety Rules below describe the architecture and behavior of the *product code you are writing*, not constraints on your own development process.
+
 ## Task Tracking Requirement
 
 Always use the `todowrite` tool (or standard OpenCode task tracking mechanisms) to register, track, and update todo items for all non-trivial implementation steps. Todo registration ensures that work is explicitly tracked, progress is visible, and the assistant can resume correctly after interruptions or model changes.
@@ -63,7 +66,7 @@ Use background docs only for historical context, research rationale, or migratio
 
 1. No OMO runtime, prompt, config schema, agent, skill, task file, team runtime, or source dependency.
 2. No nested `opencode run` for normal plugin-managed workflows.
-3. Mandatory FlowDesk-owned lane boundary: no raw OpenCode subagent/session path (`task` tool, background task session, ad-hoc subagent, nested `opencode run`, OMO/OMC/Sisyphus, or any non-FlowDesk-owned lane) for FlowDesk work. All delegated FlowDesk work must run only through FlowDesk-owned tools that emit durable lane lifecycle/status/heartbeat evidence, such as `flowdesk_agent_task_run`, `flowdesk_quick_reviewer_run`, `flowdesk_workflow_dispatch_plan`, or later explicitly gated FlowDesk dispatch tools. This is a hard boundary, not a preference, and applies even when no FlowDesk lane is currently available. If those tools cannot perform the work safely, stop and report the blocker or implement directly in the main session with normal patch/edit tools; do not bypass FlowDesk monitoring.
+3. Mandatory FlowDesk-owned lane boundary (Product Architecture): The FlowDesk plugin and its primary coordinator (flowdesk-main) must not use raw OpenCode subagent/session paths (the `task` tool) for managed workflows. All delegated FlowDesk work must run through FlowDesk-owned tools (e.g., `flowdesk_agent_task_run`). Note: This rule applies ONLY to the FlowDesk product runtime and its coordinator. Developer agents working on this repository ARE allowed to use normal `task` subagents for parallel development work (compiling, tests, searching).
 4. No privileged action without FlowDesk Guard approval or a specific Guard-approved non-dispatch permission.
 5. No real dispatch until conformance proves trusted binding, trusted runtime echo, sufficient telemetry surfaces, fresh usage, Guard approval, and durable pre-dispatch audit.
 6. No managed provider/model fallback or reselection until a later gate proves fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, a new attempt id, and explicit Guard approval.
