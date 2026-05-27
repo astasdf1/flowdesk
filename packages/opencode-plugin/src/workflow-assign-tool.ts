@@ -5,57 +5,10 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
+	type FlowDeskAgentRegistryRoleCategoryV1,
 } from "@flowdesk/core";
 import type { FlowDeskTuiUsageProviderRowV1 } from "./tui-usage-snapshot.js";
-
-const ROLE_PROVIDER_FIT: Record<string, string[]> = {
-	security: ["claude", "openai"],
-	architecture: ["openai", "claude"],
-	review: ["claude", "openai", "gemini"],
-	verification: ["openai", "gemini", "claude"],
-	implementation: ["openai", "claude", "gemini"],
-	documentation: ["openai", "claude", "gemini"],
-	migration: ["openai", "claude"],
-};
-
-function agentNameForProvider(provider: string): string {
-	if (provider === "claude" || provider === "anthropic") return "reviewer-claude-opus";
-	if (provider === "gemini" || provider === "google") return "reviewer-gemini-pro";
-	return "reviewer-gpt-frontier";
-}
-
-function modelIdForProvider(provider: string, remaining: number | null): string {
-	if (provider === "claude" || provider === "anthropic") return "anthropic/claude-opus-4-7";
-	if (provider === "gemini" || provider === "google") return "google/gemini-3.1-pro-preview";
-	return remaining !== null && remaining > 80 ? "openai/gpt-5.5" : "openai/gpt-5.5";
-}
-
-function selectProvider(agentRole: string, rows: FlowDeskTuiUsageProviderRowV1[]): FlowDeskTuiUsageProviderRowV1 | null {
-	const available = rows.filter(r =>
-		r.connected &&
-		r.alertLevel !== "exhausted" &&
-		r.alertLevel !== "unknown",
-	);
-	if (available.length === 0) return null;
-
-	const openai = available.find(r => r.providerFamily === "openai");
-	const claude = available.find(r => r.providerFamily === "claude");
-	const gemini = available.find(r => r.providerFamily === "gemini");
-
-	const preferred = ROLE_PROVIDER_FIT[agentRole] ?? ["openai", "claude", "gemini"];
-
-	// Apply user-specified selection rule
-	if (openai && (openai.remainingPercent === null || openai.remainingPercent > 50)) {
-		if (preferred.includes("openai")) return openai;
-	}
-	if (claude && (claude.remainingPercent === null || claude.remainingPercent > 30)) {
-		if (preferred.includes("claude")) return claude;
-	}
-	if (gemini && gemini.alertLevel === "ok" && preferred.includes("gemini")) {
-		return gemini;
-	}
-	return available[0] ?? null;
-}
+import { selectModelForTask, buildUsageMapFromProviders } from "./model-selection-engine.js";
 
 export interface FlowDeskWorkflowAssignToolResultV1 {
 	status: "assignments_written" | "blocked_before_assignments";
@@ -110,13 +63,16 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		const agentRole = typeof node.agent_role === "string" ? node.agent_role : "implementation";
 		if (!taskId) continue;
 
-		const selected = selectProvider(agentRole, rows);
-		if (!selected) return blocked(`no available provider for task ${taskId}`, input.workflowId);
+		const usageMap = buildUsageMapFromProviders(rows);
+		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap);
+		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		const assignmentId = `assignment-${randomBytes(4).toString("hex")}`;
 		const selectionId = `selection-${randomBytes(4).toString("hex")}`;
-		const agentName = agentNameForProvider(selected.providerFamily);
-		const modelId = modelIdForProvider(selected.providerFamily, selected.remainingPercent);
+		const agentName = selected.candidate.agentName;
+		const modelId = selected.candidate.providerQualifiedModelId;
+		const selectedFamily = selected.candidate.providerFamily;
+		const selectedRemaining = rows.find(r => r.providerFamily === selectedFamily)?.remainingPercent ?? null;
 
 		const assignmentRecord = {
 			schema_version: "flowdesk.task_agent_assignment.v1",
@@ -128,7 +84,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 			selected_agent_ref: agentName,
 			selected_profile_ref: `profile-${agentName}`,
 			compatibility_status: "compatible",
-			fit_label: `${selected.providerFamily}_fit`,
+			fit_label: selected.candidate.tier === "heavy" ? "strong_fit" : "acceptable_fit",
 			registry_evidence_ref: "registry-default",
 			profile_evidence_ref: "profile-default",
 			blocked_labels: [],
@@ -147,16 +103,16 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 			workflow_id: input.workflowId,
 			task_id: taskId,
 			selection_id: selectionId,
-			provider_family: selected.providerFamily,
+			provider_family: selectedFamily,
 			provider_qualified_model_id: modelId,
-			usage_snapshot_ref: `usage-${selected.providerFamily}-recent`,
+			usage_snapshot_ref: `usage-${selectedFamily}-recent`,
 			usage_snapshot_freshness: "fresh",
-			provider_health_ref: `health-${selected.providerFamily}-recent`,
-			provider_health_label: selected.alertLevel === "ok" ? "ok" : "degraded",
-			exact_model_availability_ref: `avail-${selected.providerFamily}-recent`,
+			provider_health_ref: `health-${selectedFamily}-recent`,
+			provider_health_label: rows.find(r => r.providerFamily === selectedFamily)?.alertLevel === "ok" ? "ok" : "warning",
+			exact_model_availability_ref: `avail-${selectedFamily}-recent`,
 			exact_model_availability_label: "available",
-			fit_label: ROLE_PROVIDER_FIT[agentRole]?.[0] === selected.providerFamily ? "strong_fit" : "acceptable_fit",
-			performance_label: (selected.remainingPercent ?? 100) > 50 ? "headroom_ok" : "headroom_tight",
+			fit_label: selected.candidate.tier === "heavy" ? "strong_fit" : "acceptable_fit",
+			performance_label: (selectedRemaining ?? 100) > 50 ? "headroom_ok" : "headroom_tight",
 			selection_status: "selected",
 			blocked_labels: [],
 			fallback_allowed: false,
@@ -190,7 +146,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		workflowId: input.workflowId,
 		assignmentCount: nodes.length,
 		evidenceRefs,
-		summaryForUser: `FlowDesk assigned ${nodes.length} task(s) to agents and models based on provider usage. Planning only: no dispatch authority opened.`,
+		summaryForUser: `FlowDesk assigned ${nodes.length} task(s) to agents/models using usage-weighted selection. Planning only: no dispatch authority opened.`,
 		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
 		authority: SAFE_AUTHORITY,
 	};

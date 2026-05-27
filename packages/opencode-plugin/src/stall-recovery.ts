@@ -16,7 +16,7 @@ import {
 	type FlowDeskAutoRetryResultV1,
 	type DisabledAutoRetryReason,
 } from "@flowdesk/core";
-import { createHmac, createHash, timingSafeEqual } from "node:crypto";
+import { createHmac, createHash, timingSafeEqual, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -30,7 +30,7 @@ import {
 	FlowDeskTimeoutError,
 	withTimeout,
 } from "./shared/with-timeout.js";
-import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION } from "./agent-task-runner.js";
 
 export interface FlowDeskTimeoutConfig {
 	sessionReadMs?: number;
@@ -1446,6 +1446,18 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 		const now = input.now ?? new Date();
 
 		for (const workflowId of workflowIds) {
+			// Monitor async-mode child sessions (nudge + abort + result collection)
+			if (input.client !== undefined) {
+				try {
+					await monitorChildSessionsV1({
+						rootDir: input.rootDir,
+						workflowId,
+						client: input.client,
+						now,
+					});
+				} catch { /* best-effort, must not crash watchdog */ }
+			}
+
 			backfillTerminalAgentTaskFailedLanesV1({
 				rootDir: input.rootDir,
 				workflowId,
@@ -1537,4 +1549,238 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 		lanesRetried,
 		lanesFailed,
 	};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Child session monitor (async-mode lanes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AGENT_TASK_NUDGE_TEXT_WATCHDOG =
+	"Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
+
+/** Poll result from one session.messages call */
+async function pollChildSessionText(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	messagesTimeoutMs = 3_000,
+): Promise<string | null> {
+	const messages = client.session.messages;
+	if (typeof messages !== "function") return null;
+	try {
+		const raw = await Promise.race([
+			(messages as (o: unknown) => Promise<unknown>).call(client.session, {
+				sessionID: childSessionId,
+			}),
+			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
+		]);
+		if (raw === null) return null;
+		const data = Array.isArray(raw) ? raw : (typeof raw === "object" && raw !== null && Array.isArray((raw as Record<string, unknown>).items) ? (raw as Record<string, unknown>).items as unknown[] : []);
+		for (let i = (data as unknown[]).length - 1; i >= 0; i--) {
+			const msg = (data as unknown[])[i];
+			const msgRec = typeof msg === "object" && msg !== null ? msg as Record<string, unknown> : undefined;
+			const info = (typeof msgRec?.info === "object" && msgRec.info !== null ? msgRec.info : msgRec) as Record<string, unknown> | undefined;
+			if (info?.role !== "assistant") continue;
+			const parts = Array.isArray(msgRec?.parts) ? msgRec.parts : Array.isArray(info?.parts) ? info.parts : [];
+			for (const part of parts as unknown[]) {
+				const p = typeof part === "object" && part !== null ? part as Record<string, unknown> : undefined;
+				const text = typeof p?.text === "string" ? p.text : typeof p?.content === "string" ? p.content : undefined;
+				if (typeof text === "string" && text.trim().length > 0) return text;
+			}
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/** Send a noReply nudge to a child session — best effort with hard timeout */
+async function sendWatchdogNudge(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	timeoutMs = 5_000,
+): Promise<"sent" | "timeout" | "skipped"> {
+	const promptFn = client.session.prompt ?? client.session.promptAsync;
+	if (promptFn === undefined) return "skipped";
+	try {
+		await Promise.race([
+			(promptFn as (o: unknown) => unknown).call(client.session, {
+				sessionID: childSessionId,
+				noReply: true,
+				parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT_WATCHDOG }],
+			}),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("nudge timeout")), timeoutMs),
+			),
+		]);
+		return "sent";
+	} catch {
+		return "timeout";
+	}
+}
+
+/** Abort a child session via the injected SDK client */
+async function abortChildSession(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+): Promise<void> {
+	const abort = client.session.abort;
+	if (typeof abort !== "function") return;
+	try {
+		await (abort as (o: unknown) => unknown).call(client.session, {
+			path: { id: childSessionId },
+		});
+	} catch { /* best-effort */ }
+}
+
+function writeChildSessionEvidence(
+	rootDir: string,
+	workflowId: string,
+	evidenceId: string,
+	record: Record<string, unknown>,
+): void {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId, record });
+	if (prepared.ok && prepared.writeIntent !== undefined)
+		applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+}
+
+export interface FlowDeskChildSessionMonitorResultV1 {
+	lanesPolled: number;
+	lanesCompleted: number;
+	lanesNudged: number;
+	lanesAborted: number;
+}
+
+/**
+ * Monitor all async-mode agent task lanes in the given workflow.
+ * Called from the watchdog cycle once per interval:
+ *   - Poll session.messages for each running child session
+ *   - On result: write task_result evidence + terminal lifecycle
+ *   - At 20s silence: nudge with noReply: true
+ *   - At 40s: second nudge
+ *   - At 60s+: session.abort + task_failed + terminal lifecycle
+ */
+export async function monitorChildSessionsV1(input: {
+	rootDir: string;
+	workflowId: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	now?: Date;
+	nudgeQuietPeriodMs?: number;  // default 20_000
+	maxNudges?: number;            // default 2
+	abortThresholdMs?: number;     // default 60_000
+}): Promise<FlowDeskChildSessionMonitorResultV1> {
+	const nowMs = (input.now ?? new Date()).getTime();
+	const nudgeQuietPeriodMs = input.nudgeQuietPeriodMs ?? 20_000;
+	const maxNudges = input.maxNudges ?? 2;
+	const abortThresholdMs = input.abortThresholdMs ?? 60_000;
+	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
+
+	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
+	if (!reloaded.ok) return result;
+
+	// Find all child session records for running lanes
+	const childRecords = reloaded.entries
+		.filter(e => e.evidenceClass === "agent_task_child_session")
+		.map(e => e.record as Record<string, unknown>)
+		.filter(r => r.schema_version === AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION);
+
+	// Find lanes that are NOT yet terminal (by lifecycle state or by task_result/task_failed evidence)
+	const terminalLaneIds = new Set<string>();
+	for (const entry of reloaded.entries) {
+		const rec = entry.record as Record<string, unknown>;
+		const laneIdVal = typeof rec.lane_id === "string" ? rec.lane_id : undefined;
+		if (!laneIdVal) continue;
+		if (entry.evidenceClass === "lane_lifecycle") {
+			const s = rec.state;
+			if (s === "complete" || s === "invocation_failed" || s === "no_output" || s === "incomplete")
+				terminalLaneIds.add(laneIdVal);
+		} else if (entry.evidenceClass === "task_result" || entry.evidenceClass === "task_failed") {
+			terminalLaneIds.add(laneIdVal);
+		}
+	}
+
+	for (const record of childRecords) {
+		const laneId = typeof record.lane_id === "string" ? record.lane_id : "";
+		const childSessionId = typeof record.child_session_id === "string" ? record.child_session_id : "";
+		if (!laneId || !childSessionId) continue;
+		if (terminalLaneIds.has(laneId)) continue; // already done
+
+		result.lanesPolled++;
+		const createdAtMs = typeof record.created_at === "string" ? Date.parse(record.created_at) : nowMs;
+		const nudgeCount = typeof record.nudge_count === "number" ? record.nudge_count : 0;
+		const lastNudgeAtMs = typeof record.last_nudge_at === "string" ? Date.parse(record.last_nudge_at) : createdAtMs;
+		const silenceMs = nowMs - lastNudgeAtMs;
+		const totalAgeMs = nowMs - createdAtMs;
+
+		// 1. Try to collect result text
+		const resultText = await pollChildSessionText(input.client, childSessionId);
+		if (resultText !== null && resultText.trim().length > 0) {
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const token = randomBytes(4).toString("hex");
+			const completedAt = new Date(nowMs).toISOString();
+			const truncated = resultText.length > 32_768;
+			const finalText = resultText.slice(0, 32_768);
+
+			const taskResultEvidenceId = `task-result-${taskId}-watchdog-${token}`;
+			writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
+				schema_version: "flowdesk.task_result.v1",
+				workflow_id: input.workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: agentRef,
+				provider_qualified_model_id: modelId,
+				task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
+				result_text: finalText,
+				result_text_truncated: truncated,
+				result_text_sha256: createHash("sha256").update(finalText).digest("hex"),
+				created_at: completedAt,
+				dispatch_authority_enabled: false,
+			});
+			result.lanesCompleted++;
+			continue;
+		}
+
+		// 2. Abort threshold exceeded
+		if (totalAgeMs >= abortThresholdMs && nudgeCount >= maxNudges) {
+			await abortChildSession(input.client, childSessionId);
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const token = randomBytes(4).toString("hex");
+			const abortedAt = new Date(nowMs).toISOString();
+
+			writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-abort-${token}`, {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: input.workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: agentRef,
+				provider_qualified_model_id: modelId,
+				failure_category: "sdk_prompt_timeout",
+				redacted_reason: `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no response`,
+				created_at: abortedAt,
+				dispatch_authority_enabled: false,
+			});
+			result.lanesAborted++;
+			continue;
+		}
+
+		// 3. Nudge if silence threshold exceeded
+		if (silenceMs >= nudgeQuietPeriodMs && nudgeCount < maxNudges) {
+			await sendWatchdogNudge(input.client, childSessionId);
+			result.lanesNudged++;
+			// Update nudge_count in evidence (overwrite record)
+			const evidenceId = reloaded.entries
+				.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
+				?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
+			writeChildSessionEvidence(input.rootDir, input.workflowId, evidenceId, {
+				...record,
+				nudge_count: nudgeCount + 1,
+				last_nudge_at: new Date(nowMs).toISOString(),
+			});
+		}
+	}
+
+	return result;
 }

@@ -22,6 +22,19 @@ export interface FlowDeskTuiUsageProviderRowV1 {
 	usageSnapshotRef?: string;
 	secondsUntilReset?: number;
 	secondsSinceObserved?: number;
+	buckets?: readonly FlowDeskTuiUsageProviderBucketV1[];
+}
+
+export interface FlowDeskTuiUsageProviderBucketV1 {
+	resetBucket?: string;
+	resetTime?: string;
+	remainingPercent: number | null;
+	freshness: FlowDeskTuiUsageProviderRowV1["freshness"];
+	dispatchability: FlowDeskTuiUsageProviderRowV1["dispatchability"];
+	connected: boolean;
+	usageSnapshotRef?: string;
+	secondsUntilReset?: number;
+	secondsSinceObserved?: number;
 }
 
 export interface FlowDeskTuiUsageSnapshotViewV1 {
@@ -90,6 +103,62 @@ function alertLevelFor(
 	return "ok";
 }
 
+function bucketFromRow(row: FlowDeskTuiUsageProviderRowV1): FlowDeskTuiUsageProviderBucketV1 | undefined {
+	if (row.resetBucket === undefined && row.resetTime === undefined && row.remainingPercent === null) return undefined;
+	return {
+		...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
+		...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
+		remainingPercent: row.remainingPercent,
+		freshness: row.freshness,
+		dispatchability: row.dispatchability,
+		connected: row.connected,
+		...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
+		...(row.secondsUntilReset === undefined ? {} : { secondsUntilReset: row.secondsUntilReset }),
+		...(row.secondsSinceObserved === undefined ? {} : { secondsSinceObserved: row.secondsSinceObserved }),
+	};
+}
+
+function bucketSortRank(value: string | undefined): number {
+	if (value === undefined) return 99;
+	const normalized = value.toLowerCase();
+	if (normalized.includes("5h")) return 0;
+	if (normalized.includes("weekly") || normalized.includes("1w") || normalized.includes("7d")) return 1;
+	if (normalized.includes("daily")) return 2;
+	return 10;
+}
+
+function canonicalResetBucketKey(value: unknown): string {
+	if (typeof value !== "string") return "unknown";
+	const normalized = value.toLowerCase().trim().replace(/^[0-9]+(?:\.[0-9]+)?%\s+/, "");
+	if (normalized.length === 0) return "unknown";
+	return normalized;
+}
+
+function rowFromBucketRows(
+	family: FlowDeskTuiProviderFamilyV1,
+	rows: readonly FlowDeskTuiUsageProviderRowV1[],
+	nowMs: number,
+): FlowDeskTuiUsageProviderRowV1 {
+	if (rows.length === 0) return rowFromRecord(family, undefined, nowMs);
+	const sorted = [...rows].sort((a, b) => {
+		const byRank = bucketSortRank(a.resetBucket) - bucketSortRank(b.resetBucket);
+		if (byRank !== 0) return byRank;
+		return (a.resetBucket ?? "").localeCompare(b.resetBucket ?? "");
+	});
+	const buckets = sorted.map(bucketFromRow).filter((bucket): bucket is FlowDeskTuiUsageProviderBucketV1 => bucket !== undefined);
+	const connectedBuckets = sorted.filter((row) => row.connected);
+	const primary = connectedBuckets[0] ?? sorted[0] ?? rowFromRecord(family, undefined, nowMs);
+	const percents = sorted.map((row) => row.remainingPercent).filter((value): value is number => value !== null);
+	const remainingPercent = percents.length > 0 ? Math.min(...percents) : primary.remainingPercent;
+	return {
+		...primary,
+		connected: connectedBuckets.length > 0,
+		remainingPercent,
+		alertLevel: alertLevelFor(primary.freshness, remainingPercent),
+		...(buckets.length > 0 ? { buckets } : {}),
+	};
+}
+
 function rowFromRecord(
 	family: FlowDeskTuiProviderFamilyV1,
 	record: Record<string, unknown> | undefined,
@@ -119,7 +188,7 @@ function rowFromRecord(
 	const resetMs = resetTime === undefined ? Number.NaN : Date.parse(resetTime);
 	const observedMs = timestampFromUsageSnapshotId(record.snapshot_id);
 	const remainingPercent = remainingPercentFromResetBucket(record.reset_bucket);
-	return {
+	const row: FlowDeskTuiUsageProviderRowV1 = {
 		providerFamily: family,
 		connected: dispatchability === "dispatchable" && freshness === "fresh",
 		dispatchability,
@@ -135,6 +204,43 @@ function rowFromRecord(
 		...(observedMs === undefined
 			? {}
 			: { secondsSinceObserved: Math.max(0, Math.floor((nowMs - observedMs) / 1000)) }),
+	};
+	const bucket = bucketFromRow(row);
+	return bucket === undefined ? row : { ...row, buckets: [bucket] };
+}
+
+function bucketFromSidebarCacheRecord(
+	record: Record<string, unknown>,
+	nowMs: number,
+): FlowDeskTuiUsageProviderBucketV1 | undefined {
+	const dispatchability =
+		record.dispatchability === "dispatchable" ||
+		record.dispatchability === "diagnostic_only" ||
+		record.dispatchability === "non_dispatchable"
+			? record.dispatchability
+			: "non_dispatchable";
+	const freshness =
+		record.freshness === "fresh" || record.freshness === "stale" || record.freshness === "unknown"
+			? record.freshness
+			: "unknown";
+	const remainingPercent =
+		typeof record.remainingPercent === "number" && Number.isFinite(record.remainingPercent)
+			? record.remainingPercent
+			: null;
+	const resetTime = typeof record.resetTime === "string" ? record.resetTime : undefined;
+	const resetMs = resetTime === undefined ? Number.NaN : Date.parse(resetTime);
+	if (typeof record.resetBucket !== "string" && resetTime === undefined && remainingPercent === null) return undefined;
+	return {
+		...(typeof record.resetBucket === "string" ? { resetBucket: record.resetBucket } : {}),
+		...(resetTime === undefined ? {} : { resetTime }),
+		remainingPercent,
+		freshness,
+		dispatchability,
+		connected: record.connected === true,
+		...(typeof record.usageSnapshotRef === "string" ? { usageSnapshotRef: record.usageSnapshotRef } : {}),
+		...(Number.isFinite(resetMs)
+			? { secondsUntilReset: Math.max(0, Math.floor((resetMs - nowMs) / 1000)) }
+			: {}),
 	};
 }
 
@@ -169,7 +275,7 @@ function rowFromSidebarCacheRecord(
 			: null;
 	const resetTime = typeof record.resetTime === "string" ? record.resetTime : undefined;
 	const resetMs = resetTime === undefined ? Number.NaN : Date.parse(resetTime);
-	return {
+	const row: FlowDeskTuiUsageProviderRowV1 = {
 		providerFamily: family,
 		connected: record.connected === true,
 		dispatchability,
@@ -183,6 +289,15 @@ function rowFromSidebarCacheRecord(
 			? { secondsUntilReset: Math.max(0, Math.floor((resetMs - nowMs) / 1000)) }
 			: {}),
 	};
+	const explicitBuckets = Array.isArray(record.buckets)
+		? record.buckets
+				.filter(isRecord)
+				.map((bucket) => bucketFromSidebarCacheRecord(bucket, nowMs))
+				.filter((bucket): bucket is FlowDeskTuiUsageProviderBucketV1 => bucket !== undefined)
+		: [];
+	const fallbackBucket = bucketFromRow(row);
+	const buckets = explicitBuckets.length > 0 ? explicitBuckets : fallbackBucket === undefined ? [] : [fallbackBucket];
+	return buckets.length === 0 ? row : { ...row, buckets };
 }
 
 function loadSidebarCacheRows(
@@ -194,6 +309,11 @@ function loadSidebarCacheRows(
 			readFileSync(join(rootDir, ".flowdesk", "ui", "provider-usage-sidebar.json"), "utf8"),
 		) as unknown;
 		if (!isRecord(cache) || cache.schema_version !== "flowdesk.provider_usage_sidebar_cache.v1") return undefined;
+		// Respect expires_at: if the cache is expired, fall through to evidence snapshots
+		if (typeof cache.expires_at === "string") {
+			const expiresAtMs = Date.parse(cache.expires_at);
+			if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) return undefined;
+		}
 		if (!Array.isArray(cache.providers)) return undefined;
 		const byFamily = new Map<FlowDeskTuiProviderFamilyV1, Record<string, unknown>>();
 		for (const row of cache.providers) {
@@ -238,29 +358,37 @@ export function loadFlowDeskTuiUsageSnapshotViewV1(input: {
 		"provider-usage-snapshot",
 	);
 	try {
-		const byFamily = new Map<FlowDeskTuiProviderFamilyV1, Record<string, unknown>>();
+		const byFamilyBucket = new Map<FlowDeskTuiProviderFamilyV1, Map<string, Record<string, unknown>>>();
 		for (const name of readdirSync(evidenceDir)) {
 			if (!name.endsWith(".json")) continue;
 			const record = JSON.parse(readFileSync(join(evidenceDir, name), "utf8")) as unknown;
 			if (!isRecord(record) || record.schema_version !== "flowdesk.usage_snapshot.v1") continue;
 			if (!isProviderFamily(record.provider_family)) continue;
-			const previous = byFamily.get(record.provider_family);
+			const bucketKey = canonicalResetBucketKey(record.reset_bucket);
+			const familyRows = byFamilyBucket.get(record.provider_family) ?? new Map<string, Record<string, unknown>>();
+			const previous = familyRows.get(bucketKey);
 			const previousMs = timestampFromUsageSnapshotId(previous?.snapshot_id);
 			const currentMs = timestampFromUsageSnapshotId(record.snapshot_id);
 			if (previous === undefined || (currentMs ?? 0) >= (previousMs ?? 0)) {
-				byFamily.set(record.provider_family, record);
+				familyRows.set(bucketKey, record);
+				byFamilyBucket.set(record.provider_family, familyRows);
 			}
 		}
 		const providers = providerFamilies.map((family) =>
-			rowFromRecord(family, byFamily.get(family), nowMs),
+			rowFromBucketRows(
+				family,
+				[...(byFamilyBucket.get(family)?.values() ?? [])].map((record) => rowFromRecord(family, record, nowMs)),
+				nowMs,
+			),
 		);
+		const loadedCount = [...byFamilyBucket.values()].reduce((total, rows) => total + rows.size, 0);
 		return {
-			status: byFamily.size === 0 ? "missing" : "loaded",
+			status: loadedCount === 0 ? "missing" : "loaded",
 			observedAt,
 			rootDir,
 			workflowId,
 			providers,
-			...(byFamily.size === 0 ? { redactedReason: "no provider usage snapshots found" } : {}),
+			...(loadedCount === 0 ? { redactedReason: "no provider usage snapshots found" } : {}),
 			safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
 		};
 	} catch {
@@ -274,4 +402,69 @@ export function loadFlowDeskTuiUsageSnapshotViewV1(input: {
 			safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
 		};
 	}
+}
+
+function displayResetTime(value: string | undefined, label: "5h" | "1w"): string {
+	if (value === undefined) return "?";
+	const parsed = Date.parse(value);
+	if (!Number.isFinite(parsed)) return value;
+	const date = new Date(parsed);
+	const hh = String(date.getHours()).padStart(2, "0");
+	const mm = String(date.getMinutes()).padStart(2, "0");
+	if (label === "5h") return `${hh}:${mm}`;
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	return `${month}-${day} ${hh}:${mm}`;
+}
+
+function compactPercent(value: number | null): string {
+	return value === null ? "?" : `${Math.round(value)}%`;
+}
+
+function compactBucketSegment(bucket: FlowDeskTuiUsageProviderBucketV1 | undefined, label: "5h" | "1w"): string {
+	return `${compactPercent(bucket?.remainingPercent ?? null)} (${label}, r ${displayResetTime(bucket?.resetTime, label)})`;
+}
+
+function bucketForCompactLabel(
+	provider: FlowDeskTuiUsageProviderRowV1,
+	label: "5h" | "1w",
+): FlowDeskTuiUsageProviderBucketV1 | undefined {
+	const buckets = provider.buckets ?? [];
+	return buckets.find((bucket) => {
+		const resetBucket = bucket.resetBucket?.toLowerCase() ?? "";
+		return label === "5h"
+			? resetBucket.includes("5h")
+			: resetBucket.includes("weekly") || resetBucket.includes("1w") || resetBucket.includes("7d");
+	});
+}
+
+const compactProviderLabels = {
+	claude: "CL",
+	openai: "OA",
+	gemini: "GM",
+} as const;
+
+export function formatFlowDeskTuiUsageSnapshotCompactLines(
+	view: FlowDeskTuiUsageSnapshotViewV1,
+): string[] {
+	const lines: string[] = [];
+	for (const family of providerFamilies) {
+		const provider = view.providers.find((candidate) => candidate.providerFamily === family);
+		const label = compactProviderLabels[family];
+		if (provider === undefined || provider.connected !== true) {
+			lines.push(`${label}: ✗`);
+			continue;
+		}
+		const fiveHour = bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
+		const weekly = bucketForCompactLabel(provider, "1w");
+		lines.push(`${label}: ${compactBucketSegment(fiveHour, "5h")}`);
+		lines.push(`    ${compactBucketSegment(weekly, "1w")}`);
+	}
+	return lines;
+}
+
+export function formatFlowDeskTuiUsageSnapshotCompactText(
+	view: FlowDeskTuiUsageSnapshotViewV1,
+): string {
+	return formatFlowDeskTuiUsageSnapshotCompactLines(view).join("\n");
 }

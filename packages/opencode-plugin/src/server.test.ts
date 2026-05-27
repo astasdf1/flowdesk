@@ -74,6 +74,18 @@ import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGua
 
 const now = "2026-05-17T00:00:00.000Z";
 
+function formatLocalResetTimeForTest(value: string, label: "5h" | "1w"): string {
+	const parsed = Date.parse(value);
+	if (!Number.isFinite(parsed)) return value;
+	const date = new Date(parsed);
+	const hh = String(date.getHours()).padStart(2, "0");
+	const mm = String(date.getMinutes()).padStart(2, "0");
+	if (label === "5h") return `${hh}:${mm}`;
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	return `${month}-${day} ${hh}:${mm}`;
+}
+
 const stallRecoveryGuardKey = "test-stall-recovery-guard-key-32-bytes";
 const stallRecoveryGuardMarkdown = "# SDK surface verification\n\nP6 evidence-only auto-abort is safe.\n";
 
@@ -5395,6 +5407,77 @@ test("chat.message steering mutates message parts without hard interception fiel
 	assert.equal(generalChatOutput.parts.length, 1);
 });
 
+test("chat.message appends compact usage snapshot lines from sidebar cache", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-usage-sidebar-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-27T01:00:00.000Z",
+					expires_at: "2026-05-27T01:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "claude",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							remainingPercent: 34,
+							alertLevel: "ok",
+							buckets: [
+								{
+									resetBucket: "claude-5h",
+									resetTime: "2026-05-27T19:20:00.000Z",
+									remainingPercent: 77,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+								{
+									resetBucket: "claude-weekly",
+									resetTime: "2026-06-03T12:00:00.000Z",
+									remainingPercent: 34,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+							],
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		const hook = createFlowDeskNaturalLanguageChatMessageHook(
+			() => new Date("2026-05-27T01:02:00.000Z"),
+			undefined,
+			undefined,
+			undefined,
+			{ durableStateRootDir: root, providers: ["claude"], persistWorkflowId: "workflow-provider-usage-live", appendToChat: true },
+		);
+		const output = { parts: [{ type: "text", text: "오늘 날씨 이야기하자" }] as unknown[] };
+		await hook({ messageID: "message-usage-sidebar", sessionID: "session-usage-sidebar" }, output);
+		const serialized = JSON.stringify(output);
+		assert.match(
+			serialized,
+			new RegExp(`CL: 77% \\(5h, r ${formatLocalResetTimeForTest("2026-05-27T19:20:00.000Z", "5h")}\\)`),
+		);
+		assert.match(
+			serialized,
+			new RegExp(`34% \\(1w, r ${formatLocalResetTimeForTest("2026-06-03T12:00:00.000Z", "1w")}\\)`),
+		);
+		assert.match(serialized, /OA: ✗/);
+		assert.match(serialized, /GM: ✗/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("chat.message authority probe records local hook observation as blocked hard-control evidence", async () => {
 	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskNaturalLanguageRoutingOption]: true,
@@ -7675,6 +7758,106 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 					typeof entry.record.output_ref === "string",
 			),
 		);
+
+		const statusHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const statusTool = statusHooks.tool?.[flowdeskStatusLiveToolName];
+		assert.ok(statusTool);
+		const statusResult = JSON.parse(
+			toolOutput(await statusTool.execute({ workflowId: "workflow-task-exec-1" }, undefined as never)),
+		) as Record<string, unknown>;
+		const workflows = statusResult.workflows as Array<Record<string, unknown>>;
+		const cards = workflows[0]?.laneProgressCards as Array<Record<string, unknown>>;
+		assert.ok(cards.some((card) => card.laneId === result.laneId && card.state === "task_result"));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run fails fast for FlowDesk session refs used as parentSessionId", async () => {
+	let createCalls = 0;
+	let promptCalls = 0;
+	const dummyClient = {
+		session: {
+			create() {
+				createCalls += 1;
+				return Promise.resolve({ id: "child-should-not-launch" });
+			},
+			prompt() {
+				promptCalls += 1;
+				return Promise.resolve({ info: { id: "message-should-not-launch" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-invalid-parent-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-invalid-parent-1",
+						taskDescription: "Analyze this code.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "ses-ses-flowdesk-coordinator",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_failed");
+		assert.equal(result.failureCategory, "sdk_create_failed");
+		assert.equal(result.redactedReason, "invalid_parent_session_binding");
+		assert.equal(createCalls, 0);
+		assert.equal(promptCalls, 0);
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-task-invalid-parent-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "task_failed" &&
+					entry.record.failure_category === "sdk_create_failed" &&
+					entry.record.redacted_reason === "invalid_parent_session_binding",
+			),
+		);
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.state === "invocation_failed" &&
+					entry.record.parent_session_ref === "ses-invalid-parent-session-binding" &&
+					entry.record.dispatch_authority_enabled === false,
+			),
+		);
+		assert.equal(JSON.stringify(evidence.entries).includes("ses-ses-flowdesk-coordinator"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

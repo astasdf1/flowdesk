@@ -81,6 +81,10 @@ import {
 	type FlowDeskProviderUsageLiveProviderFamilyV1,
 } from "./provider-usage-live-tool.js";
 import {
+	formatFlowDeskTuiUsageSnapshotCompactText,
+	loadFlowDeskTuiUsageSnapshotViewV1,
+} from "./tui-usage-snapshot.js";
+import {
 	executeFlowDeskQuickFallbackRunV1,
 	type FlowDeskQuickFallbackRunConfigV1,
 } from "./quick-fallback-run.js";
@@ -1900,6 +1904,22 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				} catch {}
 			}
 		}
+		const usageTextToAppend =
+			providerUsageLiveConfig?.durableStateRootDir &&
+			providerUsageLiveConfig.appendToChat === true
+				? formatFlowDeskTuiUsageSnapshotCompactText(
+						loadFlowDeskTuiUsageSnapshotViewV1({
+							rootDir: providerUsageLiveConfig.durableStateRootDir,
+							workflowId: providerUsageLiveConfig.persistWorkflowId,
+							now: () => (typeof now === "function" ? now() : now),
+						}),
+					)
+				: undefined;
+		const appendUsageCard = () => {
+			if (usageTextToAppend === undefined) return;
+			if (!Array.isArray(output.parts)) output.parts = [];
+			output.parts.push(buildTextPart(usageTextToAppend));
+		};
 		for (const [key, recordedAtMs] of recentSuggestionCards) {
 			if (
 				nowMs - recordedAtMs > flowdeskChatSuggestionDuplicateWindowMs ||
@@ -1966,6 +1986,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		};
 
 		if (preview.evaluation.response.route_decision === "continue_chat") {
+			appendUsageCard();
 			appendStallCard();
 			return;
 		}
@@ -1993,11 +2014,15 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				previousAtMs !== undefined &&
 				nowMs - previousAtMs <= flowdeskChatSuggestionDuplicateWindowMs
 			)
+			{
+				appendUsageCard();
 				return;
+			}
 		}
 		const result = evaluateNaturalLanguageRouting(request, session);
 		if (!Array.isArray(output.parts)) output.parts = [];
 		output.parts.push(buildTextPart(steeringText(result)));
+		appendUsageCard();
 		appendStallCard();
 	};
 }
@@ -3126,7 +3151,8 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				parentSessionId: tool.schema.string().optional().describe("Parent session id"),
 				developerModeAcknowledged: tool.schema.boolean(),
 				allowProviderCall: tool.schema.boolean(),
-				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Seconds of silence before sending a nudge prompt (default 30000ms). Applies to both the task agent and the calling session."),
+				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Milliseconds of silence before sending a nudge prompt. Default 20000ms (20s). Recommended: always pass 20000. At 20s silence → nudge 1, 40s → nudge 2, 60s+ → lane fails and watchdog retries."),
+			asyncMode: tool.schema.boolean().optional().describe("When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 20s/40s, and aborts at 60s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
 			},
 			async execute(args, ctx) {
 				const record: Record<string, unknown> = isRecord(args) ? args : {};
@@ -3149,6 +3175,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 							: "";
 				const nudgeQuietPeriodMs = typeof record.nudgeQuietPeriodMs === "number" && record.nudgeQuietPeriodMs > 0
 					? Math.floor(record.nudgeQuietPeriodMs) : undefined;
+				const asyncMode = record.asyncMode === true;
 				const taskId = `task-${Date.now().toString(36)}`;
 				const laneId = `lane-task-${Date.now().toString(36)}`;
 				const result = await executeFlowDeskAgentTaskV1({
@@ -3161,6 +3188,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					parentSessionId,
 					rootDir,
 					client,
+					asyncMode,
 					_nudgeQuietPeriodMs: nudgeQuietPeriodMs,
 				});
 				return JSON.stringify({
@@ -3168,13 +3196,16 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					laneId,
 					taskId,
 					status: result.status,
+					...(result.status === "task_launched" ? { childSessionId: result.childSessionId, asyncMode: true, safeNextActions: ["/flowdesk-status"] } : {}),
 					resultText: result.status === "task_completed" ? result.resultText.slice(0, 4_096) : undefined,
 					resultTruncated: result.status === "task_completed" && result.resultText.length > 4_096,
 					failureCategory: result.status === "task_failed" ? result.failureCategory : undefined,
 					redactedReason: result.status === "task_failed" ? result.redactedReason : undefined,
 					summaryForUser: result.status === "task_completed"
 						? `Task completed on ${agentName} (${providerQualifiedModelId}). Result: ${result.resultText.slice(0, 200)}${result.resultText.length > 200 ? "..." : ""}`
-						: `Task failed on ${agentName}: ${result.failureCategory}`,
+						: result.status === "task_launched"
+							? `Task launched on ${agentName} (asyncMode). Use flowdesk_status_live(${laneId}) to track completion.`
+							: `Task failed on ${agentName}: ${result.status === "task_failed" ? result.failureCategory : "unknown"}`,
 				});
 			},
 		}),
@@ -3395,6 +3426,7 @@ function providerUsageLiveConfigFromOptions(
 	)
 		config.geminiProjectId = value.geminiProjectId;
 	if (value.persistSnapshots === true) config.persistSnapshots = true;
+	if (value.appendToChat === true) config.appendToChat = true;
 	const explicitRoot =
 		typeof value.durableStateRootDir === "string" &&
 		value.durableStateRootDir.trim().length > 0
@@ -4618,6 +4650,31 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			? input.client
 			: undefined,
 	);
+	// Background sidebar cache refresh interval — runs every 3 minutes regardless of chat activity
+	if (providerUsageLiveConfig?.durableStateRootDir) {
+		const capturedUsageConfig = providerUsageLiveConfig;
+		const sidebarRefreshIntervalMs = 3 * 60_000;
+		const sidebarRefreshInterval = setInterval(() => {
+			const cachePath = join(capturedUsageConfig.durableStateRootDir!, ".flowdesk", "ui", "provider-usage-sidebar.json");
+			let isStale = false;
+			try {
+				const cache = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+				if (typeof cache.observed_at === "string" && Date.now() - Date.parse(cache.observed_at) > sidebarRefreshIntervalMs) isStale = true;
+			} catch {
+				isStale = true;
+			}
+			if (isStale) {
+				executeFlowDeskProviderUsageLiveV1({
+					config: { ...capturedUsageConfig, persistSidebarCache: true },
+					request: { providerFamily: "all" },
+				}).catch(() => {});
+			}
+		}, sidebarRefreshIntervalMs);
+		sidebarRefreshInterval.unref();
+		process.once("exit", () => clearInterval(sidebarRefreshInterval));
+		process.once("SIGTERM", () => clearInterval(sidebarRefreshInterval));
+	}
+
 	return {
 		tool: tools,
 		"chat.message": createFlowDeskNaturalLanguageChatMessageHook(

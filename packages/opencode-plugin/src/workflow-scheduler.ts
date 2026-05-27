@@ -59,7 +59,9 @@ export async function executeFlowDeskWorkflowSchedulerV1(
 		results[next.task_id] = result;
 		executedTaskIds.push(next.task_id);
 		if (result.status !== "task_completed") {
-			return { status: "workflow_incomplete", executedTaskIds, results, redactedReason: result.redactedReason };
+			const reason = result.status === "task_failed" ? result.redactedReason
+				: result.status === "task_launched" ? `async lane launched: ${result.laneId}` : "unknown";
+			return { status: "workflow_incomplete", executedTaskIds, results, redactedReason: reason };
 		}
 		done.add(next.task_id);
 	}

@@ -369,10 +369,10 @@ export async function executeFlowDeskWorkflowDispatchToolV1(input: {
 		parentSessionId: request.parentSessionId,
 		laneId,
 		taskId,
-		...(completed ? { taskResultEvidenceId: taskResult.taskResultEvidenceId } : { redactedBlockReason: taskResult.redactedReason }),
+		...(completed ? { taskResultEvidenceId: taskResult.taskResultEvidenceId } : { redactedBlockReason: taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async mode" : "unknown" }),
 		summaryForUser: completed
 			? `FlowDesk dev-mode workflow dispatch completed one lane for ${workflowId}. Default Release 1 dispatch authority remains disabled.`
-			: `FlowDesk dev-mode workflow dispatch launched one lane but ended incomplete: ${taskResult.redactedReason}. Default Release 1 dispatch authority remains disabled.`,
+			: `FlowDesk dev-mode workflow dispatch launched one lane but ended incomplete: ${taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async lane launched" : "unknown"}. Default Release 1 dispatch authority remains disabled.`,
 		safeNextActions: safeNextActions(),
 		authority: authority({
 			developerModeAcknowledged: true,

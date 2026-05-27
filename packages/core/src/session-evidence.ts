@@ -128,6 +128,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
 	reviewer_lane_context: "flowdesk.reviewer_lane_context.v1",
 	agent_task_context: "flowdesk.agent_task_context.v1",
+	agent_task_child_session: "flowdesk.agent_task_child_session.v1",
 	pending_retry_plan: "flowdesk.pending_retry_plan.v1",
 	retry_executed: "flowdesk.retry_executed.v1",
 	retry_failed: "flowdesk.retry_failed.v1",

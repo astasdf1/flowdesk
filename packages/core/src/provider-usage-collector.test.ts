@@ -104,6 +104,24 @@ test("Codex/OpenAI collector produces provider-native usage authority evidence",
   assert.equal(result.usageSnapshot.reset_bucket, "openai-gpt-5h");
 });
 
+test("Codex/OpenAI collector preserves known 0 percent remaining without dispatch authority", async () => {
+  const filesystem = memoryFilesystem({
+    "/home/test/.codex/auth.json": JSON.stringify({ tokens: { access_token: "access-token-123", account_id: "account-123" } })
+  });
+  const fetcher: FlowDeskProviderUsageFetchV1 = async () => response({ rate_limit_status: { rate_limit: { primary_window: { remaining_percent: 0, reset_after_seconds: 3600 } } } });
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5", modelFamily: "gpt-5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem, fetch: fetcher, execFile: () => { throw new Error("no keychain in tests"); }, now: () => observedAtMs });
+
+  assert.equal(result.ok, false);
+  assert.equal(validateUsageSnapshotV1(result.usageSnapshot).ok, true);
+  assert.equal(result.usageSnapshot.freshness, "fresh");
+  assert.equal(result.usageSnapshot.dispatchability, "non_dispatchable");
+  assert.equal(result.usageSnapshot.reset_bucket, "0% openai-gpt-5h");
+  assert.deepEqual(result.usageSnapshot.uncertainty_flags, []);
+  assert.equal(result.bucketSnapshot?.remainingPercent, 0);
+  assert.equal(result.usageAuthorityEvidence, undefined);
+});
+
 test("Gemini Code Assist collector classifies pro reset within 24h as 5-hour bucket", async () => {
   const filesystem = memoryFilesystem({
     "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })

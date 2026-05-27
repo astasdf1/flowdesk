@@ -484,7 +484,13 @@ function buildLaneProgressCards(
 		string,
 		"pass" | "changes_required" | "blocked" | "inconclusive"
 	>();
+	const taskResultLaneIds = new Set<string>();
 	for (const entry of reload.entries) {
+		if (entry.evidenceClass === "task_result") {
+			const laneId = getStringField(entry.record, "lane_id");
+			if (laneId !== undefined) taskResultLaneIds.add(laneId);
+			continue;
+		}
 		if (entry.evidenceClass === "reviewer_verdict") {
 			const label = getStringField(entry.record, "verdict_label");
 			if (
@@ -517,6 +523,9 @@ function buildLaneProgressCards(
 	}
 	return projection.entries.slice(0, 6).map((entry) => {
 		const meta = lifecycleMeta.get(entry.laneId);
+		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
+			? "task_result"
+			: (meta?.state ?? entry.lifecycleState);
 		const verdictLabel =
 			meta?.verdictRef === undefined
 				? undefined
@@ -525,7 +534,7 @@ function buildLaneProgressCards(
 			workflowId,
 			laneId: entry.laneId,
 			attemptId: entry.attemptId,
-			state: meta?.state ?? entry.lifecycleState,
+			state: projectedState,
 			classification: entry.classification,
 			...(entry.secondsSinceLastSignal === undefined
 				? {}

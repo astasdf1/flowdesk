@@ -80,6 +80,7 @@ export interface FlowDeskProviderUsageCollectorResultV1 {
   providerHealthSnapshot: FlowDeskProviderHealthSnapshotV1;
   usageAuthorityEvidence?: FlowDeskManagedDispatchBetaUsageAuthorityEvidenceV1;
   bucketSnapshot?: FlowDeskProviderUsageCollectorBucketSnapshotV1;
+  additionalSnapshots?: readonly FlowDeskUsageSnapshotV1[];
   redacted_reason?: string;
 }
 
@@ -111,6 +112,7 @@ interface ProviderCollection {
   accountBoundaryRef?: string;
   quotaEvidenceRef?: string;
   bucket?: ProviderBucket;
+  additionalBuckets?: readonly ProviderBucket[];
   failureClass: FlowDeskProviderHealthSnapshotV1["failure_class"];
   availabilityState: FlowDeskProviderHealthSnapshotV1["availability_state"];
   redactedReason?: string;
@@ -163,8 +165,9 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
 
   const bucket = collection.bucket;
   const resetAt = bucket?.resetAt;
-  const usageOk = bucket !== undefined && bucket.remaining !== null && bucket.remaining > 0 && resetAt !== undefined && bucket.uncertainty === "available";
-  const usageSnapshot: FlowDeskUsageSnapshotV1 = usageOk
+  const usageKnown = bucket !== undefined && bucket.remaining !== null && resetAt !== undefined && bucket.uncertainty === "available";
+  const usageOk = usageKnown && bucket.remaining > 0;
+  const usageSnapshot: FlowDeskUsageSnapshotV1 = usageKnown
     ? {
       schema_version: "flowdesk.usage_snapshot.v1",
       snapshot_id: target.usageSnapshotId,
@@ -173,8 +176,8 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
       freshness: "fresh",
       freshness_ttl: ttlMinutes,
       reset_time: resetAt,
-      reset_bucket: bucket.resetBucket,
-      dispatchability: "dispatchable",
+      reset_bucket: bucket.remaining === 0 ? `0% ${bucket.resetBucket}` : bucket.resetBucket,
+      dispatchability: usageOk ? "dispatchable" : "non_dispatchable",
       uncertainty_flags: [],
       source_ref: target.sourceRef
     }
@@ -206,6 +209,32 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
     }
     : undefined;
 
+  const additionalSnapshots: FlowDeskUsageSnapshotV1[] = [];
+  for (const addBucket of collection.additionalBuckets ?? []) {
+    const addResetAt = addBucket.resetAt;
+    const addKnown = addBucket.remaining !== null && addResetAt !== undefined && addBucket.uncertainty === "available";
+    const addOk = addKnown && addBucket.remaining > 0;
+    additionalSnapshots.push(addKnown
+      ? {
+          schema_version: "flowdesk.usage_snapshot.v1",
+          snapshot_id: `${target.usageSnapshotId}-${addBucket.resetBucket}`,
+          provider_family: target.providerFamily,
+          model_family: target.modelFamily,
+          freshness: "fresh",
+          freshness_ttl: ttlMinutes,
+          reset_time: addResetAt,
+          reset_bucket: addBucket.remaining !== null ? `${addBucket.remaining}% ${addBucket.resetBucket}` : addBucket.resetBucket,
+          dispatchability: addOk ? "dispatchable" : "non_dispatchable",
+          uncertainty_flags: [],
+          source_ref: target.sourceRef,
+        }
+      : unknownUsageSnapshot(
+          { ...target, usageSnapshotId: `${target.usageSnapshotId}-${addBucket.resetBucket}` },
+          { ...collection, bucket: addBucket },
+          ttlMinutes,
+        ));
+  }
+
   if (!usageOk || collection.authProfileRef === undefined || collection.authEvidenceRef === undefined || collection.credentialScopeRef === undefined || collection.accountBoundaryRef === undefined || collection.quotaEvidenceRef === undefined) {
     return {
       ok: false,
@@ -213,6 +242,7 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
       usageSnapshot,
       providerHealthSnapshot,
       ...(bucketSnapshot !== undefined ? { bucketSnapshot } : {}),
+      ...(additionalSnapshots.length > 0 ? { additionalSnapshots } : {}),
       redacted_reason: collection.redactedReason ?? "usage evidence is unavailable"
     };
   }
@@ -223,6 +253,7 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
     usageSnapshot,
     providerHealthSnapshot,
     ...(bucketSnapshot !== undefined ? { bucketSnapshot } : {}),
+    ...(additionalSnapshots.length > 0 ? { additionalSnapshots } : {}),
     usageAuthorityEvidence: {
       schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
       authority_ref: target.authorityRef,
@@ -275,7 +306,10 @@ async function collectClaudeUsage(acquisition: FlowDeskProviderUsageAcquisitionC
     if (!response.ok) return refusedCollection("claude", "claude", "claude usage endpoint refused");
     const payload = JSON.parse(await response.text()) as unknown;
     const buckets = claudeOAuthBuckets(payload, observedAt, defaults());
-    return availableCollection("claude", "claude", "claude-oauth", "claude-oauth", firstDispatchableBucket(buckets) ?? buckets[0] ?? defaults()[0]);
+    const primaryBucket = firstDispatchableBucket(buckets) ?? buckets[0] ?? defaults()[0];
+    const additionalBuckets = buckets.filter((b) => b !== primaryBucket);
+    const collection = availableCollection("claude", "claude", "claude-oauth", "claude-oauth", primaryBucket);
+    return { ...collection, additionalBuckets };
   } catch {
     return refusedCollection("claude", "claude", "claude usage collection failed");
   }
@@ -300,8 +334,11 @@ async function collectCodexUsage(acquisition: FlowDeskProviderUsageAcquisitionCo
       headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", ...(accountId ? { "ChatGPT-Account-Id": accountId } : {}), "User-Agent": "codex-cli" }
     });
     if (!response.ok) return refusedCollection("openai", "gpt", "codex usage endpoint refused");
-    const bucketValue = codexLiveBucket(JSON.parse(await response.text()), observedAt);
-    return availableCollection("openai", "gpt", "codex-live", firstNonEmpty(accountId, "codex-account"), bucketValue);
+    const buckets = codexLiveBuckets(JSON.parse(await response.text()), observedAt);
+    const primaryBucket = firstDispatchableBucket(buckets) ?? buckets[0] ?? bucket("openai-gpt-5h", "%", null, undefined, "unknown");
+    const additionalBuckets = buckets.filter((b) => b !== primaryBucket);
+    const collection = availableCollection("openai", "gpt", "codex-live", firstNonEmpty(accountId, "codex-account"), primaryBucket);
+    return { ...collection, additionalBuckets };
   } catch {
     return refusedCollection("openai", "gpt", "codex usage collection failed");
   }
@@ -481,12 +518,15 @@ function claudeUsageBucket(resetBucket: string, defaultBucket: ProviderBucket | 
   return bucket(resetBucket, "%", calculated.remaining, calculated.reset_at, calculated.uncertainty);
 }
 
-function codexLiveBucket(payload: unknown, observedAt: number): ProviderBucket {
+function codexLiveBuckets(payload: unknown, observedAt: number): ProviderBucket[] {
   const record = isRecord(payload) ? payload : {};
   const rateLimitPayload = isRecord(record.rate_limit_status) ? record.rate_limit_status : record;
   const details = firstRecord(rateLimitPayload.rate_limit, record.rate_limit);
   const primary = firstRecord(details?.primary_window, details?.primary, details);
-  return codexRateLimitBucket("openai-gpt-5h", primary, observedAt);
+  const secondary = isRecord(details?.secondary_window) ? details.secondary_window : undefined;
+  const primaryBucket = codexRateLimitBucket("openai-gpt-5h", primary, observedAt);
+  const secondaryBucket = secondary !== undefined ? codexRateLimitBucket("openai-weekly", secondary, observedAt) : undefined;
+  return secondaryBucket !== undefined ? [primaryBucket, secondaryBucket] : [primaryBucket];
 }
 
 function codexRateLimitBucket(resetBucket: string, rateLimit: Record<string, unknown> | undefined, observedAt: number): ProviderBucket {
@@ -655,7 +695,7 @@ function calculateRemainingUsagePercent(input: RemainingPercentInput): Remaining
 }
 
 function availableResult(remaining: number, used: number, resetAt: string | undefined): RemainingPercentResult {
-  return { remaining, used, ...(resetAt ? { reset_at: resetAt } : {}), uncertainty: remaining > 0 ? "available" : "insufficient" };
+  return { remaining, used, ...(resetAt ? { reset_at: resetAt } : {}), uncertainty: "available" };
 }
 
 function resolveResetAt(input: RemainingPercentInput, observedAt: number): string | undefined {

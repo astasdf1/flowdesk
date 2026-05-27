@@ -38,6 +38,7 @@ export interface FlowDeskProviderUsageLiveConfigV1 {
 	persistSidebarCache?: boolean;
 	durableStateRootDir?: string;
 	persistWorkflowId?: string;
+	appendToChat?: boolean;
 }
 
 export interface FlowDeskProviderUsageLiveRequestV1 {
@@ -426,6 +427,8 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 	const cachedByFamily = new Map(
 		snapshotReuse.cached.map((cached) => [cached.family, cached] as const),
 	);
+	// Pre-populate additionalSnapshotsByFamily from evidence cache (for reuse path)
+	const additionalSnapshotsByFamilyFromCache = snapshotReuse.additionalByFamily;
 	const familiesToCollect = families.filter((family) => !cachedByFamily.has(family));
 	const acquisition = acquisitionConfigFromLive(input.config, familiesToCollect);
 	const collectorOptions: FlowDeskProviderUsageCollectorOptionsV1 = {
@@ -471,10 +474,18 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 		collectorResults,
 		observedAt,
 	);
+	// Merge: fresh collector results take priority over cached evidence
+	const additionalSnapshotsByFamily = new Map<FlowDeskProviderUsageLiveProviderFamilyV1, readonly FlowDeskUsageSnapshotV1[]>(additionalSnapshotsByFamilyFromCache);
+	for (const { family, result } of collectorResults) {
+		if (result?.additionalSnapshots && result.additionalSnapshots.length > 0) {
+			additionalSnapshotsByFamily.set(family, result.additionalSnapshots);
+		}
+	}
 	const sidebarCachePersistence = persistProviderUsageSidebarCache(
 		input.config,
 		providers,
 		observedAt,
+		additionalSnapshotsByFamily,
 	);
 
 	return {
@@ -612,6 +623,7 @@ function persistProviderUsageSidebarCache(
 	config: FlowDeskProviderUsageLiveConfigV1,
 	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[],
 	observedAt: string,
+	additionalSnapshotsByFamily?: Map<FlowDeskProviderUsageLiveProviderFamilyV1, readonly FlowDeskUsageSnapshotV1[]>,
 ): FlowDeskProviderUsageLiveSidebarCachePersistenceV1 | undefined {
 	if (config.persistSidebarCache !== true && config.persistSnapshots !== true)
 		return undefined;
@@ -640,27 +652,68 @@ function persistProviderUsageSidebarCache(
 	}
 	const cachePath = join(dir, "provider-usage-sidebar.json");
 	const tempPath = join(dir, `provider-usage-sidebar.${observedAt.replace(/[^0-9A-Za-z]/g, "")}.tmp`);
+	// Load previous sidebar to preserve weekly buckets when we're in the evidence-reuse path
+	let previousSidebarBucketsByFamily = new Map<string, readonly Record<string, unknown>[]>();
+	try {
+		const prev = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+		if (prev.schema_version === "flowdesk.provider_usage_sidebar_cache.v1" && Array.isArray(prev.providers)) {
+			for (const p of prev.providers as Record<string, unknown>[]) {
+				if (typeof p.providerFamily === "string" && Array.isArray(p.buckets)) {
+					previousSidebarBucketsByFamily.set(p.providerFamily, p.buckets as Record<string, unknown>[]);
+				}
+			}
+		}
+	} catch {}
 	const record = {
 		schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
 		observed_at: observedAt,
 		expires_at: new Date(Date.parse(observedAt) + 5 * 60_000).toISOString(),
-		providers: providers.map((row) => ({
-			providerFamily: row.providerFamily,
-			connected:
+		providers: providers.map((row) => {
+			const primaryConnected =
 				row.dispatchability === "dispatchable" &&
 				row.freshness === "fresh" &&
-				row.usageAuthorityAcquired === true,
-			dispatchability: row.dispatchability,
-			freshness: row.freshness,
-			...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
-			...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
-			remainingPercent: row.remainingPercent,
-			alertLevel: row.alertLevel,
-			...(row.modelFamily === undefined ? {} : { modelFamily: row.modelFamily }),
-			...(row.redactedReason === undefined ? {} : { redactedReason: row.redactedReason }),
-			...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
-			uncertaintyFlags: [...row.uncertaintyFlags],
-		})),
+				row.usageAuthorityAcquired === true;
+			const primaryBucket = {
+				...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
+				...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
+				remainingPercent: row.remainingPercent,
+				freshness: row.freshness,
+				dispatchability: row.dispatchability,
+				connected: primaryConnected,
+				...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
+			};
+			const freshAdditional = (additionalSnapshotsByFamily?.get(row.providerFamily) ?? []).map((snap) => ({
+				resetBucket: snap.reset_bucket,
+				...(snap.reset_time !== undefined && snap.reset_time !== "unknown" ? { resetTime: snap.reset_time } : {}),
+				remainingPercent: remainingPercentFromSnapshot(snap),
+				freshness: snap.freshness,
+				dispatchability: snap.dispatchability,
+				connected: snap.dispatchability === "dispatchable" && snap.freshness === "fresh",
+				usageSnapshotRef: snap.snapshot_id,
+			}));
+			// When evidence-cache reuse path produced no additional buckets, preserve weekly etc. from previous sidebar
+			const prevBuckets = previousSidebarBucketsByFamily.get(row.providerFamily) ?? [];
+			const primaryResetBucket = row.resetBucket ?? "";
+			const preservedBuckets = freshAdditional.length > 0
+				? []
+				: prevBuckets.filter((b) => typeof b.resetBucket === "string" && b.resetBucket !== primaryResetBucket);
+			const additionalBuckets = freshAdditional.length > 0 ? freshAdditional : preservedBuckets as typeof freshAdditional;
+			return {
+				providerFamily: row.providerFamily,
+				connected: primaryConnected,
+				dispatchability: row.dispatchability,
+				freshness: row.freshness,
+				...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
+				...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
+				remainingPercent: row.remainingPercent,
+				alertLevel: row.alertLevel,
+				...(row.modelFamily === undefined ? {} : { modelFamily: row.modelFamily }),
+				...(row.redactedReason === undefined ? {} : { redactedReason: row.redactedReason }),
+				...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
+				buckets: [primaryBucket, ...additionalBuckets],
+				uncertaintyFlags: [...row.uncertaintyFlags],
+			};
+		}),
 		safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
 		authority: {
 			realOpenCodeDispatch: false,
@@ -703,10 +756,11 @@ function loadFreshProviderUsageSnapshots(
 		snapshot: FlowDeskUsageSnapshotV1;
 		evidenceId: string;
 	}>;
+	additionalByFamily: Map<FlowDeskProviderUsageLiveProviderFamilyV1, FlowDeskUsageSnapshotV1[]>;
 	report?: FlowDeskProviderUsageLiveSnapshotReuseV1;
 } {
 	if (typeof config.durableStateRootDir !== "string" || config.durableStateRootDir.trim().length === 0)
-		return { cached: [] };
+		return { cached: [], additionalByFamily: new Map() };
 	const workflowId = sanitizePersistWorkflowId(config.persistWorkflowId);
 	const reload = reloadFlowDeskSessionEvidenceV1({
 		rootDir: config.durableStateRootDir,
@@ -716,6 +770,7 @@ function loadFreshProviderUsageSnapshots(
 	if (!reload.ok) {
 		return {
 			cached: [],
+			additionalByFamily: new Map(),
 			report: {
 				requested: true,
 				durableStateRootConfigured: true,
@@ -730,6 +785,7 @@ function loadFreshProviderUsageSnapshots(
 		snapshot: FlowDeskUsageSnapshotV1;
 		evidenceId: string;
 	}> = [];
+	const additionalByFamily = new Map<FlowDeskProviderUsageLiveProviderFamilyV1, FlowDeskUsageSnapshotV1[]>();
 	for (const family of families) {
 		const entry = latestFreshUsageSnapshotEntry(reload.entries, family, observedAt);
 		if (entry === undefined) {
@@ -741,9 +797,15 @@ function loadFreshProviderUsageSnapshots(
 			snapshot: entry.record as unknown as FlowDeskUsageSnapshotV1,
 			evidenceId: entry.evidenceId,
 		});
+		// Load fresh additional snapshots (e.g. weekly) that were persisted alongside the primary
+		const addEntries = additionalFreshUsageSnapshotEntries(reload.entries, family, entry.evidenceId, observedAt);
+		if (addEntries.length > 0) {
+			additionalByFamily.set(family, addEntries.map((e) => e.record as unknown as FlowDeskUsageSnapshotV1));
+		}
 	}
 	return {
 		cached,
+		additionalByFamily,
 		report: {
 			requested: true,
 			durableStateRootConfigured: true,
@@ -771,6 +833,25 @@ function latestFreshUsageSnapshotEntry(
 		})
 		.sort((a, b) => b.observedAtMs - a.observedAtMs);
 	return candidates[0]?.entry;
+}
+
+function additionalFreshUsageSnapshotEntries(
+	entries: readonly FlowDeskSessionEvidenceReloadEntryV1[],
+	family: FlowDeskProviderUsageLiveProviderFamilyV1,
+	primaryEvidenceId: string,
+	observedAt: string,
+): FlowDeskSessionEvidenceReloadEntryV1[] {
+	// Additional snapshots are persisted with evidenceId = primaryEvidenceId + "-" + bucketKey
+	return entries
+		.filter((entry) => entry.evidenceClass === "provider_usage_snapshot")
+		.filter((entry) => entry.record.provider_family === family)
+		.filter((entry) => entry.evidenceId !== primaryEvidenceId && entry.evidenceId.startsWith(`${primaryEvidenceId}-`))
+		.filter((entry) => {
+			const observedAtMs = snapshotObservedAtMs(entry);
+			if (observedAtMs === undefined) return false;
+			const ttlMinutes = typeof entry.record.freshness_ttl === "number" ? entry.record.freshness_ttl : 0;
+			return new Date(observedAt).getTime() - observedAtMs <= ttlMinutes * 60_000;
+		});
 }
 
 function snapshotObservedAtMs(
@@ -845,6 +926,20 @@ function persistProviderUsageSnapshots(
 		}
 		intents.push(prep.writeIntent);
 		persistedIds.push(evidenceId);
+		// Also persist additional snapshots (e.g. weekly bucket) as separate evidence files
+		for (const addSnap of result.additionalSnapshots ?? []) {
+			const addBucketKey = (addSnap.reset_bucket ?? "unknown").replace(/^[0-9]+(?:\.[0-9]+)?%\s+/, "").replace(/[^a-z0-9-]/gi, "-");
+			const addEvidenceId = `provider-usage-snapshot-${family}-${stamp}-${addBucketKey}`;
+			const addPrep = prepareFlowDeskSessionEvidenceWriteIntentV1({
+				workflowId,
+				evidenceId: addEvidenceId,
+				record: addSnap as unknown as Record<string, unknown>,
+			});
+			if (addPrep.ok && addPrep.writeIntent !== undefined) {
+				intents.push(addPrep.writeIntent);
+				persistedIds.push(addEvidenceId);
+			}
+		}
 	}
 	if (intents.length === 0) {
 		return {

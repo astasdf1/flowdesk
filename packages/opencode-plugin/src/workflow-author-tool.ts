@@ -191,7 +191,8 @@ export async function executeFlowDeskWorkflowAuthorToolV1(input: {
 	});
 
 	if (taskResult.status !== "task_completed") {
-		return { status: "workflow_authoring_incomplete", workflowId, redactedBlockReason: taskResult.redactedReason, safeNextActions: ["/flowdesk-status"], authority: SAFE_AUTHORITY };
+		const reason = taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async mode not supported for authoring" : "unknown";
+		return { status: "workflow_authoring_incomplete", workflowId, redactedBlockReason: reason, safeNextActions: ["/flowdesk-status"], authority: SAFE_AUTHORITY };
 	}
 
 	const parsed = extractJsonBlock(taskResult.resultText);

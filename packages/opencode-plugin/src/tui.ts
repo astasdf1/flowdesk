@@ -1,12 +1,46 @@
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { createElement, createTextNode, insert, setProp, type JSX } from "@opentui/solid";
-import { loadFlowDeskTuiUsageSnapshotViewV1 } from "./tui-usage-snapshot.js";
+import { createSignal } from "solid-js";
+import {
+	formatFlowDeskTuiUsageSnapshotCompactLines,
+	loadFlowDeskTuiUsageSnapshotViewV1,
+	type FlowDeskTuiUsageSnapshotViewV1,
+} from "./tui-usage-snapshot.js";
 
 interface FlowDeskTuiPluginOptionsV1 {
 	durableStateRootDir?: string;
 	usageWorkflowId?: string;
 	showAppBottom?: boolean;
 	showSessionPromptRight?: boolean;
+}
+
+const USAGE_SIDEBAR_REFRESH_INTERVAL_MS = 30_000;
+
+type UsageSnapshotState = {
+	view: () => FlowDeskTuiUsageSnapshotViewV1;
+	dispose: () => void;
+};
+
+function createUsageSnapshotState(options: FlowDeskTuiPluginOptionsV1): UsageSnapshotState {
+	const read = (): FlowDeskTuiUsageSnapshotViewV1 =>
+		loadFlowDeskTuiUsageSnapshotViewV1({
+			rootDir: options.durableStateRootDir,
+			workflowId: options.usageWorkflowId,
+		});
+
+	const [view, setView] = createSignal(read());
+	const refresh = () => {
+		setView(read());
+	};
+
+	const intervalId = setInterval(refresh, USAGE_SIDEBAR_REFRESH_INTERVAL_MS);
+
+	return {
+		view: () => view(),
+		dispose: () => {
+			clearInterval(intervalId);
+		},
+	};
 }
 
 function optionsFrom(value: unknown): FlowDeskTuiPluginOptionsV1 {
@@ -37,78 +71,55 @@ function box(children: readonly JSX.Element[], props: Record<string, unknown> = 
 	return node as unknown as JSX.Element;
 }
 
-function percentLabel(value: number | null): string {
-	return value === null ? "?" : `${Math.round(value)}%`;
+function formatObservedAt(iso: string): string {
+	const ms = Date.parse(iso);
+	if (!Number.isFinite(ms)) return "updated ?";
+	const date = new Date(ms);
+	const hh = String(date.getHours()).padStart(2, "0");
+	const mm = String(date.getMinutes()).padStart(2, "0");
+	const ss = String(date.getSeconds()).padStart(2, "0");
+	return `updated ${hh}:${mm}:${ss}`;
 }
 
-function resetLabel(seconds: number | undefined): string {
-	if (seconds === undefined) return "reset ?";
-	if (seconds < 60) return "reset <1m";
-	if (seconds < 3600) return `reset ${Math.ceil(seconds / 60)}m`;
-	return `reset ${Math.ceil(seconds / 3600)}h`;
-}
-
-const providerLabels = {
-	claude: "Claude",
-	openai: "OpenAI",
-	gemini: "Gemini",
-} as const;
-
-const statusGlyph = {
-	ok: "●",
-	warning: "▲",
-	critical: "!",
-	exhausted: "×",
-	stale: "◌",
-	unknown: "?",
-} as const;
-
-function usageSidebar(options: FlowDeskTuiPluginOptionsV1): JSX.Element {
-	const view = loadFlowDeskTuiUsageSnapshotViewV1({
-		rootDir: options.durableStateRootDir,
-		workflowId: options.usageWorkflowId,
-	});
+function usageSidebar(state: UsageSnapshotState): JSX.Element {
+	const view = state.view();
 	return box(
 		[
-			textLine("FlowDesk subscriptions"),
-			...view.providers.map((provider) =>
-				textLine(
-					`${statusGlyph[provider.alertLevel]} ${providerLabels[provider.providerFamily]} · ${provider.connected ? "connected" : "unavailable"} · ${percentLabel(provider.remainingPercent)} · ${resetLabel(provider.secondsUntilReset)}`,
-				),
-			),
+			...formatFlowDeskTuiUsageSnapshotCompactLines(view).map((line) => textLine(line)),
+			textLine(formatObservedAt(view.observedAt)),
 			textLine(view.status === "loaded" ? "cache readable" : "run /flowdesk-usage"),
 		],
-		{ flexShrink: 0, gap: 1, paddingTop: 1, paddingBottom: 1 },
+		{ flexShrink: 0, paddingTop: 1, paddingBottom: 1 },
 	);
 }
 
-function usageBadge(options: FlowDeskTuiPluginOptionsV1): JSX.Element {
-	const view = loadFlowDeskTuiUsageSnapshotViewV1({
-		rootDir: options.durableStateRootDir,
-		workflowId: options.usageWorkflowId,
-	});
+function usageBadge(state: UsageSnapshotState): JSX.Element {
+	const view = state.view();
 	const connected = view.providers.filter((provider) => provider.connected).length;
 	return textLine(`FD ${connected}/${view.providers.length}`);
 }
 
 const tui: TuiPlugin = async (api, rawOptions) => {
 	const options = optionsFrom(rawOptions);
+	const usageSnapshotState = createUsageSnapshotState(options);
+	api.lifecycle.onDispose(usageSnapshotState.dispose);
+
 	api.slots.register({
 		slots: {
 			sidebar_content() {
-				return usageSidebar(options);
+				return usageSidebar(usageSnapshotState);
 			},
 			...(options.showAppBottom === true
 				? {
 						app_bottom() {
-							return usageBadge(options);
+							return usageBadge(usageSnapshotState);
 						},
 					}
 				: {}),
 			...(options.showSessionPromptRight === true
 				? {
 						session_prompt_right() {
-							return usageBadge(options);
+							return usageBadge(usageSnapshotState);
 						},
 					}
 				: {}),

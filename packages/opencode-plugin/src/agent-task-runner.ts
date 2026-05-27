@@ -17,6 +17,7 @@ import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
+const INVALID_PARENT_SESSION_REF = "ses-invalid-parent-session-binding" as const;
 
 export interface FlowDeskAgentTaskInputV1 {
 	workflowId: string;
@@ -30,6 +31,12 @@ export interface FlowDeskAgentTaskInputV1 {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	timeoutMs?: number;
 	outputContract?: "final_assistant_text";
+	/**
+	 * When true, return immediately after lane launch with { status: "task_launched" }.
+	 * The watchdog takes over polling, nudging (noReply), and aborting the child session.
+	 * The coordinator polls flowdesk_status_live to detect terminal state.
+	 */
+	asyncMode?: boolean;
 	/** Override quiet period before nudge — for testing only */
 	_nudgeQuietPeriodMs?: number;
 	/** Override messages poll timeout — for testing only (default 3000ms in prod) */
@@ -40,7 +47,11 @@ export interface FlowDeskAgentTaskInputV1 {
 
 export type FlowDeskAgentTaskResultV1 =
 	| { status: "task_completed"; resultText: string; laneId: string; taskResultEvidenceId: string }
+	| { status: "task_launched"; laneId: string; childSessionId: string }
 	| { status: "task_failed"; failureCategory: string; redactedReason: string; laneId: string };
+
+/** Schema version for async child session tracking evidence */
+export const AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION = "flowdesk.agent_task_child_session.v1" as const;
 
 function agentTaskLaunchPlan(input: {
 	workflowId: string;
@@ -76,6 +87,25 @@ function agentTaskLaunchPlan(input: {
 		actualLaneLaunch: false,
 		runtimeExecution: false,
 	};
+}
+
+function validateAgentTaskParentSessionId(parentSessionId: string): { ok: true; parentSessionRef: string } | { ok: false; redactedReason: string; parentSessionRef: typeof INVALID_PARENT_SESSION_REF } {
+	const value = parentSessionId.trim();
+	if (value.length === 0)
+		return { ok: false, redactedReason: "missing_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
+	if (value.length > 128)
+		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
+	// `ses-...` is FlowDesk's opaque session-ref wrapper, not the raw OpenCode
+	// session id expected by SDK `session.create({ parentID })`. Accepting it here
+	// causes evidence such as `ses-ses-flowdesk-coordinator` and can make the SDK
+	// wait on a non-existent synthetic parent session until launch timeout.
+	if (value.startsWith("ses-"))
+		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
+	if (/\s/.test(value))
+		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
+	if (!/^[A-Za-z0-9_.:-]+$/.test(value))
+		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
+	return { ok: true, parentSessionRef: `ses-${value}` };
 }
 
 /** Bounded nudge text — versioned constant, never echoes user input */
@@ -133,18 +163,28 @@ async function extractAssistantTextFromResponse(
 		]);
 	};
 
-	/** Send a nudge to the child session */
-	const sendNudge = async (): Promise<void> => {
+	/** Send a nudge to the child session with a hard timeout to prevent blocking.
+	 * Uses noReply: true so the child does not generate a spurious second assistant turn.
+	 */
+	const sendNudge = async (): Promise<"sent" | "timeout" | "skipped"> => {
 		const promptFn = client.session.prompt ?? client.session.promptAsync;
-		if (promptFn === undefined) return;
+		if (promptFn === undefined) return "skipped";
+		const NUDGE_TIMEOUT_MS = 5_000;
 		try {
-			await (promptFn as (o: unknown) => unknown).call(client.session, {
-				sessionID: childSessionId,
-				...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
-				...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
-				parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
-			});
-		} catch { /* nudge is best-effort */ }
+			await Promise.race([
+				(promptFn as (o: unknown) => unknown).call(client.session, {
+					sessionID: childSessionId,
+					noReply: true,
+					...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
+					...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
+					parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
+				}),
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("nudge timeout")), NUDGE_TIMEOUT_MS),
+				),
+			]);
+			return "sent";
+		} catch { return "timeout"; }
 	};
 
 	const extractText = (response: unknown): string | undefined => {
@@ -361,6 +401,45 @@ export async function executeFlowDeskAgentTaskV1(
 ): Promise<FlowDeskAgentTaskResultV1> {
 	const observedAt = new Date().toISOString();
 	const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	const parentBinding = validateAgentTaskParentSessionId(input.parentSessionId);
+	const parentSessionRef = parentBinding.parentSessionRef;
+	const attemptId = `attempt-task-${token}`;
+
+	if (!parentBinding.ok) {
+		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}-invalid-parent`;
+		const redactedReason = parentBinding.redactedReason;
+		writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: taskFailedEvidenceId,
+			record: {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: input.workflowId,
+				lane_id: input.laneId,
+				task_id: input.taskId,
+				agent_ref: input.agentRef,
+				provider_qualified_model_id: input.providerQualifiedModelId,
+				failure_category: "sdk_create_failed",
+				redacted_reason: redactedReason,
+				created_at: observedAt,
+				dispatch_authority_enabled: false,
+			} as unknown as Record<string, unknown>,
+		});
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			state: "invocation_failed",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-invalid-parent`,
+			createdAt: observedAt,
+			updatedAt: observedAt,
+		});
+		return { status: "task_failed", failureCategory: "sdk_create_failed", redactedReason, laneId: input.laneId };
+	}
 
 	const launchPlan = agentTaskLaunchPlan({
 		workflowId: input.workflowId,
@@ -372,8 +451,6 @@ export async function executeFlowDeskAgentTaskV1(
 	});
 
 	const runningLifecycleEvidenceId = `lifecycle-task-running-${input.laneId}-${token}`;
-	const attemptId = launchPlan.attempt_id ?? `attempt-task-${token}`;
-	const parentSessionRef = `ses-${input.parentSessionId}`;
 	const promptTextTruncated = input.promptText.length > AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT;
 	const agentTaskContextRecord: FlowDeskAgentTaskContextV1 = {
 		schema_version: "flowdesk.agent_task_context.v1",
@@ -540,10 +617,36 @@ export async function executeFlowDeskAgentTaskV1(
 		progressSummaryLabel: `agent task lane launch heartbeat`,
 	});
 
-	// Extract child session ID and get response text
+	// Extract child session ID
 	const childSessionId = launchResult.childSessionRef?.startsWith("ses-")
 		? launchResult.childSessionRef.slice("ses-".length)
 		: undefined;
+
+	// ── Async mode: return immediately, watchdog handles polling/nudging/abort ──
+	if (input.asyncMode === true) {
+		const resolvedChildId = childSessionId ?? "";
+		// Write child session evidence so watchdog can find it
+		writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: `agent-task-child-session-${input.laneId}-${token}`,
+			record: {
+				schema_version: AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION,
+				workflow_id: input.workflowId,
+				lane_id: input.laneId,
+				task_id: input.taskId,
+				child_session_id: resolvedChildId,
+				parent_session_ref: parentSessionRef,
+				provider_qualified_model_id: input.providerQualifiedModelId,
+				agent_ref: input.agentRef,
+				nudge_count: 0,
+				last_nudge_at: null,
+				created_at: observedAt,
+				dispatch_authority_enabled: false,
+			} as unknown as Record<string, unknown>,
+		});
+		return { status: "task_launched", laneId: input.laneId, childSessionId: resolvedChildId };
+	}
 
 	let resultText: string | undefined;
 	if (childSessionId !== undefined) {
@@ -552,7 +655,7 @@ export async function executeFlowDeskAgentTaskV1(
 		const agentName = launchResult.status === "lane_launch_started" && typeof launchResult.agent === "string"
 			? launchResult.agent : undefined;
 		resultText = await extractAssistantTextFromResponse(input.client, childSessionId, {
-			quietPeriodMs: input._nudgeQuietPeriodMs ?? 20_000,
+			quietPeriodMs: input._nudgeQuietPeriodMs ?? 20_000,  // default 20s per policy
 			maxNudges: 2,
 			runtimeModel,
 			agentName,
