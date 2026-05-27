@@ -165,8 +165,9 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
 
   const bucket = collection.bucket;
   const resetAt = bucket?.resetAt;
-  const usageKnown = bucket !== undefined && bucket.remaining !== null && resetAt !== undefined && bucket.uncertainty === "available";
-  const usageOk = usageKnown && bucket.remaining > 0;
+  const remaining = bucket?.remaining ?? null;
+  const usageKnown = bucket !== undefined && remaining !== null && resetAt !== undefined && bucket.uncertainty === "available";
+  const usageOk = usageKnown && remaining > 0;
   const usageSnapshot: FlowDeskUsageSnapshotV1 = usageKnown
     ? {
       schema_version: "flowdesk.usage_snapshot.v1",
@@ -176,7 +177,7 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
       freshness: "fresh",
       freshness_ttl: ttlMinutes,
       reset_time: resetAt,
-      reset_bucket: bucket.remaining === 0 ? `0% ${bucket.resetBucket}` : bucket.resetBucket,
+      reset_bucket: remaining === 0 ? `0% ${bucket.resetBucket}` : bucket.resetBucket,
       dispatchability: usageOk ? "dispatchable" : "non_dispatchable",
       uncertainty_flags: [],
       source_ref: target.sourceRef
@@ -212,8 +213,9 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
   const additionalSnapshots: FlowDeskUsageSnapshotV1[] = [];
   for (const addBucket of collection.additionalBuckets ?? []) {
     const addResetAt = addBucket.resetAt;
-    const addKnown = addBucket.remaining !== null && addResetAt !== undefined && addBucket.uncertainty === "available";
-    const addOk = addKnown && addBucket.remaining > 0;
+    const addRemaining = addBucket.remaining;
+    const addKnown = addRemaining !== null && addResetAt !== undefined && addBucket.uncertainty === "available";
+    const addOk = addKnown && addRemaining > 0;
     additionalSnapshots.push(addKnown
       ? {
           schema_version: "flowdesk.usage_snapshot.v1",
