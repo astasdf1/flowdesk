@@ -40,6 +40,7 @@ import {
 import { validateFlowDeskTaskAgentAssignmentV1 } from "./task-agent-assignment.js";
 import { validateFlowDeskTaskGraphV1 } from "./task-graph.js";
 import { validateFlowDeskTaskModelSelectionV1 } from "./task-model-selection.js";
+import { validateFlowDeskWorkflowSynthesisResultV1 } from "./workflow-synthesis.js";
 import { validateFlowDeskWorkflowAuthoringResultV1 } from "./workflow-authoring-result.js";
 import { validateFlowDeskWorkflowDispatchPlanV1 } from "./workflow-dispatch-plan.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
@@ -136,6 +137,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	task_graph: "flowdesk.task_graph.v1",
 	task_agent_assignment: "flowdesk.task_agent_assignment.v1",
 	task_model_selection: "flowdesk.task_model_selection.v1",
+	workflow_synthesis_result: "flowdesk.workflow_synthesis_result.v1",
 	workflow_dispatch_plan: "flowdesk.workflow_dispatch_plan.v1",
 };
 
@@ -839,6 +841,8 @@ function validateEvidenceShape(
 		return validateFlowDeskTaskAgentAssignmentV1(record);
 	if (evidenceClass === "task_model_selection")
 		return validateFlowDeskTaskModelSelectionV1(record);
+	if (evidenceClass === "workflow_synthesis_result")
+		return validateFlowDeskWorkflowSynthesisResultV1(record);
 	if (evidenceClass === "workflow_dispatch_plan")
 		return validateFlowDeskWorkflowDispatchPlanV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")

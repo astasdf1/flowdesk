@@ -142,6 +142,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"task_graph",
 	"task_agent_assignment",
 	"task_model_selection",
+	"workflow_synthesis_result",
 	"workflow_dispatch_plan",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
@@ -190,6 +191,7 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	task_graph: "task-graph",
 	task_agent_assignment: "task-agent-assignment",
 	task_model_selection: "task-model-selection",
+	workflow_synthesis_result: "workflow-synthesis-result",
 	workflow_dispatch_plan: "workflow-dispatch-plan",
 };
 

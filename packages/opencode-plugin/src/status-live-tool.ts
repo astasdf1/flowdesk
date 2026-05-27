@@ -152,6 +152,8 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestTaskAgentAssignmentCount?: number;
 	latestTaskModelSelectionStatus?: string;
 	latestTaskModelSelectionBlockedLabels?: readonly string[];
+	latestWorkflowSynthesisTasksSummarized?: number;
+	latestWorkflowSynthesisConflictDetected?: boolean;
 	latestWorkflowDispatchPlanRevisionId?: string;
 	latestWorkflowDispatchPlanTaskCount?: number;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
@@ -285,6 +287,8 @@ function summarizeWorkflow(
 	let taskAgentAssignmentCount: number | undefined;
 	let taskModelSelectionStatus: string | undefined;
 	let taskModelSelectionBlockedLabels: string[] | undefined;
+	let workflowSynthesisTasksSummarized: number | undefined;
+	let workflowSynthesisConflictDetected: boolean | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
 
@@ -368,6 +372,14 @@ function summarizeWorkflow(
 				}
 			}
 		}
+		if (evidenceClass === "workflow_synthesis_result") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				const tasks = last.record.tasks_summarized;
+				if (typeof tasks === "number") workflowSynthesisTasksSummarized = tasks;
+				workflowSynthesisConflictDetected = last.record.conflict_detected === true;
+			}
+		}
 		if (evidenceClass === "workflow_dispatch_plan") {
 			const last = classEntries[classEntries.length - 1];
 			if (last !== undefined) {
@@ -434,6 +446,12 @@ function summarizeWorkflow(
 			: {}),
 		...(taskModelSelectionBlockedLabels !== undefined
 			? { latestTaskModelSelectionBlockedLabels: taskModelSelectionBlockedLabels }
+			: {}),
+		...(workflowSynthesisTasksSummarized !== undefined
+			? { latestWorkflowSynthesisTasksSummarized: workflowSynthesisTasksSummarized }
+			: {}),
+		...(workflowSynthesisConflictDetected !== undefined
+			? { latestWorkflowSynthesisConflictDetected: workflowSynthesisConflictDetected }
 			: {}),
 		...(workflowDispatchPlanRevisionId !== undefined
 			? {
@@ -746,7 +764,7 @@ function buildStatusLiveSummaryForUser(input: {
 			workflow.latestWorkflowDispatchPlanRevisionId !== undefined
 				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}`
 				: workflow.latestTaskGraphTaskCount !== undefined
-					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}`
+					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}${workflow.latestWorkflowSynthesisTasksSummarized !== undefined ? ` synthesis=${workflow.latestWorkflowSynthesisTasksSummarized} tasks${workflow.latestWorkflowSynthesisConflictDetected ? " (conflict)" : ""}` : ""}`
 					: "workflow_plan=(none)";
 		const classification = workflow.worstLaneStallClassification ?? "unknown";
 		const lanePreview = (workflow.laneProgressCards ?? [])

@@ -91,3 +91,4 @@ export * from "./usage-health.js";
 export * from "./validators.js";
 export * from "./workflow-dispatch-plan.js";
 export * from "./workflow-authoring-result.js";
+export * from "./workflow-synthesis.js";

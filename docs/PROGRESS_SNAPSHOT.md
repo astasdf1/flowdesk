@@ -335,3 +335,5 @@ If a Release 2/2.5 feature works in practice but a conformance proof is incomple
 177. Phase 1-4 planning evidence slice was added on 2026-05-27. `workflow_authoring_result.v1`, `task_graph.v1`, `task_agent_assignment.v1`, and `task_model_selection.v1` were implemented with non-authorizing durable evidence schemas and session-evidence wiring, keeping real dispatch, provider/model fallback, and write authority false.
 
 178. Phase 5 Multi-task Dev Scheduler was added on 2026-05-27. `executeFlowDeskWorkflowSchedulerV1` executes tasks sequentially based on `task_graph.v1` dependencies and `task_model_selection.v1` models. It preserves Release 1 non-dispatch authority constraints by using `executeFlowDeskAgentTaskV1` directly.
+
+179. Phase 6 Result Synthesis evidence slice was added on 2026-05-27. `workflow_synthesis_result.v1` records task graph aggregation results without storing raw payloads, providing synthesis summary diagnostics and safe next actions while keeping default dispatch/write authority false. It is wired into session evidence reload and projected correctly in `status_live`.
