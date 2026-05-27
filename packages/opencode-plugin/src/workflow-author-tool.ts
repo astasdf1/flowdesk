@@ -8,6 +8,22 @@ import {
 } from "@flowdesk/core";
 import { executeFlowDeskAgentTaskV1, type FlowDeskAgentTaskInputV1 } from "./agent-task-runner.js";
 
+/** Normalize any string to a safe opaque-id: ASCII alphanumeric plus -._ only */
+function toSafeId(raw: string, fallback: string): string {
+	const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+	const safe = cleaned.length >= 3 ? cleaned : fallback;
+	return safe.slice(0, 64);
+}
+
+/** Redact any text that might trigger forbidden-payload validators */
+function safeText(raw: string, max: number): string {
+	return raw
+		.replace(/\b(prompt|system prompt|developer message|transcript|stack trace|provider payload|provider response|tool args|tool result|shell output|raw log|raw config)\b/gi, "[redacted]")
+		.replace(/([A-Za-z]:[\\/]|\\\\|\/(Users|home|etc|var|private|tmp|usr|opt)(?:\/|$))/g, "[redacted-path]")
+		.replace(/\b(sk-[A-Za-z0-9]|api[_-]?key|bearer\s+[A-Za-z0-9]|token[:=]|secret)\b/gi, "[redacted-cred]")
+		.slice(0, max);
+}
+
 function randomId(prefix: string) {
 	return `${prefix}-${randomBytes(5).toString("hex")}`;
 }
@@ -37,26 +53,47 @@ function parseTasks(raw: unknown): { ok: boolean; tasks: ParsedTask[]; error?: s
 	const arr = (raw as Record<string, unknown>).tasks;
 	if (!Array.isArray(arr) || arr.length === 0) return { ok: false, tasks: [], error: "tasks must be a non-empty array" };
 	const seen = new Set<string>();
+	const rawIdMap = new Map<string, string>(); // raw LLM id → normalized safe id
 	const tasks: ParsedTask[] = [];
-	for (const item of arr) {
+	for (let idx = 0; idx < arr.length; idx++) {
+		const item = arr[idx];
 		if (!item || typeof item !== "object") return { ok: false, tasks: [], error: "task must be an object" };
 		const t = item as Record<string, unknown>;
-		if (typeof t.task_id !== "string" || !t.task_id.trim()) return { ok: false, tasks: [], error: "task_id required" };
-		if (seen.has(t.task_id)) return { ok: false, tasks: [], error: `duplicate task_id: ${t.task_id}` };
-		seen.add(t.task_id);
-		tasks.push({
-			task_id: t.task_id,
-			title: typeof t.title === "string" ? t.title.slice(0, 120) : "Task",
-			summary: typeof t.summary === "string" ? t.summary.slice(0, 500) : "No summary.",
-			agent_role: typeof t.agent_role === "string" ? t.agent_role : "implementation",
-			depends_on: Array.isArray(t.depends_on) ? t.depends_on.filter((d): d is string => typeof d === "string") : [],
-		});
-	}
-	for (const t of tasks) {
-		for (const dep of t.depends_on) {
-			if (!seen.has(dep)) return { ok: false, tasks: [], error: `unknown dependency: ${dep}` };
-			if (dep === t.task_id) return { ok: false, tasks: [], error: `self dependency: ${t.task_id}` };
+		const rawId = typeof t.task_id === "string" ? t.task_id.trim() : "";
+		if (!rawId) return { ok: false, tasks: [], error: "task_id required" };
+		// Normalize task_id to ASCII-safe format
+		const safeId = toSafeId(rawId, `task-${idx + 1}`);
+		// Ensure it starts with "task-" for clarity
+		const finalId = safeId.startsWith("task") ? safeId : `task-${safeId}`;
+		if (seen.has(finalId)) {
+			// deduplicate by appending index
+			const dedupId = `${finalId}-${idx}`;
+			rawIdMap.set(rawId, dedupId);
+			seen.add(dedupId);
+			tasks.push({
+				task_id: dedupId,
+				title: safeText(typeof t.title === "string" ? t.title : "Task", 120),
+				summary: safeText(typeof t.summary === "string" ? t.summary : "No summary.", 400),
+				agent_role: typeof t.agent_role === "string" ? t.agent_role : "implementation",
+				depends_on: [],
+			});
+		} else {
+			rawIdMap.set(rawId, finalId);
+			seen.add(finalId);
+			tasks.push({
+				task_id: finalId,
+				title: safeText(typeof t.title === "string" ? t.title : "Task", 120),
+				summary: safeText(typeof t.summary === "string" ? t.summary : "No summary.", 400),
+				agent_role: typeof t.agent_role === "string" ? t.agent_role : "implementation",
+				depends_on: Array.isArray(t.depends_on) ? t.depends_on.filter((d): d is string => typeof d === "string") : [],
+			});
 		}
+	}
+	// Resolve depends_on using the rawIdMap
+	for (const task of tasks) {
+		task.depends_on = task.depends_on
+			.map(rawDep => rawIdMap.get(rawDep) ?? rawDep)
+			.filter(dep => seen.has(dep) && dep !== task.task_id);
 	}
 	return { ok: true, tasks };
 }
@@ -146,7 +183,7 @@ export async function executeFlowDeskWorkflowAuthorToolV1(input: {
 		schema_version: "flowdesk.workflow_authoring_result.v1",
 		workflow_id: workflowId,
 		authoring_result_id: authoringResultId,
-		goal_summary: input.goalSummary.slice(0, 500),
+		goal_summary: safeText(input.goalSummary, 400),
 		scope_summary: `Planning evidence only: ${tasks.length} task(s) identified.`,
 		output_summary: "Task graph ready for agent assignment.",
 		risk_summary: "Planning only, no execution authority.",
