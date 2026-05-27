@@ -67,6 +67,7 @@ test("model selection picks lighter models for documentation role", () => {
 	const usageMap = buildUsageMapFromProviders([
 		{ providerFamily: "claude", remainingPercent: 80, alertLevel: "ok" },
 		{ providerFamily: "openai", remainingPercent: 80, alertLevel: "ok" },
+		{ providerFamily: "gemini", remainingPercent: 0, alertLevel: "exhausted" },
 	]);
 	const result = selectModelForTask("documentation", usageMap);
 	assert.ok(result, "should return a selection");
@@ -107,4 +108,30 @@ test("model selection prefers distinct models for each task independently", () =
 	const roles = ["security", "implementation", "documentation"] as const;
 	const selections = roles.map(role => selectModelForTask(role, usageMap));
 	assert.ok(selections.every(s => s !== undefined), "all roles should get a selection");
+});
+
+test("Gemini model selection uses pro, flash, and flash-lite usage buckets separately", () => {
+	const usageMap = buildUsageMapFromProviders([
+		{ providerFamily: "claude", remainingPercent: 0, alertLevel: "exhausted" },
+		{ providerFamily: "openai", remainingPercent: 0, alertLevel: "exhausted" },
+		{
+			providerFamily: "gemini",
+			remainingPercent: 0,
+			alertLevel: "exhausted",
+			buckets: [
+				{ resetBucket: "0% gemini-pro-daily", remainingPercent: 0, freshness: "fresh" },
+				{ resetBucket: "80% gemini-flash-daily", remainingPercent: 80, freshness: "fresh" },
+				{ resetBucket: "90% gemini-flash-lite-daily", remainingPercent: 90, freshness: "fresh" },
+			],
+		},
+	]);
+
+	assert.equal(usageMap.get("gemini-pro")?.alertLevel, "exhausted");
+	assert.equal(usageMap.get("gemini-flash")?.remainingPercent, 80);
+	assert.equal(usageMap.get("gemini-flash-lite")?.remainingPercent, 90);
+	assert.equal(selectModelForTask("implementation", usageMap)?.candidate.usageKey, "gemini-flash");
+
+	const liteOnlyUsageMap = new Map(usageMap);
+	liteOnlyUsageMap.set("gemini-flash", usage("gemini", 0, "exhausted"));
+	assert.equal(selectModelForTask("documentation", liteOnlyUsageMap)?.candidate.usageKey, "gemini-flash-lite");
 });

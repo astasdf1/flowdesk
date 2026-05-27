@@ -5837,7 +5837,7 @@ test("provider usage live tool is absent by default and registers only with expl
 	assert.match(description, /claude-5h/);
 	assert.match(description, /claude-weekly/);
 	assert.match(description, /openai-gpt-5h/);
-	assert.match(description, /gemini-pro-5h/);
+	assert.match(description, /gemini-pro-daily/);
 	assert.match(description, /gemini-pro-weekly/);
 	assert.match(description, /gemini-flash-daily/);
 	assert.doesNotMatch(description, /paid provider/);
@@ -6900,8 +6900,28 @@ test("chat.message progress card surfaces active lanes when includeProgressCards
 			record: runningLifecycle,
 		});
 		assert.equal(intent.ok, true, intent.errors.join("; "));
+		const contextIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-context-chat-progress-card",
+			record: {
+				schema_version: "flowdesk.agent_task_context.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-chat-progress-card",
+				task_id: "task-chat-progress-card",
+				agent_ref: "agent-chat-progress-card",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				parent_session_ref: "ses-chat-progress-card-parent",
+				prompt_text: "Inspect the repository and report progress details with a very long internal instruction that should be compacted in UI cards.",
+				prompt_text_truncated: false,
+				prompt_text_sha256: "abc123sha256progresscard",
+				redaction_version: "v1",
+				created_at: new Date(observedAtMs - 20_000).toISOString(),
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(contextIntent.ok, true, contextIntent.errors.join("; "));
 		assert.equal(
-			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [intent.writeIntent as never]).ok,
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [intent.writeIntent as never, contextIntent.writeIntent as never]).ok,
 			true,
 		);
 
@@ -6951,8 +6971,10 @@ test("chat.message progress card surfaces active lanes when includeProgressCards
 		assert.match(serialized, /Lane progress:/);
 		assert.match(serialized, /lane-chat-progress-card/);
 		assert.match(serialized, /running\/progressing_normal/);
-		assert.match(serialized, /agent=agent-chat-progress-card/);
-		assert.match(serialized, /model=openai\/gpt-5\.5/);
+		assert.match(serialized, /task: task-chat-progress-card/);
+		assert.match(serialized, /prompt: Inspect the repository/);
+		assert.match(serialized, /agent: agent-chat-progress-card/);
+		assert.match(serialized, /model: openai\/gpt-5\.5/);
 		assert.match(serialized, /- \/flowdesk-status/);
 		assert.match(serialized, /native clickable task UI is not claimed/);
 		assert.equal(/noReply|cancel|stop/.test(serialized), false);
@@ -7732,6 +7754,12 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 		assert.equal(result.status, "task_completed");
 		assert.ok(typeof result.resultText === "string" && result.resultText.includes(assistantText.slice(0, 20)));
 		assert.ok(typeof result.summaryForUser === "string" && result.summaryForUser.length > 0);
+		assert.match(String(result.summaryForUser), /prompt: Analyze this code for security issues\./);
+		assert.match(String(result.summaryForUser), /agent: reviewer-claude-opus/);
+		assert.match(String(result.summaryForUser), /model: anthropic\/claude-opus-4-7/);
+		assert.equal(result.taskPreview, "Analyze this code for security issues.");
+		assert.equal(result.agentName, "reviewer-claude-opus");
+		assert.equal(result.providerQualifiedModelId, "anthropic/claude-opus-4-7");
 		assert.ok(typeof result.workflowId === "string");
 		assert.ok(typeof result.laneId === "string");
 		assert.ok(typeof result.taskId === "string");
@@ -7776,6 +7804,7 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 		const workflows = statusResult.workflows as Array<Record<string, unknown>>;
 		const cards = workflows[0]?.laneProgressCards as Array<Record<string, unknown>>;
 		assert.ok(cards.some((card) => card.laneId === result.laneId && card.state === "task_result"));
+		assert.ok(cards.some((card) => card.laneId === result.laneId && card.promptPreview === "Analyze this code for security issues."));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

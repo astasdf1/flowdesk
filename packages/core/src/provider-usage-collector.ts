@@ -387,8 +387,11 @@ async function collectGeminiUsage(acquisition: FlowDeskProviderUsageAcquisitionC
     projectId = firstNonEmpty(projectId, stringField(details, "cloudaicompanionProject"));
     if (!projectId) return refusedCollection("gemini", "gemini", "gemini project boundary is missing");
     const quota = await codeAssistPost("retrieveUserQuota", { project: projectId }, accessToken, fetcher);
-    const bucketValue = geminiQuotaBucket(quota, observedAt);
-    return availableCollection("gemini", "gemini", "gemini-code-assist", projectId, bucketValue);
+    const buckets = geminiQuotaBuckets(quota, observedAt);
+    const primaryBucket = firstDispatchableBucket(buckets) ?? firstKnownBucket(buckets) ?? buckets[0] ?? bucket("gemini-unknown-5h", "%", null, undefined, "unknown");
+    const additionalBuckets = buckets.filter((b) => b !== primaryBucket);
+    const collection = availableCollection("gemini", "gemini", "gemini-code-assist", projectId, primaryBucket);
+    return { ...collection, additionalBuckets };
   } catch {
     return refusedCollection("gemini", "gemini", "gemini usage collection failed");
   }
@@ -541,9 +544,9 @@ function codexRateLimitBucket(resetBucket: string, rateLimit: Record<string, unk
   return bucket(resetBucket, "%", calculated.remaining, calculated.reset_at, calculated.uncertainty);
 }
 
-function geminiQuotaBucket(quota: Record<string, unknown>, observedAt: number): ProviderBucket {
+function geminiQuotaBuckets(quota: Record<string, unknown>, observedAt: number): ProviderBucket[] {
   const quotaBuckets = Array.isArray(quota.buckets) ? quota.buckets.filter(isRecord) : [];
-  let selected: ProviderBucket | undefined;
+  const selectedByBucket = new Map<string, ProviderBucket>();
   for (const quotaBucket of quotaBuckets) {
     const tokenType = stringField(quotaBucket, "tokenType");
     if (tokenType && tokenType !== "REQUESTS") continue;
@@ -560,20 +563,36 @@ function geminiQuotaBucket(quota: Record<string, unknown>, observedAt: number): 
       if (Number.isFinite(resetMs) && (resetMs - observedAt) > 24 * 60 * 60 * 1000) {
         resetBucket = "gemini-pro-weekly";
       } else {
-        resetBucket = "gemini-pro-5h";
+        resetBucket = "gemini-pro-daily";
       }
     }
 
     if (!resetBucket) continue;
     const remainingPercent = calculateRemainingUsagePercent({ remainingFraction: numberField(quotaBucket, "remainingFraction"), remainingAmount: stringField(quotaBucket, "remainingAmount"), resetAt: stringField(quotaBucket, "resetTime"), observedAt, expiredResetBehavior: "reset_to_full" });
     const candidate = bucket(resetBucket, "%", remainingPercent.remaining, remainingPercent.reset_at, remainingPercent.uncertainty);
-    if (selected === undefined || selected.remaining === null || (candidate.remaining !== null && candidate.remaining < selected.remaining)) selected = candidate;
+    const existing = selectedByBucket.get(resetBucket);
+    if (existing === undefined || existing.remaining === null || (candidate.remaining !== null && candidate.remaining < existing.remaining)) selectedByBucket.set(resetBucket, candidate);
   }
-  return selected ?? bucket("gemini-unknown-5h", "%", null, undefined, "unknown");
+  const buckets = [...selectedByBucket.values()].sort((a, b) => geminiBucketRank(a.resetBucket) - geminiBucketRank(b.resetBucket));
+  return buckets.length > 0 ? buckets : [bucket("gemini-unknown-5h", "%", null, undefined, "unknown")];
+}
+
+function geminiBucketRank(resetBucket: string): number {
+  if (resetBucket === "gemini-pro-daily") return 0;
+  if (resetBucket === "gemini-pro-weekly") return 1;
+  if (resetBucket === "gemini-flash-daily") return 2;
+  if (resetBucket === "gemini-flash-lite-daily") return 3;
+  return 99;
 }
 
 function firstDispatchableBucket(buckets: ProviderBucket[]): ProviderBucket | undefined {
-  return buckets.find((candidate) => candidate.remaining !== null && candidate.remaining > 0 && candidate.resetAt !== undefined && candidate.uncertainty === "available");
+  return buckets
+    .filter((candidate) => candidate.remaining !== null && candidate.remaining > 0 && candidate.resetAt !== undefined && candidate.uncertainty === "available")
+    .sort((a, b) => (a.remaining ?? Number.POSITIVE_INFINITY) - (b.remaining ?? Number.POSITIVE_INFINITY))[0];
+}
+
+function firstKnownBucket(buckets: ProviderBucket[]): ProviderBucket | undefined {
+  return buckets.find((candidate) => candidate.remaining !== null && candidate.resetAt !== undefined && candidate.uncertainty === "available");
 }
 
 async function readClaudeOAuthCredentials(homeDir: string, filesystem: FlowDeskProviderUsageFileSystemV1, options: FlowDeskProviderUsageCollectorOptionsV1): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number } | null> {

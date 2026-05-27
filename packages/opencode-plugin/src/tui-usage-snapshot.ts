@@ -404,7 +404,7 @@ export function loadFlowDeskTuiUsageSnapshotViewV1(input: {
 	}
 }
 
-function displayResetTime(value: string | undefined, label: "5h" | "1w"): string {
+function displayResetTime(value: string | undefined, label: "5h" | "1w" | string): string {
 	if (value === undefined) return "?";
 	const parsed = Date.parse(value);
 	if (!Number.isFinite(parsed)) return value;
@@ -425,6 +425,10 @@ function compactBucketSegment(bucket: FlowDeskTuiUsageProviderBucketV1 | undefin
 	return `${compactPercent(bucket?.remainingPercent ?? null)} (${label}, r ${displayResetTime(bucket?.resetTime, label)})`;
 }
 
+function compactNamedBucketSegment(bucket: FlowDeskTuiUsageProviderBucketV1 | undefined, label: string): string {
+	return `${compactPercent(bucket?.remainingPercent ?? null)} (${label}, r ${displayResetTime(bucket?.resetTime, label)})`;
+}
+
 function bucketForCompactLabel(
 	provider: FlowDeskTuiUsageProviderRowV1,
 	label: "5h" | "1w",
@@ -435,6 +439,17 @@ function bucketForCompactLabel(
 		return label === "5h"
 			? resetBucket.includes("5h")
 			: resetBucket.includes("weekly") || resetBucket.includes("1w") || resetBucket.includes("7d");
+	});
+}
+
+function bucketForResetBucketPrefix(
+	provider: FlowDeskTuiUsageProviderRowV1,
+	prefix: string,
+): FlowDeskTuiUsageProviderBucketV1 | undefined {
+	const normalizedPrefix = prefix.toLowerCase();
+	return (provider.buckets ?? []).find((bucket) => {
+		const resetBucket = bucket.resetBucket?.toLowerCase().replace(/^[0-9]+(?:\.[0-9]+)?%\s+/, "") ?? "";
+		return resetBucket.startsWith(normalizedPrefix);
 	});
 }
 
@@ -451,8 +466,18 @@ export function formatFlowDeskTuiUsageSnapshotCompactLines(
 	for (const family of providerFamilies) {
 		const provider = view.providers.find((candidate) => candidate.providerFamily === family);
 		const label = compactProviderLabels[family];
-		if (provider === undefined || provider.connected !== true) {
+		const hasKnownBuckets = (provider?.buckets ?? []).some((bucket) => bucket.remainingPercent !== null || bucket.resetTime !== undefined);
+		if (provider === undefined || (provider.connected !== true && !hasKnownBuckets)) {
 			lines.push(`${label}: ✗`);
+			continue;
+		}
+		if (family === "gemini") {
+			const pro = bucketForResetBucketPrefix(provider, "gemini-pro-daily") ?? bucketForResetBucketPrefix(provider, "gemini-pro");
+			const flash = bucketForResetBucketPrefix(provider, "gemini-flash-daily");
+			const lite = bucketForResetBucketPrefix(provider, "gemini-flash-lite-daily");
+			lines.push(`${label}: Pro ${compactNamedBucketSegment(pro, pro?.resetBucket?.includes("weekly") ? "1w" : "day")}`);
+			lines.push(`    Flash ${compactNamedBucketSegment(flash, "day")}`);
+			lines.push(`    Lite ${compactNamedBucketSegment(lite, "day")}`);
 			continue;
 		}
 		const fiveHour = bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);

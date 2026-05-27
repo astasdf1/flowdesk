@@ -13,6 +13,7 @@ export type ModelTier = "heavy" | "medium" | "light";
 export interface ModelCandidate {
 	providerQualifiedModelId: string;
 	providerFamily: "claude" | "openai" | "gemini";
+	usageKey?: string;
 	agentName: string;
 	tier: ModelTier;
 }
@@ -41,12 +42,14 @@ const HEAVY_MODELS: ModelCandidate[] = [
 const MEDIUM_MODELS: ModelCandidate[] = [
 	{ providerQualifiedModelId: "openai/gpt-5.5", providerFamily: "openai", agentName: "reviewer-gpt-frontier", tier: "medium" },
 	{ providerQualifiedModelId: "anthropic/claude-sonnet-4-6", providerFamily: "claude", agentName: "reviewer-claude-opus", tier: "medium" },
-	{ providerQualifiedModelId: "google/gemini-3.1-pro-preview", providerFamily: "gemini", agentName: "reviewer-gemini-pro", tier: "medium" },
+	{ providerQualifiedModelId: "google/gemini-3.1-pro-preview", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
+	{ providerQualifiedModelId: "google/gemini-3.1-flash-preview", providerFamily: "gemini", usageKey: "gemini-flash", agentName: "reviewer-gemini-pro", tier: "medium" },
 ];
 
 const LIGHT_MODELS: ModelCandidate[] = [
 	{ providerQualifiedModelId: "openai/gpt-5.5", providerFamily: "openai", agentName: "reviewer-gpt-frontier", tier: "light" },
 	{ providerQualifiedModelId: "anthropic/claude-sonnet-4-6", providerFamily: "claude", agentName: "reviewer-claude-opus", tier: "light" },
+	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite-preview", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "light" },
 ];
 
 // Role → preferred tier + candidate pool
@@ -115,7 +118,7 @@ export function selectModelForTask(
 	for (const candidate of mapping.candidates) {
 		if (seen.has(candidate.providerQualifiedModelId)) continue;
 		seen.add(candidate.providerQualifiedModelId);
-		const usage = usageByFamily.get(candidate.providerFamily);
+		const usage = usageByFamily.get(candidate.usageKey ?? candidate.providerFamily) ?? usageByFamily.get(candidate.providerFamily);
 		const weight = usageWeight(usage);
 		if (weight <= 0) continue; // exhausted – skip entirely
 		weighted.push({ candidate, weight, usageNote: usageNote(usage) });
@@ -141,16 +144,58 @@ export function buildUsageMapFromProviders(
 		providerFamily: string;
 		remainingPercent: number | null;
 		alertLevel: string;
+		buckets?: readonly {
+			resetBucket?: string;
+			remainingPercent: number | null;
+			alertLevel?: string;
+			freshness?: string;
+		}[];
 	}>,
 ): Map<string, ProviderUsageInput> {
 	const map = new Map<string, ProviderUsageInput>();
 	for (const p of providers) {
 		if (p.providerFamily !== "claude" && p.providerFamily !== "openai" && p.providerFamily !== "gemini") continue;
-		map.set(p.providerFamily, {
+		const providerUsage: ProviderUsageInput = {
 			providerFamily: p.providerFamily,
 			remainingPercent: p.remainingPercent,
 			alertLevel: (p.alertLevel as ProviderUsageInput["alertLevel"]) ?? "unknown",
-		});
+		};
+		map.set(p.providerFamily, providerUsage);
+		if (p.providerFamily !== "gemini") continue;
+		for (const bucket of p.buckets ?? []) {
+			const usageKey = geminiUsageKeyFromResetBucket(bucket.resetBucket);
+			if (usageKey === undefined) continue;
+			const usage: ProviderUsageInput = {
+				providerFamily: "gemini",
+				remainingPercent: bucket.remainingPercent,
+				alertLevel: alertLevelForBucket(bucket.remainingPercent, bucket.freshness, bucket.alertLevel),
+			};
+			const existing = map.get(usageKey);
+			if (existing === undefined || usageRank(usage) < usageRank(existing)) map.set(usageKey, usage);
+		}
 	}
 	return map;
+}
+
+function geminiUsageKeyFromResetBucket(value: string | undefined): "gemini-pro" | "gemini-flash" | "gemini-flash-lite" | undefined {
+	const normalized = value?.toLowerCase().trim().replace(/^[0-9]+(?:\.[0-9]+)?%\s+/, "") ?? "";
+	if (normalized.startsWith("gemini-flash-lite")) return "gemini-flash-lite";
+	if (normalized.startsWith("gemini-flash")) return "gemini-flash";
+	if (normalized.startsWith("gemini-pro")) return "gemini-pro";
+	return undefined;
+}
+
+function alertLevelForBucket(remainingPercent: number | null, freshness: string | undefined, explicit: string | undefined): ProviderUsageInput["alertLevel"] {
+	if (explicit === "ok" || explicit === "warning" || explicit === "critical" || explicit === "exhausted" || explicit === "stale" || explicit === "unknown") return explicit;
+	if (freshness !== undefined && freshness !== "fresh") return freshness === "stale" ? "stale" : "unknown";
+	if (remainingPercent === null) return "unknown";
+	if (remainingPercent <= 0) return "exhausted";
+	if (remainingPercent <= 10) return "critical";
+	if (remainingPercent <= 30) return "warning";
+	return "ok";
+}
+
+function usageRank(usage: ProviderUsageInput): number {
+	if (usage.remainingPercent !== null) return usage.remainingPercent;
+	return usage.alertLevel === "unknown" || usage.alertLevel === "stale" ? Number.POSITIVE_INFINITY : 100;
 }

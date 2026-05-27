@@ -42,20 +42,16 @@ flowdesk_agent_task_run({
   taskDescription: "...",
   agentName: "reviewer-claude-opus",
   providerQualifiedModelId: "anthropic/claude-opus-4-7",
+  parentSessionId: "",
   nudgeQuietPeriodMs: 20000,
   developerModeAcknowledged: true,
   allowProviderCall: true,
 })
 ```
 
-### Code review / critique → multi-perspective
-```
-flowdesk_quick_reviewer_run({
-  prompt: "...",
-  developerModeAcknowledged: true,
-  allowProviderCall: true,
-})
-```
+### Code review / critique
+
+`flowdesk_quick_reviewer_run` is quarantined until explicitly revalidated by the user. Do **not** call it. Use one or more explicit `flowdesk_agent_task_run` lanes instead, one lane at a time unless concurrent launch has been revalidated in this session.
 
 ### Agent selection guide
 | Task type | Agent | Model |
@@ -79,21 +75,23 @@ All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 20000` (20 seconds)
 
 ## Operational Rules
 
-1. **Never do the work yourself** — if a task requires analysis, implementation, search, or review, dispatch it via `flowdesk_agent_task_run` or `flowdesk_quick_reviewer_run`. ALL subtasks go through these tools.
-2. **Keep main context small** — do not copy large outputs, logs, or file contents into this session. Ask lanes for short findings and file:line references only.
-3. **Check usage first** — before launching multiple lanes, call `flowdesk_provider_usage_live`. If any provider is critical/exhausted, warn the user.
-4. **Track progress** — after dispatching, call `flowdesk_status_live` to show lane status. Record `flowdesk_lane_heartbeat_record` for long-running work.
-5. **Summarize results** — when lanes complete, surface `summaryForUser` from tool results verbatim. Do not paraphrase verdict labels or alert levels.
-6. **Incomplete = incomplete** — if a lane returns empty result, timeout, or no verdict, classify as incomplete. Do not count as success.
-7. **No OMO, no nested opencode run** — never use OMO/OMC/Sisyphus or nested `opencode run` paths.
-8. **Mandatory FlowDesk-owned lane boundary** — for any FlowDesk work, every delegated subtask MUST run only through FlowDesk-owned tools that create durable lane/status evidence: `flowdesk_agent_task_run`, `flowdesk_quick_reviewer_run`, `flowdesk_workflow_dispatch_plan`, or explicitly gated FlowDesk dispatch tools such as `flowdesk_workflow_dispatch`. Never use the raw OpenCode `task` tool, background task sessions, ad-hoc subagents, nested `opencode run`, OMO/OMC/Sisyphus, or any non-FlowDesk-owned lane for FlowDesk planning, implementation, review, verification, or investigation. Raw subagents bypass FlowDesk heartbeat/status/watchdog/retry evidence and are forbidden even when no FlowDesk lane is available. If a FlowDesk-owned tool cannot safely do the work, stop and report the blocker, or perform bounded direct patch/edit work in the main session with normal file tools; do not bypass FlowDesk monitoring.
-9. **Auto-invocation** — call FlowDesk natural-language tools directly on intent match without asking confirmation:
-   - Review/critique/audit → `flowdesk_quick_reviewer_run`
+1. **Todo discipline is mandatory** — for any non-trivial task, verification, patch, review, or multi-step investigation, call `todowrite` before starting, keep exactly one item `in_progress`, update it immediately after each step completes/blocks, and never give a final answer until the todo list reflects the real final state. If you discover you forgot, call `todowrite` immediately and explicitly acknowledge the correction.
+2. **Never do the work yourself** — if a task requires analysis, implementation, search, or review, dispatch it via `flowdesk_agent_task_run`. ALL subtasks go through this tool while quick reviewer is quarantined.
+3. **Keep main context small** — do not copy large outputs, logs, or file contents into this session. Ask lanes for short findings and file:line references only.
+4. **Check usage first** — before launching multiple lanes, call `flowdesk_provider_usage_live`. If any provider is critical/exhausted, warn the user.
+5. **Track progress** — after dispatching, call `flowdesk_status_live` to show lane status. Record `flowdesk_lane_heartbeat_record` for long-running work.
+6. **Summarize results** — when lanes complete, surface `summaryForUser` from tool results verbatim. Do not paraphrase verdict labels or alert levels.
+7. **Incomplete = incomplete** — if a lane returns empty result, timeout, or no verdict, classify as incomplete. Do not count as success.
+8. **No OMO, no nested opencode run** — never use OMO/OMC/Sisyphus or nested `opencode run` paths.
+9. **Mandatory FlowDesk-owned lane boundary** — for any FlowDesk work, every delegated subtask MUST run only through FlowDesk-owned tools that create durable lane/status evidence: `flowdesk_agent_task_run`, `flowdesk_quick_reviewer_run`, `flowdesk_workflow_dispatch_plan`, or explicitly gated FlowDesk dispatch tools such as `flowdesk_workflow_dispatch`. Never use the raw OpenCode `task` tool, background task sessions, ad-hoc subagents, nested `opencode run`, OMO/OMC/Sisyphus, or any non-FlowDesk-owned lane for FlowDesk planning, implementation, review, verification, or investigation. Raw subagents bypass FlowDesk heartbeat/status/watchdog/retry evidence and are forbidden even when no FlowDesk lane is available. If a FlowDesk-owned tool cannot safely do the work, stop and report the blocker, or perform bounded direct patch/edit work in the main session with normal file tools; do not bypass FlowDesk monitoring.
+10. **Auto-invocation** — call FlowDesk natural-language tools directly on intent match without asking confirmation:
+   - Review/critique/audit → explicit `flowdesk_agent_task_run` reviewer lane(s); do not use `flowdesk_quick_reviewer_run` until revalidated
    - Usage/quota → `flowdesk_provider_usage_live`
    - Status/progress/"잘 됐어?"/"결과는?" → `flowdesk_status_live`
    - Provider switch → `flowdesk_quick_fallback_run`
    - Heartbeat → `flowdesk_lane_heartbeat_record`
-   - Delegate subtask to specific model → `flowdesk_agent_task_run` (always with `nudgeQuietPeriodMs: 20000`)
+   - Delegate subtask to specific model → `flowdesk_agent_task_run` (always with `parentSessionId: ""` and `nudgeQuietPeriodMs: 20000`)
+11. **Lane launch stability** — run `flowdesk_agent_task_run` lanes one at a time unless concurrent launch has been revalidated in the current OpenCode session. If a lane fails with `sdk_create_failed`, stop and report the blocker instead of opening parallel lanes.
 
 ## Typical Flow
 

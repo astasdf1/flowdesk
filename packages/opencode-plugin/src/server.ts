@@ -98,7 +98,7 @@ import {
 	redactedRuntimeReviewerExecutionBlocked,
 	runtimeReviewerExecutionExpectationsFromValue,
 } from "./runtime-reviewer-execution-bridge.js";
-import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, type FlowDeskAgentTaskResultV1 } from "./agent-task-runner.js";
 import {
 	executeFlowDeskControlledWriteApplyToolV1,
 	type FlowDeskControlledWriteApplyToolConfigV1,
@@ -2040,11 +2040,14 @@ interface FlowDeskChatMessageStallSummaryV1 {
 		failureHint?: string;
 		laneCards?: Array<{
 			laneId: string;
+			taskId?: string;
 			state?: string;
 			classification: string;
 			secondsSinceLastSignal?: number;
 			agentRef?: string;
 			providerQualifiedModelId?: string;
+			promptPreview?: string;
+			nudgeCount?: number;
 			verdictLabel?: string;
 			failureHint?: string;
 		}>;
@@ -2299,16 +2302,19 @@ export async function collectStallAlertResult(
 						? {
 								laneCards: scopedLaneCards
 									.slice(0, stallAlert.maxProgressCards ?? 3)
-									.map((lane) => ({
-										laneId: lane.laneId,
-										state: lane.state,
-										classification: lane.classification,
-										secondsSinceLastSignal: lane.secondsSinceLastSignal,
-										agentRef: lane.agentRef,
-										providerQualifiedModelId: lane.providerQualifiedModelId,
-										verdictLabel: lane.verdictLabel,
-										failureHint: lane.failureHint,
-									})),
+							.map((lane) => ({
+								laneId: lane.laneId,
+								taskId: lane.taskId,
+								state: lane.state,
+								classification: lane.classification,
+								secondsSinceLastSignal: lane.secondsSinceLastSignal,
+								agentRef: lane.agentRef,
+								providerQualifiedModelId: lane.providerQualifiedModelId,
+								promptPreview: lane.promptPreview,
+								nudgeCount: lane.nudgeCount,
+								verdictLabel: lane.verdictLabel,
+								failureHint: lane.failureHint,
+							})),
 							}
 						: {}),
 				};
@@ -2424,11 +2430,17 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 					: `~${Math.floor(lane.secondsSinceLastSignal / 60)}m ago`;
 			const model = lane.providerQualifiedModelId ?? "(unknown)";
 			const agent = lane.agentRef ?? "(unknown)";
+			const task = lane.taskId ?? lane.laneId;
+			const prompt = lane.promptPreview ?? "(hidden)";
+			const nudge = lane.nudgeCount === undefined ? "?" : String(lane.nudgeCount);
 			const verdict = lane.verdictLabel ?? "(none)";
 			const issue = lane.failureHint === undefined ? "" : ` issue=${lane.failureHint}`;
-			lines.push(
-				`  - lane ${lane.laneId}: ${lane.state ?? "unknown"}/${lane.classification}, last signal ${age}, agent=${agent}, model=${model}, verdict=${verdict}${issue}`,
-			);
+			lines.push(`  - lane ${lane.laneId}: ${lane.state ?? "unknown"}/${lane.classification}`);
+			lines.push(`    task: ${task}`);
+			lines.push(`    prompt: ${prompt}`);
+			lines.push(`    agent: ${agent}`);
+			lines.push(`    model: ${model}`);
+			lines.push(`    last signal: ${age}; nudges=${nudge}; verdict=${verdict}${issue}`);
 		}
 	}
 	if (summary.autoAbortSummaries !== undefined && summary.autoAbortSummaries.length > 0) {
@@ -3133,14 +3145,49 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 	if (!input.client || !input.durableStateRoot) return undefined;
 	const client = input.client;
 	const rootDir = input.durableStateRoot;
+	const promptPreview = (text: string, max = 120) => {
+		const compact = text.replace(/\s+/g, " ").trim();
+		return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+	};
+	const taskSummaryForUser = (input: {
+		status: FlowDeskAgentTaskResultV1["status"];
+		workflowId: string;
+		laneId: string;
+		taskId: string;
+		agentName: string;
+		providerQualifiedModelId: string;
+		promptText: string;
+		resultText?: string;
+		failureCategory?: string;
+		redactedReason?: string;
+		asyncMode?: boolean;
+	}) => {
+		const lines = [
+			input.status === "task_completed"
+				? "FlowDesk task completed."
+				: input.status === "task_launched"
+					? "FlowDesk task launched."
+					: "FlowDesk task failed.",
+			`workflow: ${input.workflowId}`,
+			`lane: ${input.laneId}`,
+			`task: ${input.taskId}`,
+			`prompt: ${promptPreview(input.promptText)}`,
+			`agent: ${input.agentName}`,
+			`model: ${input.providerQualifiedModelId}`,
+		];
+		if (input.asyncMode === true) lines.push("progress: use /flowdesk-status or flowdesk_status_live to follow durable lane evidence");
+		if (input.resultText !== undefined) lines.push(`result: ${promptPreview(input.resultText, 200)}`);
+		if (input.failureCategory !== undefined) lines.push(`failure: ${input.failureCategory}${input.redactedReason === undefined ? "" : ` (${input.redactedReason})`}`);
+		return lines.join("\n");
+	};
 	return {
 		[flowdeskAgentTaskRunToolName]: tool({
-			description: [
+				description: [
 				"Run a single task on a specific agent and model, returning the result text.",
 				"Use this to delegate a well-defined subtask to a specific model (e.g. Claude Opus for security analysis, GPT for architecture review).",
 				"Requires developerModeAcknowledged=true and allowProviderCall=true per call.",
 				"WHEN TO USE: user asks to delegate a specific task to a specific model/agent.",
-				"WHEN NOT TO USE: multi-step workflows (use flowdesk_workflow_dispatch), code review (use flowdesk_quick_reviewer_run).",
+				"WHEN NOT TO USE: multi-step workflows (use flowdesk_workflow_dispatch).",
 				"After calling, use flowdesk_status_live to check the lane status.",
 			].join(" "),
 			args: {
@@ -3191,21 +3238,34 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					asyncMode,
 					_nudgeQuietPeriodMs: nudgeQuietPeriodMs,
 				});
+				const failureCategory = result.status === "task_failed" ? result.failureCategory : undefined;
+				const redactedReason = result.status === "task_failed" ? result.redactedReason : undefined;
 				return JSON.stringify({
 					workflowId,
 					laneId,
 					taskId,
 					status: result.status,
+					taskPreview: promptPreview(taskDescription),
+					agentName,
+					providerQualifiedModelId,
 					...(result.status === "task_launched" ? { childSessionId: result.childSessionId, asyncMode: true, safeNextActions: ["/flowdesk-status"] } : {}),
 					resultText: result.status === "task_completed" ? result.resultText.slice(0, 4_096) : undefined,
 					resultTruncated: result.status === "task_completed" && result.resultText.length > 4_096,
-					failureCategory: result.status === "task_failed" ? result.failureCategory : undefined,
-					redactedReason: result.status === "task_failed" ? result.redactedReason : undefined,
-					summaryForUser: result.status === "task_completed"
-						? `Task completed on ${agentName} (${providerQualifiedModelId}). Result: ${result.resultText.slice(0, 200)}${result.resultText.length > 200 ? "..." : ""}`
-						: result.status === "task_launched"
-							? `Task launched on ${agentName} (asyncMode). Use flowdesk_status_live(${laneId}) to track completion.`
-							: `Task failed on ${agentName}: ${result.status === "task_failed" ? result.failureCategory : "unknown"}`,
+					failureCategory,
+					redactedReason,
+					summaryForUser: taskSummaryForUser({
+						status: result.status,
+						workflowId,
+						laneId,
+						taskId,
+						agentName,
+						providerQualifiedModelId,
+						promptText: taskDescription,
+						...(result.status === "task_completed" ? { resultText: result.resultText } : {}),
+						...(result.status === "task_launched" ? { asyncMode: true } : {}),
+						...(failureCategory === undefined ? {} : { failureCategory }),
+						...(redactedReason === undefined ? {} : { redactedReason }),
+					}),
 				});
 			},
 		}),
@@ -4071,7 +4131,7 @@ export function createFlowDeskProviderUsageLiveOptInTools(
 				"ALSO PROACTIVELY USE: before starting a large multi-step task that depends on a specific provider (e.g. extensive refactor, long agentic loop, multi-perspective review), call this tool first to check whether the chosen provider has enough headroom; if worstAlertLevel is critical or exhausted, warn the user and suggest switching providers or waiting for reset.",
 				"WHEN NOT TO USE: general chat, status of an in-progress workflow (use status instead), or any non-usage question.",
 				"INVOKE WITH: optional providerFamily ('claude', 'openai', 'gemini', or 'all'; default 'all'). The plugin user has already opted in to provider-native usage collection at configuration time, so this tool can be called automatically without per-call confirmation.",
-				"AFTER CALLING: summarize per-provider availability for the user in plain language. For each provider include the bucket label (claude-5h, claude-weekly, openai-gpt-5h, gemini-pro-5h, gemini-pro-weekly, gemini-flash-daily, gemini-flash-lite-daily), remainingPercent, reset time, alertLevel, and recommendation. If any provider returned non_dispatchable, exhausted, critical, stale, or unknown, note it explicitly and surface the overallRecommendation. Never echo raw tokens or raw payloads.",
+				"AFTER CALLING: summarize per-provider availability for the user in plain language. For each provider include the bucket label (claude-5h, claude-weekly, openai-gpt-5h, gemini-pro-daily, gemini-pro-weekly, gemini-flash-daily, gemini-flash-lite-daily), remainingPercent, reset time, alertLevel, and recommendation. If any provider returned non_dispatchable, exhausted, critical, stale, or unknown, note it explicitly and surface the overallRecommendation. Never echo raw tokens or raw payloads.",
 			].join(" "),
 			args: {
 				providerFamily: tool.schema

@@ -166,6 +166,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	workflowId: string;
 	laneId: string;
+	taskId?: string;
 	attemptId?: string;
 	state?: string;
 	classification: FlowDeskLaneStallClassificationV1;
@@ -173,6 +174,9 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	lastSignalSource?: string;
 	agentRef?: string;
 	providerQualifiedModelId?: string;
+	promptPreview?: string;
+	promptTextTruncated?: boolean;
+	nudgeCount?: number;
 	verdictLabel?: "pass" | "changes_required" | "blocked" | "inconclusive";
 	failureHint?: string;
 	statusCommandRef: "/flowdesk-status";
@@ -262,6 +266,13 @@ function getStringField(
 ): string | undefined {
 	const value = record[key];
 	return typeof value === "string" ? value : undefined;
+}
+
+function compactPromptPreview(value: string | undefined, max = 96): string | undefined {
+	if (value === undefined) return undefined;
+	const compact = value.replace(/\s+/g, " ").trim();
+	if (compact.length === 0) return undefined;
+	return compact.length > max ? `${compact.slice(0, Math.max(0, max - 1))}…` : compact;
 }
 
 function summarizeWorkflow(
@@ -485,7 +496,35 @@ function buildLaneProgressCards(
 		"pass" | "changes_required" | "blocked" | "inconclusive"
 	>();
 	const taskResultLaneIds = new Set<string>();
+	const agentTaskContextByLane = new Map<
+		string,
+		{ taskId?: string; promptPreview?: string; promptTextTruncated?: boolean }
+	>();
+	const childSessionByLane = new Map<string, { nudgeCount?: number }>();
 	for (const entry of reload.entries) {
+		if (entry.evidenceClass === "agent_task_context") {
+			const laneId = getStringField(entry.record, "lane_id");
+			if (laneId !== undefined) {
+				agentTaskContextByLane.set(laneId, {
+					taskId: getStringField(entry.record, "task_id"),
+					promptPreview: compactPromptPreview(getStringField(entry.record, "prompt_text")),
+					promptTextTruncated: entry.record.prompt_text_truncated === true,
+				});
+			}
+			continue;
+		}
+		if (entry.evidenceClass === "agent_task_child_session") {
+			const laneId = getStringField(entry.record, "lane_id");
+			const nudgeCount = entry.record.nudge_count;
+			if (laneId !== undefined) {
+				childSessionByLane.set(laneId, {
+					...(typeof nudgeCount === "number" && Number.isFinite(nudgeCount)
+						? { nudgeCount }
+						: {}),
+				});
+			}
+			continue;
+		}
 		if (entry.evidenceClass === "task_result") {
 			const laneId = getStringField(entry.record, "lane_id");
 			if (laneId !== undefined) taskResultLaneIds.add(laneId);
@@ -523,6 +562,8 @@ function buildLaneProgressCards(
 	}
 	return projection.entries.slice(0, 6).map((entry) => {
 		const meta = lifecycleMeta.get(entry.laneId);
+		const context = agentTaskContextByLane.get(entry.laneId);
+		const childSession = childSessionByLane.get(entry.laneId);
 		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
@@ -533,6 +574,7 @@ function buildLaneProgressCards(
 		return {
 			workflowId,
 			laneId: entry.laneId,
+			...(context?.taskId === undefined ? {} : { taskId: context.taskId }),
 			attemptId: entry.attemptId,
 			state: projectedState,
 			classification: entry.classification,
@@ -546,6 +588,9 @@ function buildLaneProgressCards(
 			...(meta?.providerQualifiedModelId === undefined
 				? {}
 				: { providerQualifiedModelId: meta.providerQualifiedModelId }),
+			...(context?.promptPreview === undefined ? {} : { promptPreview: context.promptPreview }),
+			...(context?.promptTextTruncated === undefined ? {} : { promptTextTruncated: context.promptTextTruncated }),
+			...(childSession?.nudgeCount === undefined ? {} : { nudgeCount: childSession.nudgeCount }),
 			...(verdictLabel === undefined ? {} : { verdictLabel }),
 			...(entry.failureHint === undefined
 				? {}

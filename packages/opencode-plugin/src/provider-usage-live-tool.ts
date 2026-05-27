@@ -220,6 +220,16 @@ function classifyAlert(
 		};
 	}
 	if (!result.ok) {
+		const remaining = result.bucketSnapshot?.remainingPercent ?? remainingPercentFromSnapshot(result.usageSnapshot);
+		if (remaining !== null && result.usageSnapshot.freshness === "fresh") {
+			return {
+				remainingPercent: remaining,
+				alertLevel: remaining <= 0 ? "exhausted" : remaining <= 10 ? "critical" : remaining <= 30 ? "warning" : "ok",
+				recommendation: remaining <= 0
+					? `${family} bucket ${result.usageSnapshot.reset_bucket} is exhausted; wait for reset at ${result.usageSnapshot.reset_time} or use a non-exhausted model bucket.`
+					: `${family} bucket ${result.usageSnapshot.reset_bucket} has ${remaining.toFixed(1)}% remaining, but dispatch authority was not acquired; use diagnostic display only.`,
+			};
+		}
 		return {
 			remainingPercent: null,
 			alertLevel: result.usageSnapshot.freshness === "stale" ? "stale" : "unknown",

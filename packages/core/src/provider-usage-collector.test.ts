@@ -122,7 +122,7 @@ test("Codex/OpenAI collector preserves known 0 percent remaining without dispatc
   assert.equal(result.usageAuthorityEvidence, undefined);
 });
 
-test("Gemini Code Assist collector classifies pro reset within 24h as 5-hour bucket", async () => {
+test("Gemini Code Assist collector classifies pro reset within 24h as daily bucket", async () => {
   const filesystem = memoryFilesystem({
     "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })
   });
@@ -137,7 +137,7 @@ test("Gemini Code Assist collector classifies pro reset within 24h as 5-hour buc
   const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
 
   assertCollectorEvidenceValid(result);
-  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-daily");
 });
 
 test("Gemini Code Assist collector classifies pro reset beyond 24h as weekly bucket", async () => {
@@ -191,7 +191,28 @@ test("Gemini Code Assist collector skips non-REQUESTS token type buckets", async
   const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
 
   assertCollectorEvidenceValid(result);
-  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-daily");
+});
+
+test("Gemini Code Assist collector preserves pro flash and flash-lite buckets separately", async () => {
+  const filesystem = memoryFilesystem({
+    "/home/test/.gemini/oauth_creds.json": JSON.stringify({ refresh_token: "refresh-token-123" })
+  });
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url) => {
+    if (url === "https://oauth2.googleapis.com/token") return response({ access_token: "access-token-123" });
+    if (url.endsWith(":loadCodeAssist")) return response({ cloudaicompanionProject: "project-123" });
+    return response({ buckets: [
+      { modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0, resetTime: "2026-05-17T02:49:00.000Z" },
+      { modelId: "gemini-2.5-flash", tokenType: "REQUESTS", remainingFraction: 0.8, resetTime: "2026-05-18T00:00:00.000Z" },
+      { modelId: "gemini-2.5-flash-lite", tokenType: "REQUESTS", remainingFraction: 0.9, resetTime: "2026-05-18T00:00:00.000Z" }
+    ] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }), { enabled: true, homeDir: "/home/test", providers: ["gemini"], geminiOAuthClientId: "gemini-client-id-test", geminiOAuthClientSecret: "gemini-client-secret-test" }, { filesystem, fetch: fetcher, now: () => observedAtMs });
+
+  assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-flash-daily");
+  assert.deepEqual(result.additionalSnapshots?.map((snapshot) => snapshot.reset_bucket), ["0% gemini-pro-daily", "90% gemini-flash-lite-daily"]);
 });
 
 test("provider usage collector fails closed when acquisition or auth evidence is unavailable", async () => {
@@ -241,7 +262,7 @@ test("Gemini Code Assist collector uses cached access_token when not expired wit
   );
 
   assertCollectorEvidenceValid(result);
-  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-daily");
   assert.equal(tokenRefreshCalls, 0, "no refresh call should be made when cached token is still valid");
   assert.equal(firstAuthHeader, "Bearer cached-access-token-still-valid");
 });
@@ -278,7 +299,7 @@ test("Gemini Code Assist collector uses OpenCode google OAuth auth when logged i
   );
 
   assertCollectorEvidenceValid(result);
-  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-5h");
+  assert.equal(result.usageSnapshot.reset_bucket, "gemini-pro-daily");
   assert.equal(firstAuthHeader, "Bearer opencode-access-token-still-valid");
 });
 
