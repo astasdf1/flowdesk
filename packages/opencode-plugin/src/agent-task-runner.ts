@@ -34,6 +34,8 @@ export interface FlowDeskAgentTaskInputV1 {
 	_nudgeQuietPeriodMs?: number;
 	/** Override messages poll timeout — for testing only (default 3000ms in prod) */
 	_messagesTimeoutMs?: number;
+	/** Override launch timeout — for testing only (default 300000ms = 5min in prod) */
+	_launchTimeoutMs?: number;
 }
 
 export type FlowDeskAgentTaskResultV1 =
@@ -397,17 +399,63 @@ export async function executeFlowDeskAgentTaskV1(
 		record: agentTaskContextRecord as unknown as Record<string, unknown>,
 	});
 
-	// Launch the lane
-	const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
-		client: input.client,
-		launchPlan,
-		request: {
-			allowActualLaneLaunch: true,
-			parentSessionId: input.parentSessionId,
-			promptText: input.promptText,
-			dispatchMethod: "prompt",
-		},
-	});
+	// Launch the lane — wrap in absolute timeout so session.prompt blocking doesn't hang forever.
+	// The launch phase timeout is longer (5 min) since promptAsync may queue work before responding.
+	// 1 min default — if session.prompt blocks for more than 1 min with no activity, give up
+	const LAUNCH_TIMEOUT_MS = input._launchTimeoutMs ?? 60_000;
+	const launchTimeoutHandle = setTimeout(() => { /* no-op; just a handle */ }, LAUNCH_TIMEOUT_MS);
+	const launchResult = await Promise.race([
+		launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client: input.client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: true,
+				parentSessionId: input.parentSessionId,
+				promptText: input.promptText,
+				dispatchMethod: "prompt",
+			},
+		}),
+		new Promise<{ status: "launch_timeout" }>(resolve =>
+			setTimeout(() => resolve({ status: "launch_timeout" }), LAUNCH_TIMEOUT_MS)
+		),
+	]);
+	clearTimeout(launchTimeoutHandle);
+
+	if ("status" in launchResult && launchResult.status === "launch_timeout") {
+		// session.prompt blocked for too long — treat as invocation failure
+		const failedEvidenceId = `task-failed-${input.taskId}-${token}-launch-timeout`;
+		writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: failedEvidenceId,
+			record: {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: input.workflowId,
+				lane_id: input.laneId,
+				task_id: input.taskId,
+				agent_ref: input.agentRef,
+				provider_qualified_model_id: input.providerQualifiedModelId,
+				failure_category: "sdk_create_failed",
+				redacted_reason: "lane launch timed out: session.prompt did not respond",
+				created_at: observedAt,
+				dispatch_authority_enabled: false,
+			} as unknown as Record<string, unknown>,
+		});
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			state: "invocation_failed",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-launch-timeout`,
+			createdAt: observedAt,
+			updatedAt: new Date().toISOString(),
+		});
+		return { status: "task_failed", failureCategory: "sdk_create_failed", redactedReason: "launch timeout: session.prompt did not respond within the allowed window", laneId: input.laneId };
+	}
 
 	// Write running lifecycle evidence
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
@@ -504,7 +552,7 @@ export async function executeFlowDeskAgentTaskV1(
 		const agentName = launchResult.status === "lane_launch_started" && typeof launchResult.agent === "string"
 			? launchResult.agent : undefined;
 		resultText = await extractAssistantTextFromResponse(input.client, childSessionId, {
-			quietPeriodMs: input._nudgeQuietPeriodMs ?? 30_000,
+			quietPeriodMs: input._nudgeQuietPeriodMs ?? 20_000,
 			maxNudges: 2,
 			runtimeModel,
 			agentName,
