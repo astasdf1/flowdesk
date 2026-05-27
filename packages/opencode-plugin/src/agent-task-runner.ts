@@ -135,14 +135,6 @@ async function extractAssistantTextFromResponse(
 
 	try {
 		while (true) {
-			const nowMs = Date.now();
-
-			// Emit heartbeat every heartbeatIntervalMs
-			if (nowMs - lastHeartbeatMs >= heartbeatIntervalMs) {
-				lastHeartbeatMs = nowMs;
-				opts?.heartbeatFn?.(nowMs - startMs);
-			}
-
 			const response = await callMessages();
 			const data = asResponseData(response);
 			const record = asRecord(data);
@@ -151,16 +143,25 @@ async function extractAssistantTextFromResponse(
 				: Array.isArray(record?.messages) ? record.messages : [];
 			const sig = `${items.length}:${extractText(response)?.length ?? 0}`;
 
+			const nowMs = Date.now();
 			if (sig !== lastSignature) {
+				// Activity detected — update timestamp, no heartbeat needed
 				lastSignature = sig;
-				lastActivityMs = Date.now();
+				lastActivityMs = nowMs;
+				lastHeartbeatMs = nowMs; // reset heartbeat clock too
+			} else {
+				// No activity — emit heartbeat only when inactive for heartbeatIntervalMs
+				if (nowMs - lastHeartbeatMs >= heartbeatIntervalMs) {
+					lastHeartbeatMs = nowMs;
+					opts?.heartbeatFn?.(nowMs - startMs);
+				}
 			}
 
 			const text = extractText(response);
 			if (text !== undefined && text.trim().length > 0) return text;
 
 			// Inactivity timeout: no new messages for inactivityTimeoutMs
-			if (Date.now() - lastActivityMs >= inactivityTimeoutMs) return undefined;
+			if (nowMs - lastActivityMs >= inactivityTimeoutMs) return undefined;
 
 			await new Promise<void>((r) => setTimeout(r, pollIntervalMs));
 		}
