@@ -46,6 +46,7 @@ import {
 	flowdeskPluginScaffold,
 	hasProductionOpenCodeRegistration,
 } from "./index.js";
+import { observeFlowDeskOpenCodeEventV1 } from "./event-hook-observer.js";
 import {
 	type FlowDeskLaneHeartbeatWriteRequestV1,
 	recordFlowDeskLaneHeartbeatV1,
@@ -2035,6 +2036,15 @@ interface FlowDeskChatMessageStallSummaryV1 {
 		workflowId: string;
 		stalledLaneCount: number;
 		lateLaneCount: number;
+		laneProgressAggregate?: {
+			expected: number;
+			terminal: number;
+			taskResult: number;
+			failed: number;
+			awaitingPermission: number;
+			normalCompleted: number;
+			autoNextStepEligible: boolean;
+		};
 		secondsSinceLastSignal?: number;
 		laneId?: string;
 		failureHint?: string;
@@ -2051,6 +2061,9 @@ interface FlowDeskChatMessageStallSummaryV1 {
 			progressPhase?: string;
 			progressLabel?: string;
 			verdictLabel?: string;
+			completionStatus?: string;
+			outputKind?: string;
+			usableForSynthesis?: boolean;
 			failureHint?: string;
 		}>;
 	}>;
@@ -2300,6 +2313,9 @@ export async function collectStallAlertResult(
 					...(primary?.failureHint === undefined
 						? {}
 						: { failureHint: primary.failureHint }),
+					...(workflow.laneProgressAggregate === undefined
+						? {}
+						: { laneProgressAggregate: workflow.laneProgressAggregate }),
 					...(stallAlert.includeProgressCards === true
 						? {
 								laneCards: scopedLaneCards
@@ -2317,6 +2333,9 @@ export async function collectStallAlertResult(
 								progressPhase: lane.progressPhase,
 								progressLabel: lane.progressLabel,
 								verdictLabel: lane.verdictLabel,
+								completionStatus: lane.completionStatus,
+								outputKind: lane.outputKind,
+								usableForSynthesis: lane.usableForSynthesis,
 								failureHint: lane.failureHint,
 							})),
 							}
@@ -2427,6 +2446,12 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 		lines.push(
 			`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
 		);
+		if (workflow.laneProgressAggregate !== undefined) {
+			const aggregate = workflow.laneProgressAggregate;
+			lines.push(
+				`  tasks: expected=${aggregate.expected}, terminal=${aggregate.terminal}, completed=${aggregate.normalCompleted}, failed=${aggregate.failed}, awaiting_permission=${aggregate.awaitingPermission}, auto_next=${aggregate.autoNextStepEligible}`,
+			);
+		}
 		for (const lane of workflow.laneCards?.slice(0, 3) ?? []) {
 			const age =
 				lane.secondsSinceLastSignal === undefined
@@ -2441,6 +2466,9 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 				? "(none)"
 				: `${lane.progressPhase ?? "progress"}: ${lane.progressLabel}`;
 			const verdict = lane.verdictLabel ?? "(none)";
+			const resultQuality = lane.completionStatus === undefined && lane.outputKind === undefined && lane.usableForSynthesis === undefined
+				? "(none)"
+				: `${lane.completionStatus ?? "unknown"}/${lane.outputKind ?? "unknown"}/synthesis=${lane.usableForSynthesis === undefined ? "unknown" : String(lane.usableForSynthesis)}`;
 			const issue = lane.failureHint === undefined ? "" : ` issue=${lane.failureHint}`;
 			lines.push(`  - lane ${lane.laneId}: ${lane.state ?? "unknown"}/${lane.classification}`);
 			lines.push(`    task: ${task}`);
@@ -2448,6 +2476,7 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 			lines.push(`    agent: ${agent}`);
 			lines.push(`    model: ${model}`);
 			lines.push(`    progress: ${progress}`);
+			lines.push(`    result: ${resultQuality}`);
 			lines.push(`    last signal: ${age}; nudges=${nudge}; verdict=${verdict}${issue}`);
 		}
 	}
@@ -4710,7 +4739,14 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		});
 	}
 
-	if (!naturalLanguageRoutingEnabled) return { tool: tools };
+	const eventRootDir = durableStateRootFromOptions(options);
+	const eventHook = eventRootDir === undefined
+		? undefined
+		: async (input: { event: unknown }) => {
+				await observeFlowDeskOpenCodeEventV1({ rootDir: eventRootDir, event: input.event });
+			};
+
+	if (!naturalLanguageRoutingEnabled) return eventHook === undefined ? { tool: tools } : { tool: tools, event: eventHook };
 	const stallAlertOption = chatMessageStallAlertOptionsFrom(
 		options,
 		statusLiveConfig,
@@ -4745,6 +4781,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 
 	return {
 		tool: tools,
+		...(eventHook === undefined ? {} : { event: eventHook }),
 		"chat.message": createFlowDeskNaturalLanguageChatMessageHook(
 			() => new Date(),
 			localSession,

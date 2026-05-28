@@ -256,6 +256,7 @@ interface ChatMessageHooks {
 		input: unknown,
 		output: { parts?: unknown[] },
 	) => Promise<void>;
+	event?: (input: { event: unknown }) => Promise<void>;
 }
 
 function toolOutput(value: string | { output: string }): string {
@@ -6975,6 +6976,7 @@ test("chat.message progress card surfaces active lanes when includeProgressCards
 		assert.match(serialized, /prompt: Inspect the repository/);
 		assert.match(serialized, /agent: agent-chat-progress-card/);
 		assert.match(serialized, /model: openai\/gpt-5\.5/);
+		assert.match(serialized, /result: \(none\)/);
 		assert.match(serialized, /- \/flowdesk-status/);
 		assert.match(serialized, /native clickable task UI is not claimed/);
 		assert.equal(/noReply|cancel|stop/.test(serialized), false);
@@ -7102,6 +7104,111 @@ test("chat.message progress card only surfaces lanes for the current session", a
 		const serialized = JSON.stringify(output);
 		assert.equal(serialized.includes("Lane progress:"), false);
 		assert.equal(serialized.includes("lane-chat-other-session-progress-card"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("event hook records child session permission progress", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-event-hook-progress-"));
+	try {
+		const workflowId = "workflow-event-hook-progress";
+		const childIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-child-session-event-hook-progress",
+			record: {
+				schema_version: "flowdesk.agent_task_child_session.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-event-hook-progress",
+				task_id: "task-event-hook-progress",
+				child_session_id: "child-event-hook-progress",
+				parent_session_ref: "ses-event-hook-parent",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				agent_ref: "agent-reviewer-gpt-frontier",
+				nudge_count: 0,
+				last_nudge_at: null,
+				created_at: new Date().toISOString(),
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(childIntent.ok, true, childIntent.errors.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [childIntent.writeIntent as never]).ok, true);
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		)) as ChatMessageHooks;
+		assert.ok(hooks.event);
+		await hooks.event({
+			event: {
+				type: "permission.updated",
+				properties: {
+					id: "perm-event-hook-progress",
+					type: "read",
+					sessionID: "child-event-hook-progress",
+					messageID: "msg-event-hook-progress",
+					title: "Allow read",
+					metadata: {},
+					time: { created: Date.now() },
+				},
+			},
+		});
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.entries.some((entry) =>
+			entry.evidenceClass === "agent_task_progress" &&
+			entry.record.lane_id === "lane-event-hook-progress" &&
+			entry.record.phase === "awaiting_permission" &&
+			entry.record.progress_label === "agent task awaiting OpenCode permission response",
+		));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("event hook maps child session errors to terminal task failure", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-event-hook-error-"));
+	try {
+		const workflowId = "workflow-event-hook-error";
+		const childIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-child-session-event-hook-error",
+			record: {
+				schema_version: "flowdesk.agent_task_child_session.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-event-hook-error",
+				task_id: "task-event-hook-error",
+				child_session_id: "child-event-hook-error",
+				parent_session_ref: "ses-event-hook-parent",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				agent_ref: "agent-reviewer-gpt-frontier",
+				nudge_count: 0,
+				last_nudge_at: null,
+				created_at: new Date().toISOString(),
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(childIntent.ok, true, childIntent.errors.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [childIntent.writeIntent as never]).ok, true);
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		)) as ChatMessageHooks;
+		assert.ok(hooks.event);
+		await hooks.event({ event: { type: "session.error", properties: { sessionID: "child-event-hook-error" } } });
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "task_failed" && entry.record.lane_id === "lane-event-hook-error"));
+		assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "lane_lifecycle" && entry.record.lane_id === "lane-event-hook-error" && entry.record.state === "invocation_failed"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

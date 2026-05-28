@@ -117,6 +117,26 @@ function pruneNonTerminalLifecycleSnapshotsNoLongerValid(
 	return { ...reload, entries };
 }
 
+function pruneInconsistencySnapshotsNoLongerValid(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): FlowDeskSessionEvidenceReloadResultV1 {
+	const terminalLaneIds = new Set<string>();
+	for (const entry of reload.entries) {
+		if (entry.evidenceClass === "task_result" || entry.evidenceClass === "task_failed") {
+			const laneId = getLaneLifecycleRecordField(entry.record, "lane_id");
+			if (laneId !== undefined) terminalLaneIds.add(laneId);
+		}
+	}
+	if (terminalLaneIds.size === 0) return reload;
+	const entries = reload.entries.filter((entry) => {
+		if (entry.evidenceClass !== "agent_task_inconsistency") return true;
+		const laneId = getLaneLifecycleRecordField(entry.record, "lane_id");
+		return laneId === undefined || !terminalLaneIds.has(laneId);
+	});
+	if (entries.length === reload.entries.length) return reload;
+	return { ...reload, entries };
+}
+
 export interface FlowDeskStatusLiveConfigV1 {
 	rootDir: string;
 	maxWorkflows?: number;
@@ -166,6 +186,15 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	progressingLateLaneCount?: number;
 	inconsistentFinalizingWithoutTerminalLaneCount?: number;
 	laneProgressCards?: readonly FlowDeskStatusLiveLaneProgressCardV1[];
+	laneProgressAggregate?: {
+		expected: number;
+		terminal: number;
+		taskResult: number;
+		failed: number;
+		awaitingPermission: number;
+		normalCompleted: number;
+		autoNextStepEligible: boolean;
+	};
 }
 
 export interface FlowDeskStatusLiveLaneProgressCardV1 {
@@ -827,6 +856,30 @@ function buildLaneProgressCards(
 	});
 }
 
+function buildLaneProgressAggregate(cards: readonly FlowDeskStatusLiveLaneProgressCardV1[]): NonNullable<FlowDeskStatusLiveWorkflowEvidenceSummaryV1["laneProgressAggregate"]> {
+	const expected = cards.length;
+	const terminal = cards.filter(card => card.classification === "terminal").length;
+	const taskResult = cards.filter(card => card.state === "task_result").length;
+	const failed = cards.filter(card => card.failureHint !== undefined || card.state === "invocation_failed" || card.state === "task_failed").length;
+	const awaitingPermission = cards.filter(card => card.progressPhase === "awaiting_permission").length;
+	const normalCompleted = cards.filter(card =>
+		card.state === "task_result" &&
+		card.classification === "terminal" &&
+		card.completionStatus !== "partial" &&
+		card.usableForSynthesis !== false &&
+		card.failureHint === undefined,
+	).length;
+	return {
+		expected,
+		terminal,
+		taskResult,
+		failed,
+		awaitingPermission,
+		normalCompleted,
+		autoNextStepEligible: expected > 0 && normalCompleted === expected,
+	};
+}
+
 function summarizeLatestProviderUsageSnapshot(
 	entries: readonly FlowDeskSessionEvidenceReloadEntryV1[],
 ): {
@@ -928,7 +981,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			});
 		}
 		const summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
-		const projectionReload = pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload);
+		const projectionReload = pruneInconsistencySnapshotsNoLongerValid(pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload));
 		const projection = projectFlowDeskLaneStallV1({
 			workflowId,
 			reload: projectionReload,
@@ -951,6 +1004,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			projectionReload,
 			projection,
 		);
+		summary.laneProgressAggregate = buildLaneProgressAggregate(summary.laneProgressCards);
 		workflows.push(summary);
 	}
 

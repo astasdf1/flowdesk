@@ -1765,10 +1765,20 @@ export async function monitorChildSessionsV1(input: {
 
 	// Find lanes that are NOT yet terminal (by lifecycle state or by task_result/task_failed evidence)
 	const terminalLaneIds = new Set<string>();
+	const awaitingPermissionLaneIds = new Set<string>();
+	const latestProgressByLane = new Map<string, { observedAtMs: number; phase: string }>();
 	for (const entry of reloaded.entries) {
 		const rec = entry.record as Record<string, unknown>;
 		const laneIdVal = typeof rec.lane_id === "string" ? rec.lane_id : undefined;
 		if (!laneIdVal) continue;
+		if (entry.evidenceClass === "agent_task_progress") {
+			const observedAtMs = typeof rec.observed_at === "string" ? Date.parse(rec.observed_at) : NaN;
+			const phase = typeof rec.phase === "string" ? rec.phase : undefined;
+			const current = latestProgressByLane.get(laneIdVal);
+			if (phase !== undefined && Number.isFinite(observedAtMs) && (current === undefined || current.observedAtMs <= observedAtMs)) {
+				latestProgressByLane.set(laneIdVal, { observedAtMs, phase });
+			}
+		}
 		if (entry.evidenceClass === "lane_lifecycle") {
 			const s = rec.state;
 			if (s === "complete" || s === "invocation_failed" || s === "no_output" || s === "incomplete")
@@ -1777,12 +1787,25 @@ export async function monitorChildSessionsV1(input: {
 			terminalLaneIds.add(laneIdVal);
 		}
 	}
+	for (const [laneId, progress] of latestProgressByLane) {
+		if (progress.phase === "awaiting_permission") awaitingPermissionLaneIds.add(laneId);
+	}
+	// Defensive fallback for older/event-written progress records: if any explicit
+	// awaiting_permission marker is present and no later permission response has
+	// been observed, suspend watchdog nudge/abort for the lane.
+	for (const entry of reloaded.entries) {
+		if (entry.evidenceClass !== "agent_task_progress") continue;
+		const rec = entry.record as Record<string, unknown>;
+		if (rec.phase === "awaiting_permission" && typeof rec.lane_id === "string") awaitingPermissionLaneIds.add(rec.lane_id);
+		if (rec.phase === "waiting" && typeof rec.progress_label === "string" && rec.progress_label.includes("permission response") && typeof rec.lane_id === "string") awaitingPermissionLaneIds.delete(rec.lane_id);
+	}
 
 	for (const record of childRecords) {
 		const laneId = typeof record.lane_id === "string" ? record.lane_id : "";
 		const childSessionId = typeof record.child_session_id === "string" ? record.child_session_id : "";
 		if (!laneId || !childSessionId) continue;
 		if (terminalLaneIds.has(laneId)) continue; // already done
+		if (awaitingPermissionLaneIds.has(laneId)) continue; // user permission is outstanding; do not nudge or abort
 
 		result.lanesPolled++;
 		const createdAtMs = typeof record.created_at === "string" ? Date.parse(record.created_at) : nowMs;

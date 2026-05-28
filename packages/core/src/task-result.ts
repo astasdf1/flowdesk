@@ -52,7 +52,7 @@ export interface FlowDeskAgentTaskProgressV1 {
 	provider_qualified_model_id: string;
 	progress_seq: number;
 	observed_at: string;
-	phase: "started" | "waiting" | "nudged" | "finalizing" | "failed";
+	phase: "started" | "waiting" | "nudged" | "awaiting_permission" | "retrying" | "finalizing" | "failed";
 	progress_label: string;
 	progress_ref: string;
 	redaction_version: "v1";
@@ -97,6 +97,8 @@ const VALID_AGENT_TASK_PROGRESS_PHASES = new Set([
 	"started",
 	"waiting",
 	"nudged",
+	"awaiting_permission",
+	"retrying",
 	"finalizing",
 	"failed",
 ]);

@@ -303,6 +303,22 @@ test("status live does not materialize inconsistency when finalizing has task_re
 		const laneId = "lane-task-finalizing-result-1";
 		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-running-finalizing-result-1", runningLifecycle(workflowId, laneId, "attempt-finalizing-result-1"));
 		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-result-3", finalizingProgress(workflowId, laneId, "task-finalizing-result-1", 3));
+		writeStatusRecord(rootDir, workflowId, "agent_task_inconsistency", "agent-task-inconsistency-finalizing-result-legacy", {
+			schema_version: "flowdesk.agent_task_inconsistency.v1",
+			workflow_id: workflowId,
+			attempt_id: "attempt-finalizing-result-1",
+			lane_id: laneId,
+			task_id: "task-finalizing-result-1",
+			last_progress_seq: 3,
+			last_progress_observed_at: "2026-05-27T00:01:30.000Z",
+			inconsistency_kind: "finalizing_without_terminal",
+			grace_window_ms: 90_000,
+			grace_source_label: "test_legacy_inconsistency",
+			observed_at: "2026-05-27T00:02:00.000Z",
+			safe_next_actions: ["/flowdesk-status"],
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
 		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-finalizing-result-1", {
 			schema_version: "flowdesk.task_result.v1",
 			workflow_id: workflowId,
@@ -326,13 +342,17 @@ test("status live does not materialize inconsistency when finalizing has task_re
 			request: { workflowId },
 			now: () => new Date("2026-05-27T00:03:00.000Z"),
 		});
-		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, undefined);
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, 1);
 		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
 		assert.equal(result.totalStalledLaneCount, 0);
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "task_result");
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.completionStatus, "partial");
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.outputKind, "process_notes");
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.usableForSynthesis, true);
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.classification, "terminal");
+		assert.equal(result.workflows[0].laneProgressAggregate?.expected, 1);
+		assert.equal(result.workflows[0].laneProgressAggregate?.normalCompleted, 0);
+		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, false);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

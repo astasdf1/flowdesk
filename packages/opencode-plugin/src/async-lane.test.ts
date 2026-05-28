@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION } from "./agent-task-runner.js";
 import { monitorChildSessionsV1 } from "./stall-recovery.js";
-import { reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
+import { applyFlowDeskSessionEvidenceWriteIntentsV1, prepareFlowDeskSessionEvidenceWriteIntentV1, reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
 
 function makeClient(overrides: Partial<{
@@ -424,6 +424,71 @@ test("monitorChildSessions sends noReply nudge after quiet period", async () => 
 		assert.ok(nudged.length > 0);
 		const hasNoReplyNudge = nudged.some(n => (n as Record<string, unknown>).noReply === true);
 		assert.ok(hasNoReplyNudge, "at least one prompt call must use noReply: true");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions suspends nudge and abort while awaiting permission", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-permission-wait-"));
+	try {
+		const nudged: unknown[] = [];
+		const aborted: unknown[] = [];
+		const client = makeClient({
+			messages: async () => [],
+			prompt: (o) => { nudged.push(o); return {}; },
+			abort: async (o) => { aborted.push(o); },
+		});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-permission-wait-1",
+			taskId: "task-pw1",
+			laneId: "lane-pw1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		nudged.length = 0;
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-permission-wait-1",
+			evidenceId: "agent-task-progress-lane-pw1-permission-wait-test",
+			record: {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: "workflow-permission-wait-1",
+				lane_id: "lane-pw1",
+				task_id: "task-pw1",
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				progress_seq: 99,
+				observed_at: new Date(Date.now() + 1_000).toISOString(),
+				phase: "awaiting_permission",
+				progress_label: "agent task awaiting OpenCode permission response",
+				progress_ref: "progress-lane-pw1-permission-wait-test",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(prepared.ok, true, prepared.errors.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent as never]).ok, true);
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-permission-wait-1",
+			client,
+			now: new Date(Date.now() + 120_000),
+			nudgeQuietPeriodMs: 20_000,
+			abortThresholdMs: 60_000,
+		});
+
+		assert.equal(monResult.lanesNudged, 0);
+		assert.equal(monResult.lanesAborted, 0);
+		assert.equal(nudged.length, 0);
+		assert.equal(aborted.length, 0);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
