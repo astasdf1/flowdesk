@@ -136,6 +136,51 @@ test("monitorChildSessions collects result when child session has text", async (
 	}
 });
 
+test("monitorChildSessions reads current SDK messages response shapes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-current-shape-"));
+	try {
+		const seenOptions: unknown[] = [];
+		const launchClient = makeClient({});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-current-shape",
+			taskId: "task-current-shape",
+			laneId: "lane-current-shape",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: launchClient,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async (options) => {
+				seenOptions.push(options);
+				if ((options as Record<string, unknown>).sessionID !== undefined) return { error: { message: "legacy shape" } };
+				return { data: { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "current shape done" }] }] } };
+			},
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-current-shape",
+			client: monitorClient,
+			now: new Date(),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		assert.ok(seenOptions.some((option) => (option as Record<string, unknown>).sessionID !== undefined));
+		assert.ok(seenOptions.some((option) => typeof (option as Record<string, unknown>).path === "object"));
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-current-shape" });
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "current shape done");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("monitorChildSessions sends noReply nudge after quiet period", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-nudge-"));
 	try {

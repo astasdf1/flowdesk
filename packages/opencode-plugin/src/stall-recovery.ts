@@ -1559,6 +1559,31 @@ const AGENT_TASK_NUDGE_TEXT_WATCHDOG =
 	"Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
 
 /** Poll result from one session.messages call */
+function monitorRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
+}
+
+function monitorResponseData(value: unknown): unknown {
+	const record = monitorRecord(value);
+	return record !== undefined && "data" in record ? record.data : value;
+}
+
+function monitorSdkErrorResponse(value: unknown): boolean {
+	const record = monitorRecord(value);
+	const data = monitorRecord(monitorResponseData(value));
+	return record?.error !== undefined || data?.error !== undefined;
+}
+
+function monitorMessageItems(value: unknown): unknown[] {
+	const data = monitorResponseData(value);
+	if (Array.isArray(data)) return data;
+	const record = monitorRecord(data);
+	if (Array.isArray(record?.items)) return record.items;
+	return Array.isArray(record?.messages) ? record.messages : [];
+}
+
 async function pollChildSessionText(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
@@ -1567,18 +1592,25 @@ async function pollChildSessionText(
 	const messages = client.session.messages;
 	if (typeof messages !== "function") return null;
 	try {
-		const raw = await Promise.race([
-			(messages as (o: unknown) => Promise<unknown>).call(client.session, {
+		const readMessages = async (): Promise<unknown> => {
+			const current = await (messages as (o: unknown) => Promise<unknown>).call(client.session, {
 				sessionID: childSessionId,
-			}),
+			});
+			if (!monitorSdkErrorResponse(current)) return current;
+			return (messages as (o: unknown) => Promise<unknown>).call(client.session, {
+				path: { id: childSessionId },
+			});
+		};
+		const raw = await Promise.race([
+			readMessages(),
 			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
 		]);
 		if (raw === null) return null;
-		const data = Array.isArray(raw) ? raw : (typeof raw === "object" && raw !== null && Array.isArray((raw as Record<string, unknown>).items) ? (raw as Record<string, unknown>).items as unknown[] : []);
-		for (let i = (data as unknown[]).length - 1; i >= 0; i--) {
-			const msg = (data as unknown[])[i];
-			const msgRec = typeof msg === "object" && msg !== null ? msg as Record<string, unknown> : undefined;
-			const info = (typeof msgRec?.info === "object" && msgRec.info !== null ? msgRec.info : msgRec) as Record<string, unknown> | undefined;
+		const data = monitorMessageItems(raw);
+		for (let i = data.length - 1; i >= 0; i--) {
+			const msg = data[i];
+			const msgRec = monitorRecord(msg);
+			const info = monitorRecord(msgRec?.info) ?? msgRec;
 			if (info?.role !== "assistant") continue;
 			const parts = Array.isArray(msgRec?.parts) ? msgRec.parts : Array.isArray(info?.parts) ? info.parts : [];
 			for (const part of parts as unknown[]) {
@@ -1599,7 +1631,7 @@ async function sendWatchdogNudge(
 	childSessionId: string,
 	timeoutMs = 5_000,
 ): Promise<"sent" | "timeout" | "skipped"> {
-	const promptFn = client.session.prompt ?? client.session.promptAsync;
+	const promptFn = client.session.promptAsync ?? client.session.prompt;
 	if (promptFn === undefined) return "skipped";
 	try {
 		await Promise.race([
