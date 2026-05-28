@@ -2048,6 +2048,8 @@ interface FlowDeskChatMessageStallSummaryV1 {
 			providerQualifiedModelId?: string;
 			promptPreview?: string;
 			nudgeCount?: number;
+			progressPhase?: string;
+			progressLabel?: string;
 			verdictLabel?: string;
 			failureHint?: string;
 		}>;
@@ -2312,6 +2314,8 @@ export async function collectStallAlertResult(
 								providerQualifiedModelId: lane.providerQualifiedModelId,
 								promptPreview: lane.promptPreview,
 								nudgeCount: lane.nudgeCount,
+								progressPhase: lane.progressPhase,
+								progressLabel: lane.progressLabel,
 								verdictLabel: lane.verdictLabel,
 								failureHint: lane.failureHint,
 							})),
@@ -2433,6 +2437,9 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 			const task = lane.taskId ?? lane.laneId;
 			const prompt = lane.promptPreview ?? "(hidden)";
 			const nudge = lane.nudgeCount === undefined ? "?" : String(lane.nudgeCount);
+			const progress = lane.progressLabel === undefined
+				? "(none)"
+				: `${lane.progressPhase ?? "progress"}: ${lane.progressLabel}`;
 			const verdict = lane.verdictLabel ?? "(none)";
 			const issue = lane.failureHint === undefined ? "" : ` issue=${lane.failureHint}`;
 			lines.push(`  - lane ${lane.laneId}: ${lane.state ?? "unknown"}/${lane.classification}`);
@@ -2440,6 +2447,7 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 			lines.push(`    prompt: ${prompt}`);
 			lines.push(`    agent: ${agent}`);
 			lines.push(`    model: ${model}`);
+			lines.push(`    progress: ${progress}`);
 			lines.push(`    last signal: ${age}; nudges=${nudge}; verdict=${verdict}${issue}`);
 		}
 	}

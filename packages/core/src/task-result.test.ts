@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	validateFlowDeskTaskResultV1,
 	validateFlowDeskTaskFailedV1,
+	validateFlowDeskAgentTaskProgressV1,
 	VALID_TASK_FAILURE_CATEGORIES,
 } from "./task-result.js";
 
@@ -39,6 +40,25 @@ function taskFailed(overrides: Record<string, unknown> = {}) {
 	failure_category: "sdk_create_failed",
 		redacted_reason: "session_create_api_unavailable",
 		created_at: "2026-05-26T10:00:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function taskProgress(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: "workflow-agent-task-abc123",
+		lane_id: "lane-task-abc123",
+		task_id: "task-abc123",
+		agent_ref: "agent-reviewer-claude-opus",
+		provider_qualified_model_id: "claude/claude-opus-4-7",
+		progress_seq: 1,
+		observed_at: "2026-05-26T10:00:00.000Z",
+		phase: "started",
+		progress_label: "agent task started",
+		progress_ref: "progress-lane-task-abc123-1",
+		redaction_version: "v1",
 		dispatch_authority_enabled: false,
 		...overrides,
 	};
@@ -142,4 +162,18 @@ test("task failed validator rejects task_id not starting with task-", () => {
 	);
 	assert.equal(result.ok, false);
 	assert.ok(result.errors.some((e) => /task_id/.test(e)));
+});
+
+test("agent task progress validator accepts valid record", () => {
+	const result = validateFlowDeskAgentTaskProgressV1(taskProgress());
+	assert.equal(result.ok, true, result.errors.join("; "));
+});
+
+test("agent task progress validator rejects authority and oversized labels", () => {
+	const authority = validateFlowDeskAgentTaskProgressV1(taskProgress({ dispatch_authority_enabled: true }));
+	assert.equal(authority.ok, false);
+	assert.ok(authority.errors.some((e) => /dispatch authority/i.test(e)));
+	const label = validateFlowDeskAgentTaskProgressV1(taskProgress({ progress_label: "x".repeat(121) }));
+	assert.equal(label.ok, false);
+	assert.ok(label.errors.some((e) => /progress_label/.test(e)));
 });

@@ -3662,29 +3662,33 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 		};
 	let response: unknown;
 	try {
-		response = await callSdkWithLegacyFallback(
-			dispatch as (options: unknown) => unknown | Promise<unknown>,
-			input.client.session,
-			{
-				sessionID: childSessionId,
-				...(input.request.directory === undefined
-					? {}
-					: { directory: input.request.directory }),
+		const flatPromptOptions = {
+			sessionID: childSessionId,
+			...(input.request.directory === undefined
+				? {}
+				: { directory: input.request.directory }),
+			model: runtimeModel,
+			agent,
+			parts: [{ type: "text", text }],
+		};
+		const structuredPromptOptions = {
+			path: { id: childSessionId },
+			...(input.request.directory === undefined
+				? {}
+				: { query: { directory: input.request.directory } }),
+			body: {
 				model: runtimeModel,
 				agent,
 				parts: [{ type: "text", text }],
 			},
-			{
-				path: { id: childSessionId },
-				...(input.request.directory === undefined
-					? {}
-					: { query: { directory: input.request.directory } }),
-				body: {
-					model: runtimeModel,
-					agent,
-					parts: [{ type: "text", text }],
-				},
-			},
+		};
+		const firstPromptOptions = dispatchMethod === "promptAsync" ? structuredPromptOptions : flatPromptOptions;
+		const fallbackPromptOptions = dispatchMethod === "promptAsync" ? flatPromptOptions : structuredPromptOptions;
+		response = await callSdkWithLegacyFallback(
+			dispatch as (options: unknown) => unknown | Promise<unknown>,
+			input.client.session,
+			firstPromptOptions,
+			fallbackPromptOptions,
 		);
 		if (isSdkErrorResponse(response)) throw new Error("sdk prompt failed");
 	} catch {

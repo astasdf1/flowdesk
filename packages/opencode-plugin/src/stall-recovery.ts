@@ -8,6 +8,7 @@ import {
 	type FlowDeskPendingAbortWarningV1,
 	type FlowDeskReviewerLaneContextV1,
 	type FlowDeskAgentTaskContextV1,
+	type FlowDeskAgentTaskProgressV1,
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
 	type FlowDeskPendingRetryPlanV1,
@@ -1675,6 +1676,41 @@ function writeChildSessionEvidence(
 		applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
 }
 
+function childProgressLabel(value: string): string {
+	const compact = value.replace(/\s+/g, " ").trim();
+	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
+}
+
+function writeAgentTaskProgressEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	phase: FlowDeskAgentTaskProgressV1["phase"];
+	progressSeq: number;
+	progressLabel: string;
+	observedAt: string;
+}): void {
+	const record: FlowDeskAgentTaskProgressV1 = {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		progress_seq: input.progressSeq,
+		observed_at: input.observedAt,
+		phase: input.phase,
+		progress_label: childProgressLabel(input.progressLabel),
+		progress_ref: `progress-${input.laneId}-${input.progressSeq}`,
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	};
+	writeChildSessionEvidence(input.rootDir, input.workflowId, `agent-task-progress-${input.laneId}-${input.progressSeq}`, record as unknown as Record<string, unknown>);
+}
+
 export interface FlowDeskChildSessionMonitorResultV1 {
 	lanesPolled: number;
 	lanesCompleted: number;
@@ -1769,6 +1805,18 @@ export async function monitorChildSessionsV1(input: {
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
 			});
+			writeAgentTaskProgressEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId,
+				agentRef,
+				providerQualifiedModelId: modelId,
+				phase: "finalizing",
+				progressSeq: 10 + nudgeCount,
+				progressLabel: "async agent task result captured by watchdog",
+				observedAt: completedAt,
+			});
 			result.lanesCompleted++;
 			continue;
 		}
@@ -1794,6 +1842,18 @@ export async function monitorChildSessionsV1(input: {
 				created_at: abortedAt,
 				dispatch_authority_enabled: false,
 			});
+			writeAgentTaskProgressEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId,
+				agentRef,
+				providerQualifiedModelId: modelId,
+				phase: "failed",
+				progressSeq: 20 + nudgeCount,
+				progressLabel: "async agent task aborted after no response",
+				observedAt: abortedAt,
+			});
 			result.lanesAborted++;
 			continue;
 		}
@@ -1802,6 +1862,22 @@ export async function monitorChildSessionsV1(input: {
 		if (silenceMs >= nudgeQuietPeriodMs && nudgeCount < maxNudges) {
 			await sendWatchdogNudge(input.client, childSessionId);
 			result.lanesNudged++;
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const nudgedAt = new Date(nowMs).toISOString();
+			writeAgentTaskProgressEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId,
+				agentRef,
+				providerQualifiedModelId: modelId,
+				phase: "nudged",
+				progressSeq: 2 + nudgeCount,
+				progressLabel: "async agent task nudged after quiet period",
+				observedAt: nudgedAt,
+			});
 			// Update nudge_count in evidence (overwrite record)
 			const evidenceId = reloaded.entries
 				.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)

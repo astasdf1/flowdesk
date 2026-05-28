@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
 	type FlowDeskAgentTaskContextV1,
+	type FlowDeskAgentTaskProgressV1,
 	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
@@ -348,6 +349,47 @@ function writeSessionEvidence(input: {
 	}
 }
 
+function progressLabel(value: string): string {
+	const compact = value.replace(/\s+/g, " ").trim();
+	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
+}
+
+function writeAgentTaskProgress(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	phase: FlowDeskAgentTaskProgressV1["phase"];
+	progressSeq: number;
+	progressLabel: string;
+	observedAt?: string;
+}): void {
+	const observedAt = input.observedAt ?? new Date().toISOString();
+	const record: FlowDeskAgentTaskProgressV1 = {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		progress_seq: input.progressSeq,
+		observed_at: observedAt,
+		phase: input.phase,
+		progress_label: progressLabel(input.progressLabel),
+		progress_ref: `progress-${input.laneId}-${input.progressSeq}`,
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	};
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: `agent-task-progress-${input.laneId}-${input.progressSeq}`,
+		record: record as unknown as Record<string, unknown>,
+	});
+}
+
 function writeAgentTaskTerminalLifecycle(input: {
 	rootDir: string;
 	workflowId: string;
@@ -474,6 +516,18 @@ export async function executeFlowDeskAgentTaskV1(
 		workflowId: input.workflowId,
 		evidenceId: `agent-task-context-${input.taskId}-${token}`,
 		record: agentTaskContextRecord as unknown as Record<string, unknown>,
+	});
+	writeAgentTaskProgress({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		taskId: input.taskId,
+		agentRef: input.agentRef,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		phase: "started",
+		progressSeq: 1,
+		progressLabel: "agent task lane launch started",
+		observedAt,
 	});
 
 	// Launch the lane — wrap in absolute timeout so session.prompt blocking doesn't hang forever.
@@ -646,6 +700,17 @@ export async function executeFlowDeskAgentTaskV1(
 				dispatch_authority_enabled: false,
 			} as unknown as Record<string, unknown>,
 		});
+		writeAgentTaskProgress({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			taskId: input.taskId,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			phase: "waiting",
+			progressSeq: 2,
+			progressLabel: "agent task waiting for async child result",
+		});
 		return { status: "task_launched", laneId: input.laneId, childSessionId: resolvedChildId };
 	}
 
@@ -704,6 +769,17 @@ export async function executeFlowDeskAgentTaskV1(
 			evidenceId: taskFailedEvidenceId,
 			record: taskFailedRecord as unknown as Record<string, unknown>,
 		});
+		writeAgentTaskProgress({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			taskId: input.taskId,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			phase: "failed",
+			progressSeq: 3,
+			progressLabel: failureCategory === "no_response" ? "agent task finished without response" : "agent task output contract not satisfied",
+		});
 		writeAgentTaskTerminalLifecycle({
 			rootDir: input.rootDir,
 			workflowId: input.workflowId,
@@ -756,6 +832,17 @@ export async function executeFlowDeskAgentTaskV1(
 		workflowId: input.workflowId,
 		evidenceId: taskResultEvidenceId,
 		record: taskResultRecord as unknown as Record<string, unknown>,
+	});
+	writeAgentTaskProgress({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		taskId: input.taskId,
+		agentRef: input.agentRef,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		phase: "finalizing",
+		progressSeq: 3,
+		progressLabel: "agent task result captured",
 	});
 	writeAgentTaskTerminalLifecycle({
 		rootDir: input.rootDir,

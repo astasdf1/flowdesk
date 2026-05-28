@@ -1074,6 +1074,33 @@ test("injected sdk runtime lane launch creates child session and prompts exact r
 	]);
 });
 
+test("injected sdk runtime lane launch uses structured promptAsync options first", async () => {
+	const { client, promptCalls, promptAsyncCalls } = fakeRuntimeLaneClient();
+	const result = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+		client,
+		launchPlan: runtimeLaneLaunchPlan(),
+		request: {
+			allowActualLaneLaunch: true,
+			parentSessionId: "parent-123",
+			promptText: "Return a typed FlowDesk reviewer verdict.",
+			dispatchMethod: "promptAsync",
+		},
+	});
+
+	assert.equal(result.status, "lane_launch_started");
+	assert.equal(promptCalls.length, 0);
+	assert.deepEqual(promptAsyncCalls, [
+		{
+			path: { id: "child-123" },
+			body: {
+				model: { providerID: "anthropic", modelID: "sonnet-4" },
+				agent: "reviewer",
+				parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
+			},
+		},
+	]);
+});
+
 test("injected sdk runtime lane launch blocks before SDK calls without opt-in or plan binding", async () => {
 	const noOptIn = fakeRuntimeLaneClient();
 	const blockedOptIn = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({

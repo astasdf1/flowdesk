@@ -36,6 +36,7 @@ import {
 import {
 	validateFlowDeskTaskResultV1,
 	validateFlowDeskTaskFailedV1,
+	validateFlowDeskAgentTaskProgressV1,
 } from "./task-result.js";
 import { validateFlowDeskTaskAgentAssignmentV1 } from "./task-agent-assignment.js";
 import { validateFlowDeskTaskGraphV1 } from "./task-graph.js";
@@ -128,6 +129,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
 	reviewer_lane_context: "flowdesk.reviewer_lane_context.v1",
 	agent_task_context: "flowdesk.agent_task_context.v1",
+	agent_task_progress: "flowdesk.agent_task_progress.v1",
 	agent_task_child_session: "flowdesk.agent_task_child_session.v1",
 	pending_retry_plan: "flowdesk.pending_retry_plan.v1",
 	retry_executed: "flowdesk.retry_executed.v1",
@@ -824,6 +826,8 @@ function validateEvidenceShape(
 		return validateFlowDeskReviewerLaneContextV1(record);
 	if (evidenceClass === "agent_task_context")
 		return validateFlowDeskAgentTaskContextV1(record);
+	if (evidenceClass === "agent_task_progress")
+		return validateFlowDeskAgentTaskProgressV1(record);
 	if (evidenceClass === "pending_retry_plan")
 		return validateFlowDeskPendingRetryPlanV1(record);
 	if (evidenceClass === "retry_executed")

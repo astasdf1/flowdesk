@@ -177,6 +177,9 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	promptPreview?: string;
 	promptTextTruncated?: boolean;
 	nudgeCount?: number;
+	progressPhase?: string;
+	progressLabel?: string;
+	progressObservedAt?: string;
 	verdictLabel?: "pass" | "changes_required" | "blocked" | "inconclusive";
 	failureHint?: string;
 	statusCommandRef: "/flowdesk-status";
@@ -501,7 +504,28 @@ function buildLaneProgressCards(
 		{ taskId?: string; promptPreview?: string; promptTextTruncated?: boolean }
 	>();
 	const childSessionByLane = new Map<string, { nudgeCount?: number }>();
+	const agentTaskProgressByLane = new Map<
+		string,
+		{ observedAtMs: number; phase?: string; label?: string; observedAt?: string }
+	>();
 	for (const entry of reload.entries) {
+		if (entry.evidenceClass === "agent_task_progress") {
+			const laneId = getStringField(entry.record, "lane_id");
+			if (laneId !== undefined) {
+				const observedAt = getStringField(entry.record, "observed_at");
+				const observedAtMs = observedAt === undefined ? 0 : Date.parse(observedAt);
+				const current = agentTaskProgressByLane.get(laneId);
+				if (current === undefined || current.observedAtMs <= observedAtMs) {
+					agentTaskProgressByLane.set(laneId, {
+						observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : 0,
+						phase: getStringField(entry.record, "phase"),
+						label: getStringField(entry.record, "progress_label"),
+						observedAt,
+					});
+				}
+			}
+			continue;
+		}
 		if (entry.evidenceClass === "agent_task_context") {
 			const laneId = getStringField(entry.record, "lane_id");
 			if (laneId !== undefined) {
@@ -564,6 +588,7 @@ function buildLaneProgressCards(
 		const meta = lifecycleMeta.get(entry.laneId);
 		const context = agentTaskContextByLane.get(entry.laneId);
 		const childSession = childSessionByLane.get(entry.laneId);
+		const progress = agentTaskProgressByLane.get(entry.laneId);
 		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
@@ -591,6 +616,9 @@ function buildLaneProgressCards(
 			...(context?.promptPreview === undefined ? {} : { promptPreview: context.promptPreview }),
 			...(context?.promptTextTruncated === undefined ? {} : { promptTextTruncated: context.promptTextTruncated }),
 			...(childSession?.nudgeCount === undefined ? {} : { nudgeCount: childSession.nudgeCount }),
+			...(progress?.phase === undefined ? {} : { progressPhase: progress.phase }),
+			...(progress?.label === undefined ? {} : { progressLabel: progress.label }),
+			...(progress?.observedAt === undefined ? {} : { progressObservedAt: progress.observedAt }),
 			...(verdictLabel === undefined ? {} : { verdictLabel }),
 			...(entry.failureHint === undefined
 				? {}

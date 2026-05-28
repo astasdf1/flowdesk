@@ -176,6 +176,8 @@ test("monitorChildSessions reads current SDK messages response shapes", async ()
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-current-shape" });
 		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
 		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "current shape done");
+		const progress = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && (e.record as Record<string, unknown>).phase === "finalizing");
+		assert.equal((progress?.record as Record<string, unknown>).progress_label, "async agent task result captured by watchdog");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
