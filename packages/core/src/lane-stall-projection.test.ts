@@ -48,6 +48,19 @@ function entry(
 	};
 }
 
+function genericEntry(
+	evidenceClass: FlowDeskSessionEvidenceReloadEntryV1["evidenceClass"],
+	evidenceId: string,
+	record: Record<string, unknown>,
+): FlowDeskSessionEvidenceReloadEntryV1 {
+	return {
+		evidenceClass,
+		evidenceId,
+		path: `.flowdesk/sessions/${workflowId}/${evidenceClass}/${evidenceId}.json`,
+		record,
+	};
+}
+
 function reload(
 	entries: FlowDeskSessionEvidenceReloadEntryV1[],
 ): FlowDeskSessionEvidenceReloadResultV1 {
@@ -264,6 +277,45 @@ test("lane stall projection attaches a failure hint for invocation_failed lanes"
 	});
 	assert.equal(result.entries[0].classification, "terminal");
 	assert.equal(result.entries[0].failureHint, "invocation_failed");
+});
+
+test("lane stall projection surfaces finalizing-without-terminal inconsistency before stalled", () => {
+	const result = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload: reload([
+			entry(
+				lifecycle({
+					lane_id: "lane-inconsistent",
+					updated_at: new Date(observedAtMs - 7 * 60_000).toISOString(),
+				}),
+				"lifecycle-inconsistent",
+			),
+			genericEntry("agent_task_inconsistency", "agent-task-inconsistency-lane-inconsistent-finalizing-without-terminal", {
+				schema_version: "flowdesk.agent_task_inconsistency.v1",
+				workflow_id: workflowId,
+				attempt_id: "attempt-stall-1",
+				lane_id: "lane-inconsistent",
+				task_id: "task-inconsistent",
+				last_progress_seq: 3,
+				last_progress_observed_at: new Date(observedAtMs - 2 * 60_000).toISOString(),
+				inconsistency_kind: "finalizing_without_terminal",
+				grace_window_ms: 90_000,
+				grace_source_label: "default_status_live_finalizing_inconsistency_grace",
+				observed_at: observedAt,
+				safe_next_actions: ["/flowdesk-status", "/flowdesk-abort"],
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			}),
+		]),
+	});
+	assert.equal(result.entries[0].classification, "inconsistent_finalizing_without_terminal");
+	assert.equal(result.entries[0].abnormal, true);
+	assert.equal(result.entries[0].failureHint, "finalizing_without_terminal");
+	assert.equal(result.totalInconsistentLanes, 1);
+	assert.equal(result.totalStalledLanes, 0);
+	assert.equal(result.worstClassification, "inconsistent_finalizing_without_terminal");
+	assert.ok(result.entries[0].safeNextActions.includes("/flowdesk-abort"));
 });
 
 test("lane stall projection enforces a minimum late threshold and stall above it", () => {

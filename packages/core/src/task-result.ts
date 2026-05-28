@@ -55,6 +55,29 @@ export interface FlowDeskAgentTaskProgressV1 {
 	dispatch_authority_enabled: false;
 }
 
+export interface FlowDeskAgentTaskInconsistencyV1 {
+	schema_version: "flowdesk.agent_task_inconsistency.v1";
+	workflow_id: string;
+	attempt_id: string;
+	lane_id: string;
+	task_id: string;
+	last_progress_seq: number;
+	last_progress_observed_at: string;
+	inconsistency_kind: "finalizing_without_terminal";
+	grace_window_ms: number;
+	grace_source_label: string;
+	observed_at: string;
+	safe_next_actions: readonly (
+		| "/flowdesk-status"
+		| "/flowdesk-abort"
+		| "/flowdesk-retry"
+		| "/flowdesk-doctor"
+		| "/flowdesk-export-debug"
+	)[];
+	redaction_version: "v1";
+	dispatch_authority_enabled: false;
+}
+
 export const VALID_TASK_FAILURE_CATEGORIES = new Set([
 	"sdk_create_failed",
 	"sdk_prompt_timeout",
@@ -65,12 +88,23 @@ export const VALID_TASK_FAILURE_CATEGORIES = new Set([
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_PROGRESS_MAX_LABEL = 120;
+const AGENT_TASK_INCONSISTENCY_MAX_GRACE_LABEL = 120;
 const VALID_AGENT_TASK_PROGRESS_PHASES = new Set([
 	"started",
 	"waiting",
 	"nudged",
 	"finalizing",
 	"failed",
+]);
+const VALID_AGENT_TASK_INCONSISTENCY_KINDS = new Set([
+	"finalizing_without_terminal",
+]);
+const VALID_AGENT_TASK_INCONSISTENCY_ACTIONS = new Set([
+	"/flowdesk-status",
+	"/flowdesk-abort",
+	"/flowdesk-retry",
+	"/flowdesk-doctor",
+	"/flowdesk-export-debug",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -103,6 +137,28 @@ function idStartsWith(value: unknown, prefix: string, label: string): Validation
 	return value.startsWith(prefix)
 		? valid()
 		: invalid(`${label} must start with "${prefix}"`);
+}
+
+function boundedString(value: unknown, label: string, max: number): ValidationResult {
+	if (typeof value !== "string" || value.trim().length === 0)
+		return invalid(`${label} must be a non-empty string`);
+	if (value.length > max) return invalid(`${label} exceeds ${max} chars`);
+	return valid();
+}
+
+function safeNextActions(value: unknown): ValidationResult {
+	if (!Array.isArray(value)) return invalid("safe_next_actions must be an array");
+	if (value.length === 0 || value.length > 5)
+		return invalid("safe_next_actions must contain 1-5 actions");
+	const errors: string[] = [];
+	for (const action of value) {
+		if (
+			typeof action !== "string" ||
+			!VALID_AGENT_TASK_INCONSISTENCY_ACTIONS.has(action)
+		)
+			errors.push("safe_next_actions contains an invalid action");
+	}
+	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,5 +277,48 @@ export function validateFlowDeskAgentTaskProgressV1(value: unknown): ValidationR
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("agent task progress cannot enable dispatch authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "agent_task_progress").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function validateFlowDeskAgentTaskInconsistencyV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("agent task inconsistency must be an object");
+	const record = value as Partial<FlowDeskAgentTaskInconsistencyV1>;
+	const errors: string[] = [];
+	const allowed = new Set([
+		"schema_version",
+		"workflow_id",
+		"attempt_id",
+		"lane_id",
+		"task_id",
+		"last_progress_seq",
+		"last_progress_observed_at",
+		"inconsistency_kind",
+		"grace_window_ms",
+		"grace_source_label",
+		"observed_at",
+		"safe_next_actions",
+		"redaction_version",
+		"dispatch_authority_enabled",
+	]);
+	for (const key of Object.keys(record)) if (!allowed.has(key)) errors.push(`unknown property: ${key}`);
+	errors.push(...exactString(record.schema_version, "flowdesk.agent_task_inconsistency.v1", "schema_version").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueId(record.attempt_id, "attempt_id").errors);
+	errors.push(...validateOpaqueId(record.lane_id, "lane_id").errors);
+	errors.push(...idStartsWith(record.task_id, "task-", "task_id").errors);
+	if (typeof record.last_progress_seq !== "number" || !Number.isInteger(record.last_progress_seq) || record.last_progress_seq < 1)
+		errors.push("last_progress_seq must be a positive integer");
+	errors.push(...timestamp(record.last_progress_observed_at, "last_progress_observed_at").errors);
+	if (!VALID_AGENT_TASK_INCONSISTENCY_KINDS.has(record.inconsistency_kind ?? ""))
+		errors.push("inconsistency_kind is invalid");
+	if (typeof record.grace_window_ms !== "number" || !Number.isInteger(record.grace_window_ms) || record.grace_window_ms < 30_000 || record.grace_window_ms > 600_000)
+		errors.push("grace_window_ms must be an integer between 30000 and 600000");
+	errors.push(...boundedString(record.grace_source_label, "grace_source_label", AGENT_TASK_INCONSISTENCY_MAX_GRACE_LABEL).errors);
+	errors.push(...timestamp(record.observed_at, "observed_at").errors);
+	errors.push(...safeNextActions(record.safe_next_actions).errors);
+	errors.push(...exactString(record.redaction_version, "v1", "redaction_version").errors);
+	if (record.dispatch_authority_enabled !== false)
+		errors.push("agent task inconsistency cannot enable dispatch authority");
+	errors.push(...validateNoForbiddenRawPayloads(record, "agent_task_inconsistency").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }

@@ -1,12 +1,15 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	FLOWDESK_SESSION_EVIDENCE_CLASSES,
+	type FlowDeskAgentTaskInconsistencyV1,
 	type FlowDeskLaneStallClassificationV1,
 	type FlowDeskLaneStallProjectionResultV1,
 	type FlowDeskSessionEvidenceClass,
 	type FlowDeskSessionEvidenceReloadEntryV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
+	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	projectFlowDeskLaneStallV1,
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
@@ -120,6 +123,7 @@ export interface FlowDeskStatusLiveConfigV1 {
 	maxRecentEvidencePerClass?: number;
 	laneHeartbeatLateThresholdMs?: number;
 	laneHeartbeatStallThresholdMs?: number;
+	agentTaskFinalizingInconsistencyGraceMs?: number;
 }
 
 export interface FlowDeskStatusLiveRequestV1 {
@@ -160,6 +164,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
 	stalledLaneCount?: number;
 	progressingLateLaneCount?: number;
+	inconsistentFinalizingWithoutTerminalLaneCount?: number;
 	laneProgressCards?: readonly FlowDeskStatusLiveLaneProgressCardV1[];
 }
 
@@ -196,6 +201,7 @@ export interface FlowDeskStatusLiveResultV1 {
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
 	totalStalledLaneCount?: number;
 	totalProgressingLateLaneCount?: number;
+	totalInconsistentFinalizingWithoutTerminalLaneCount?: number;
 	redactedBlockReason?: string;
 	summaryForUser?: string;
 	safeNextActions: readonly (
@@ -269,6 +275,168 @@ function getStringField(
 ): string | undefined {
 	const value = record[key];
 	return typeof value === "string" ? value : undefined;
+}
+
+function getPositiveIntegerField(
+	record: Record<string, unknown>,
+	key: string,
+): number | undefined {
+	const value = record[key];
+	return typeof value === "number" && Number.isInteger(value) && value > 0
+		? value
+		: undefined;
+}
+
+const DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 90_000;
+const MIN_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 30_000;
+const MAX_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 600_000;
+
+function clampFinalizingInconsistencyGraceMs(value: number | undefined): number {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+		return DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS;
+	return Math.min(
+		MAX_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS,
+		Math.max(MIN_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS, Math.floor(value)),
+	);
+}
+
+function finalizingInconsistencyEvidenceId(laneId: string): string {
+	return `agent-task-inconsistency-${laneId}-finalizing-without-terminal`;
+}
+
+function materializeFinalizingWithoutTerminalInconsistencies(input: {
+	workflowId: string;
+	rootDir: string;
+	reload: FlowDeskSessionEvidenceReloadResultV1;
+	observedAt: string;
+	graceMs: number;
+}): boolean {
+	const observedAtMs = Date.parse(input.observedAt);
+	if (!Number.isFinite(observedAtMs)) return false;
+	const terminalLaneIds = new Set<string>();
+	const existingInconsistencyIds = new Set<string>();
+	const attemptIdByLane = new Map<string, string>();
+	const taskIdByLane = new Map<string, string>();
+	const latestActiveSignalByLane = new Map<string, number>();
+	const latestFinalizingByLane = new Map<
+		string,
+		{
+			laneId: string;
+			attemptId?: string;
+			taskId?: string;
+			progressSeq?: number;
+			observedAt: string;
+			observedAtMs: number;
+		}
+	>();
+	for (const entry of input.reload.entries) {
+		const laneId = getStringField(entry.record, "lane_id");
+		if (laneId !== undefined) {
+			if (entry.evidenceClass === "lane_lifecycle" || entry.evidenceClass === "lane_heartbeat") {
+				const attemptId = getStringField(entry.record, "attempt_id");
+				if (attemptId !== undefined) attemptIdByLane.set(laneId, attemptId);
+				const state = getStringField(entry.record, "state");
+				const observedAt =
+					getStringField(entry.record, "updated_at") ??
+					getStringField(entry.record, "observed_at") ??
+					getStringField(entry.record, "created_at");
+				const observedAtMs = observedAt === undefined ? NaN : Date.parse(observedAt);
+				if (
+					(state === "created" ||
+						state === "running" ||
+						state === "awaiting_dependency" ||
+						state === "cooldown") &&
+					Number.isFinite(observedAtMs)
+				) {
+					const current = latestActiveSignalByLane.get(laneId);
+					if (current === undefined || observedAtMs > current)
+						latestActiveSignalByLane.set(laneId, observedAtMs);
+				}
+			}
+			if (entry.evidenceClass === "agent_task_context") {
+				const taskId = getStringField(entry.record, "task_id");
+				if (taskId !== undefined) taskIdByLane.set(laneId, taskId);
+			}
+		}
+		if (entry.evidenceClass === "task_result" || entry.evidenceClass === "task_failed") {
+			if (laneId !== undefined) terminalLaneIds.add(laneId);
+			continue;
+		}
+		if (entry.evidenceClass === "agent_task_inconsistency") {
+			existingInconsistencyIds.add(entry.evidenceId);
+			continue;
+		}
+		if (entry.evidenceClass !== "agent_task_progress") continue;
+		if (laneId === undefined) continue;
+		if (getStringField(entry.record, "phase") !== "finalizing") continue;
+		const progressObservedAt = getStringField(entry.record, "observed_at");
+		if (progressObservedAt === undefined) continue;
+		const progressObservedAtMs = Date.parse(progressObservedAt);
+		if (!Number.isFinite(progressObservedAtMs)) continue;
+		const current = latestFinalizingByLane.get(laneId);
+		if (current !== undefined && current.observedAtMs > progressObservedAtMs)
+			continue;
+		latestFinalizingByLane.set(laneId, {
+			laneId,
+			attemptId: attemptIdByLane.get(laneId),
+			taskId: getStringField(entry.record, "task_id"),
+			progressSeq: getPositiveIntegerField(entry.record, "progress_seq"),
+			observedAt: progressObservedAt,
+			observedAtMs: progressObservedAtMs,
+		});
+	}
+	const intents: NonNullable<ReturnType<typeof prepareFlowDeskSessionEvidenceWriteIntentV1>["writeIntent"]>[] = [];
+	for (const progress of latestFinalizingByLane.values()) {
+		if (terminalLaneIds.has(progress.laneId)) continue;
+		const activeSignalMs = latestActiveSignalByLane.get(progress.laneId);
+		const finalizingAgeMs = observedAtMs - progress.observedAtMs;
+		const activeSignalAgeMs =
+			activeSignalMs === undefined ? 0 : observedAtMs - activeSignalMs;
+		if (finalizingAgeMs < input.graceMs && activeSignalAgeMs < input.graceMs)
+			continue;
+		const attemptId = progress.attemptId ?? attemptIdByLane.get(progress.laneId);
+		const taskId = progress.taskId ?? taskIdByLane.get(progress.laneId);
+		const progressSeq = progress.progressSeq;
+		if (attemptId === undefined || taskId === undefined || progressSeq === undefined)
+			continue;
+		const evidenceId = finalizingInconsistencyEvidenceId(progress.laneId);
+		if (existingInconsistencyIds.has(evidenceId)) continue;
+		const record: FlowDeskAgentTaskInconsistencyV1 = {
+			schema_version: "flowdesk.agent_task_inconsistency.v1",
+			workflow_id: input.workflowId,
+			attempt_id: attemptId,
+			lane_id: progress.laneId,
+			task_id: taskId,
+			last_progress_seq: progressSeq,
+			last_progress_observed_at: progress.observedAt,
+			inconsistency_kind: "finalizing_without_terminal",
+			grace_window_ms: input.graceMs,
+			grace_source_label:
+				input.graceMs === DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS
+					? "default_status_live_finalizing_inconsistency_grace"
+					: "configured_status_live_finalizing_inconsistency_grace",
+			observed_at: input.observedAt,
+			safe_next_actions: [
+				"/flowdesk-status",
+				"/flowdesk-abort",
+				"/flowdesk-retry",
+				"/flowdesk-doctor",
+				"/flowdesk-export-debug",
+			],
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		};
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId,
+			evidenceId,
+			record,
+		});
+		if (prepared.ok && prepared.writeIntent !== undefined)
+			intents.push(prepared.writeIntent);
+	}
+	if (intents.length === 0) return false;
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, intents);
+	return applied.ok && applied.writtenPaths.length > 0;
 }
 
 function compactPromptPreview(value: string | undefined, max = 96): string | undefined {
@@ -709,10 +877,26 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			rootDir,
 			now: new Date(observedAt),
 		});
-		const reload = reloadFlowDeskSessionEvidenceV1({
+		let reload = reloadFlowDeskSessionEvidenceV1({
 			workflowId,
 			rootDir,
 		});
+		const graceMs = clampFinalizingInconsistencyGraceMs(
+			input.config.agentTaskFinalizingInconsistencyGraceMs,
+		);
+		const wroteInconsistency = materializeFinalizingWithoutTerminalInconsistencies({
+			workflowId,
+			rootDir,
+			reload,
+			observedAt,
+			graceMs,
+		});
+		if (wroteInconsistency) {
+			reload = reloadFlowDeskSessionEvidenceV1({
+				workflowId,
+				rootDir,
+			});
+		}
 		const summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
 		const projectionReload = pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload);
 		const projection = projectFlowDeskLaneStallV1({
@@ -730,6 +914,8 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		summary.worstLaneStallClassification = projection.worstClassification;
 		summary.stalledLaneCount = projection.totalStalledLanes;
 		summary.progressingLateLaneCount = projection.totalLateLanes;
+		summary.inconsistentFinalizingWithoutTerminalLaneCount =
+			projection.totalInconsistentLanes;
 		summary.laneProgressCards = buildLaneProgressCards(
 			workflowId,
 			projectionReload,
@@ -752,8 +938,19 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		(sum, summary) => sum + (summary.progressingLateLaneCount ?? 0),
 		0,
 	);
+	const totalInconsistent = workflows.reduce(
+		(sum, summary) =>
+			sum + (summary.inconsistentFinalizingWithoutTerminalLaneCount ?? 0),
+		0,
+	);
 	const worstLaneStallClassification: FlowDeskLaneStallClassificationV1 =
 		workflows.some(
+			(summary) =>
+				summary.worstLaneStallClassification ===
+				"inconsistent_finalizing_without_terminal",
+		)
+			? "inconsistent_finalizing_without_terminal"
+			: workflows.some(
 			(summary) => summary.worstLaneStallClassification === "stalled",
 		)
 			? "stalled"
@@ -779,6 +976,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		worstLaneStallClassification,
 		totalStalled,
 		totalLate,
+		totalInconsistent,
 		requestedWorkflowId,
 	});
 
@@ -792,6 +990,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		worstLaneStallClassification,
 		totalStalledLaneCount: totalStalled,
 		totalProgressingLateLaneCount: totalLate,
+		totalInconsistentFinalizingWithoutTerminalLaneCount: totalInconsistent,
 		summaryForUser,
 		safeNextActions: safeNextActions(),
 		authority: {
@@ -812,6 +1011,7 @@ function buildStatusLiveSummaryForUser(input: {
 	worstLaneStallClassification: FlowDeskLaneStallClassificationV1;
 	totalStalled: number;
 	totalLate: number;
+	totalInconsistent: number;
 	requestedWorkflowId?: string;
 }): string {
 	const workflowsCount = input.workflows.length;
@@ -821,7 +1021,9 @@ function buildStatusLiveSummaryForUser(input: {
 			: "FlowDesk status: no durable workflows found.";
 	}
 	const headline =
-		input.totalStalled > 0
+		input.totalInconsistent > 0
+			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalInconsistent} finalizing-without-terminal inconsistent lane(s) require manual recovery.`
+			: input.totalStalled > 0
 			? `FlowDesk status: ${workflowsCount} workflow(s); worst classification stalled (${input.totalStalled} stalled, ${input.totalLate} progressing-late).`
 			: input.totalLate > 0
 				? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalLate} progressing-late, no stalled lanes.`

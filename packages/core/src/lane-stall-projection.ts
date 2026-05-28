@@ -28,6 +28,7 @@ const TERMINAL_LIFECYCLE_STATES = new Set([
 ]);
 
 export type FlowDeskLaneStallClassificationV1 =
+	| "inconsistent_finalizing_without_terminal"
 	| "progressing_normal"
 	| "progressing_late"
 	| "stalled"
@@ -68,6 +69,7 @@ export interface FlowDeskLaneStallProjectionResultV1 {
 	totalActiveLanes: number;
 	totalLateLanes: number;
 	totalStalledLanes: number;
+	totalInconsistentLanes: number;
 	totalTerminalLanes: number;
 	worstClassification: FlowDeskLaneStallClassificationV1;
 	entries: FlowDeskLaneStallProjectionEntryV1[];
@@ -158,6 +160,12 @@ function isHeartbeatEntry(
 	return entry.evidenceClass === "lane_heartbeat";
 }
 
+function isInconsistencyEntry(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+): boolean {
+	return entry.evidenceClass === "agent_task_inconsistency";
+}
+
 function lifecycleSnapshotFromEntry(
 	entry: FlowDeskSessionEvidenceReloadEntryV1,
 	workflowId: string,
@@ -244,6 +252,34 @@ function pickLatestLifecyclePerLane(
 	return latestByLane;
 }
 
+function pickFinalizingWithoutTerminalInconsistencies(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number }> {
+	const selected = new Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number }>();
+	for (const entry of reload.entries) {
+		if (!isInconsistencyEntry(entry)) continue;
+		if (getStringField(entry.record, "inconsistency_kind") !== "finalizing_without_terminal") continue;
+		const laneId = getStringField(entry.record, "lane_id");
+		if (laneId === undefined) continue;
+		const observedAt = getStringField(entry.record, "observed_at");
+		const observedAtMs = observedAt === undefined ? 0 : Date.parse(observedAt);
+		const snapshot = {
+			evidenceId: entry.evidenceId,
+			observedAt,
+			observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : 0,
+		};
+		const previous = selected.get(laneId);
+		if (
+			previous === undefined ||
+			snapshot.observedAtMs > previous.observedAtMs ||
+			(snapshot.observedAtMs === previous.observedAtMs && snapshot.evidenceId > previous.evidenceId)
+		) {
+			selected.set(laneId, snapshot);
+		}
+	}
+	return selected;
+}
+
 function classify(
 	snapshot: LifecycleSnapshot,
 	observedAtMs: number,
@@ -289,6 +325,14 @@ function classify(
 function safeActionsFor(
 	classification: FlowDeskLaneStallClassificationV1,
 ): FlowDeskLaneStallProjectionEntryV1["safeNextActions"] {
+	if (classification === "inconsistent_finalizing_without_terminal")
+		return [
+			"/flowdesk-status",
+			"/flowdesk-abort",
+			"/flowdesk-retry",
+			"/flowdesk-doctor",
+			"/flowdesk-export-debug",
+		];
 	if (classification === "stalled")
 		return [
 			"/flowdesk-status",
@@ -316,6 +360,8 @@ function failureHintFor(state: string): string | undefined {
 function projectionWorstClassification(
 	entries: readonly FlowDeskLaneStallProjectionEntryV1[],
 ): FlowDeskLaneStallClassificationV1 {
+	if (entries.some((entry) => entry.classification === "inconsistent_finalizing_without_terminal"))
+		return "inconsistent_finalizing_without_terminal";
 	if (entries.some((entry) => entry.classification === "stalled"))
 		return "stalled";
 	if (entries.some((entry) => entry.classification === "progressing_late"))
@@ -352,23 +398,32 @@ export function projectFlowDeskLaneStallV1(input: {
 			totalActiveLanes: 0,
 			totalLateLanes: 0,
 			totalStalledLanes: 0,
+			totalInconsistentLanes: 0,
 			totalTerminalLanes: 0,
 			worstClassification: "unknown",
 			entries: [],
 		};
 	const latestByLane = pickLatestLifecyclePerLane(input.reload, input.workflowId);
+	const inconsistenciesByLane = pickFinalizingWithoutTerminalInconsistencies(input.reload);
 	const entries: FlowDeskLaneStallProjectionEntryV1[] = [];
 	let totalActive = 0;
 	let totalLate = 0;
 	let totalStalled = 0;
+	let totalInconsistent = 0;
 	let totalTerminal = 0;
 	for (const snapshot of latestByLane.values()) {
-		const { classification, secondsSinceLastSignal } = classify(
+		const base = classify(
 			snapshot,
 			observedAtMs,
 			lateThresholdMs,
 			stallThresholdMs,
 		);
+		const inconsistency = inconsistenciesByLane.get(snapshot.laneId);
+		const classification: FlowDeskLaneStallClassificationV1 =
+			inconsistency === undefined
+				? base.classification
+				: "inconsistent_finalizing_without_terminal";
+		const secondsSinceLastSignal = base.secondsSinceLastSignal;
 		if (classification === "progressing_normal") totalActive += 1;
 		if (classification === "progressing_late") {
 			totalActive += 1;
@@ -378,6 +433,8 @@ export function projectFlowDeskLaneStallV1(input: {
 			totalActive += 1;
 			totalStalled += 1;
 		}
+		if (classification === "inconsistent_finalizing_without_terminal")
+			totalInconsistent += 1;
 		if (classification === "terminal") totalTerminal += 1;
 		const failureHint = failureHintFor(snapshot.state);
 		let expectedNextHeartbeatOverdue: boolean | undefined;
@@ -400,7 +457,7 @@ export function projectFlowDeskLaneStallV1(input: {
 			classification,
 			lifecycleState: snapshot.state,
 			lastSignalAt: snapshot.updatedAt,
-			lastSignalEvidenceId: snapshot.evidenceId,
+			lastSignalEvidenceId: inconsistency?.evidenceId ?? snapshot.evidenceId,
 			lastSignalSource: snapshot.signalSource,
 			...(snapshot.heartbeatSeq === undefined
 				? {}
@@ -416,18 +473,25 @@ export function projectFlowDeskLaneStallV1(input: {
 				: { secondsPastExpectedNextHeartbeat }),
 			secondsSinceLastSignal,
 			abnormal:
-				classification === "stalled" || classification === "progressing_late",
-			...(failureHint === undefined ? {} : { failureHint }),
+				classification === "stalled" ||
+				classification === "progressing_late" ||
+				classification === "inconsistent_finalizing_without_terminal",
+			...(classification === "inconsistent_finalizing_without_terminal"
+				? { failureHint: "finalizing_without_terminal" }
+				: failureHint === undefined
+					? {}
+					: { failureHint }),
 			safeNextActions: safeActionsFor(classification),
 		});
 	}
 	entries.sort((a, b) => {
 		const order: Record<FlowDeskLaneStallClassificationV1, number> = {
-			stalled: 0,
-			progressing_late: 1,
-			progressing_normal: 2,
-			terminal: 3,
-			unknown: 4,
+			inconsistent_finalizing_without_terminal: 0,
+			stalled: 1,
+			progressing_late: 2,
+			progressing_normal: 3,
+			terminal: 4,
+			unknown: 5,
 		};
 		const byOrder = order[a.classification] - order[b.classification];
 		if (byOrder !== 0) return byOrder;
@@ -443,6 +507,7 @@ export function projectFlowDeskLaneStallV1(input: {
 		totalActiveLanes: totalActive,
 		totalLateLanes: totalLate,
 		totalStalledLanes: totalStalled,
+		totalInconsistentLanes: totalInconsistent,
 		totalTerminalLanes: totalTerminal,
 		worstClassification: projectionWorstClassification(entries),
 		entries,

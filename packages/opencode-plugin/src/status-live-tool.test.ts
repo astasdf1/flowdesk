@@ -216,3 +216,82 @@ test("status live reports first planning evidence slice summaries", async () => 
 		rmSync(rootDir, { recursive: true, force: true });
 	}
 });
+
+test("status live materializes finalizing-without-terminal inconsistency idempotently", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-inconsistent-"));
+	try {
+		const workflowId = "workflow-status-inconsistent-1";
+		const laneId = "lane-task-inconsistent-1";
+		const records = [
+			{
+				evidenceClass: "lane_lifecycle" as const,
+				evidenceId: "lifecycle-running-inconsistent-1",
+				record: {
+					schema_version: "flowdesk.lane_lifecycle_record.v1",
+					lane_id: laneId,
+					workflow_id: workflowId,
+					attempt_id: "attempt-task-inconsistent-1",
+					parent_session_ref: "ses-status-parent-1",
+					agent_ref: "agent-reviewer-gpt-frontier",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					state: "running",
+					timeout_ms: 60_000,
+					orphan_max_age_ms: 600_000,
+					retry_count: 0,
+					created_at: "2026-05-27T00:00:00.000Z",
+					updated_at: "2026-05-27T00:00:30.000Z",
+					dispatch_authority_enabled: false,
+					providerCall: false,
+					actualLaneLaunch: false,
+					runtimeExecution: false,
+				},
+			},
+			{
+				evidenceClass: "agent_task_progress" as const,
+				evidenceId: "agent-task-progress-inconsistent-3",
+				record: {
+					schema_version: "flowdesk.agent_task_progress.v1",
+					workflow_id: workflowId,
+					lane_id: laneId,
+					task_id: "task-inconsistent-1",
+					agent_ref: "agent-reviewer-gpt-frontier",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					progress_seq: 3,
+					observed_at: "2026-05-27T00:01:00.000Z",
+					phase: "finalizing",
+					progress_label: "async agent task result captured by watchdog",
+					progress_ref: "progress-lane-task-inconsistent-1-3",
+					redaction_version: "v1",
+					dispatch_authority_enabled: false,
+				},
+			},
+		];
+		for (const item of records) {
+			const relativePath = sessionEvidenceRecordPath(workflowId, item.evidenceClass, item.evidenceId);
+			const absolutePath = join(rootDir, relativePath);
+			mkdirSync(join(absolutePath, ".."), { recursive: true });
+			writeFileSync(absolutePath, JSON.stringify(item.record), "utf8");
+		}
+
+		const first = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+		assert.equal(first.status, "status_live_collected");
+		assert.equal(first.workflows[0].evidenceCounts.agent_task_inconsistency, 1);
+		assert.equal(first.workflows[0].worstLaneStallClassification, "inconsistent_finalizing_without_terminal");
+		assert.equal(first.totalInconsistentFinalizingWithoutTerminalLaneCount, 1);
+		assert.match(first.summaryForUser ?? "", /finalizing-without-terminal inconsistent/);
+		assert.equal(first.authority.actualLaneLaunch, false);
+
+		const second = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:04:00.000Z"),
+		});
+		assert.equal(second.workflows[0].evidenceCounts.agent_task_inconsistency, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});

@@ -4,6 +4,7 @@ import {
 	validateFlowDeskTaskResultV1,
 	validateFlowDeskTaskFailedV1,
 	validateFlowDeskAgentTaskProgressV1,
+	validateFlowDeskAgentTaskInconsistencyV1,
 	VALID_TASK_FAILURE_CATEGORIES,
 } from "./task-result.js";
 
@@ -58,6 +59,32 @@ function taskProgress(overrides: Record<string, unknown> = {}) {
 		phase: "started",
 		progress_label: "agent task started",
 		progress_ref: "progress-lane-task-abc123-1",
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function taskInconsistency(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.agent_task_inconsistency.v1",
+		workflow_id: "workflow-agent-task-abc123",
+		attempt_id: "attempt-agent-task-abc123",
+		lane_id: "lane-task-abc123",
+		task_id: "task-abc123",
+		last_progress_seq: 3,
+		last_progress_observed_at: "2026-05-26T10:00:00.000Z",
+		inconsistency_kind: "finalizing_without_terminal",
+		grace_window_ms: 90_000,
+		grace_source_label: "default_status_live_finalizing_inconsistency_grace",
+		observed_at: "2026-05-26T10:02:00.000Z",
+		safe_next_actions: [
+			"/flowdesk-status",
+			"/flowdesk-abort",
+			"/flowdesk-retry",
+			"/flowdesk-doctor",
+			"/flowdesk-export-debug",
+		],
 		redaction_version: "v1",
 		dispatch_authority_enabled: false,
 		...overrides,
@@ -176,4 +203,34 @@ test("agent task progress validator rejects authority and oversized labels", () 
 	const label = validateFlowDeskAgentTaskProgressV1(taskProgress({ progress_label: "x".repeat(121) }));
 	assert.equal(label.ok, false);
 	assert.ok(label.errors.some((e) => /progress_label/.test(e)));
+});
+
+test("agent task inconsistency validator accepts valid redacted record", () => {
+	const result = validateFlowDeskAgentTaskInconsistencyV1(taskInconsistency());
+	assert.equal(result.ok, true, result.errors.join("; "));
+});
+
+test("agent task inconsistency validator rejects authority and raw payload wording", () => {
+	const authority = validateFlowDeskAgentTaskInconsistencyV1(
+		taskInconsistency({ dispatch_authority_enabled: true }),
+	);
+	assert.equal(authority.ok, false);
+	assert.ok(authority.errors.some((e) => /dispatch authority/i.test(e)));
+	const raw = validateFlowDeskAgentTaskInconsistencyV1(
+		taskInconsistency({ grace_source_label: "provider payload copied" }),
+	);
+	assert.equal(raw.ok, false);
+});
+
+test("agent task inconsistency validator rejects invalid grace and action", () => {
+	const grace = validateFlowDeskAgentTaskInconsistencyV1(
+		taskInconsistency({ grace_window_ms: 1_000 }),
+	);
+	assert.equal(grace.ok, false);
+	assert.ok(grace.errors.some((e) => /grace_window_ms/.test(e)));
+	const action = validateFlowDeskAgentTaskInconsistencyV1(
+		taskInconsistency({ safe_next_actions: ["/flowdesk-status", "/flowdesk-fallback"] }),
+	);
+	assert.equal(action.ok, false);
+	assert.ok(action.errors.some((e) => /safe_next_actions/.test(e)));
 });
