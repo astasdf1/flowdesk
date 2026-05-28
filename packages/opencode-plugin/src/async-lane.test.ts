@@ -183,6 +183,52 @@ test("monitorChildSessions reads current SDK messages response shapes", async ()
 	}
 });
 
+test("monitorChildSessions does not write finalizing progress when task_result persistence fails", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-result-write-fail-"));
+	try {
+		const launchClient = makeClient({});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-result-write-fail",
+			taskId: "task-write-fail",
+			laneId: "lane-write-fail",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: launchClient,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "done but cannot persist" }] }]),
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-result-write-fail",
+			client: monitorClient,
+			now: new Date(),
+			_forceTaskResultWriteFailureForTest: true,
+		});
+
+		assert.equal(monResult.lanesPolled, 1);
+		assert.equal(monResult.lanesCompleted, 0);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-result-write-fail" });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
+		const taskFailed = reloaded.entries.find(e => e.evidenceClass === "task_failed");
+		assert.ok(taskFailed, "task_failed evidence should be written when task_result cannot persist");
+		assert.equal((taskFailed.record as Record<string, unknown>).redacted_reason, "watchdog could not persist task_result evidence");
+		const finalizing = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && (e.record as Record<string, unknown>).phase === "finalizing");
+		assert.equal(finalizing, undefined, "finalizing progress must not be written without task_result evidence");
+		const failed = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && (e.record as Record<string, unknown>).phase === "failed");
+		assert.equal((failed?.record as Record<string, unknown>).progress_label, "async agent task result persistence failed");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("monitorChildSessions sends noReply nudge after quiet period", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-nudge-"));
 	try {

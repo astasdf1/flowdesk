@@ -1670,10 +1670,11 @@ function writeChildSessionEvidence(
 	workflowId: string,
 	evidenceId: string,
 	record: Record<string, unknown>,
-): void {
+): boolean {
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId, record });
-	if (prepared.ok && prepared.writeIntent !== undefined)
-		applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	if (!prepared.ok || prepared.writeIntent === undefined) return false;
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	return applied.ok && applied.writtenPaths.length > 0;
 }
 
 function childProgressLabel(value: string): string {
@@ -1735,6 +1736,7 @@ export async function monitorChildSessionsV1(input: {
 	nudgeQuietPeriodMs?: number;  // default 20_000
 	maxNudges?: number;            // default 2
 	abortThresholdMs?: number;     // default 60_000
+	_forceTaskResultWriteFailureForTest?: boolean;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
 	const nudgeQuietPeriodMs = input.nudgeQuietPeriodMs ?? 20_000;
@@ -1791,7 +1793,9 @@ export async function monitorChildSessionsV1(input: {
 			const finalText = resultText.slice(0, 32_768);
 
 			const taskResultEvidenceId = `task-result-${taskId}-watchdog-${token}`;
-			writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
+			const taskResultWritten = input._forceTaskResultWriteFailureForTest === true
+				? false
+				: writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
 				schema_version: "flowdesk.task_result.v1",
 				workflow_id: input.workflowId,
 				lane_id: laneId,
@@ -1805,6 +1809,33 @@ export async function monitorChildSessionsV1(input: {
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
 			});
+			if (!taskResultWritten) {
+				writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-result-write-${token}`, {
+					schema_version: "flowdesk.task_failed.v1",
+					workflow_id: input.workflowId,
+					lane_id: laneId,
+					task_id: taskId,
+					agent_ref: agentRef,
+					provider_qualified_model_id: modelId,
+					failure_category: "unknown",
+					redacted_reason: "watchdog could not persist task_result evidence",
+					created_at: completedAt,
+					dispatch_authority_enabled: false,
+				});
+				writeAgentTaskProgressEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
+					agentRef,
+					providerQualifiedModelId: modelId,
+					phase: "failed",
+					progressSeq: 20 + nudgeCount,
+					progressLabel: "async agent task result persistence failed",
+					observedAt: completedAt,
+				});
+				continue;
+			}
 			writeAgentTaskProgressEvidence({
 				rootDir: input.rootDir,
 				workflowId: input.workflowId,
