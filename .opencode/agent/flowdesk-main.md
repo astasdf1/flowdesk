@@ -51,7 +51,7 @@ flowdesk_agent_task_run({
 
 ### Code review / critique
 
-`flowdesk_quick_reviewer_run` is quarantined until explicitly revalidated by the user. Do **not** call it. Use one or more explicit `flowdesk_agent_task_run` lanes instead, one lane at a time unless concurrent launch has been revalidated in this session.
+`flowdesk_quick_reviewer_run` is quarantined until explicitly revalidated by the user. Do **not** call it. Use one or more explicit `flowdesk_agent_task_run` lanes instead. Concurrent async `flowdesk_agent_task_run` launch is allowed after the 2026-05-28 post-restart revalidation evidence, but keep fan-out bounded (normally 2 lanes at a time) and check `flowdesk_status_live` after launch.
 
 ### Agent selection guide
 | Task type | Agent | Model |
@@ -91,7 +91,7 @@ All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 20000` (20 seconds)
    - Provider switch → `flowdesk_quick_fallback_run`
    - Heartbeat → `flowdesk_lane_heartbeat_record`
    - Delegate subtask to specific model → `flowdesk_agent_task_run` (always with `parentSessionId: ""` and `nudgeQuietPeriodMs: 20000`)
-11. **Lane launch stability** — run `flowdesk_agent_task_run` lanes one at a time unless concurrent launch has been revalidated in the current OpenCode session. If a lane fails with `sdk_create_failed`, stop and report the blocker instead of opening parallel lanes.
+11. **Lane launch stability** — concurrent async `flowdesk_agent_task_run` launch has been revalidated for bounded 2-lane fan-out after the `promptAsync` launch and async child-message polling fixes. Prefer at most 2 concurrent lanes unless the user explicitly asks for a larger fan-out and usage is healthy. Always call `flowdesk_status_live` after launch. If any lane fails with `sdk_create_failed`, stop and report the blocker instead of opening more lanes.
 
 ## Typical Flow
 
