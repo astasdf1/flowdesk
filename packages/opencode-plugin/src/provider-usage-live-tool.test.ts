@@ -46,6 +46,9 @@ test("provider usage live result includes per-row alertLevel and overall recomme
 		);
 		assert.equal(typeof row.recommendation, "string");
 		assert.ok(row.recommendation.length > 0);
+		assert.ok(row.providerHealth);
+		assert.equal(typeof row.providerHealth?.snapshotRef, "string");
+		assert.equal(typeof row.providerHealth?.sourceSurface, "string");
 	}
 	assert.ok(validAlertLevels.has(result.worstAlertLevel));
 	assert.equal(typeof result.overallRecommendation, "string");
@@ -131,8 +134,16 @@ test("provider usage live persistence reports durable root, workflow id, and an 
 			root,
 			".flowdesk/sessions/workflow-provider-usage-live/evidence/provider-usage-snapshot",
 		);
-		if (persisted.length > 0) {
+		if (persisted.some((id) => id.startsWith("provider-usage-snapshot-"))) {
 			const stat = statSync(evidenceDir);
+			assert.equal(stat.isDirectory(), true);
+		}
+		if (persisted.some((id) => id.startsWith("provider-health-snapshot-"))) {
+			const healthEvidenceDir = join(
+				root,
+				".flowdesk/sessions/workflow-provider-usage-live/evidence/provider-health-snapshot",
+			);
+			const stat = statSync(healthEvidenceDir);
 			assert.equal(stat.isDirectory(), true);
 		}
 		const sidebarCache = JSON.parse(
@@ -195,6 +206,8 @@ test("provider usage live reuses a fresh durable snapshot before collecting prov
 		);
 		assert.equal(result.providers[0]?.remainingPercent, 80);
 		assert.equal(result.providers[0]?.alertLevel, "ok");
+		assert.equal(result.providers[0]?.providerHealth?.freshness, "unknown");
+		assert.equal(result.providers[0]?.providerHealth?.dispatchability, "diagnostic_only");
 		assert.match(
 			result.providers[0]?.recommendation ?? "",
 			/Reused a fresh durable usage snapshot/i,

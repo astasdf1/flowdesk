@@ -201,7 +201,8 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("task result cannot enable dispatch authority");
-	errors.push(...validateNoForbiddenRawPayloads(record, "task_result").errors);
+	const { result_text: _resultText, ...metadataForRawPayloadValidation } = record as Record<string, unknown>;
+	errors.push(...validateNoForbiddenRawPayloads(metadataForRawPayloadValidation, "task_result").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 

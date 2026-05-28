@@ -136,6 +136,83 @@ test("monitorChildSessions collects result when child session has text", async (
 	}
 });
 
+test("monitorChildSessions sanitizes raw markers before task_result persistence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-sanitize-"));
+	try {
+		const launchClient = makeClient({});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-sanitize",
+			taskId: "task-sanitize-watchdog",
+			laneId: "lane-sanitize-watchdog",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: launchClient,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "I saw the prompt and packages/core/src/example.ts plus /Users/example/project details." }] }]),
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-sanitize",
+			client: monitorClient,
+			now: new Date(),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-sanitize" });
+		assert.ok(reloaded.ok);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.ok(taskResult, "sanitized task_result evidence should be written");
+		const record = taskResult.record as Record<string, unknown>;
+		assert.equal(typeof record.result_text, "string");
+		assert.equal(record.result_text, "FlowDesk task result captured; content redacted for safety.");
+		assert.equal(record.result_text_truncated, true);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("executeFlowDeskAgentTaskV1 sanitizes synchronous task_result text", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-sanitize-"));
+	try {
+		const client = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "Final mentions developer message and src/index.ts but should persist." }] }]),
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-sync-sanitize",
+			taskId: "task-sync-sanitize",
+			laneId: "lane-sync-sanitize",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_completed");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-sync-sanitize" });
+		assert.ok(reloaded.ok);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.ok(taskResult, "synchronous sanitized task_result evidence should be written");
+		const record = taskResult.record as Record<string, unknown>;
+		assert.equal(record.result_text, "FlowDesk task result captured; content redacted for safety.");
+		assert.equal(record.result_text_truncated, true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("monitorChildSessions reads current SDK messages response shapes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-current-shape-"));
 	try {

@@ -86,6 +86,7 @@ import {
 	validateNoForbiddenRawPayloads,
 	validateOpaqueId,
 	validateOpaqueRef,
+	validateProviderHealthSnapshotV1,
 	validateTopTierReviewVerdictV1,
 	validateUsageSnapshotV1,
 } from "./validators.js";
@@ -128,6 +129,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	pending_abort_warning: "flowdesk.pending_abort_warning.v1",
 	pending_abort_cancel: "flowdesk.pending_abort_cancel.v1",
 	provider_usage_snapshot: "flowdesk.usage_snapshot.v1",
+	provider_health_snapshot: "flowdesk.provider_health_snapshot.v1",
 	reviewer_lane_context: "flowdesk.reviewer_lane_context.v1",
 	agent_task_context: "flowdesk.agent_task_context.v1",
 	agent_task_progress: "flowdesk.agent_task_progress.v1",
@@ -866,6 +868,8 @@ function validateEvidenceShape(
 		return validateFlowDeskFallbackRegatePlanV1(record);
 	if (evidenceClass === "provider_usage_snapshot")
 		return validateUsageSnapshotV1(record);
+	if (evidenceClass === "provider_health_snapshot")
+		return validateProviderHealthSnapshotV1(record);
 	if (evidenceClass === "configured_verification")
 		return validateFlowDeskConfiguredVerificationResultV1(record);
 	if (evidenceClass === "sanitized_auth_capture")

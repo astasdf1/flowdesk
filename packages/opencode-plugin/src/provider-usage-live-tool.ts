@@ -6,6 +6,7 @@ import {
 	type FlowDeskProviderUsageCollectorOptionsV1,
 	type FlowDeskProviderUsageCollectorResultV1,
 	type FlowDeskProviderUsageCollectorTargetV1,
+	type FlowDeskProviderHealthSnapshotV1,
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	collectManagedDispatchBetaUsageEvidenceV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
@@ -68,6 +69,14 @@ export interface FlowDeskProviderUsageLiveProviderRowV1 {
 	redactedReason?: string;
 	usageSnapshotRef?: string;
 	providerHealthSnapshotRef?: string;
+	providerHealth?: {
+		snapshotRef: string;
+		freshness: FlowDeskProviderHealthSnapshotV1["freshness"];
+		availabilityState: FlowDeskProviderHealthSnapshotV1["availability_state"];
+		failureClass: FlowDeskProviderHealthSnapshotV1["failure_class"];
+		dispatchability: FlowDeskProviderHealthSnapshotV1["dispatchability"];
+		sourceSurface: FlowDeskProviderHealthSnapshotV1["source_surface"];
+	};
 	usageAuthorityAcquired: boolean;
 }
 
@@ -308,6 +317,14 @@ function rowFromCollectorResult(
 		redactedReason: result.redacted_reason,
 		usageSnapshotRef: result.usageSnapshot.snapshot_id,
 		providerHealthSnapshotRef: result.providerHealthSnapshot.snapshot_id,
+		providerHealth: {
+			snapshotRef: result.providerHealthSnapshot.snapshot_id,
+			freshness: result.providerHealthSnapshot.freshness,
+			availabilityState: result.providerHealthSnapshot.availability_state,
+			failureClass: result.providerHealthSnapshot.failure_class,
+			dispatchability: result.providerHealthSnapshot.dispatchability,
+			sourceSurface: result.providerHealthSnapshot.source_surface,
+		},
 		usageAuthorityAcquired:
 			result.usageAuthorityEvidence?.usage_acquired === true,
 	};
@@ -333,6 +350,14 @@ function rowFromUsageSnapshot(
 		modelFamily: snapshot.model_family,
 		usageSnapshotRef: snapshot.snapshot_id,
 		providerHealthSnapshotRef: `cached-health-${snapshot.snapshot_id}`,
+		providerHealth: {
+			snapshotRef: `cached-health-${snapshot.snapshot_id}`,
+			freshness: "unknown",
+			availabilityState: "unknown",
+			failureClass: "telemetry_ambiguous",
+			dispatchability: "diagnostic_only",
+			sourceSurface: "unknown",
+		},
 		usageAuthorityAcquired: true,
 	};
 }
@@ -917,6 +942,20 @@ function persistProviderUsageSnapshots(
 		if (result === undefined) {
 			skippedReasons.push(`${family}: collector result missing`);
 			continue;
+		}
+		const healthEvidenceId = `provider-health-snapshot-${family}-${stamp}`;
+		const healthPrep = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: healthEvidenceId,
+			record: result.providerHealthSnapshot as unknown as Record<string, unknown>,
+		});
+		if (healthPrep.ok && healthPrep.writeIntent !== undefined) {
+			intents.push(healthPrep.writeIntent);
+			persistedIds.push(healthEvidenceId);
+		} else {
+			skippedReasons.push(
+				`${family}: provider health snapshot prepare failed (${healthPrep.errors.join("; ")})`,
+			);
 		}
 		if (result.usageAuthorityEvidence?.usage_acquired !== true) {
 			skippedReasons.push(`${family}: usage authority not acquired`);

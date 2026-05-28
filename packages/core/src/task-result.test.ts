@@ -101,6 +101,16 @@ test("task result validator accepts valid record", () => {
 	assert.deepEqual(result.errors, []);
 });
 
+test("task result validator treats result_text as bounded final output, not metadata", () => {
+	const result = validateFlowDeskTaskResultV1(
+		taskResult({
+			result_text: "Final output mentions prompt, developer message, packages/core/src/example.ts, and /Users/example/project.",
+			result_text_truncated: true,
+		}),
+	);
+	assert.equal(result.ok, true, result.errors.join("; "));
+});
+
 test("task result validator rejects dispatch_authority_enabled: true", () => {
 	const result = validateFlowDeskTaskResultV1(
 		taskResult({ dispatch_authority_enabled: true }),

@@ -31,7 +31,7 @@ import {
 	FlowDeskTimeoutError,
 	withTimeout,
 } from "./shared/with-timeout.js";
-import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1 } from "./agent-task-runner.js";
 
 export interface FlowDeskTimeoutConfig {
 	sessionReadMs?: number;
@@ -1789,8 +1789,8 @@ export async function monitorChildSessionsV1(input: {
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 			const token = randomBytes(4).toString("hex");
 			const completedAt = new Date(nowMs).toISOString();
-			const truncated = resultText.length > 32_768;
-			const finalText = resultText.slice(0, 32_768);
+			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultText);
+			const finalText = sanitizedResult.text;
 
 			const taskResultEvidenceId = `task-result-${taskId}-watchdog-${token}`;
 			const taskResultWritten = input._forceTaskResultWriteFailureForTest === true
@@ -1804,8 +1804,8 @@ export async function monitorChildSessionsV1(input: {
 				provider_qualified_model_id: modelId,
 				task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
 				result_text: finalText,
-				result_text_truncated: truncated,
-				result_text_sha256: createHash("sha256").update(finalText).digest("hex"),
+				result_text_truncated: sanitizedResult.truncated || sanitizedResult.changed,
+				result_text_sha256: createHash("sha256").update(resultText).digest("hex"),
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
 			});
