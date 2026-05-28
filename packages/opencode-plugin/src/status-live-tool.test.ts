@@ -295,3 +295,126 @@ test("status live materializes finalizing-without-terminal inconsistency idempot
 		rmSync(rootDir, { recursive: true, force: true });
 	}
 });
+
+test("status live does not materialize inconsistency when finalizing has task_result", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalizing-result-"));
+	try {
+		const workflowId = "workflow-status-finalizing-result-1";
+		const laneId = "lane-task-finalizing-result-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-running-finalizing-result-1", runningLifecycle(workflowId, laneId, "attempt-finalizing-result-1"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-result-3", finalizingProgress(workflowId, laneId, "task-finalizing-result-1", 3));
+		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-finalizing-result-1", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-finalizing-result-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "done",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			created_at: "2026-05-27T00:01:30.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, undefined);
+		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
+		assert.equal(result.totalStalledLaneCount, 0);
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "task_result");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live does not materialize inconsistency when finalizing has task_failed", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalizing-failed-"));
+	try {
+		const workflowId = "workflow-status-finalizing-failed-1";
+		const laneId = "lane-task-finalizing-failed-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-running-finalizing-failed-1", runningLifecycle(workflowId, laneId, "attempt-finalizing-failed-1"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-failed-3", finalizingProgress(workflowId, laneId, "task-finalizing-failed-1", 3));
+		writeStatusRecord(rootDir, workflowId, "task_failed", "task-failed-finalizing-failed-1", {
+			schema_version: "flowdesk.task_failed.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-finalizing-failed-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			failure_category: "unknown",
+			redacted_reason: "watchdog could not persist task_result evidence",
+			created_at: "2026-05-27T00:01:30.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, undefined);
+		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
+		assert.equal(result.totalStalledLaneCount, 0);
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "invocation_failed");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+function writeStatusRecord(
+	rootDir: string,
+	workflowId: string,
+	evidenceClass: Parameters<typeof sessionEvidenceRecordPath>[1],
+	evidenceId: string,
+	record: Record<string, unknown>,
+): void {
+	const relativePath = sessionEvidenceRecordPath(workflowId, evidenceClass, evidenceId);
+	const absolutePath = join(rootDir, relativePath);
+	mkdirSync(join(absolutePath, ".."), { recursive: true });
+	writeFileSync(absolutePath, JSON.stringify(record), "utf8");
+}
+
+function runningLifecycle(workflowId: string, laneId: string, attemptId: string): Record<string, unknown> {
+	return {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: laneId,
+		workflow_id: workflowId,
+		attempt_id: attemptId,
+		parent_session_ref: "ses-status-parent-1",
+		agent_ref: "agent-reviewer-gpt-frontier",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		state: "running",
+		timeout_ms: 60_000,
+		orphan_max_age_ms: 600_000,
+		retry_count: 0,
+		created_at: "2026-05-27T00:00:00.000Z",
+		updated_at: "2026-05-27T00:00:30.000Z",
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+}
+
+function finalizingProgress(workflowId: string, laneId: string, taskId: string, seq: number): Record<string, unknown> {
+	return {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: workflowId,
+		lane_id: laneId,
+		task_id: taskId,
+		agent_ref: "agent-reviewer-gpt-frontier",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		progress_seq: seq,
+		observed_at: "2026-05-27T00:01:00.000Z",
+		phase: "finalizing",
+		progress_label: "async agent task result captured by watchdog",
+		progress_ref: `progress-${laneId}-${seq}`,
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	};
+}
