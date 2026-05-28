@@ -481,6 +481,7 @@ export async function executeFlowDeskAgentTaskV1(
 	// 1 min default — if session.prompt blocks for more than 1 min with no activity, give up
 	const LAUNCH_TIMEOUT_MS = input._launchTimeoutMs ?? 60_000;
 	const launchTimeoutHandle = setTimeout(() => { /* no-op; just a handle */ }, LAUNCH_TIMEOUT_MS);
+	const dispatchMethod = input.client.session.promptAsync !== undefined ? "promptAsync" : "prompt";
 	const launchResult = await Promise.race([
 		launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
 			client: input.client,
@@ -489,7 +490,7 @@ export async function executeFlowDeskAgentTaskV1(
 				allowActualLaneLaunch: true,
 				parentSessionId: input.parentSessionId,
 				promptText: input.promptText,
-				dispatchMethod: "prompt",
+				dispatchMethod,
 			},
 		}),
 		new Promise<{ status: "launch_timeout" }>(resolve =>

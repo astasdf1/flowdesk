@@ -10,6 +10,7 @@ import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-disp
 
 function makeClient(overrides: Partial<{
 	prompt: (o: unknown) => unknown;
+	promptAsync: (o: unknown) => unknown;
 	messages: (o: unknown) => Promise<unknown>;
 	abort: (o: unknown) => Promise<void>;
 }>): FlowDeskManagedDispatchBetaOpenCodeClientV1 {
@@ -17,6 +18,7 @@ function makeClient(overrides: Partial<{
 		session: {
 			create: async () => ({ id: "ses-child-test-01" }),
 			prompt: overrides.prompt ?? (async () => ({})),
+			...(overrides.promptAsync === undefined ? {} : { promptAsync: overrides.promptAsync }),
 			messages: overrides.messages ?? (async () => []),
 			abort: overrides.abort ?? (async () => {}),
 		},
@@ -55,6 +57,36 @@ test("asyncMode returns task_launched immediately after lane launch", async () =
 		assert.equal((childEvidence?.record as Record<string, unknown>).schema_version, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION);
 		assert.equal((childEvidence?.record as Record<string, unknown>).lane_id, "lane-async-1");
 		assert.equal((childEvidence?.record as Record<string, unknown>).nudge_count, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("agent task launch prefers promptAsync when available", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-promptasync-"));
+	try {
+		const calls: string[] = [];
+		const client = makeClient({
+			prompt: () => { calls.push("prompt"); return {}; },
+			promptAsync: () => { calls.push("promptAsync"); return {}; },
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-promptasync-test",
+			taskId: "task-promptasync-1",
+			laneId: "lane-promptasync-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "hello",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_launched");
+		assert.deepEqual(calls, ["promptAsync"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
