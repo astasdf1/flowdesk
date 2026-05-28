@@ -32,6 +32,7 @@ import {
 	withTimeout,
 } from "./shared/with-timeout.js";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1 } from "./agent-task-runner.js";
+import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
 
 export interface FlowDeskTimeoutConfig {
 	sessionReadMs?: number;
@@ -1577,19 +1578,11 @@ function monitorSdkErrorResponse(value: unknown): boolean {
 	return record?.error !== undefined || data?.error !== undefined;
 }
 
-function monitorMessageItems(value: unknown): unknown[] {
-	const data = monitorResponseData(value);
-	if (Array.isArray(data)) return data;
-	const record = monitorRecord(data);
-	if (Array.isArray(record?.items)) return record.items;
-	return Array.isArray(record?.messages) ? record.messages : [];
-}
-
-async function pollChildSessionText(
+async function pollChildSessionOutput(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<string | null> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | null> {
 	const messages = client.session.messages;
 	if (typeof messages !== "function") return null;
 	try {
@@ -1607,19 +1600,36 @@ async function pollChildSessionText(
 			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
 		]);
 		if (raw === null) return null;
-		const data = monitorMessageItems(raw);
-		for (let i = data.length - 1; i >= 0; i--) {
-			const msg = data[i];
-			const msgRec = monitorRecord(msg);
-			const info = monitorRecord(msgRec?.info) ?? msgRec;
-			if (info?.role !== "assistant") continue;
-			const parts = Array.isArray(msgRec?.parts) ? msgRec.parts : Array.isArray(info?.parts) ? info.parts : [];
-			for (const part of parts as unknown[]) {
-				const p = typeof part === "object" && part !== null ? part as Record<string, unknown> : undefined;
-				const text = typeof p?.text === "string" ? p.text : typeof p?.content === "string" ? p.content : undefined;
-				if (typeof text === "string" && text.trim().length > 0) return text;
-			}
-		}
+		const observed = observeFlowDeskAgentTaskOutputV1(raw);
+		if (observed.terminalObserved && observed.latestText !== undefined && observed.latestText.trim().length > 0)
+			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis };
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+async function pollChildSessionCandidate(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	messagesTimeoutMs = 3_000,
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | null> {
+	const messages = client.session.messages;
+	if (typeof messages !== "function") return null;
+	try {
+		const readMessages = async (): Promise<unknown> => {
+			const current = await (messages as (o: unknown) => Promise<unknown>).call(client.session, { sessionID: childSessionId });
+			if (!monitorSdkErrorResponse(current)) return current;
+			return (messages as (o: unknown) => Promise<unknown>).call(client.session, { path: { id: childSessionId } });
+		};
+		const raw = await Promise.race([
+			readMessages(),
+			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
+		]);
+		if (raw === null) return null;
+		const observed = observeFlowDeskAgentTaskOutputV1(raw);
+		if (observed.latestText !== undefined && observed.latestText.trim().length > 0)
+			return { text: observed.latestText, completionStatus: observed.terminalObserved ? "final" : "partial", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis };
 		return null;
 	} catch {
 		return null;
@@ -1781,15 +1791,15 @@ export async function monitorChildSessionsV1(input: {
 		const silenceMs = nowMs - lastNudgeAtMs;
 		const totalAgeMs = nowMs - createdAtMs;
 
-		// 1. Try to collect result text
-		const resultText = await pollChildSessionText(input.client, childSessionId);
-		if (resultText !== null && resultText.trim().length > 0) {
+		// 1. Try to collect terminal result text. Candidate text without terminal is kept for abort-time partial capture.
+		const resultObservation = await pollChildSessionOutput(input.client, childSessionId);
+		if (resultObservation !== null && resultObservation.text.trim().length > 0) {
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 			const token = randomBytes(4).toString("hex");
 			const completedAt = new Date(nowMs).toISOString();
-			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultText);
+			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultObservation.text);
 			const finalText = sanitizedResult.text;
 
 			const taskResultEvidenceId = `task-result-${taskId}-watchdog-${token}`;
@@ -1805,7 +1815,11 @@ export async function monitorChildSessionsV1(input: {
 				task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
 				result_text: finalText,
 				result_text_truncated: sanitizedResult.truncated,
-				result_text_sha256: createHash("sha256").update(resultText).digest("hex"),
+				result_text_sha256: createHash("sha256").update(resultObservation.text).digest("hex"),
+				completion_status: resultObservation.completionStatus,
+				output_kind: resultObservation.outputKind,
+				usable_for_synthesis: resultObservation.usableForSynthesis,
+				missing_contract: false,
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
 			});
@@ -1860,6 +1874,44 @@ export async function monitorChildSessionsV1(input: {
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 			const token = randomBytes(4).toString("hex");
 			const abortedAt = new Date(nowMs).toISOString();
+			const partialObservation = await pollChildSessionCandidate(input.client, childSessionId);
+			if (partialObservation !== null && partialObservation.text.trim().length > 0) {
+				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(partialObservation.text);
+				const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, `task-result-${taskId}-watchdog-partial-${token}`, {
+					schema_version: "flowdesk.task_result.v1",
+					workflow_id: input.workflowId,
+					lane_id: laneId,
+					task_id: taskId,
+					agent_ref: agentRef,
+					provider_qualified_model_id: modelId,
+					task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
+					result_text: sanitizedResult.text,
+					result_text_truncated: sanitizedResult.truncated,
+					result_text_sha256: createHash("sha256").update(partialObservation.text).digest("hex"),
+					completion_status: "partial",
+					output_kind: partialObservation.outputKind,
+					usable_for_synthesis: partialObservation.usableForSynthesis,
+					missing_contract: true,
+					created_at: abortedAt,
+					dispatch_authority_enabled: false,
+				});
+				if (taskResultWritten) {
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "finalizing",
+						progressSeq: 20 + nudgeCount,
+						progressLabel: "async agent task partial result captured before abort",
+						observedAt: abortedAt,
+					});
+					result.lanesCompleted++;
+					continue;
+				}
+			}
 
 			writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-abort-${token}`, {
 				schema_version: "flowdesk.task_failed.v1",

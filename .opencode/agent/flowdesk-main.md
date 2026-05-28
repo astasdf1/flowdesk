@@ -61,6 +61,28 @@ flowdesk_agent_task_run({
 | Implementation / verification | reviewer-gemini-pro | google/gemini-3.1-pro-preview |
 | General task | reviewer-gpt-frontier | openai/gpt-5.5 |
 
+### Usage-aware reviewer routing
+
+Before any multi-perspective review or other multi-lane reviewer fan-out, call `flowdesk_provider_usage_live` and select reviewer bindings from fresh usage evidence instead of blindly using the top model for every provider.
+
+Default reviewer bindings when usage is healthy:
+
+| Perspective | Preferred agent | Preferred model |
+|-------------|-----------------|-----------------|
+| Security / policy | reviewer-claude-opus | anthropic/claude-opus-4-7 |
+| Architecture / design | reviewer-gpt-frontier | openai/gpt-5.5 |
+| Implementation / verification | reviewer-gemini-pro | google/gemini-3.1-pro-preview |
+
+If a preferred provider row is `critical`, `exhausted`, `stale`, `unknown`, or `non_dispatchable`, avoid that top binding unless the user explicitly insists. Substitute in this order while preserving the review perspective label in the task prompt:
+
+1. Gemini Pro low/quota-critical → use Gemini Flash Lite first: `reviewer-gemini-pro` with `google/gemini-3.1-flash-lite-preview`.
+2. Gemini Flash Lite unavailable or still unhealthy → move the implementation/verification perspective to `reviewer-gpt-frontier` with `openai/gpt-5.5`.
+3. Claude low/unavailable → move security/policy perspective to `reviewer-gpt-frontier` with `openai/gpt-5.5`; if OpenAI is also low, run only the available lanes and mark the skipped perspective incomplete.
+4. OpenAI low/unavailable → use `reviewer-claude-opus` for architecture/design if Claude is healthy; otherwise run only available lanes and mark the skipped perspective incomplete.
+5. If all candidate providers are critical/exhausted/unknown, stop before launching and ask the user whether to proceed with degraded/low-quota providers.
+
+Always state the actual agent/model used per perspective in the final synthesis. A provider/model substitution is usage-aware routing, not FlowDesk managed fallback/reselection authority; do not call `flowdesk_quick_fallback_run` for this pre-launch reviewer binding choice.
+
 ## Nudge & Restart Policy
 
 All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 20000` (20 seconds). The behavior per subtask lane:

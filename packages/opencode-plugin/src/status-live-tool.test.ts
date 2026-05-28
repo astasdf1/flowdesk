@@ -314,6 +314,9 @@ test("status live does not materialize inconsistency when finalizing has task_re
 			result_text: "done",
 			result_text_truncated: false,
 			result_text_sha256: "b".repeat(64),
+			completion_status: "partial",
+			output_kind: "process_notes",
+			usable_for_synthesis: true,
 			created_at: "2026-05-27T00:01:30.000Z",
 			dispatch_authority_enabled: false,
 		});
@@ -327,6 +330,9 @@ test("status live does not materialize inconsistency when finalizing has task_re
 		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
 		assert.equal(result.totalStalledLaneCount, 0);
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "task_result");
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.completionStatus, "partial");
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.outputKind, "process_notes");
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.usableForSynthesis, true);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

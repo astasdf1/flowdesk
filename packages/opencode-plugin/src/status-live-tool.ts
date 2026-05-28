@@ -186,6 +186,9 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	progressLabel?: string;
 	progressObservedAt?: string;
 	verdictLabel?: "pass" | "changes_required" | "blocked" | "inconclusive";
+	completionStatus?: string;
+	outputKind?: string;
+	usableForSynthesis?: boolean;
 	failureHint?: string;
 	statusCommandRef: "/flowdesk-status";
 	debugCommandRef: "/flowdesk-export-debug";
@@ -667,6 +670,14 @@ function buildLaneProgressCards(
 		"pass" | "changes_required" | "blocked" | "inconclusive"
 	>();
 	const taskResultLaneIds = new Set<string>();
+	const taskResultByLane = new Map<
+		string,
+		{
+			completionStatus?: string;
+			outputKind?: string;
+			usableForSynthesis?: boolean;
+		}
+	>();
 	const agentTaskContextByLane = new Map<
 		string,
 		{ taskId?: string; promptPreview?: string; promptTextTruncated?: boolean }
@@ -719,7 +730,16 @@ function buildLaneProgressCards(
 		}
 		if (entry.evidenceClass === "task_result") {
 			const laneId = getStringField(entry.record, "lane_id");
-			if (laneId !== undefined) taskResultLaneIds.add(laneId);
+			if (laneId !== undefined) {
+				taskResultLaneIds.add(laneId);
+				taskResultByLane.set(laneId, {
+					completionStatus: getStringField(entry.record, "completion_status"),
+					outputKind: getStringField(entry.record, "output_kind"),
+					...(typeof entry.record.usable_for_synthesis === "boolean"
+						? { usableForSynthesis: entry.record.usable_for_synthesis }
+						: {}),
+				});
+			}
 			continue;
 		}
 		if (entry.evidenceClass === "reviewer_verdict") {
@@ -757,6 +777,7 @@ function buildLaneProgressCards(
 		const context = agentTaskContextByLane.get(entry.laneId);
 		const childSession = childSessionByLane.get(entry.laneId);
 		const progress = agentTaskProgressByLane.get(entry.laneId);
+		const taskResult = taskResultByLane.get(entry.laneId);
 		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
@@ -788,6 +809,15 @@ function buildLaneProgressCards(
 			...(progress?.label === undefined ? {} : { progressLabel: progress.label }),
 			...(progress?.observedAt === undefined ? {} : { progressObservedAt: progress.observedAt }),
 			...(verdictLabel === undefined ? {} : { verdictLabel }),
+			...(taskResult?.completionStatus === undefined
+				? {}
+				: { completionStatus: taskResult.completionStatus }),
+			...(taskResult?.outputKind === undefined
+				? {}
+				: { outputKind: taskResult.outputKind }),
+			...(taskResult?.usableForSynthesis === undefined
+				? {}
+				: { usableForSynthesis: taskResult.usableForSynthesis }),
 			...(entry.failureHint === undefined
 				? {}
 				: { failureHint: entry.failureHint }),

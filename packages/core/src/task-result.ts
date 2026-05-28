@@ -17,6 +17,10 @@ export interface FlowDeskTaskResultV1 {
 	result_text: string;
 	result_text_truncated: boolean;
 	result_text_sha256: string;
+	completion_status?: "final" | "partial";
+	output_kind?: "final_answer" | "partial_findings" | "process_notes" | "tool_trace_only" | "empty";
+	usable_for_synthesis?: boolean;
+	missing_contract?: boolean;
 	created_at: string;
 	dispatch_authority_enabled: false;
 }
@@ -106,6 +110,8 @@ const VALID_AGENT_TASK_INCONSISTENCY_ACTIONS = new Set([
 	"/flowdesk-doctor",
 	"/flowdesk-export-debug",
 ]);
+const VALID_TASK_RESULT_COMPLETION_STATUS = new Set(["final", "partial"]);
+const VALID_TASK_RESULT_OUTPUT_KIND = new Set(["final_answer", "partial_findings", "process_notes", "tool_trace_only", "empty"]);
 
 // ---------------------------------------------------------------------------
 // Local helpers
@@ -180,6 +186,10 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 		"result_text",
 		"result_text_truncated",
 		"result_text_sha256",
+		"completion_status",
+		"output_kind",
+		"usable_for_synthesis",
+		"missing_contract",
 		"created_at",
 		"dispatch_authority_enabled",
 	]);
@@ -198,6 +208,14 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 	if (typeof record.result_text_truncated !== "boolean")
 		errors.push("result_text_truncated must be a boolean");
 	errors.push(...nonEmptyString(record.result_text_sha256, "result_text_sha256").errors);
+	if (record.completion_status !== undefined && !VALID_TASK_RESULT_COMPLETION_STATUS.has(record.completion_status))
+		errors.push("completion_status must be final or partial");
+	if (record.output_kind !== undefined && !VALID_TASK_RESULT_OUTPUT_KIND.has(record.output_kind))
+		errors.push("output_kind is invalid");
+	if (record.usable_for_synthesis !== undefined && typeof record.usable_for_synthesis !== "boolean")
+		errors.push("usable_for_synthesis must be a boolean");
+	if (record.missing_contract !== undefined && typeof record.missing_contract !== "boolean")
+		errors.push("missing_contract must be a boolean");
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("task result cannot enable dispatch authority");

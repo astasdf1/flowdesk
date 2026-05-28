@@ -14,6 +14,7 @@ import {
 	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
 } from "./managed-dispatch-adapter.js";
+import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
@@ -140,7 +141,7 @@ async function extractAssistantTextFromResponse(
 		messagesTimeoutMs?: number;      // per-call cap for session.messages (default 3000ms)
 		heartbeatFn?: (elapsedMs: number) => void;
 	},
-): Promise<string | undefined> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | undefined> {
 	const messages = client.session.messages;
 	if (messages === undefined) return undefined;
 
@@ -196,35 +197,9 @@ async function extractAssistantTextFromResponse(
 		} catch { return "timeout"; }
 	};
 
-	const extractText = (response: unknown): string | undefined => {
+	const observe = (response: unknown) => {
 		if (response === null) return undefined; // timed-out poll cycle
-		const data = asResponseData(response);
-		const record = asRecord(data);
-		const items = Array.isArray(data)
-			? data
-			: Array.isArray(record?.items)
-				? record.items
-				: Array.isArray(record?.messages)
-					? record.messages
-					: [];
-		for (let i = items.length - 1; i >= 0; i--) {
-			const msg = items[i];
-			const msgRec = asRecord(msg);
-			const info = asRecord(msgRec?.info) ?? msgRec;
-			if (info?.role !== "assistant") continue;
-			const parts = Array.isArray(msgRec?.parts)
-				? msgRec.parts
-				: Array.isArray(info?.parts)
-					? info.parts
-					: [];
-			for (const part of parts) {
-				const p = asRecord(part);
-				const text = typeof p?.text === "string" ? p.text
-					: typeof p?.content === "string" ? p.content : undefined;
-				if (typeof text === "string" && text.trim().length > 0) return text;
-			}
-		}
-		return undefined;
+		return observeFlowDeskAgentTaskOutputV1(response);
 	};
 
 	const startMs = Date.now();
@@ -232,6 +207,7 @@ async function extractAssistantTextFromResponse(
 	let lastSignature = "";
 	let lastHeartbeatMs = startMs;
 	let nudgeCount = 0;
+	let latestCandidate: ReturnType<typeof observeFlowDeskAgentTaskOutputV1> | undefined;
 
 	try {
 		while (true) {
@@ -245,7 +221,8 @@ async function extractAssistantTextFromResponse(
 				const items = Array.isArray(data) ? data
 					: Array.isArray(record?.items) ? record.items
 					: Array.isArray(record?.messages) ? record.messages : [];
-				return `${items.length}:${extractText(response)?.length ?? 0}`;
+				const observed = observe(response);
+				return `${items.length}:${observed?.latestText?.length ?? 0}:${observed?.terminalObserved === true ? "terminal" : "open"}`;
 			})();
 
 			if (sig !== lastSignature) {
@@ -255,9 +232,11 @@ async function extractAssistantTextFromResponse(
 				lastHeartbeatMs = nowMs;
 			}
 
-			// Check for final text — return immediately if found
-			const text = extractText(response);
-			if (text !== undefined && text.trim().length > 0) return text;
+			const observed = observe(response);
+			if (observed?.latestText !== undefined && observed.latestText.trim().length > 0) latestCandidate = observed;
+			if (observed?.terminalObserved === true && observed.latestText !== undefined && observed.latestText.trim().length > 0) {
+				return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis };
+			}
 
 			const silenceMs = nowMs - lastActivityMs;
 
@@ -276,7 +255,10 @@ async function extractAssistantTextFromResponse(
 				lastActivityMs = Date.now();
 				lastHeartbeatMs = lastActivityMs;
 			} else {
-				// Exhausted all nudges with no response
+				// Exhausted all nudges. Preserve usable candidate text as partial output.
+				if (latestCandidate?.latestText !== undefined && latestCandidate.latestText.trim().length > 0) {
+					return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis };
+				}
 				return undefined;
 			}
 		} else {
@@ -290,34 +272,6 @@ async function extractAssistantTextFromResponse(
 	} catch {
 		return undefined;
 	}
-}
-
-function isProcessOnlyAssistantOutput(text: string): boolean {
-	const normalized = text.trim().toLowerCase();
-	if (normalized.length === 0) return true;
-	// Detect thinking/planning narration without a concrete deliverable.
-	// Only flag when the ENTIRE text is narration (no JSON object or substantial content).
-	const hasJson = normalized.includes("{") && normalized.includes("}");
-	if (hasJson) return false; // JSON present → treat as real output
-	const processFragments = [
-		"working",
-		"thinking",
-		"i'll take a look",
-		"i will take a look",
-		"let me inspect",
-		"i'm going to inspect",
-		"i need to",
-		"i should",
-		"let me",
-		"determining",
-		"i'm going to",
-		"i am going to",
-		"planning to",
-		"will analyze",
-		"will focus",
-		"focused on",
-	];
-	return processFragments.some((fragment) => normalized.includes(fragment));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -724,13 +678,13 @@ export async function executeFlowDeskAgentTaskV1(
 		return { status: "task_launched", laneId: input.laneId, childSessionId: resolvedChildId };
 	}
 
-	let resultText: string | undefined;
+	let resultObservation: { text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | undefined;
 	if (childSessionId !== undefined) {
 		const runtimeModel = launchResult.status === "lane_launch_started" && typeof launchResult.model === "string"
 			? launchResult.model : undefined;
 		const agentName = launchResult.status === "lane_launch_started" && typeof launchResult.agent === "string"
 			? launchResult.agent : undefined;
-		resultText = await extractAssistantTextFromResponse(input.client, childSessionId, {
+		resultObservation = await extractAssistantTextFromResponse(input.client, childSessionId, {
 			quietPeriodMs: input._nudgeQuietPeriodMs ?? 20_000,  // default 20s per policy
 			maxNudges: 2,
 			runtimeModel,
@@ -753,14 +707,13 @@ export async function executeFlowDeskAgentTaskV1(
 		});
 	}
 
-	if (resultText === undefined || (input.outputContract === "final_assistant_text" && isProcessOnlyAssistantOutput(resultText))) {
+	const resultText = resultObservation?.text;
+	if (resultText === undefined) {
 		// No response text - write task_failed
 		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}`;
-		const failureCategory = resultText === undefined ? "no_response" : "contract_not_satisfied";
-		const evidenceFailureCategory = resultText === undefined ? "no_response" : "unknown";
-		const redactedReason = resultText === undefined
-			? "lane launched but no assistant response text found"
-			: "lane launched but final assistant response did not satisfy requested output contract";
+		const failureCategory = "no_response";
+		const evidenceFailureCategory = "no_response";
+		const redactedReason = "lane launched but no assistant response text found";
 		const taskFailedRecord: FlowDeskTaskFailedV1 = {
 			schema_version: "flowdesk.task_failed.v1",
 			workflow_id: input.workflowId,
@@ -800,7 +753,7 @@ export async function executeFlowDeskAgentTaskV1(
 			messageRef: launchResult.messageRef?.startsWith("msg-") ? launchResult.messageRef : undefined,
 			agentRef: input.agentRef,
 			providerQualifiedModelId: input.providerQualifiedModelId,
-			state: resultText === undefined ? "no_output" : "incomplete",
+			state: "no_output",
 			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
 			createdAt: observedAt,
 			updatedAt: new Date().toISOString(),
@@ -833,6 +786,10 @@ export async function executeFlowDeskAgentTaskV1(
 		result_text: storedResultText,
 		result_text_truncated: sanitizedResult.truncated,
 		result_text_sha256: resultSha256,
+		completion_status: resultObservation?.completionStatus ?? "final",
+		output_kind: resultObservation?.outputKind as FlowDeskTaskResultV1["output_kind"] ?? "final_answer",
+		usable_for_synthesis: resultObservation?.usableForSynthesis ?? true,
+		missing_contract: input.outputContract === "final_assistant_text" && resultObservation?.completionStatus !== "final",
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	};

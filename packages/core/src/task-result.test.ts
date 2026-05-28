@@ -111,6 +111,18 @@ test("task result validator treats result_text as bounded final output, not meta
 	assert.equal(result.ok, true, result.errors.join("; "));
 });
 
+test("task result validator accepts optional output quality metadata", () => {
+	const result = validateFlowDeskTaskResultV1(
+		taskResult({
+			completion_status: "partial",
+			output_kind: "process_notes",
+			usable_for_synthesis: true,
+			missing_contract: true,
+		}),
+	);
+	assert.equal(result.ok, true, result.errors.join("; "));
+});
+
 test("task result validator rejects dispatch_authority_enabled: true", () => {
 	const result = validateFlowDeskTaskResultV1(
 		taskResult({ dispatch_authority_enabled: true }),

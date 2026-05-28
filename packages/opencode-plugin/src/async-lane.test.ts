@@ -97,7 +97,7 @@ test("monitorChildSessions collects result when child session has text", async (
 	try {
 		// First launch in asyncMode to write evidence
 		const client = makeClient({
-			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "final answer here" }] }]),
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "final answer here" }, { type: "step-finish", reason: "stop" }] }]),
 		});
 		await executeFlowDeskAgentTaskV1({
 			workflowId: "workflow-monitor-1",
@@ -156,7 +156,7 @@ test("monitorChildSessions preserves marker-like task_result text", async () => 
 		});
 
 		const monitorClient = makeClient({
-			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "I saw the prompt and packages/core/src/example.ts plus /Users/example/project details." }] }]),
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "I saw the prompt and packages/core/src/example.ts plus /Users/example/project details." }, { type: "step-finish", reason: "stop" }] }]),
 		});
 		const monResult = await monitorChildSessionsV1({
 			rootDir: root,
@@ -184,7 +184,7 @@ test("executeFlowDeskAgentTaskV1 preserves synchronous marker-like task_result t
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-sanitize-"));
 	try {
 		const client = makeClient({
-			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "Final mentions developer message and src/index.ts but should persist." }] }]),
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "Final mentions developer message and src/index.ts but should persist." }, { type: "step-finish", reason: "stop" }] }]),
 		});
 		const result = await executeFlowDeskAgentTaskV1({
 			workflowId: "workflow-sync-sanitize",
@@ -237,7 +237,7 @@ test("monitorChildSessions reads current SDK messages response shapes", async ()
 			messages: async (options) => {
 				seenOptions.push(options);
 				if ((options as Record<string, unknown>).sessionID !== undefined) return { error: { message: "legacy shape" } };
-				return { data: { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "current shape done" }] }] } };
+				return { data: { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "current shape done" }, { type: "step-finish", reason: "stop" }] }] } };
 			},
 		});
 		const monResult = await monitorChildSessionsV1({
@@ -255,6 +255,86 @@ test("monitorChildSessions reads current SDK messages response shapes", async ()
 		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "current shape done");
 		const progress = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && (e.record as Record<string, unknown>).phase === "finalizing");
 		assert.equal((progress?.record as Record<string, unknown>).progress_label, "async agent task result captured by watchdog");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions waits for terminal marker and ignores reasoning parts", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-terminal-aware-"));
+	try {
+		const launchClient = makeClient({});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-terminal-aware",
+			taskId: "task-terminal-aware",
+			laneId: "lane-terminal-aware",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: launchClient,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [
+				{ type: "reasoning", text: "I am planning the answer" },
+				{ type: "text", text: "FINAL_TERMINAL_AWARE_OK" },
+				{ type: "step-finish", reason: "stop" },
+			] }]),
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-terminal-aware",
+			client: monitorClient,
+			now: new Date(),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-terminal-aware" });
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "FINAL_TERMINAL_AWARE_OK");
+		assert.equal((taskResult?.record as Record<string, unknown>).completion_status, "final");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions does not finalize non-terminal candidate before abort threshold", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-nonterminal-"));
+	try {
+		const launchClient = makeClient({});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-nonterminal",
+			taskId: "task-nonterminal",
+			laneId: "lane-nonterminal",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: launchClient,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "candidate only" }] }]),
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-nonterminal",
+			client: monitorClient,
+			now: new Date(),
+		});
+
+		assert.equal(monResult.lanesCompleted, 0);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-nonterminal" });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -280,7 +360,7 @@ test("monitorChildSessions does not write finalizing progress when task_result p
 		});
 
 		const monitorClient = makeClient({
-			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "done but cannot persist" }] }]),
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "done but cannot persist" }, { type: "step-finish", reason: "stop" }] }]),
 		});
 		const monResult = await monitorChildSessionsV1({
 			rootDir: root,
@@ -423,7 +503,7 @@ test("monitorChildSessions skips terminal lanes", async () => {
 
 		// Run monitor to collect result (first cycle)
 		const clientWithResult = makeClient({
-			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "done" }] }]),
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "done" }, { type: "step-finish", reason: "stop" }] }]),
 		});
 		await monitorChildSessionsV1({ rootDir: root, workflowId: "workflow-terminal-1", client: clientWithResult, now: new Date() });
 
