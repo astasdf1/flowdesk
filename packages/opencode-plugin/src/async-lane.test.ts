@@ -136,7 +136,7 @@ test("monitorChildSessions collects result when child session has text", async (
 	}
 });
 
-test("monitorChildSessions sanitizes raw markers before task_result persistence", async () => {
+test("monitorChildSessions preserves marker-like task_result text", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-sanitize-"));
 	try {
 		const launchClient = makeClient({});
@@ -169,18 +169,18 @@ test("monitorChildSessions sanitizes raw markers before task_result persistence"
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-sanitize" });
 		assert.ok(reloaded.ok);
 		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
-		assert.ok(taskResult, "sanitized task_result evidence should be written");
+		assert.ok(taskResult, "task_result evidence should be written");
 		const record = taskResult.record as Record<string, unknown>;
 		assert.equal(typeof record.result_text, "string");
-		assert.equal(record.result_text, "FlowDesk task result captured; content redacted for safety.");
-		assert.equal(record.result_text_truncated, true);
+		assert.equal(record.result_text, "I saw the prompt and packages/core/src/example.ts plus /Users/example/project details.");
+		assert.equal(record.result_text_truncated, false);
 		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("executeFlowDeskAgentTaskV1 sanitizes synchronous task_result text", async () => {
+test("executeFlowDeskAgentTaskV1 preserves synchronous marker-like task_result text", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-sanitize-"));
 	try {
 		const client = makeClient({
@@ -204,10 +204,10 @@ test("executeFlowDeskAgentTaskV1 sanitizes synchronous task_result text", async 
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-sync-sanitize" });
 		assert.ok(reloaded.ok);
 		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
-		assert.ok(taskResult, "synchronous sanitized task_result evidence should be written");
+		assert.ok(taskResult, "synchronous task_result evidence should be written");
 		const record = taskResult.record as Record<string, unknown>;
-		assert.equal(record.result_text, "FlowDesk task result captured; content redacted for safety.");
-		assert.equal(record.result_text_truncated, true);
+		assert.equal(record.result_text, "Final mentions developer message and src/index.ts but should persist.");
+		assert.equal(record.result_text_truncated, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

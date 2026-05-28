@@ -55,20 +55,11 @@ export type FlowDeskAgentTaskResultV1 =
 export const AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION = "flowdesk.agent_task_child_session.v1" as const;
 
 export function sanitizeFlowDeskTaskResultTextV1(text: string): { text: string; changed: boolean; truncated: boolean } {
-	const bounded = text.length > TASK_RESULT_MAX_TEXT ? text.slice(0, TASK_RESULT_MAX_TEXT) : text;
-	let sanitized = bounded
-		.replace(/\b(system prompt|developer message|provider payload|provider response|tool args|tool result|shell output|raw log|raw config|runtime echo|stack trace|transcript|prompt)\b/gi, "[redacted-marker]")
-		.replace(/[A-Za-z]:[\\/][^\s"'`)]+/g, "[redacted-path]")
-		.replace(/\\\\[^\s"'`)]+/g, "[redacted-path]")
-		.replace(/\/(Users|home|etc|var|private|tmp|usr|opt|bin|sbin|Volumes|Applications|Library|System|dev|proc|root|mnt|srv|run)(?:\/[^\s"'`)]+)?/g, "[redacted-path]")
-		.replace(/(?:^|[\s"'`(])(?:\.\.\/|\.\.\\|\.git\/|src\/|packages\/|~\/)[^\s"'`)]*/g, (match) => match.startsWith(" ") ? " [redacted-path]" : "[redacted-path]")
-		.replace(/\b(sk-[A-Za-z0-9]+|api[_-]?key|bearer\s+[A-Za-z0-9._-]+|token[:=][^\s"'`)]+|credential|secret)\b/gi, "[redacted-sensitive]");
-	// Defensive second pass for partial replacements such as "system [redacted-marker]".
-	sanitized = sanitized.replace(/\b(system|developer|provider|tool|shell|raw|runtime)\s+\[redacted-marker\]/gi, "[redacted-marker]");
-	const changed = sanitized !== text;
-	if (changed)
-		return { text: "FlowDesk task result captured; content redacted for safety.", changed: true, truncated: text.length > TASK_RESULT_MAX_TEXT };
-	return { text: sanitized, changed: false, truncated: text.length > TASK_RESULT_MAX_TEXT };
+	return {
+		text: text.length > TASK_RESULT_MAX_TEXT ? text.slice(0, TASK_RESULT_MAX_TEXT) : text,
+		changed: false,
+		truncated: text.length > TASK_RESULT_MAX_TEXT,
+	};
 }
 
 function agentTaskLaunchPlan(input: {
@@ -840,7 +831,7 @@ export async function executeFlowDeskAgentTaskV1(
 		provider_qualified_model_id: input.providerQualifiedModelId,
 		task_prompt_sha256: promptSha256,
 		result_text: storedResultText,
-		result_text_truncated: sanitizedResult.truncated || sanitizedResult.changed,
+		result_text_truncated: sanitizedResult.truncated,
 		result_text_sha256: resultSha256,
 		created_at: observedAt,
 		dispatch_authority_enabled: false,

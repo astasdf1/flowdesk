@@ -1804,7 +1804,7 @@ export async function monitorChildSessionsV1(input: {
 				provider_qualified_model_id: modelId,
 				task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
 				result_text: finalText,
-				result_text_truncated: sanitizedResult.truncated || sanitizedResult.changed,
+				result_text_truncated: sanitizedResult.truncated,
 				result_text_sha256: createHash("sha256").update(resultText).digest("hex"),
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
