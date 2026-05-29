@@ -6,6 +6,7 @@ import {
 	reloadFlowDeskSessionEvidenceV1,
 } from "@flowdesk/core";
 import { executeFlowDeskAgentTaskV1, type FlowDeskAgentTaskInputV1 } from "./agent-task-runner.js";
+import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
 function extractJsonBlock(text: string): unknown | null {
 	const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -49,6 +50,128 @@ function blocked(reason: string, workflowId?: string): FlowDeskWorkflowSynthesis
 	return { status: "blocked_before_synthesis", workflowId, redactedBlockReason: reason, summaryForUser: `Blocked: ${reason}`, safeNextActions: ["/flowdesk-status", "/flowdesk-doctor"], authority: SAFE_AUTHORITY };
 }
 
+function collectTaskResultSummaries(input: {
+	workflowId: string;
+	rootDir: string;
+}): { ok: true; summaries: Array<{ taskId: string; status: string; text: string }>; conflictDetected: boolean } | { ok: false; result: FlowDeskWorkflowSynthesisToolResultV1 } {
+	const reload = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
+	if (!reload.ok) return { ok: false, result: blocked("session evidence reload failed", input.workflowId) };
+
+	const taskResultEntries = reload.entries.filter(e => e.evidenceClass === "task_result");
+	if (taskResultEntries.length === 0) return { ok: false, result: blocked("no task_result evidence found – run scheduler first", input.workflowId) };
+
+	const summaries: Array<{ taskId: string; status: string; text: string }> = [];
+	let conflictDetected = false;
+	const conflictKeywords = /conflict|contradict|blocked|failed|changes_required|invalid|error/i;
+	for (const entry of taskResultEntries.slice(0, 10)) {
+		const record = entry.record as Record<string, unknown>;
+		const rawText = typeof record.result_text === "string" ? record.result_text : "(no output)";
+		const redacted = FORBIDDEN_MARKERS.test(rawText) ? "(redacted)" : clamp(rawText, 500);
+		const taskId = typeof record.task_id === "string" ? record.task_id : entry.evidenceId;
+		const status = "completed";
+		if (conflictKeywords.test(redacted)) conflictDetected = true;
+		summaries.push({ taskId, status, text: redacted });
+	}
+	return { ok: true, summaries, conflictDetected };
+}
+
+function writeWorkflowSynthesisResult(input: {
+	workflowId: string;
+	rootDir: string;
+	summaries: Array<{ taskId: string; status: string; text: string }>;
+	conflictDetected: boolean;
+	synthesisSummary: string;
+}): FlowDeskWorkflowSynthesisToolResultV1 {
+	const synthesisId = `synthesis-${randomBytes(5).toString("hex")}`;
+	const synthesisRecord = {
+		schema_version: "flowdesk.workflow_synthesis_result.v1",
+		workflow_id: input.workflowId,
+		synthesis_id: synthesisId,
+		tasks_summarized: input.summaries.length,
+		task_refs: input.summaries.map(s => s.taskId),
+		conflict_detected: input.conflictDetected,
+		synthesis_summary: input.synthesisSummary,
+		safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+	};
+
+	if (!validateFlowDeskWorkflowSynthesisResultV1(synthesisRecord).ok) {
+		return { status: "workflow_synthesis_incomplete", workflowId: input.workflowId, redactedBlockReason: "synthesis record validation failed", summaryForUser: "Synthesis validation failed.", safeNextActions: ["/flowdesk-status"], authority: SAFE_AUTHORITY };
+	}
+
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId: input.workflowId, evidenceId: synthesisId, record: synthesisRecord as unknown as Record<string, unknown> });
+	if (!prepared.ok || !prepared.writeIntent) return blocked("synthesis write intent failed", input.workflowId);
+
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+	if (!applied.ok) return blocked("synthesis evidence write failed", input.workflowId);
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+	});
+
+	return {
+		status: "workflow_synthesis_completed",
+		workflowId: input.workflowId,
+		synthesisId,
+		tasksSummarized: input.summaries.length,
+		conflictDetected: input.conflictDetected,
+		summaryForUser: input.synthesisSummary,
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+		authority: SAFE_AUTHORITY,
+	};
+}
+
+function existingWorkflowSynthesisResult(input: {
+	workflowId: string;
+	rootDir: string;
+}): FlowDeskWorkflowSynthesisToolResultV1 | undefined {
+	const reload = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
+	if (!reload.ok) return undefined;
+	const existing = reload.entries.find((entry) => entry.evidenceClass === "workflow_synthesis_result");
+	if (!existing) return undefined;
+	const record = existing.record as Record<string, unknown>;
+	const synthesisId = typeof record.synthesis_id === "string" ? record.synthesis_id : existing.evidenceId;
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+	});
+	return {
+		status: "workflow_synthesis_completed",
+		workflowId: input.workflowId,
+		synthesisId,
+		tasksSummarized: typeof record.tasks_summarized === "number" ? record.tasks_summarized : 0,
+		conflictDetected: record.conflict_detected === true,
+		summaryForUser: typeof record.synthesis_summary === "string" ? record.synthesis_summary : "Existing synthesis preview.",
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
+		authority: SAFE_AUTHORITY,
+	};
+}
+
+export function executeFlowDeskWorkflowSynthesisPreviewV1(input: {
+	workflowId: string;
+	rootDir: string;
+}): FlowDeskWorkflowSynthesisToolResultV1 {
+	if (!input.workflowId?.trim()) return blocked("workflowId is required");
+	if (!input.rootDir?.trim()) return blocked("rootDir is required");
+	const existing = existingWorkflowSynthesisResult({ workflowId: input.workflowId, rootDir: input.rootDir });
+	if (existing) return existing;
+	const collected = collectTaskResultSummaries({ workflowId: input.workflowId, rootDir: input.rootDir });
+	if (!collected.ok) return collected.result;
+	const previewText = collected.summaries
+		.map(s => `${s.taskId}: ${s.text}`)
+		.join("; ");
+	const synthesisSummary = clamp(
+		`Provider-free synthesis preview for ${collected.summaries.length} task result(s). ${previewText}`,
+		650,
+	);
+	return writeWorkflowSynthesisResult({
+		workflowId: input.workflowId,
+		rootDir: input.rootDir,
+		summaries: collected.summaries,
+		conflictDetected: collected.conflictDetected,
+		synthesisSummary,
+	});
+}
+
 export async function executeFlowDeskWorkflowSynthesisToolV1(input: {
 	workflowId: string;
 	rootDir: string;
@@ -62,27 +185,13 @@ export async function executeFlowDeskWorkflowSynthesisToolV1(input: {
 	if (!input.parentSessionId?.trim()) return blocked("parentSessionId is required");
 	if (!input.providerQualifiedModelId?.includes("/")) return blocked("providerQualifiedModelId must be concrete");
 	if (!input.agentName?.trim()) return blocked("agentName is required");
+	const existing = existingWorkflowSynthesisResult({ workflowId: input.workflowId, rootDir: input.rootDir });
+	if (existing) return existing;
 
-	const reload = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
-	if (!reload.ok) return blocked("session evidence reload failed", input.workflowId);
-
-	const taskResultEntries = reload.entries.filter(e => e.evidenceClass === "task_result");
-	if (taskResultEntries.length === 0) return blocked("no task_result evidence found – run scheduler first", input.workflowId);
-
-	// Collect and redact task results (500 chars each max)
-	const summaries: Array<{ taskId: string; status: string; text: string }> = [];
-	let conflictDetected = false;
-	const conflictKeywords = /conflict|contradict|blocked|failed|changes_required|invalid|error/i;
-
-	for (const entry of taskResultEntries.slice(0, 10)) {
-		const record = entry.record as Record<string, unknown>;
-		const rawText = typeof record.result_text === "string" ? record.result_text : "(no output)";
-		const redacted = FORBIDDEN_MARKERS.test(rawText) ? "(redacted)" : clamp(rawText, 500);
-		const taskId = typeof record.task_id === "string" ? record.task_id : entry.evidenceId;
-		const status = "completed";
-		if (conflictKeywords.test(redacted)) conflictDetected = true;
-		summaries.push({ taskId, status, text: redacted });
-	}
+	const collected = collectTaskResultSummaries({ workflowId: input.workflowId, rootDir: input.rootDir });
+	if (!collected.ok) return collected.result;
+	const summaries = collected.summaries;
+	let conflictDetected = collected.conflictDetected;
 
 	const promptText = [
 		"You are a results synthesizer. Read the following task results and provide a concise, bounded synthesis.",
@@ -119,36 +228,11 @@ export async function executeFlowDeskWorkflowSynthesisToolV1(input: {
 		}
 	}
 
-	const synthesisId = `synthesis-${randomBytes(5).toString("hex")}`;
-	const synthesisRecord = {
-		schema_version: "flowdesk.workflow_synthesis_result.v1",
-		workflow_id: input.workflowId,
-		synthesis_id: synthesisId,
-		tasks_summarized: summaries.length,
-		task_refs: summaries.map(s => s.taskId),
-		conflict_detected: conflictDetected,
-		synthesis_summary: synthesisSummary,
-		safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-	};
-
-	if (!validateFlowDeskWorkflowSynthesisResultV1(synthesisRecord).ok) {
-		return { status: "workflow_synthesis_incomplete", workflowId: input.workflowId, redactedBlockReason: "synthesis record validation failed", summaryForUser: "Synthesis validation failed.", safeNextActions: ["/flowdesk-status"], authority: SAFE_AUTHORITY };
-	}
-
-	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId: input.workflowId, evidenceId: synthesisId, record: synthesisRecord as unknown as Record<string, unknown> });
-	if (!prepared.ok || !prepared.writeIntent) return blocked("synthesis write intent failed", input.workflowId);
-
-	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
-	if (!applied.ok) return blocked("synthesis evidence write failed", input.workflowId);
-
-	return {
-		status: "workflow_synthesis_completed",
+	return writeWorkflowSynthesisResult({
 		workflowId: input.workflowId,
-		synthesisId,
-		tasksSummarized: summaries.length,
+		rootDir: input.rootDir,
+		summaries,
 		conflictDetected,
-		summaryForUser: synthesisSummary,
-		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
-		authority: SAFE_AUTHORITY,
-	};
+		synthesisSummary,
+	});
 }

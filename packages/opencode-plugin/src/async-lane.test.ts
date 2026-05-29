@@ -644,6 +644,12 @@ test("monitorChildSessions skips lanes with task_result even when lifecycle is s
 		assert.equal(monResult.lanesPolled, 0, "task_result-backed lane should be skipped even if lifecycle still says running");
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
 		assert.equal(reloaded.entries.filter(e => e.evidenceClass === "task_result").length, 1);
+		const autoNextCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
+		const workflows = autoNextCache.workflows as Array<Record<string, unknown>>;
+		assert.equal(workflows[0]?.workflowId, workflowId);
+		const aggregate = workflows[0]?.laneProgressAggregate as Record<string, unknown>;
+		assert.equal(aggregate.nextActionAvailable, true);
+		assert.equal(aggregate.nextActionKind, "synthesis");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

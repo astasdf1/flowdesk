@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
@@ -176,8 +176,10 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestTaskAgentAssignmentCount?: number;
 	latestTaskModelSelectionStatus?: string;
 	latestTaskModelSelectionBlockedLabels?: readonly string[];
+	latestWorkflowSynthesisId?: string;
 	latestWorkflowSynthesisTasksSummarized?: number;
 	latestWorkflowSynthesisConflictDetected?: boolean;
+	latestWorkflowSynthesisSummaryPreview?: string;
 	latestWorkflowDispatchPlanRevisionId?: string;
 	latestWorkflowDispatchPlanTaskCount?: number;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
@@ -195,6 +197,9 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 		awaitingPermission: number;
 		normalCompleted: number;
 		autoNextStepEligible: boolean;
+		nextActionAvailable: boolean;
+		nextActionKind?: "synthesis";
+		nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
 	};
 }
 
@@ -269,6 +274,12 @@ export interface FlowDeskStatusLiveResultV1 {
 		| "/flowdesk-doctor"
 		| "/flowdesk-export-debug"
 	)[];
+	authorityCapabilitySummary?: {
+		availableNow: readonly ("display_only" | "local_preview" | "command_backed_guarded")[];
+		explicitDevBeta: readonly ("provider_task_lane" | "controlled_workspace_write")[];
+		laterGated: readonly ("managed_dispatch" | "managed_fallback" | "tui_actions" | "hard_chat_control")[];
+		unsupportedByDefault: readonly ("auto_provider_execution" | "automatic_reselection")[];
+	};
 	authority: {
 		realOpenCodeDispatch: false;
 		providerCall: false;
@@ -302,6 +313,15 @@ function safeNextActions(): readonly (
 	| "/flowdesk-export-debug"
 )[] {
 	return ["/flowdesk-status", "/flowdesk-doctor", "/flowdesk-export-debug"];
+}
+
+function authorityCapabilitySummary(): NonNullable<FlowDeskStatusLiveResultV1["authorityCapabilitySummary"]> {
+	return {
+		availableNow: ["display_only", "local_preview", "command_backed_guarded"],
+		explicitDevBeta: ["provider_task_lane", "controlled_workspace_write"],
+		laterGated: ["managed_dispatch", "managed_fallback", "tui_actions", "hard_chat_control"],
+		unsupportedByDefault: ["auto_provider_execution", "automatic_reselection"],
+	};
 }
 
 function listSessionWorkflowIds(rootDir: string, max: number): string[] {
@@ -345,6 +365,15 @@ function getPositiveIntegerField(
 	return typeof value === "number" && Number.isInteger(value) && value > 0
 		? value
 		: undefined;
+}
+
+const FORBIDDEN_SYNTHESIS_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch|fallback|reselect/i;
+
+function synthesisSummaryPreview(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const compact = value.replace(/\s+/g, " ").trim();
+	if (compact.length === 0 || FORBIDDEN_SYNTHESIS_SUMMARY_MARKERS.test(compact)) return undefined;
+	return compact.length > 160 ? `${compact.slice(0, 159)}…` : compact;
 }
 
 const DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 90_000;
@@ -529,8 +558,10 @@ function summarizeWorkflow(
 	let taskAgentAssignmentCount: number | undefined;
 	let taskModelSelectionStatus: string | undefined;
 	let taskModelSelectionBlockedLabels: string[] | undefined;
+	let workflowSynthesisId: string | undefined;
 	let workflowSynthesisTasksSummarized: number | undefined;
 	let workflowSynthesisConflictDetected: boolean | undefined;
+	let workflowSynthesisSummaryPreview: string | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
 
@@ -617,9 +648,11 @@ function summarizeWorkflow(
 		if (evidenceClass === "workflow_synthesis_result") {
 			const last = classEntries[classEntries.length - 1];
 			if (last !== undefined) {
+				workflowSynthesisId = getStringField(last.record, "synthesis_id") ?? last.evidenceId;
 				const tasks = last.record.tasks_summarized;
 				if (typeof tasks === "number") workflowSynthesisTasksSummarized = tasks;
 				workflowSynthesisConflictDetected = last.record.conflict_detected === true;
+				workflowSynthesisSummaryPreview = synthesisSummaryPreview(getStringField(last.record, "synthesis_summary"));
 			}
 		}
 		if (evidenceClass === "workflow_dispatch_plan") {
@@ -689,11 +722,17 @@ function summarizeWorkflow(
 		...(taskModelSelectionBlockedLabels !== undefined
 			? { latestTaskModelSelectionBlockedLabels: taskModelSelectionBlockedLabels }
 			: {}),
+		...(workflowSynthesisId !== undefined
+			? { latestWorkflowSynthesisId: workflowSynthesisId }
+			: {}),
 		...(workflowSynthesisTasksSummarized !== undefined
 			? { latestWorkflowSynthesisTasksSummarized: workflowSynthesisTasksSummarized }
 			: {}),
 		...(workflowSynthesisConflictDetected !== undefined
 			? { latestWorkflowSynthesisConflictDetected: workflowSynthesisConflictDetected }
+			: {}),
+		...(workflowSynthesisSummaryPreview !== undefined
+			? { latestWorkflowSynthesisSummaryPreview: workflowSynthesisSummaryPreview }
 			: {}),
 		...(workflowDispatchPlanRevisionId !== undefined
 			? {
@@ -887,7 +926,10 @@ function buildLaneProgressCards(
 	});
 }
 
-function buildLaneProgressAggregate(cards: readonly FlowDeskStatusLiveLaneProgressCardV1[]): NonNullable<FlowDeskStatusLiveWorkflowEvidenceSummaryV1["laneProgressAggregate"]> {
+function buildLaneProgressAggregate(
+	cards: readonly FlowDeskStatusLiveLaneProgressCardV1[],
+	synthesisAlreadyRecorded = false,
+): NonNullable<FlowDeskStatusLiveWorkflowEvidenceSummaryV1["laneProgressAggregate"]> {
 	const expected = cards.length;
 	const terminal = cards.filter(card => card.classification === "terminal").length;
 	const taskResult = cards.filter(card => card.state === "task_result").length;
@@ -900,6 +942,7 @@ function buildLaneProgressAggregate(cards: readonly FlowDeskStatusLiveLaneProgre
 		card.usableForSynthesis !== false &&
 		card.failureHint === undefined,
 	).length;
+	const nextActionReady = expected > 0 && normalCompleted === expected && !synthesisAlreadyRecorded;
 	return {
 		expected,
 		terminal,
@@ -907,7 +950,10 @@ function buildLaneProgressAggregate(cards: readonly FlowDeskStatusLiveLaneProgre
 		failed,
 		awaitingPermission,
 		normalCompleted,
-		autoNextStepEligible: expected > 0 && normalCompleted === expected,
+		autoNextStepEligible: nextActionReady,
+		nextActionAvailable: nextActionReady,
+		...(nextActionReady ? { nextActionKind: "synthesis" as const } : {}),
+		nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
 	};
 }
 
@@ -991,6 +1037,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			redactedBlockReason:
 				"status live tool requires a durable state root directory",
 			safeNextActions: safeNextActions(),
+			authorityCapabilitySummary: authorityCapabilitySummary(),
 			authority: blockedAuthority(),
 		};
 	}
@@ -1013,6 +1060,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 					? `no durable session evidence for workflow ${requestedWorkflowId}`
 					: "no durable session workflows found under the configured durable state root",
 			safeNextActions: safeNextActions(),
+			authorityCapabilitySummary: authorityCapabilitySummary(),
 			authority: blockedAuthority(),
 		};
 	}
@@ -1046,6 +1094,12 @@ export async function executeFlowDeskStatusLiveV1(input: {
 					: { stallThresholdMs: input.config.laneHeartbeatStallThresholdMs }),
 			});
 			summary.laneStallProjection = projection;
+			const projectedLifecycleStates = projection.entries
+				.map((entry) => entry.lifecycleState)
+				.filter((state): state is string => typeof state === "string" && state.length > 0);
+			if (projectedLifecycleStates.length > 0) {
+				summary.latestLaneLifecycleStates = projectedLifecycleStates;
+			}
 			summary.worstLaneStallClassification = projection.worstClassification;
 			summary.stalledLaneCount = projection.totalStalledLanes;
 			summary.progressingLateLaneCount = projection.totalLateLanes;
@@ -1057,7 +1111,10 @@ export async function executeFlowDeskStatusLiveV1(input: {
 				projection,
 			);
 			summary.subtaskActivityRows = buildSubtaskActivityRows(summary.laneProgressCards);
-			summary.laneProgressAggregate = buildLaneProgressAggregate(summary.laneProgressCards);
+			summary.laneProgressAggregate = buildLaneProgressAggregate(
+				summary.laneProgressCards,
+				summary.latestWorkflowSynthesisTasksSummarized !== undefined,
+			);
 		};
 		const graceMs = clampFinalizingInconsistencyGraceMs(
 			input.config.agentTaskFinalizingInconsistencyGraceMs,
@@ -1135,17 +1192,6 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		requestedWorkflowId,
 	});
 
-	materializeSubtaskActivitySidebarCacheV1({
-		rootDir,
-		observedAt,
-		workflows,
-	});
-	materializeAutoNextReadyCacheV1({
-		rootDir,
-		observedAt,
-		workflows,
-	});
-
 	return {
 		status: "status_live_collected",
 		observedAt,
@@ -1159,6 +1205,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		totalInconsistentFinalizingWithoutTerminalLaneCount: totalInconsistent,
 		summaryForUser,
 		safeNextActions: safeNextActions(),
+		authorityCapabilitySummary: authorityCapabilitySummary(),
 		authority: {
 			realOpenCodeDispatch: false,
 			providerCall: false,
@@ -1170,89 +1217,6 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			statusEvidenceObserved: observed,
 		},
 	};
-}
-
-function materializeSubtaskActivitySidebarCacheV1(input: {
-	rootDir: string;
-	observedAt: string;
-	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
-}): void {
-	try {
-		const rows = input.workflows.flatMap((workflow) => workflow.subtaskActivityRows ?? []).slice(0, 8);
-		const uiDir = join(input.rootDir, ".flowdesk", "ui");
-		mkdirSync(uiDir, { recursive: true });
-		writeFileSync(
-			join(uiDir, "subtask-activity-sidebar.json"),
-			`${JSON.stringify(
-				{
-					schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
-					observed_at: input.observedAt,
-					expires_at: new Date(Date.parse(input.observedAt) + 120_000).toISOString(),
-					rows,
-					authority: {
-						displayOnly: true,
-						realOpenCodeDispatch: false,
-						providerCall: false,
-						runtimeExecution: false,
-						fallbackAuthority: false,
-						hardCancelOrNoReplyAuthority: false,
-					},
-				},
-				null,
-				2,
-			)}\n`,
-			"utf8",
-		);
-	} catch {
-		// The sidebar cache is a best-effort display artifact only.
-	}
-}
-
-function materializeAutoNextReadyCacheV1(input: {
-	rootDir: string;
-	observedAt: string;
-	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
-}): void {
-	try {
-		const workflows = input.workflows
-			.filter((workflow) => workflow.laneProgressAggregate?.autoNextStepEligible === true)
-			.slice(0, 8)
-			.map((workflow) => ({
-				workflowId: workflow.workflowId,
-				laneProgressAggregate: workflow.laneProgressAggregate,
-				taskResultRefs: (workflow.laneProgressCards ?? [])
-					.filter((card) => card.state === "task_result")
-					.map((card) => card.taskId ?? card.laneId)
-					.slice(0, 32),
-				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
-			}));
-		const uiDir = join(input.rootDir, ".flowdesk", "ui");
-		mkdirSync(uiDir, { recursive: true });
-		writeFileSync(
-			join(uiDir, "auto-next-ready.json"),
-			`${JSON.stringify(
-				{
-					schema_version: "flowdesk.auto_next_ready_cache.v1",
-					observed_at: input.observedAt,
-					expires_at: new Date(Date.parse(input.observedAt) + 120_000).toISOString(),
-					workflows,
-					authority: {
-						displayOnly: true,
-						realOpenCodeDispatch: false,
-						providerCall: false,
-						runtimeExecution: false,
-						fallbackAuthority: false,
-						hardCancelOrNoReplyAuthority: false,
-					},
-				},
-				null,
-				2,
-			)}\n`,
-			"utf8",
-		);
-	} catch {
-		// The auto-next cache is a best-effort display artifact only.
-	}
 }
 
 function buildStatusLiveSummaryForUser(input: {
@@ -1288,21 +1252,32 @@ function buildStatusLiveSummaryForUser(input: {
 			verdictLabels.length > 0
 				? `verdicts=${verdictLabels.join("/")}`
 				: "verdicts=(none)";
-		const lifecycleStates = workflow.latestLaneLifecycleStates;
+		const projectedLaneStates = (workflow.laneProgressCards ?? [])
+			.slice(0, 3)
+			.map((lane) => `${lane.state ?? "unknown"}/${lane.classification}`);
+		const lifecycleStates = projectedLaneStates.length > 0 ? projectedLaneStates : workflow.latestLaneLifecycleStates;
 		const lifecycleText =
 			lifecycleStates.length > 0
-				? `lifecycle=${lifecycleStates.slice(0, 3).join("/")}`
-				: "lifecycle=(none)";
+				? `${projectedLaneStates.length > 0 ? "lane_state" : "lifecycle"}=${lifecycleStates.slice(0, 3).join("/")}`
+				: "lane_state=(none)";
+		const synthesisPreview = workflow.latestWorkflowSynthesisSummaryPreview === undefined
+			? ""
+			: ` preview="${workflow.latestWorkflowSynthesisSummaryPreview.replace(/"/g, "'").slice(0, 96)}"`;
 		const synthesisText = workflow.latestWorkflowSynthesisTasksSummarized !== undefined
-			? ` synthesis=${workflow.latestWorkflowSynthesisTasksSummarized} tasks${workflow.latestWorkflowSynthesisConflictDetected ? " (conflict)" : ""}`
+			? ` synthesis=${workflow.latestWorkflowSynthesisTasksSummarized} tasks${workflow.latestWorkflowSynthesisConflictDetected ? " conflict=detected" : ""}${synthesisPreview}`
 			: "";
 		const autoNextText = workflow.laneProgressAggregate?.autoNextStepEligible === true ? " auto_next=ready" : "";
+		const nextActionText = workflow.laneProgressAggregate?.nextActionAvailable === true
+			? ` next_action=${workflow.laneProgressAggregate.nextActionKind ?? "available"}_ready`
+			: "";
 		const planText =
 			workflow.latestWorkflowDispatchPlanRevisionId !== undefined
-				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}${synthesisText}${autoNextText}`
+				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}${synthesisText}${autoNextText}${nextActionText}`
 				: workflow.latestTaskGraphTaskCount !== undefined
-					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}${synthesisText}${autoNextText}`
-					: `workflow_plan=(none)${synthesisText}${autoNextText}`;
+					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}${synthesisText}${autoNextText}${nextActionText}`
+					: synthesisText.length > 0
+						? `${synthesisText.trim()}${autoNextText}${nextActionText}`
+						: `workflow_plan=(none)${autoNextText}${nextActionText}`;
 		const classification = workflow.worstLaneStallClassification ?? "unknown";
 		const lanePreview = (workflow.laneProgressCards ?? [])
 			.slice(0, 2)
@@ -1314,7 +1289,6 @@ function buildStatusLiveSummaryForUser(input: {
 				return `${lane.laneId}:${lane.state ?? "unknown"}/${lane.classification}/last=${age}`;
 			})
 			.join(", ");
-		const laneText = lanePreview.length > 0 ? `, lanes=${lanePreview}` : "";
 		const subtaskPreview = (workflow.subtaskActivityRows ?? [])
 			.slice(0, 3)
 			.map((row) => {
@@ -1326,6 +1300,7 @@ function buildStatusLiveSummaryForUser(input: {
 				return compact.length > 96 ? `${compact.slice(0, 95)}…` : compact;
 			})
 			.join("; ");
+		const laneText = lanePreview.length > 0 && subtaskPreview.length === 0 ? `, lanes=${lanePreview}` : "";
 		const subtaskText = subtaskPreview.length > 0 ? `, subtasks=${subtaskPreview}` : "";
 		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}`;
 	});

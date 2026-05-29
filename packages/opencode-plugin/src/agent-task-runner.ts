@@ -790,7 +790,10 @@ export async function executeFlowDeskAgentTaskV1(
 		completion_status: resultObservation?.completionStatus ?? "final",
 		output_kind: resultObservation?.outputKind as FlowDeskTaskResultV1["output_kind"] ?? "final_answer",
 		usable_for_synthesis: resultObservation?.usableForSynthesis ?? true,
-		missing_contract: input.outputContract === "final_assistant_text" && resultObservation?.completionStatus !== "final",
+		missing_contract:
+			input.outputContract === "final_assistant_text" &&
+			(resultObservation?.completionStatus !== "final" ||
+				["empty", "process_notes", "tool_trace_only"].includes(String(resultObservation?.outputKind ?? ""))),
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	};

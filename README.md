@@ -8,10 +8,10 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.1.12` is the latest published release on npm:
+Version `0.1.14` is the current Release 1 candidate in this repository:
 
 ```bash
-npm install @flowdesk/core@^0.1.12 @flowdesk/opencode-plugin@^0.1.12
+npm install @flowdesk/core@^0.1.14 @flowdesk/opencode-plugin@^0.1.14
 ```
 
 Add the plugin to your OpenCode config. The plugin entry must point at the
@@ -46,7 +46,7 @@ opt-in set for the description-driven natural-language tools is:
 }
 ```
 
-Release 1 is intentionally conservative. It provides a default-on, non-dispatch command-backed plugin path: planning records, guarded dry-run, deterministic fake-runtime output, status, recovery, usage/provider diagnostics, redacted debug export, bootstrap installation, and visible chat steering. It does **not** perform real provider dispatch by default. The opt-in natural-language tools are separate: `flowdesk_quick_reviewer_run` and `flowdesk_agent_task_run` can launch real provider-backed reviewer/task lanes only after the relevant plugin option is enabled and each tool call carries `developerModeAcknowledged=true` plus `allowProviderCall=true`.
+Release 1 is intentionally conservative. It provides a default-on, non-dispatch command-backed plugin path: planning records, guarded dry-run, deterministic fake-runtime output, status, recovery, usage/provider diagnostics, redacted debug export, bootstrap installation, visible chat steering, and provider-free local previews such as synthesis preview and durable-plan auto-continue preview. It does **not** perform real provider dispatch by default. The opt-in developer-mode tools are separate: `flowdesk_agent_task_run` can launch real provider-backed task lanes only after the relevant plugin option is enabled and each tool call carries `developerModeAcknowledged=true` plus `allowProviderCall=true`; `flowdesk_quick_reviewer_run` is an opt-in product helper but is currently quarantined by coordinator policy until revalidated.
 
 The current public package is best understood as the base harness: contracts, validators, command tools, status surfaces, evidence persistence scaffolding, and safety gates needed before real usage-based model selection can become production behavior.
 
@@ -108,7 +108,7 @@ Release 1 default behavior does not claim:
 - score-based approval,
 - or community telemetry upload.
 
-Explicit opt-in helpers such as `flowdesk_quick_reviewer_run` and `flowdesk_agent_task_run` are provider-calling developer-mode tools. They are not default Release 1 dispatch authority, and their evidence cannot by itself approve production dispatch.
+Provider-free local preview helpers such as `flowdesk_workflow_synthesis_preview` and `flowdesk_auto_continue_preview` read existing durable FlowDesk evidence and keep provider/runtime/lane/fallback/hard-chat/tool authority false. Explicit opt-in helpers such as `flowdesk_agent_task_run`, dev/beta `flowdesk_workflow_dispatch`, and dev/beta `flowdesk_controlled_write_apply` are outside default Release 1 behavior and require separate enable flags plus per-call acknowledgement/approval. They are not default Release 1 dispatch or write authority, and their evidence cannot by itself approve production dispatch.
 
 `opencode run` is not a FlowDesk production orchestration path. It is allowed only for smoke tests, diagnostics, compatibility probes, or fake-runtime harnesses.
 
@@ -129,7 +129,7 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
 
 - [x] **Phase 3: OpenCode plugin command path (about 95%)**
   - `@flowdesk/opencode-plugin`, command-backed handlers, `/flowdesk-*` command files, bootstrap installer, safe local tools, chat intake/steering, pending confirmation behavior, status/recovery/diagnostics, and Release 1 production-eligible non-dispatch registration exist.
-  - Packages are published as `@flowdesk/core@0.1.12` and `@flowdesk/opencode-plugin@0.1.12`.
+  - Packages are prepared as `@flowdesk/core@0.1.14` and `@flowdesk/opencode-plugin@0.1.14` for the next Release 1 package publication.
   - Remaining: user-facing hardening and continued proof that default behavior stays non-dispatch.
 
 - [ ] **Phase 4: OpenCode conformance (about 58%)**

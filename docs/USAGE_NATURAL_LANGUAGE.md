@@ -1,15 +1,15 @@
 # FlowDesk Natural-Language Usage
 
-FlowDesk exposes five description-driven LLM tools that fire automatically when the assistant detects matching natural-language patterns in the OpenCode chat. No portable command typing required.
+FlowDesk exposes description-driven LLM tools that fire automatically when the assistant detects matching natural-language patterns in the OpenCode chat. No portable command typing required. Release 1 also exposes local preview/status helpers that are not provider callers and do not execute workflow steps.
 
 This document covers:
 
-1. What each natural-language tool does.
+1. What each natural-language tool or local preview helper does.
 2. Which natural-language phrases trigger each tool.
 3. The minimum plugin config + environment variables required for live data.
 4. How to verify the active OpenCode profile.
 
-Default FlowDesk natural-language routing keeps `realOpenCodeDispatch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` false and does not promote default production dispatch or automatic provider switching. Four tools (`flowdesk_provider_usage_live`, `flowdesk_status_live`, `flowdesk_quick_fallback_run`, and `flowdesk_lane_heartbeat_record`) are read-only/diagnostic/planning evidence tools whose provider/runtime/lane-launch authority remains false. `flowdesk_quick_reviewer_run` is the explicit exception: when `quickReviewerRun.enabled=true` is configured and the tool call includes both `developerModeAcknowledged=true` and `allowProviderCall=true`, it may make real provider calls and launch reviewer lanes through the injected SDK helper. That opt-in helper remains outside default Release 1 dispatch authority and cannot approve work, switch providers, or bypass Guard.
+Default FlowDesk natural-language routing keeps `realOpenCodeDispatch`, `fallbackAuthority`, and `hardCancelOrNoReplyAuthority` false and does not promote default production dispatch or automatic provider switching. Diagnostic/planning/local-preview tools such as `flowdesk_provider_usage_live`, `flowdesk_status_live`, `flowdesk_quick_fallback_run`, `flowdesk_lane_heartbeat_record`, `flowdesk_workflow_synthesis_preview`, and `flowdesk_auto_continue_preview` keep provider/runtime/lane-launch authority false. Provider-calling helpers such as `flowdesk_agent_task_run` are explicit developer-mode tools and remain outside default Release 1 dispatch authority. `flowdesk_quick_reviewer_run` is an opt-in helper in the product surface, but the current coordinator operating policy quarantines it until explicitly revalidated; use explicit `flowdesk_agent_task_run` reviewer lanes instead when reviewer work is needed.
 
 ## Plan-Backed Continuous Work Steering
 
@@ -19,15 +19,19 @@ This route is deliberately gated. FlowDesk may suggest `/flowdesk-resume` only w
 
 Continuous work always stops at the next blocker, ambiguous requirement, missing verification, Guard denial, stale or absent required evidence, unsupported later-gate capability, or user-facing clarification need. It does not enable real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat cancellation.
 
+When durable `workflow_dispatch_plan` evidence exists, `flowdesk_auto_continue_preview` can show the next pending planned task without executing it. It reads only durable plan evidence plus existing `task_result` ids, reports the next task title/summary and pending/completed counts, and sets `autoContinuationExecuted=false` and `previewOnly=true`. It does not read transient chat/todowrite state, call a provider, launch a lane, invoke `/flowdesk-run`, fallback/reselect, mutate TUI/chat, or write workspace files. Treat it as “what would be next?” evidence; actual continuation still requires a later gated/confirmed execution path.
+
+When every expected task result is already durable, `flowdesk_workflow_synthesis_preview` can summarize existing `task_result` evidence locally and persist `flowdesk.workflow_synthesis_result.v1`. It is provider-free and idempotent: repeated calls return existing synthesis evidence rather than duplicating it. It does not launch a synthesis lane or grant execution authority.
+
 When `durableStateRoot` is configured, FlowDesk also remembers recently shown non-confirmation steering cards in a short-lived redacted preference cache. This prevents the same plan/status/usage suggestion from reappearing immediately after the plugin process restarts. The cache stores only schema-safe session/action labels and expiry timestamps; it does not store the chat text, prompts, transcripts, file paths, command payloads, tool results, provider payloads, or credentials. If the cache cannot be read or written, FlowDesk falls back to in-memory de-duplication.
 
 If the plugin profile opts into `projectConfig.enabled=true`, natural-language routing also depends on `.flowdesk/config.json` loading and validating successfully from the configured root. Missing, malformed, invalid, or chat-disabled config fails closed: the `chat.message` steering hook is not registered, and `flowdesk_pre_spike_doctor` reports the redacted config status.
 
 Debug-export requests route to `/flowdesk-export-debug`. With a durable state root, the local non-dispatch adapter materializes a redacted debug manifest containing only section summaries, opaque refs, retention/deletion state, and counts. It is not a raw log export.
 
-## Tool 1: `flowdesk_quick_reviewer_run`
+## Tool 1: `flowdesk_quick_reviewer_run` / explicit reviewer lanes
 
-3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model. This is an explicit opt-in provider-calling helper, not part of default non-dispatch command routing.
+3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model. This is an explicit opt-in provider-calling helper, not part of default non-dispatch command routing. Current coordinator policy quarantines this helper until revalidated, so review intent should be satisfied through explicit `flowdesk_agent_task_run` reviewer lanes with concrete agent/model bindings and `nudgeQuietPeriodMs: 20000`.
 
 ### Trigger phrases
 
@@ -374,6 +378,8 @@ Expected tools:
 - `flowdesk_status_live`
 - `flowdesk_quick_fallback_run`
 - `flowdesk_lane_heartbeat_record`
+- `flowdesk_workflow_synthesis_preview` when status/durable-root support is enabled
+- `flowdesk_auto_continue_preview` when status/durable-root support is enabled
 
 `hasChatMessage` must be `true` once `naturalLanguageRouting` is enabled. The `chat.message` hook is also the surface that emits the passive stall alert card when `chatMessageStallAlert.enabled=true` and stalled lanes are present.
 
@@ -385,6 +391,6 @@ If `localNonDispatchAdapter` and `naturalLanguageRouting` are enabled, FlowDesk 
 
 - No raw OAuth tokens are echoed in tool responses; only redacted refs and bucket-level data.
 - No default managed dispatch, automatic fallback, or hard-chat authority is enabled by these tools.
-- `flowdesk_quick_reviewer_run` may set provider/runtime/lane-launch diagnostic authority fields true only for its explicit opt-in reviewer helper call. The other natural-language tools keep those flags false.
+- `flowdesk_quick_reviewer_run` and `flowdesk_agent_task_run` may set provider/runtime/lane-launch diagnostic authority fields true only for explicit developer-mode provider-calling helper calls. Local preview tools such as synthesis preview and auto-continue preview keep those flags false.
 - Only diagnostic flags (`providerUsageAcquired`, `statusEvidenceObserved`, `exactModelProviderAcquisitionRecorded`, `regatePlanPrepared`, `laneHeartbeatPersisted`) become `true` to indicate that real data was read or written; they do not authorize dispatch.
 - The stall alert card and the lane heartbeat writer never contain raw prompts, transcripts, provider payloads, runtime echoes, tool args/results, stack traces, file contents, or absolute filesystem paths; only redacted opaque refs and bounded labels are stored.

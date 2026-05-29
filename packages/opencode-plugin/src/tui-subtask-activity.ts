@@ -17,6 +17,7 @@ export interface FlowDeskTuiSubtaskActivityRowV1 {
 	classification: FlowDeskTuiSubtaskActivityClassificationV1;
 	progressPhase?: string;
 	lastObservedAt?: string;
+	taskSummary?: string;
 	recoveryActionRefs: readonly string[];
 }
 
@@ -34,6 +35,9 @@ export interface FlowDeskTuiAutoNextReadyWorkflowV1 {
 	expected: number;
 	completed: number;
 	taskResultRefs: readonly string[];
+	taskSummaries: readonly string[];
+	nextActionKind?: "synthesis";
+	nextActionAvailable: boolean;
 }
 
 export interface FlowDeskTuiAutoNextReadyViewV1 {
@@ -41,6 +45,24 @@ export interface FlowDeskTuiAutoNextReadyViewV1 {
 	observedAt: string;
 	rootDir: string;
 	workflows: readonly FlowDeskTuiAutoNextReadyWorkflowV1[];
+	redactedReason?: string;
+	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
+}
+
+export interface FlowDeskTuiLatestSynthesisRowV1 {
+	workflowId: string;
+	synthesisId: string;
+	tasksSummarized: number;
+	conflictDetected: boolean;
+	summaryPreview: string;
+	observedAt: string;
+}
+
+export interface FlowDeskTuiLatestSynthesisViewV1 {
+	status: "loaded" | "missing" | "stale" | "blocked";
+	observedAt: string;
+	rootDir: string;
+	syntheses: readonly FlowDeskTuiLatestSynthesisRowV1[];
 	redactedReason?: string;
 	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
 }
@@ -87,6 +109,7 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		classification,
 		...(stringField(record, "progressPhase") === undefined ? {} : { progressPhase: stringField(record, "progressPhase") }),
 		...(stringField(record, "lastObservedAt") === undefined ? {} : { lastObservedAt: stringField(record, "lastObservedAt") }),
+		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 10) }),
 		recoveryActionRefs,
 	};
 }
@@ -155,7 +178,11 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 				const expected = typeof aggregate.expected === "number" && Number.isFinite(aggregate.expected) ? aggregate.expected : 0;
 				const completed = typeof aggregate.normalCompleted === "number" && Number.isFinite(aggregate.normalCompleted) ? aggregate.normalCompleted : 0;
 				const taskResultRefs = Array.isArray(workflow.taskResultRefs) ? workflow.taskResultRefs.filter((value): value is string => typeof value === "string") : [];
-				return { workflowId, expected, completed, taskResultRefs };
+				const taskSummaries = Array.isArray(workflow.taskSummaries) ? workflow.taskSummaries.filter((value): value is string => typeof value === "string" && value.length > 0).map((value) => value.slice(0, 10)) : [];
+				const nextActionKindRaw = typeof workflow.nextActionKind === "string" ? workflow.nextActionKind : aggregate.nextActionKind;
+				const nextActionKind = nextActionKindRaw === "synthesis" ? "synthesis" as const : undefined;
+				const nextActionAvailable = workflow.nextActionAvailable === true || aggregate.nextActionAvailable === true || nextActionKind !== undefined;
+				return { workflowId, expected, completed, taskResultRefs, taskSummaries, nextActionAvailable, ...(nextActionKind === undefined ? {} : { nextActionKind }) };
 			}).filter((workflow): workflow is FlowDeskTuiAutoNextReadyWorkflowV1 => workflow !== undefined)
 			: [];
 		return {
@@ -171,14 +198,54 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 	}
 }
 
+export function loadFlowDeskTuiLatestSynthesisViewV1(input: {
+	rootDir?: string;
+	now?: () => Date;
+} = {}): FlowDeskTuiLatestSynthesisViewV1 {
+	const observedAt = (input.now ? input.now() : new Date()).toISOString();
+	const nowMs = Date.parse(observedAt);
+	const rootDir = safeRootDir(input.rootDir);
+	try {
+		const cache = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "latest-synthesis.json"), "utf8")) as unknown;
+		if (!isRecord(cache) || cache.schema_version !== "flowdesk.latest_synthesis_cache.v1") {
+			return { status: "missing", observedAt, rootDir, syntheses: [], redactedReason: "latest synthesis cache missing", safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
+		}
+		const expiresAtMs = typeof cache.expires_at === "string" ? Date.parse(cache.expires_at) : Number.NaN;
+		const syntheses = Array.isArray(cache.syntheses)
+			? cache.syntheses.filter(isRecord).map((row): FlowDeskTuiLatestSynthesisRowV1 | undefined => {
+				const workflowId = stringField(row, "workflowId");
+				const synthesisId = stringField(row, "synthesisId");
+				const summaryPreview = stringField(row, "summaryPreview");
+				const rowObservedAt = stringField(row, "observedAt");
+				if (workflowId === undefined || synthesisId === undefined || summaryPreview === undefined || rowObservedAt === undefined) return undefined;
+				return {
+					workflowId,
+					synthesisId,
+					tasksSummarized: typeof row.tasksSummarized === "number" && Number.isFinite(row.tasksSummarized) ? row.tasksSummarized : 0,
+					conflictDetected: row.conflictDetected === true,
+					summaryPreview: summaryPreview.slice(0, 80),
+					observedAt: rowObservedAt,
+				};
+			}).filter((row): row is FlowDeskTuiLatestSynthesisRowV1 => row !== undefined)
+			: [];
+		return {
+			status: Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs ? "stale" : "loaded",
+			observedAt: typeof cache.observed_at === "string" ? cache.observed_at : observedAt,
+			rootDir,
+			syntheses,
+			...(syntheses.length === 0 ? { redactedReason: "no synthesis previews cached" } : {}),
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		};
+	} catch {
+		return { status: "missing", observedAt, rootDir, syntheses: [], redactedReason: "latest synthesis cache unavailable", safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
+	}
+}
+
 function shortTaskLabel(row: FlowDeskTuiSubtaskActivityRowV1): string {
+	if (row.taskSummary !== undefined && row.taskSummary.trim().length > 0) return row.taskSummary.slice(0, 10);
 	const source = row.taskId ?? row.laneId;
 	const compact = source.replace(/^task-/, "").replace(/^lane-task-/, "");
 	return `task ${compact.length <= 12 ? compact : compact.slice(-12)}`;
-}
-
-function actionLabels(actions: readonly string[]): string {
-	return actions.map((action) => action.replace(/^\/flowdesk-export-debug$/, "export").replace(/^\/flowdesk-/, "")).join("|");
 }
 
 function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
@@ -222,13 +289,16 @@ export function formatFlowDeskTuiSubtaskActivityCompactLines(
 	view: FlowDeskTuiSubtaskActivityViewV1,
 	limit = 5,
 ): readonly string[] {
-	if (view.rows.length === 0) return [view.status === "loaded" ? "Subtasks: none" : "Subtasks: run /flowdesk-status"];
-	const lines = ["Subtasks:"];
+	if (view.rows.length === 0) {
+		if (view.status === "loaded") return ["Subtasks: none"];
+		if (view.status === "stale") return ["Subtasks: cache stale; run /flowdesk-status"];
+		return ["Subtasks: run /flowdesk-status"];
+	}
+	const lines = [view.status === "stale" ? "Subtasks (stale):" : "Subtasks:"];
 	const orderedRows = sortedRows(view.rows);
 	for (const row of orderedRows.slice(0, Math.max(1, limit))) {
-		lines.push(`${displayState(row)} ${shortTaskLabel(row)} [${actionLabels(row.recoveryActionRefs)}]`);
+		lines.push(`${displayState(row)} ${shortTaskLabel(row)}`);
 	}
-	if (orderedRows.length > limit) lines.push(`… ${orderedRows.length - limit} more`);
 	return lines;
 }
 
@@ -237,11 +307,32 @@ export function formatFlowDeskTuiAutoNextReadyCompactLines(
 	limit = 2,
 ): readonly string[] {
 	if (view.workflows.length === 0) return [];
-	const lines = ["Auto-next ready:"];
+	const lines = [view.status === "stale" ? "Next ready (stale):" : "Next ready:"];
 	for (const workflow of view.workflows.slice(0, Math.max(1, limit))) {
-		const workflowLabel = workflow.workflowId.length <= 24 ? workflow.workflowId : `…${workflow.workflowId.slice(-23)}`;
-		lines.push(`✓ ${workflow.completed}/${workflow.expected} done ${workflowLabel} [status|export]`);
+		const workflowLabel = workflow.taskSummaries[0] ?? workflow.workflowId
+			.replace(/^workflow-/, "")
+			.replace(/-202\d.*$/, "")
+			.split("-")
+			.filter(Boolean)
+			.slice(-2)
+			.join("-")
+			.slice(0, 14);
+		const nextLabel = workflow.nextActionAvailable ? workflow.nextActionKind ?? "next" : "ready";
+		lines.push(`✓ ${workflow.completed}/${workflow.expected} ${nextLabel} ${workflowLabel || "workflow"}`);
 	}
-	if (view.workflows.length > limit) lines.push(`… ${view.workflows.length - limit} more ready`);
+	return lines;
+}
+
+export function formatFlowDeskTuiLatestSynthesisCompactLines(
+	view: FlowDeskTuiLatestSynthesisViewV1,
+	limit = 2,
+): readonly string[] {
+	if (view.syntheses.length === 0) return [];
+	const lines = ["Synthesis:"];
+	for (const row of view.syntheses.slice(0, Math.max(1, limit))) {
+		const prefix = row.conflictDetected ? "!" : "✓";
+		const preview = row.summaryPreview.length > 28 ? `${row.summaryPreview.slice(0, 27)}…` : row.summaryPreview;
+		lines.push(`${prefix} ${row.tasksSummarized} task ${preview}`);
+	}
 	return lines;
 }

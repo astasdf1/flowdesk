@@ -2515,11 +2515,11 @@ test("workflow dispatch tool completes one fake SDK task and preserves default a
 	}
 });
 
-test("workflow dispatch tool terminalizes process-only output as task_failed", async () => {
+test("workflow dispatch tool terminalizes process-only output as contract-incomplete task_result", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-dispatch-process-only-"));
 	try {
 		const hooks = await flowdeskOpenCodeServerPlugin.server(
-			{ client: workflowDispatchFakeClient("Working", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{ client: workflowDispatchFakeClient("I need to keep working before I can provide the final result.", { create: 0, prompt: 0, messages: 0 }) } as never,
 			{
 				[flowdeskWorkflowDispatchOption]: { enabled: true, devBetaActualLaneLaunch: true },
 				[flowdeskDurableStateRootOption]: root,
@@ -2560,9 +2560,11 @@ test("workflow dispatch tool terminalizes process-only output as task_failed", a
 		assert.ok(
 			reloaded.entries.some(
 				(entry) =>
-					entry.evidenceClass === "task_failed" &&
+					entry.evidenceClass === "task_result" &&
 					entry.record.lane_id === result.laneId &&
 					entry.record.task_id === result.taskId &&
+					entry.record.missing_contract === true &&
+					entry.record.output_kind === "process_notes" &&
 					entry.record.dispatch_authority_enabled === false,
 			),
 		);
@@ -7118,6 +7120,7 @@ test("chat.message surfaces auto-next readiness for normally completed lanes", a
 		assert.match(serialized, /auto-next ready/);
 		assert.match(serialized, /task-chat-auto-next/);
 		assert.match(serialized, /auto_next=true/);
+		assert.match(serialized, /next_action=synthesis_ready/);
 		assert.equal(/noReply|cancel|stop/.test(serialized), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

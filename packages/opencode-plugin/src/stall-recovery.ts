@@ -1783,6 +1783,7 @@ export async function monitorChildSessionsV1(input: {
 
 	// Find lanes that are NOT yet terminal (by lifecycle state or by task_result/task_failed evidence)
 	const terminalLaneIds = new Set<string>();
+	const terminalTaskResultLaneIds = new Set<string>();
 	const awaitingPermissionLaneIds = new Set<string>();
 	const latestProgressByLane = new Map<string, { observedAtMs: number; phase: string }>();
 	for (const entry of reloaded.entries) {
@@ -1803,6 +1804,7 @@ export async function monitorChildSessionsV1(input: {
 				terminalLaneIds.add(laneIdVal);
 		} else if (entry.evidenceClass === "task_result" || entry.evidenceClass === "task_failed") {
 			terminalLaneIds.add(laneIdVal);
+			if (entry.evidenceClass === "task_result") terminalTaskResultLaneIds.add(laneIdVal);
 		}
 	}
 	for (const [laneId, progress] of latestProgressByLane) {
@@ -1822,7 +1824,16 @@ export async function monitorChildSessionsV1(input: {
 		const laneId = typeof record.lane_id === "string" ? record.lane_id : "";
 		const childSessionId = typeof record.child_session_id === "string" ? record.child_session_id : "";
 		if (!laneId || !childSessionId) continue;
-		if (terminalLaneIds.has(laneId)) continue; // already done
+		if (terminalLaneIds.has(laneId)) {
+			if (terminalTaskResultLaneIds.has(laneId)) {
+				refreshFlowDeskCompletionUiCachesV1({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					observedAt: new Date(nowMs).toISOString(),
+				});
+			}
+			continue; // already done
+		}
 		if (awaitingPermissionLaneIds.has(laneId)) continue; // user permission is outstanding; do not nudge or abort
 
 		result.lanesPolled++;

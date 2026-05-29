@@ -205,6 +205,26 @@ function terminalEvidencePresent(input: {
 	return terminalLifecycle && terminalTaskEvidence;
 }
 
+function missingOutputContract(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+}): boolean {
+	const reload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.workflowId,
+		rootDir: input.rootDir,
+	});
+	if (!reload.ok || reload.blocked.length > 0) return false;
+	return reload.entries.some(
+		(entry) =>
+			entry.evidenceClass === "task_result" &&
+			entry.record.lane_id === input.laneId &&
+			entry.record.task_id === input.taskId &&
+			entry.record.missing_contract === true,
+	);
+}
+
 function planningLabel(value: string): string {
 	return value
 		.replaceAll(/real\s*-?(?:opencode\s*-?)?dispatch/gi, "explicit dev-mode workflow")
@@ -360,6 +380,25 @@ export async function executeFlowDeskWorkflowDispatchToolV1(input: {
 			planPersisted: true,
 			actualLaneLaunchAttempted: true,
 		});
+	if (completed && missingOutputContract({ rootDir: input.config.rootDir, workflowId, laneId, taskId }))
+		return {
+			status: "workflow_dispatch_incomplete",
+			rootDir: input.config.rootDir,
+			workflowId,
+			planRevisionId,
+			parentSessionId: request.parentSessionId,
+			laneId,
+			taskId,
+			redactedBlockReason: "output contract not satisfied",
+			summaryForUser:
+				`FlowDesk dev-mode workflow dispatch launched one lane but ended incomplete: output contract not satisfied. Default Release 1 dispatch authority remains disabled.`,
+			safeNextActions: safeNextActions(),
+			authority: authority({
+				developerModeAcknowledged: true,
+				planPersisted: true,
+				actualLaneLaunchAttempted: true,
+			}),
+		};
 
 	return {
 		status: completed ? "workflow_dispatch_completed" : "workflow_dispatch_incomplete",

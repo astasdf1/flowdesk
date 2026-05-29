@@ -66,7 +66,6 @@ function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): Subtas
 		loadFlowDeskTuiAutoNextReadyViewV1({
 			rootDir: options.durableStateRootDir,
 		});
-
 	const [view, setView] = createSignal(read());
 	const [autoNextView, setAutoNextView] = createSignal(readAutoNext());
 	const refresh = () => {
@@ -126,14 +125,15 @@ function formatObservedAt(iso: string): string {
 function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState): JSX.Element {
 	const view = usageState.view();
 	const subtaskView = subtaskState.view();
+	const autoNextLines = formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView());
 	return box(
 		[
 			...formatFlowDeskTuiUsageSnapshotCompactLines(view).map((line) => textLine(line)),
 			textLine(formatObservedAt(view.observedAt)),
 			textLine(view.status === "loaded" ? "cache readable" : "run /flowdesk-usage"),
 			textLine(""),
-			...formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()).map((line) => textLine(line)),
-			...(formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()).length > 0 ? [textLine("")] : []),
+			...autoNextLines.map((line) => textLine(line)),
+			...(autoNextLines.length > 0 ? [textLine("")] : []),
 			...formatFlowDeskTuiSubtaskActivityCompactLines(subtaskView).map((line) => textLine(line)),
 		],
 		{ flexShrink: 0, paddingTop: 1, paddingBottom: 1 },

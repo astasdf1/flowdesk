@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -61,6 +61,8 @@ test("status live reports durable workflow dispatch planning evidence", async ()
 		});
 
 		assert.equal(result.status, "status_live_collected");
+		assert.deepEqual(result.authorityCapabilitySummary?.availableNow, ["display_only", "local_preview", "command_backed_guarded"]);
+		assert.deepEqual(result.authorityCapabilitySummary?.laterGated, ["managed_dispatch", "managed_fallback", "tui_actions", "hard_chat_control"]);
 		assert.equal(result.authority.realOpenCodeDispatch, false);
 		assert.equal(result.authority.providerCall, false);
 		assert.equal(result.authority.runtimeExecution, false);
@@ -362,12 +364,13 @@ test("status live does not materialize inconsistency when finalizing has task_re
 		assert.deepEqual(result.workflows[0].subtaskActivityRows?.[0]?.recoveryActionRefs, ["/flowdesk-status", "/flowdesk-export-debug"]);
 		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.statusCommandRef, "/flowdesk-status");
 		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.debugCommandRef, "/flowdesk-export-debug");
+		assert.doesNotMatch(result.summaryForUser ?? "", /, lanes=/);
 		assert.match(result.summaryForUser ?? "", /subtasks=lane-task-finalizing-result-1:task_result\/terminal\[status\|export-debug\]/);
-		const sidebarCache = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
-		assert.equal(sidebarCache.schema_version, "flowdesk.subtask_activity_sidebar_cache.v1");
-		const sidebarRows = sidebarCache.rows as Array<Record<string, unknown>>;
-		assert.equal(sidebarRows[0]?.laneId, laneId);
-		assert.equal(sidebarRows[0]?.state, "task_result");
+		assert.equal(
+			existsSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json")),
+			false,
+			"status-live must not refresh TUI caches; completion paths own no-status cache updates",
+		);
 		assert.equal(result.workflows[0].laneProgressAggregate?.expected, 1);
 		assert.equal(result.workflows[0].laneProgressAggregate?.normalCompleted, 0);
 		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, false);
@@ -412,13 +415,14 @@ test("status live does not materialize inconsistency when finalizing has task_fa
 			"/flowdesk-abort",
 			"/flowdesk-export-debug",
 		]);
+		assert.doesNotMatch(result.summaryForUser ?? "", /, lanes=/);
 		assert.match(result.summaryForUser ?? "", /subtasks=lane-task-finalizing-failed-1:invocation_failed\/terminal\[status\|retry\|resume\|abort\|export-debug\]/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
 });
 
-test("status live materializes auto-next ready cache when all task lanes complete normally", async () => {
+test("status live reports auto-next readiness without materializing TUI cache", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-auto-next-"));
 	try {
 		const workflowId = "workflow-status-auto-next-1";
@@ -448,11 +452,21 @@ test("status live materializes auto-next ready cache when all task lanes complet
 			now: () => new Date("2026-05-27T00:03:00.000Z"),
 		});
 		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, true);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionAvailable, true);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionKind, "synthesis");
+		assert.deepEqual(result.workflows[0].laneProgressAggregate?.nextActionRefs, ["/flowdesk-status", "/flowdesk-export-debug"]);
+		assert.equal(result.workflows[0].latestLaneLifecycleStates.includes("running"), false);
 		assert.match(result.summaryForUser ?? "", /auto_next=ready/);
-		const autoNextCache = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
-		assert.equal(autoNextCache.schema_version, "flowdesk.auto_next_ready_cache.v1");
-		const workflows = autoNextCache.workflows as Array<Record<string, unknown>>;
-		assert.equal(workflows[0]?.workflowId, workflowId);
+		assert.match(result.summaryForUser ?? "", /next_action=synthesis_ready/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /lifecycle=running/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /lifecycle=incomplete/);
+		assert.match(result.summaryForUser ?? "", /lane_state=task_result\/terminal/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /, lanes=/);
+		assert.equal(
+			existsSync(join(rootDir, ".flowdesk", "ui", "auto-next-ready.json")),
+			false,
+			"status-live must not refresh TUI caches; completion paths own no-status cache updates",
+		);
 
 		const second = await executeFlowDeskStatusLiveV1({
 			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
@@ -461,6 +475,65 @@ test("status live materializes auto-next ready cache when all task lanes complet
 		});
 		assert.equal(second.workflows[0].laneProgressAggregate?.autoNextStepEligible, true);
 		assert.equal(second.workflows[0].evidenceCounts.workflow_synthesis_result, undefined);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live suppresses synthesis-ready next action after synthesis evidence exists", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-synthesis-done-"));
+	try {
+		const workflowId = "workflow-status-synthesis-done-1";
+		const laneId = "lane-task-synthesis-done-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-running-synthesis-done-1", runningLifecycle(workflowId, laneId, "attempt-synthesis-done-1"));
+		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-synthesis-done-1", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-synthesis-done-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "done",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			created_at: "2026-05-27T00:01:30.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeStatusRecord(rootDir, workflowId, "workflow_synthesis_result", "synthesis-done-1", {
+			schema_version: "flowdesk.workflow_synthesis_result.v1",
+			workflow_id: workflowId,
+			synthesis_id: "synthesis-done-1",
+			tasks_summarized: 1,
+			task_refs: ["task-synthesis-done-1"],
+			conflict_detected: true,
+			synthesis_summary: "Synthesis already recorded.",
+			safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+		assert.equal(result.workflows[0].latestWorkflowSynthesisId, "synthesis-done-1");
+		assert.equal(result.workflows[0].latestWorkflowSynthesisTasksSummarized, 1);
+		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, false);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionAvailable, false);
+		assert.equal(result.workflows[0].latestWorkflowSynthesisSummaryPreview, "Synthesis already recorded.");
+		assert.equal(result.workflows[0].latestLaneLifecycleStates.includes("running"), false);
+		assert.doesNotMatch(result.summaryForUser ?? "", /lifecycle=running/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /lifecycle=incomplete/);
+		assert.match(result.summaryForUser ?? "", /lane_state=task_result\/terminal/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /, lanes=/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /next_action=synthesis_ready/);
+		assert.equal(result.workflows[0].latestWorkflowSynthesisConflictDetected, true);
+		assert.match(result.summaryForUser ?? "", /synthesis=1 tasks conflict=detected/);
+		assert.match(result.summaryForUser ?? "", /preview="Synthesis already recorded\."/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /workflow_plan=\(none\)/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

@@ -12,7 +12,7 @@ never claims `realOpenCodeDispatch`, `providerCall`, `runtimeExecution`,
 ## Install
 
 ```bash
-npm install @flowdesk/core@^0.1.8
+npm install @flowdesk/core@^0.1.14
 ```
 
 ## Highlights

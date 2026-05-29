@@ -64,6 +64,10 @@ If you ask FlowDesk to keep working continuously, for example `계획 전체 진
 
 Continuous work is bounded: it stops when the plan is exhausted, a requirement is unclear, a verification/check fails, Guard blocks, required evidence is missing or stale, or a later-gate capability would be needed. It does not authorize real dispatch, provider calls, automatic fallback, actual lane launch, or hard chat cancellation.
 
+If durable FlowDesk plan evidence already exists, FlowDesk can also show a preview of what would continue next. The `flowdesk_auto_continue_preview` helper reads only saved `workflow_dispatch_plan` evidence and already-completed `task_result` ids, then reports the next pending task and pending/completed counts. It is preview-only: it does not read transient chat/todo state, run `/flowdesk-run`, call a provider, launch a lane, fallback/reselect, mutate the TUI/chat, or write workspace files.
+
+When a workflow has completed task results and status shows `next_action=synthesis_ready`, `flowdesk_workflow_synthesis_preview` can summarize those existing results locally. It is provider-free and idempotent; repeated calls return the existing synthesis record instead of creating duplicate synthesis evidence. It does not launch a synthesis lane or grant execution authority.
+
 If `durableStateRoot` is configured, FlowDesk remembers recently shown non-confirmation steering suggestions for a few seconds across plugin restarts so the chat is not flooded by repeated identical cards. The record is redacted and short-lived: it stores only safe labels and expiry timestamps, not your message text, prompts, transcripts, paths, commands, tool output, provider payloads, or credentials.
 
 When `/flowdesk-export-debug` runs with durable state enabled, FlowDesk writes a redacted debug manifest under the FlowDesk state root. This manifest contains section labels, opaque references, retention/deletion state, and counts only; it is not a raw log bundle and should not contain prompts, transcripts, file contents, paths, provider payloads, tool output, stack traces, or credentials.
@@ -73,7 +77,7 @@ When `/flowdesk-export-debug` runs with durable state enabled, FlowDesk writes a
 1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:
 
    ```text
-   npm install @flowdesk/core@0.1.8 @flowdesk/opencode-plugin@0.1.8
+   npm install @flowdesk/core@0.1.14 @flowdesk/opencode-plugin@0.1.14
    ```
 
    Reviewed local builds are still allowed for development or compatibility testing, but they should record package provenance separately.
@@ -95,15 +99,17 @@ If chat routing is unavailable, the same flow remains available through portable
 
 ### Natural-Language Tools
 
-When FlowDesk is loaded in the active OpenCode profile and the natural-language tools are opted in, the assistant LLM picks up five description-driven FlowDesk tools without you typing a portable command:
+When FlowDesk is loaded in the active OpenCode profile and the natural-language tools are opted in, the assistant LLM picks up description-driven FlowDesk tools without you typing a portable command:
 
-1. `flowdesk_quick_reviewer_run` for explicit multi-perspective code review, audit, or critique requests in Korean (`다관점 리뷰 해줘`, `보안 리뷰`, `심층 리뷰`, `비판적 검토`) or English (`multi-perspective review`, `audit this`, `critique this`).
+1. Explicit reviewer lanes for multi-perspective code review, audit, or critique requests in Korean (`다관점 리뷰 해줘`, `보안 리뷰`, `심층 리뷰`, `비판적 검토`) or English (`multi-perspective review`, `audit this`, `critique this`). The older `flowdesk_quick_reviewer_run` helper is an opt-in product tool but is quarantined by current coordinator policy until revalidated; the coordinator should use explicit `flowdesk_agent_task_run` lanes instead.
 2. `flowdesk_provider_usage_live` for usage, quota, remaining, reset, or rate-limit questions in Korean (`사용량 보여줘`, `잔량`, `리셋 언제`) or English (`how much usage do I have left`, `quota`, `rate limit`).
 3. `flowdesk_status_live` for workflow status, recent activity, lane heartbeat, or "is it stuck" questions in Korean (`상태`, `어디까지`, `멈췄어`, `하트비트 알려줘`) or English (`status`, `where are we`, `is it stuck`, `lane heartbeat status`).
 4. `flowdesk_quick_fallback_run` for explicit provider fallback intent in Korean (`Claude 막혔어 OpenAI 로 다시`, `fallback 해줘`) or English (`fallback to`, `switch to`, `retry with`). Plans only; the actual provider switch stays behind managed-dispatch promotion.
 5. `flowdesk_lane_heartbeat_record` for explicit heartbeat requests in Korean (`하트비트 남겨줘`, `심박 남겨줘`, `진행 신호 남겨줘`) or English (`record heartbeat`, `emit heartbeat`, `mark progress`).
+6. `flowdesk_auto_continue_preview` for “what would continue next?” checks against durable plan evidence. Preview only; no execution.
+7. `flowdesk_workflow_synthesis_preview` for provider-free summaries of already completed task results. Local preview only; no synthesis lane.
 
-None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. The quick reviewer helper is the explicit opt-in exception for real reviewer provider calls; it still cannot approve dispatch, switch providers, or bypass Guard. The remaining tools only read or write redacted diagnostic/planning evidence.
+None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence.
 
 ### Stalled Lane Alerts
 

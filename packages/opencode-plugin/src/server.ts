@@ -101,6 +101,10 @@ import {
 } from "./runtime-reviewer-execution-bridge.js";
 import { executeFlowDeskAgentTaskV1, type FlowDeskAgentTaskResultV1 } from "./agent-task-runner.js";
 import {
+	executeFlowDeskAutoContinuePreviewToolV1,
+	type FlowDeskAutoContinuePreviewToolConfigV1,
+} from "./auto-continue-preview-tool.js";
+import {
 	executeFlowDeskControlledWriteApplyToolV1,
 	type FlowDeskControlledWriteApplyToolConfigV1,
 } from "./controlled-write-tool.js";
@@ -117,6 +121,7 @@ import {
 	type FlowDeskWorkflowDispatchToolConfigV1,
 } from "./workflow-dispatch-tool.js";
 import { executeFlowDeskWorkflowOrchestratorV1 } from "./workflow-orchestrator.js";
+import { executeFlowDeskWorkflowSynthesisPreviewV1 } from "./workflow-synthesis-tool.js";
 import {
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
@@ -200,6 +205,8 @@ export const flowdeskControlledWriteApplyToolName =
 	"flowdesk_controlled_write_apply" as const;
 export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
+export const flowdeskWorkflowSynthesisPreviewToolName = "flowdesk_workflow_synthesis_preview" as const;
+export const flowdeskAutoContinuePreviewToolName = "flowdesk_auto_continue_preview" as const;
 export const flowdeskUiProbeToolName = "flowdesk_ui_probe" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
@@ -2055,7 +2062,10 @@ interface FlowDeskChatMessageStallSummaryV1 {
 			failed: number;
 			awaitingPermission: number;
 			normalCompleted: number;
-				autoNextStepEligible: boolean;
+			autoNextStepEligible: boolean;
+			nextActionAvailable?: boolean;
+			nextActionKind?: string;
+			nextActionRefs?: readonly string[];
 		};
 		autoNextReady?: boolean;
 		synthesisTasksSummarized?: number;
@@ -2472,7 +2482,10 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 			const conflict = workflow.synthesisConflictDetected === undefined
 				? " conflict=unknown"
 				: workflow.synthesisConflictDetected === true ? " conflict=true" : " conflict=false";
-			lines.push(`- workflow ${workflow.workflowId}: auto-next ready (${synthesis},${conflict}).`);
+			const nextAction = workflow.laneProgressAggregate?.nextActionAvailable === true
+				? ` next_action=${workflow.laneProgressAggregate.nextActionKind ?? "available"}_ready`
+				: "";
+			lines.push(`- workflow ${workflow.workflowId}: auto-next ready (${synthesis},${conflict}${nextAction}).`);
 		} else {
 			const counts =
 				workflow.stalledLaneCount > 0
@@ -2484,8 +2497,11 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 		}
 		if (workflow.laneProgressAggregate !== undefined) {
 			const aggregate = workflow.laneProgressAggregate;
+			const nextAction = aggregate.nextActionAvailable === true
+				? `, next_action=${aggregate.nextActionKind ?? "available"}_ready`
+				: "";
 			lines.push(
-				`  tasks: expected=${aggregate.expected}, terminal=${aggregate.terminal}, completed=${aggregate.normalCompleted}, failed=${aggregate.failed}, awaiting_permission=${aggregate.awaitingPermission}, auto_next=${aggregate.autoNextStepEligible}`,
+				`  tasks: expected=${aggregate.expected}, terminal=${aggregate.terminal}, completed=${aggregate.normalCompleted}, failed=${aggregate.failed}, awaiting_permission=${aggregate.awaitingPermission}, auto_next=${aggregate.autoNextStepEligible}${nextAction}`,
 			);
 		}
 		for (const lane of workflow.laneCards?.slice(0, 3) ?? []) {
@@ -3879,6 +3895,36 @@ export function createFlowDeskWorkflowDispatchPlanOptInTools(
 	};
 }
 
+export function createFlowDeskAutoContinuePreviewOptInTools(
+	config: FlowDeskAutoContinuePreviewToolConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskAutoContinuePreviewToolName]: tool({
+			description: [
+				"Preview the next pending task from durable FlowDesk workflow_dispatch_plan evidence without executing it.",
+				"WHEN TO USE: the user asks whether FlowDesk can continue remaining planned work or asks what would run next from a durable plan.",
+				"WHEN NOT TO USE: requests to actually dispatch, call a provider, launch a lane, fallback/reselect, mutate TUI/chat, or write files. This tool is preview-only and never performs continuation.",
+				"INVOKE WITH: workflowId and optional maxSteps. The configured durable state root is used. Todo source is durable workflow_dispatch_plan evidence only, not transient chat/todowrite state.",
+				"AFTER CALLING: surface summaryForUser, nextTaskId/title/summary, pendingTaskCount, and authority. Never claim automatic execution, dispatch, provider call, fallback, hard chat, or TUI action authority.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id with durable workflow_dispatch_plan evidence."),
+				maxSteps: tool.schema.number().optional().describe("Bounded preview cap. Clamped to 1..5; no steps are executed."),
+			},
+			async execute(input) {
+				const result = executeFlowDeskAutoContinuePreviewToolV1({
+					config,
+					request: {
+						workflowId: typeof input.workflowId === "string" ? input.workflowId : undefined,
+						maxSteps: typeof input.maxSteps === "number" ? input.maxSteps : undefined,
+					},
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 export function createFlowDeskWorkflowDispatchOptInTools(
 	config: FlowDeskWorkflowDispatchToolConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
@@ -4187,6 +4233,30 @@ export function createFlowDeskStatusLiveOptInTools(
 					config,
 					request,
 				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
+export function createFlowDeskWorkflowSynthesisPreviewTools(config: {
+	rootDir: string;
+}): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskWorkflowSynthesisPreviewToolName]: tool({
+			description: [
+				"Build and persist a provider-free FlowDesk synthesis preview from existing task_result evidence. This local tool never calls providers, launches lanes, dispatches runtime work, performs fallback/reselection, writes workspace files, or grants execution authority.",
+				"WHEN TO USE: a workflow reports next_action=synthesis_ready and the user asks to summarize, synthesize, continue with the next synthesis step, or see the completed task results without making a model/provider call.",
+				"WHEN NOT TO USE: requests for model-authored synthesis, real dispatch, provider calls, write/apply, fallback/retry, or replacing raw task results.",
+				"INVOKE WITH: workflowId for a workflow that already has task_result evidence under the configured durable root.",
+				"AFTER CALLING: surface summaryForUser, synthesisId, tasksSummarized, conflictDetected, safeNextActions, and authority. State that this is a provider-free preview derived from durable task_result evidence.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id with existing task_result evidence to synthesize locally."),
+			},
+			async execute(input) {
+				const workflowId = isRecord(input) && typeof input.workflowId === "string" ? input.workflowId : "";
+				const result = executeFlowDeskWorkflowSynthesisPreviewV1({ workflowId, rootDir: config.rootDir });
 				return JSON.stringify(result);
 			},
 		}),
@@ -4738,8 +4808,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const statusLiveConfig = isStatusLiveEnabled(options)
 		? statusLiveConfigFromOptions(options)
 		: undefined;
-	if (statusLiveConfig !== undefined)
+	if (statusLiveConfig !== undefined) {
 		Object.assign(tools, createFlowDeskStatusLiveOptInTools(statusLiveConfig));
+		Object.assign(tools, createFlowDeskWorkflowSynthesisPreviewTools({ rootDir: statusLiveConfig.rootDir }));
+	}
 	const quickFallbackRunConfig = isQuickFallbackRunEnabled(options)
 		? quickFallbackRunConfigFromOptions(options)
 		: undefined;
@@ -4763,6 +4835,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		Object.assign(
 			tools,
 			createFlowDeskWorkflowDispatchPlanOptInTools(workflowDispatchPlanConfig),
+		);
+	if (workflowDispatchPlanConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskAutoContinuePreviewOptInTools(workflowDispatchPlanConfig),
 		);
 	const workflowDispatchConfig = workflowDispatchToolConfigFromOptions(input, options);
 	if (workflowDispatchConfig !== undefined)
