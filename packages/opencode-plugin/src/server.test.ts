@@ -2190,14 +2190,14 @@ function workflowDispatchFakeClient(outputText: string, counters: { create: numb
 				counters.create += 1;
 				return { id: options.parentID === undefined ? "parent-session-1" : "child-session-1" };
 			},
-			async prompt(options: { sessionID?: string }) {
+			async prompt(options: { sessionID?: string; path?: { id?: string } }) {
 				counters.prompt += 1;
-				const sessionId = String(options.sessionID ?? "child-session-1");
+				const sessionId = String(options.sessionID ?? options.path?.id ?? "child-session-1");
 				sessionMessages.set(sessionId, [
 					{
 						id: "msg-workflow-dispatch-1",
 						info: { role: "assistant" },
-						parts: [{ type: "text", text: outputText }],
+						parts: [{ type: "text", text: outputText }, { type: "step-finish", reason: "stop" }],
 					},
 				]);
 				return { id: "msg-workflow-dispatch-1" };
