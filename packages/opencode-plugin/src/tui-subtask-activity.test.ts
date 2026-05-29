@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	formatFlowDeskTuiAutoNextReadyCompactLines,
 	formatFlowDeskTuiSubtaskActivityCompactLines,
+	loadFlowDeskTuiAutoNextReadyViewV1,
 	loadFlowDeskTuiSubtaskActivityViewV1,
 } from "./tui-subtask-activity.js";
 
@@ -65,6 +67,37 @@ test("TUI subtask activity view degrades to command fallback when cache is absen
 		const view = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root });
 		assert.equal(view.status, "missing");
 		assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view), ["Subtasks: run /flowdesk-status"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI auto-next ready view renders cached ready workflows", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-auto-next-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "auto-next-ready.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.auto_next_ready_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				workflows: [{
+					workflowId: "workflow-auto-next-ready-1234567890",
+					laneProgressAggregate: { expected: 2, normalCompleted: 2, autoNextStepEligible: true },
+					taskResultRefs: ["task-a", "task-b"],
+				}],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+		const view = loadFlowDeskTuiAutoNextReadyViewV1({ rootDir: root, now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(view.status, "loaded");
+		assert.equal(view.workflows.length, 1);
+		assert.deepEqual(formatFlowDeskTuiAutoNextReadyCompactLines(view), [
+			"Auto-next ready:",
+			"…o-next-ready-1234567890 2/2 done [status|export-debug]",
+		]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

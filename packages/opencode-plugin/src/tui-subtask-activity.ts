@@ -29,6 +29,22 @@ export interface FlowDeskTuiSubtaskActivityViewV1 {
 	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
 }
 
+export interface FlowDeskTuiAutoNextReadyWorkflowV1 {
+	workflowId: string;
+	expected: number;
+	completed: number;
+	taskResultRefs: readonly string[];
+}
+
+export interface FlowDeskTuiAutoNextReadyViewV1 {
+	status: "loaded" | "missing" | "stale" | "blocked";
+	observedAt: string;
+	rootDir: string;
+	workflows: readonly FlowDeskTuiAutoNextReadyWorkflowV1[];
+	redactedReason?: string;
+	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -118,6 +134,43 @@ export function loadFlowDeskTuiSubtaskActivityViewV1(input: {
 	}
 }
 
+export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
+	rootDir?: string;
+	now?: () => Date;
+} = {}): FlowDeskTuiAutoNextReadyViewV1 {
+	const observedAt = (input.now ? input.now() : new Date()).toISOString();
+	const nowMs = Date.parse(observedAt);
+	const rootDir = safeRootDir(input.rootDir);
+	try {
+		const cache = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as unknown;
+		if (!isRecord(cache) || cache.schema_version !== "flowdesk.auto_next_ready_cache.v1") {
+			return { status: "missing", observedAt, rootDir, workflows: [], redactedReason: "auto-next ready cache missing", safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
+		}
+		const expiresAtMs = typeof cache.expires_at === "string" ? Date.parse(cache.expires_at) : Number.NaN;
+		const workflows = Array.isArray(cache.workflows)
+			? cache.workflows.filter(isRecord).map((workflow): FlowDeskTuiAutoNextReadyWorkflowV1 | undefined => {
+				const workflowId = stringField(workflow, "workflowId");
+				if (workflowId === undefined) return undefined;
+				const aggregate = isRecord(workflow.laneProgressAggregate) ? workflow.laneProgressAggregate : {};
+				const expected = typeof aggregate.expected === "number" && Number.isFinite(aggregate.expected) ? aggregate.expected : 0;
+				const completed = typeof aggregate.normalCompleted === "number" && Number.isFinite(aggregate.normalCompleted) ? aggregate.normalCompleted : 0;
+				const taskResultRefs = Array.isArray(workflow.taskResultRefs) ? workflow.taskResultRefs.filter((value): value is string => typeof value === "string") : [];
+				return { workflowId, expected, completed, taskResultRefs };
+			}).filter((workflow): workflow is FlowDeskTuiAutoNextReadyWorkflowV1 => workflow !== undefined)
+			: [];
+		return {
+			status: Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs ? "stale" : "loaded",
+			observedAt: typeof cache.observed_at === "string" ? cache.observed_at : observedAt,
+			rootDir,
+			workflows,
+			...(workflows.length === 0 ? { redactedReason: "no auto-next ready workflows cached" } : {}),
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		};
+	} catch {
+		return { status: "missing", observedAt, rootDir, workflows: [], redactedReason: "auto-next ready cache unavailable", safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
+	}
+}
+
 function shortLaneId(value: string): string {
 	return value.length <= 18 ? value : `…${value.slice(-17)}`;
 }
@@ -137,5 +190,19 @@ export function formatFlowDeskTuiSubtaskActivityCompactLines(
 		lines.push(`${shortLaneId(row.laneId)} ${state}/${row.classification} [${actionLabels(row.recoveryActionRefs)}]`);
 	}
 	if (view.rows.length > limit) lines.push(`… ${view.rows.length - limit} more`);
+	return lines;
+}
+
+export function formatFlowDeskTuiAutoNextReadyCompactLines(
+	view: FlowDeskTuiAutoNextReadyViewV1,
+	limit = 2,
+): readonly string[] {
+	if (view.workflows.length === 0) return [];
+	const lines = ["Auto-next ready:"];
+	for (const workflow of view.workflows.slice(0, Math.max(1, limit))) {
+		const workflowLabel = workflow.workflowId.length <= 24 ? workflow.workflowId : `…${workflow.workflowId.slice(-23)}`;
+		lines.push(`${workflowLabel} ${workflow.completed}/${workflow.expected} done [status|export-debug]`);
+	}
+	if (view.workflows.length > limit) lines.push(`… ${view.workflows.length - limit} more ready`);
 	return lines;
 }

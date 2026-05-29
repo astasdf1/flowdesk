@@ -7,8 +7,11 @@ import {
 	type FlowDeskTuiUsageSnapshotViewV1,
 } from "./tui-usage-snapshot.js";
 import {
+	formatFlowDeskTuiAutoNextReadyCompactLines,
 	formatFlowDeskTuiSubtaskActivityCompactLines,
+	loadFlowDeskTuiAutoNextReadyViewV1,
 	loadFlowDeskTuiSubtaskActivityViewV1,
+	type FlowDeskTuiAutoNextReadyViewV1,
 	type FlowDeskTuiSubtaskActivityViewV1,
 } from "./tui-subtask-activity.js";
 
@@ -28,6 +31,7 @@ type UsageSnapshotState = {
 
 type SubtaskActivityState = {
 	view: () => FlowDeskTuiSubtaskActivityViewV1;
+	autoNextView: () => FlowDeskTuiAutoNextReadyViewV1;
 	dispose: () => void;
 };
 
@@ -58,16 +62,23 @@ function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): Subtas
 		loadFlowDeskTuiSubtaskActivityViewV1({
 			rootDir: options.durableStateRootDir,
 		});
+	const readAutoNext = (): FlowDeskTuiAutoNextReadyViewV1 =>
+		loadFlowDeskTuiAutoNextReadyViewV1({
+			rootDir: options.durableStateRootDir,
+		});
 
 	const [view, setView] = createSignal(read());
+	const [autoNextView, setAutoNextView] = createSignal(readAutoNext());
 	const refresh = () => {
 		setView(read());
+		setAutoNextView(readAutoNext());
 	};
 
 	const intervalId = setInterval(refresh, USAGE_SIDEBAR_REFRESH_INTERVAL_MS);
 
 	return {
 		view: () => view(),
+		autoNextView: () => autoNextView(),
 		dispose: () => {
 			clearInterval(intervalId);
 		},
@@ -121,6 +132,8 @@ function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActiv
 			textLine(formatObservedAt(view.observedAt)),
 			textLine(view.status === "loaded" ? "cache readable" : "run /flowdesk-usage"),
 			textLine(""),
+			...formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()).map((line) => textLine(line)),
+			...(formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()).length > 0 ? [textLine("")] : []),
 			...formatFlowDeskTuiSubtaskActivityCompactLines(subtaskView).map((line) => textLine(line)),
 		],
 		{ flexShrink: 0, paddingTop: 1, paddingBottom: 1 },
