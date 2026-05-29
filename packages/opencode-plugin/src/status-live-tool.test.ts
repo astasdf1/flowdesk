@@ -418,6 +418,54 @@ test("status live does not materialize inconsistency when finalizing has task_fa
 	}
 });
 
+test("status live materializes auto-next ready cache when all task lanes complete normally", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-auto-next-"));
+	try {
+		const workflowId = "workflow-status-auto-next-1";
+		const laneId = "lane-task-auto-next-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-running-auto-next-1", runningLifecycle(workflowId, laneId, "attempt-auto-next-1"));
+		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-auto-next-1", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-auto-next-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "done",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			created_at: "2026-05-27T00:01:30.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, true);
+		assert.match(result.summaryForUser ?? "", /auto_next=ready/);
+		const autoNextCache = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(autoNextCache.schema_version, "flowdesk.auto_next_ready_cache.v1");
+		const workflows = autoNextCache.workflows as Array<Record<string, unknown>>;
+		assert.equal(workflows[0]?.workflowId, workflowId);
+
+		const second = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:10.000Z"),
+		});
+		assert.equal(second.workflows[0].laneProgressAggregate?.autoNextStepEligible, true);
+		assert.equal(second.workflows[0].evidenceCounts.workflow_synthesis_result, undefined);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 function writeStatusRecord(
 	rootDir: string,
 	workflowId: string,

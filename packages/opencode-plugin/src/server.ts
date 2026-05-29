@@ -1972,12 +1972,13 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				stallAlert?.includeProgressingLate === true &&
 				summary.worstClassification === "progressing_late" &&
 				summary.totalLate > 0;
-			const progressCardReady =
+		const progressCardReady =
 				stallAlert?.includeProgressCards === true &&
 				summary.workflowSummaries.some(
 					(workflow) => (workflow.laneCards?.length ?? 0) > 0,
 				);
-			if (stalledAlertReady || lateAlertReady || progressCardReady) {
+			const autoNextReady = summary.workflowSummaries.some((workflow) => workflow.autoNextReady === true);
+			if (stalledAlertReady || lateAlertReady || progressCardReady || autoNextReady) {
 				stallDedupKey = stallAlertDuplicateKey(request, summary);
 				stallTextToAppend = stallAlertText(summary);
 			}
@@ -2054,8 +2055,11 @@ interface FlowDeskChatMessageStallSummaryV1 {
 			failed: number;
 			awaitingPermission: number;
 			normalCompleted: number;
-			autoNextStepEligible: boolean;
+				autoNextStepEligible: boolean;
 		};
+		autoNextReady?: boolean;
+		synthesisTasksSummarized?: number;
+		synthesisConflictDetected?: boolean;
 		secondsSinceLastSignal?: number;
 		laneId?: string;
 		failureHint?: string;
@@ -2217,9 +2221,10 @@ export async function collectStallAlertResult(
 					(entry) => entry.classification === "progressing_late",
 				);
 				const primary = stalledEntry ?? lateEntry;
+				const autoNextReady = workflow.laneProgressAggregate?.autoNextStepEligible === true;
 				const scopedLaneCards = (workflow.laneProgressCards ?? []).filter(
 					(lane) =>
-						lane.classification !== "terminal" &&
+						(autoNextReady || lane.classification !== "terminal") &&
 						laneInCurrentSession(lane.laneId),
 				);
 				const scopedStalledCount = scopedEntries.filter(
@@ -2231,6 +2236,7 @@ export async function collectStallAlertResult(
 				const shouldShowWorkflow =
 					scopedStalledCount > 0 ||
 					(stallAlert.includeProgressingLate === true && scopedLateCount > 0) ||
+					(autoNextReady && scopedLaneCards.length > 0) ||
 					(stallAlert.includeProgressCards === true && scopedLaneCards.length > 0);
 				if (!shouldShowWorkflow) return undefined;
 			if (
@@ -2327,6 +2333,13 @@ export async function collectStallAlertResult(
 					...(workflow.laneProgressAggregate === undefined
 						? {}
 						: { laneProgressAggregate: workflow.laneProgressAggregate }),
+					...(autoNextReady ? { autoNextReady: true } : {}),
+					...(workflow.latestWorkflowSynthesisTasksSummarized === undefined
+						? {}
+						: { synthesisTasksSummarized: workflow.latestWorkflowSynthesisTasksSummarized }),
+					...(workflow.latestWorkflowSynthesisConflictDetected === undefined
+						? {}
+						: { synthesisConflictDetected: workflow.latestWorkflowSynthesisConflictDetected }),
 					...(stallAlert.includeProgressCards === true
 						? {
 								laneCards: scopedLaneCards
@@ -2437,6 +2450,8 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 		lines.push(
 			`Late-progressing lanes detected: ${summary.totalLate} late, ${summary.totalStalled} stalled.`,
 		);
+	} else if (summary.workflowSummaries.some((workflow) => workflow.autoNextReady === true)) {
+		lines.push("All FlowDesk subtasks completed normally. Auto-next synthesis is ready.");
 	} else if (progressCardCount > 0) {
 		lines.push(
 			`Lane progress: ${progressCardCount} lane(s) visible on the main screen.`,
@@ -2450,13 +2465,23 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 		const secs = workflow.secondsSinceLastSignal ?? 0;
 		const minutes = Math.floor(secs / 60);
 		const hint = workflow.failureHint ?? "no recent heartbeat";
-		const counts =
-			workflow.stalledLaneCount > 0
-				? `${workflow.stalledLaneCount} stalled`
-				: `${workflow.lateLaneCount} progressing-late`;
-		lines.push(
-			`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
-		);
+		if (workflow.autoNextReady === true) {
+			const synthesis = workflow.synthesisTasksSummarized === undefined
+				? "synthesis not yet recorded"
+				: `synthesis recorded for ${workflow.synthesisTasksSummarized} task(s)`;
+			const conflict = workflow.synthesisConflictDetected === undefined
+				? " conflict=unknown"
+				: workflow.synthesisConflictDetected === true ? " conflict=true" : " conflict=false";
+			lines.push(`- workflow ${workflow.workflowId}: auto-next ready (${synthesis},${conflict}).`);
+		} else {
+			const counts =
+				workflow.stalledLaneCount > 0
+					? `${workflow.stalledLaneCount} stalled`
+					: `${workflow.lateLaneCount} progressing-late`;
+			lines.push(
+				`- workflow ${workflow.workflowId}: ${counts} (last signal ~${minutes}m ago, ${hint}).`,
+			);
+		}
 		if (workflow.laneProgressAggregate !== undefined) {
 			const aggregate = workflow.laneProgressAggregate;
 			lines.push(

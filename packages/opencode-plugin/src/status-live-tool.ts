@@ -1028,6 +1028,37 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			workflowId,
 			rootDir,
 		});
+		let summary: FlowDeskStatusLiveWorkflowEvidenceSummaryV1;
+		let projectionReload: FlowDeskSessionEvidenceReloadResultV1;
+		let projection: FlowDeskLaneStallProjectionResultV1;
+		const buildWorkflowSummary = () => {
+			summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
+			projectionReload = pruneInconsistencySnapshotsNoLongerValid(pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload));
+			projection = projectFlowDeskLaneStallV1({
+				workflowId,
+				reload: projectionReload,
+				observedAt,
+				...(input.config.laneHeartbeatLateThresholdMs === undefined
+					? {}
+					: { lateThresholdMs: input.config.laneHeartbeatLateThresholdMs }),
+				...(input.config.laneHeartbeatStallThresholdMs === undefined
+					? {}
+					: { stallThresholdMs: input.config.laneHeartbeatStallThresholdMs }),
+			});
+			summary.laneStallProjection = projection;
+			summary.worstLaneStallClassification = projection.worstClassification;
+			summary.stalledLaneCount = projection.totalStalledLanes;
+			summary.progressingLateLaneCount = projection.totalLateLanes;
+			summary.inconsistentFinalizingWithoutTerminalLaneCount =
+				projection.totalInconsistentLanes;
+			summary.laneProgressCards = buildLaneProgressCards(
+				workflowId,
+				projectionReload,
+				projection,
+			);
+			summary.subtaskActivityRows = buildSubtaskActivityRows(summary.laneProgressCards);
+			summary.laneProgressAggregate = buildLaneProgressAggregate(summary.laneProgressCards);
+		};
 		const graceMs = clampFinalizingInconsistencyGraceMs(
 			input.config.agentTaskFinalizingInconsistencyGraceMs,
 		);
@@ -1044,33 +1075,8 @@ export async function executeFlowDeskStatusLiveV1(input: {
 				rootDir,
 			});
 		}
-		const summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
-		const projectionReload = pruneInconsistencySnapshotsNoLongerValid(pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload));
-		const projection = projectFlowDeskLaneStallV1({
-			workflowId,
-			reload: projectionReload,
-			observedAt,
-			...(input.config.laneHeartbeatLateThresholdMs === undefined
-				? {}
-				: { lateThresholdMs: input.config.laneHeartbeatLateThresholdMs }),
-			...(input.config.laneHeartbeatStallThresholdMs === undefined
-				? {}
-				: { stallThresholdMs: input.config.laneHeartbeatStallThresholdMs }),
-		});
-		summary.laneStallProjection = projection;
-		summary.worstLaneStallClassification = projection.worstClassification;
-		summary.stalledLaneCount = projection.totalStalledLanes;
-		summary.progressingLateLaneCount = projection.totalLateLanes;
-		summary.inconsistentFinalizingWithoutTerminalLaneCount =
-			projection.totalInconsistentLanes;
-		summary.laneProgressCards = buildLaneProgressCards(
-			workflowId,
-			projectionReload,
-			projection,
-		);
-		summary.subtaskActivityRows = buildSubtaskActivityRows(summary.laneProgressCards);
-		summary.laneProgressAggregate = buildLaneProgressAggregate(summary.laneProgressCards);
-		workflows.push(summary);
+		buildWorkflowSummary();
+		workflows.push(summary!);
 	}
 
 	const observed = workflows.some((summary) =>
@@ -1130,6 +1136,11 @@ export async function executeFlowDeskStatusLiveV1(input: {
 	});
 
 	materializeSubtaskActivitySidebarCacheV1({
+		rootDir,
+		observedAt,
+		workflows,
+	});
+	materializeAutoNextReadyCacheV1({
 		rootDir,
 		observedAt,
 		workflows,
@@ -1197,6 +1208,53 @@ function materializeSubtaskActivitySidebarCacheV1(input: {
 	}
 }
 
+function materializeAutoNextReadyCacheV1(input: {
+	rootDir: string;
+	observedAt: string;
+	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
+}): void {
+	try {
+		const workflows = input.workflows
+			.filter((workflow) => workflow.laneProgressAggregate?.autoNextStepEligible === true)
+			.slice(0, 8)
+			.map((workflow) => ({
+				workflowId: workflow.workflowId,
+				laneProgressAggregate: workflow.laneProgressAggregate,
+				taskResultRefs: (workflow.laneProgressCards ?? [])
+					.filter((card) => card.state === "task_result")
+					.map((card) => card.taskId ?? card.laneId)
+					.slice(0, 32),
+				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+			}));
+		const uiDir = join(input.rootDir, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "auto-next-ready.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.auto_next_ready_cache.v1",
+					observed_at: input.observedAt,
+					expires_at: new Date(Date.parse(input.observedAt) + 120_000).toISOString(),
+					workflows,
+					authority: {
+						displayOnly: true,
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+	} catch {
+		// The auto-next cache is a best-effort display artifact only.
+	}
+}
+
 function buildStatusLiveSummaryForUser(input: {
 	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
 	worstLaneStallClassification: FlowDeskLaneStallClassificationV1;
@@ -1235,12 +1293,16 @@ function buildStatusLiveSummaryForUser(input: {
 			lifecycleStates.length > 0
 				? `lifecycle=${lifecycleStates.slice(0, 3).join("/")}`
 				: "lifecycle=(none)";
+		const synthesisText = workflow.latestWorkflowSynthesisTasksSummarized !== undefined
+			? ` synthesis=${workflow.latestWorkflowSynthesisTasksSummarized} tasks${workflow.latestWorkflowSynthesisConflictDetected ? " (conflict)" : ""}`
+			: "";
+		const autoNextText = workflow.laneProgressAggregate?.autoNextStepEligible === true ? " auto_next=ready" : "";
 		const planText =
 			workflow.latestWorkflowDispatchPlanRevisionId !== undefined
-				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}`
+				? `workflow_plan=${workflow.latestWorkflowDispatchPlanRevisionId} tasks=${workflow.latestWorkflowDispatchPlanTaskCount ?? "unknown"}${synthesisText}${autoNextText}`
 				: workflow.latestTaskGraphTaskCount !== undefined
-					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}${workflow.latestWorkflowSynthesisTasksSummarized !== undefined ? ` synthesis=${workflow.latestWorkflowSynthesisTasksSummarized} tasks${workflow.latestWorkflowSynthesisConflictDetected ? " (conflict)" : ""}` : ""}`
-					: "workflow_plan=(none)";
+					? `planning_slice=${workflow.latestWorkflowAuthoringStatus ?? "unknown"} tasks=${workflow.latestTaskGraphTaskCount} assignments=${workflow.latestTaskAgentAssignmentCount ?? 0} model=${workflow.latestTaskModelSelectionStatus ?? "unknown"}${synthesisText}${autoNextText}`
+					: `workflow_plan=(none)${synthesisText}${autoNextText}`;
 		const classification = workflow.worstLaneStallClassification ?? "unknown";
 		const lanePreview = (workflow.laneProgressCards ?? [])
 			.slice(0, 2)

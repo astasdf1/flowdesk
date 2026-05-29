@@ -7047,6 +7047,83 @@ test("chat.message progress card does not surface terminal-only lanes", async ()
 	}
 });
 
+test("chat.message surfaces auto-next readiness for normally completed lanes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-auto-next-"));
+	try {
+		const workflowId = "workflow-chat-auto-next";
+		const observedAtMs = Date.now();
+		const terminalLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-chat-auto-next",
+			workflow_id: workflowId,
+			attempt_id: "attempt-chat-auto-next",
+			parent_session_ref: "ses-chat-auto-next-parent",
+			agent_ref: "agent-chat-auto-next",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "incomplete" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: new Date(observedAtMs - 20_000).toISOString(),
+			updated_at: new Date(observedAtMs - 20_000).toISOString(),
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const resultRecord = {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-chat-auto-next",
+			task_id: "task-chat-auto-next",
+			agent_ref: "agent-chat-auto-next",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "complete",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			created_at: new Date(observedAtMs - 10_000).toISOString(),
+			dispatch_authority_enabled: false,
+		};
+		const lifecycleIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "lifecycle-chat-auto-next", record: terminalLifecycle });
+		const resultIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: "task-result-chat-auto-next", record: resultRecord });
+		assert.equal(lifecycleIntent.ok, true, lifecycleIntent.errors.join("; "));
+		assert.equal(resultIntent.ok, true, resultIntent.errors.join("; "));
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [lifecycleIntent.writeIntent as never, resultIntent.writeIntent as never]).ok,
+			true,
+		);
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskChatMessageStallAlertOption]: { enabled: true, includeProgressCards: true },
+			},
+		)) as ChatMessageHooks;
+		const chatMessage = hooks["chat.message"];
+		assert.ok(chatMessage);
+		const output = { parts: [{ type: "text", text: "일반 대화" }] as unknown[] };
+		await chatMessage(
+			{ messageID: "message-chat-auto-next", sessionID: "ses-chat-auto-next-parent" },
+			output,
+		);
+		const serialized = JSON.stringify(output);
+		assert.match(serialized, /Auto-next synthesis is ready/);
+		assert.match(serialized, /auto-next ready/);
+		assert.match(serialized, /task-chat-auto-next/);
+		assert.match(serialized, /auto_next=true/);
+		assert.equal(/noReply|cancel|stop/.test(serialized), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("chat.message progress card only surfaces lanes for the current session", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-session-scoped-progress-card-"));
 	try {
