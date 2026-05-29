@@ -193,16 +193,42 @@ function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
 	return "? Unknown";
 }
 
+function rowSortRank(row: FlowDeskTuiSubtaskActivityRowV1): number {
+	if (row.progressPhase === "awaiting_permission") return 0;
+	if (row.classification === "stalled") return 1;
+	if (row.classification === "progressing_late") return 2;
+	if (row.progressPhase === "finalizing") return 3;
+	if (row.state === "running" || row.classification === "progressing_normal") return 4;
+	if (row.state === "invocation_failed" || row.state === "task_failed") return 5;
+	if (row.state === "task_result" && row.classification === "terminal") return 6;
+	return 7;
+}
+
+function observedAtMs(row: FlowDeskTuiSubtaskActivityRowV1): number {
+	if (row.lastObservedAt === undefined) return 0;
+	const parsed = Date.parse(row.lastObservedAt);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortedRows(rows: readonly FlowDeskTuiSubtaskActivityRowV1[]): readonly FlowDeskTuiSubtaskActivityRowV1[] {
+	return [...rows].sort((left, right) => {
+		const byRank = rowSortRank(left) - rowSortRank(right);
+		if (byRank !== 0) return byRank;
+		return observedAtMs(right) - observedAtMs(left);
+	});
+}
+
 export function formatFlowDeskTuiSubtaskActivityCompactLines(
 	view: FlowDeskTuiSubtaskActivityViewV1,
 	limit = 5,
 ): readonly string[] {
 	if (view.rows.length === 0) return [view.status === "loaded" ? "Subtasks: none" : "Subtasks: run /flowdesk-status"];
 	const lines = ["Subtasks:"];
-	for (const row of view.rows.slice(0, Math.max(1, limit))) {
+	const orderedRows = sortedRows(view.rows);
+	for (const row of orderedRows.slice(0, Math.max(1, limit))) {
 		lines.push(`${displayState(row)} ${shortTaskLabel(row)} [${actionLabels(row.recoveryActionRefs)}]`);
 	}
-	if (view.rows.length > limit) lines.push(`… ${view.rows.length - limit} more`);
+	if (orderedRows.length > limit) lines.push(`… ${orderedRows.length - limit} more`);
 	return lines;
 }
 

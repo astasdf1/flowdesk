@@ -15,6 +15,7 @@ import {
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
 } from "./managed-dispatch-adapter.js";
 import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
+import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
@@ -834,6 +835,11 @@ export async function executeFlowDeskAgentTaskV1(
 		createdAt: observedAt,
 		updatedAt: new Date().toISOString(),
 		timeoutMs: input.timeoutMs,
+	});
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		observedAt,
 	});
 
 	return {

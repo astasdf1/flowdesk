@@ -88,11 +88,11 @@ test("TUI subtask activity compact lines use friendly labels for key states", ()
 	}, 5);
 	assert.deepEqual(lines, [
 		"Subtasks:",
-		"✓ Done task done-1 [status|export]",
-		"… Finalizing task final-1 [status|export]",
 		"! Needs permission task perm-1 [status]",
-		"! Slow task slow-1 [status|export]",
 		"!! Stalled task stall-1 [status|retry|resume|abort]",
+		"! Slow task slow-1 [status|export]",
+		"… Finalizing task final-1 [status|export]",
+		"✓ Done task done-1 [status|export]",
 	]);
 });
 

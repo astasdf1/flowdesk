@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION } from "./agent-task-runner.js";
@@ -131,6 +131,12 @@ test("monitorChildSessions collects result when child session has text", async (
 		assert.ok(reloaded.ok);
 		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
 		assert.ok(taskResult, "task_result evidence should be written");
+		const autoNextCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(autoNextCache.schema_version, "flowdesk.auto_next_ready_cache.v1");
+		const workflows = autoNextCache.workflows as Array<Record<string, unknown>>;
+		assert.equal(workflows[0]?.workflowId, "workflow-monitor-1");
+		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(subtaskCache.schema_version, "flowdesk.subtask_activity_sidebar_cache.v1");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -33,6 +33,7 @@ import {
 } from "./shared/with-timeout.js";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1 } from "./agent-task-runner.js";
 import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
+import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
 export interface FlowDeskTimeoutConfig {
 	sessionReadMs?: number;
@@ -1905,6 +1906,11 @@ export async function monitorChildSessionsV1(input: {
 				progressLabel: "async agent task result captured by watchdog",
 				observedAt: completedAt,
 			});
+			refreshFlowDeskCompletionUiCachesV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				observedAt: completedAt,
+			});
 			result.lanesCompleted++;
 			continue;
 		}
@@ -1952,6 +1958,11 @@ export async function monitorChildSessionsV1(input: {
 						phase: "finalizing",
 						progressSeq: 20 + nudgeCount,
 						progressLabel: "async agent task partial result captured before abort",
+						observedAt: abortedAt,
+					});
+					refreshFlowDeskCompletionUiCachesV1({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
 						observedAt: abortedAt,
 					});
 					result.lanesCompleted++;
