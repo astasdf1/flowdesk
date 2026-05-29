@@ -195,7 +195,7 @@ function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
 
 export function formatFlowDeskTuiSubtaskActivityCompactLines(
 	view: FlowDeskTuiSubtaskActivityViewV1,
-	limit = 3,
+	limit = 5,
 ): readonly string[] {
 	if (view.rows.length === 0) return [view.status === "loaded" ? "Subtasks: none" : "Subtasks: run /flowdesk-status"];
 	const lines = ["Subtasks:"];
