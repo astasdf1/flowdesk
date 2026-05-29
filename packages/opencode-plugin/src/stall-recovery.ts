@@ -1687,6 +1687,23 @@ function writeChildSessionEvidence(
 	return applied.ok && applied.writtenPaths.length > 0;
 }
 
+function laneAlreadyHasTerminalTaskEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+}): boolean {
+	const reloaded = reloadFlowDeskSessionEvidenceV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+	});
+	if (!reloaded.ok) return false;
+	return reloaded.entries.some((entry) => {
+		if (entry.evidenceClass !== "task_result" && entry.evidenceClass !== "task_failed") return false;
+		const record = entry.record as Record<string, unknown>;
+		return record.lane_id === input.laneId;
+	});
+}
+
 function childProgressLabel(value: string): string {
 	const compact = value.replace(/\s+/g, " ").trim();
 	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
@@ -1820,6 +1837,9 @@ export async function monitorChildSessionsV1(input: {
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+				continue;
+			}
 			const token = randomBytes(4).toString("hex");
 			const completedAt = new Date(nowMs).toISOString();
 			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultObservation.text);
@@ -1895,6 +1915,9 @@ export async function monitorChildSessionsV1(input: {
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+				continue;
+			}
 			const token = randomBytes(4).toString("hex");
 			const abortedAt = new Date(nowMs).toISOString();
 			const partialObservation = await pollChildSessionCandidate(input.client, childSessionId);
@@ -1936,6 +1959,9 @@ export async function monitorChildSessionsV1(input: {
 				}
 			}
 
+			const failureCategory = totalAgeMs > abortThresholdMs * 2
+				? "network_interrupted"
+				: "sdk_prompt_timeout";
 			writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-abort-${token}`, {
 				schema_version: "flowdesk.task_failed.v1",
 				workflow_id: input.workflowId,
@@ -1943,7 +1969,7 @@ export async function monitorChildSessionsV1(input: {
 				task_id: taskId,
 				agent_ref: agentRef,
 				provider_qualified_model_id: modelId,
-				failure_category: "sdk_prompt_timeout",
+				failure_category: failureCategory,
 				redacted_reason: `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no response`,
 				created_at: abortedAt,
 				dispatch_authority_enabled: false,

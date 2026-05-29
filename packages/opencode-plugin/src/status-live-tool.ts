@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
@@ -186,6 +186,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	progressingLateLaneCount?: number;
 	inconsistentFinalizingWithoutTerminalLaneCount?: number;
 	laneProgressCards?: readonly FlowDeskStatusLiveLaneProgressCardV1[];
+	subtaskActivityRows?: readonly FlowDeskStatusLiveSubtaskActivityRowV1[];
 	laneProgressAggregate?: {
 		expected: number;
 		terminal: number;
@@ -219,6 +220,33 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	outputKind?: string;
 	usableForSynthesis?: boolean;
 	failureHint?: string;
+	statusCommandRef: "/flowdesk-status";
+	debugCommandRef: "/flowdesk-export-debug";
+}
+
+export interface FlowDeskStatusLiveSubtaskActivityRowV1 {
+	workflowId: string;
+	laneId: string;
+	taskId?: string;
+	attemptId?: string;
+	state?: string;
+	classification: FlowDeskLaneStallClassificationV1;
+	progressPhase?: string;
+	progressLabel?: string;
+	lastObservedAt?: string;
+	nudgeCount?: number;
+	completionStatus?: string;
+	outputKind?: string;
+	usableForSynthesis?: boolean;
+	verdictLabel?: "pass" | "changes_required" | "blocked" | "inconclusive";
+	failureHint?: string;
+	recoveryActionRefs?: readonly (
+		| "/flowdesk-status"
+		| "/flowdesk-retry"
+		| "/flowdesk-resume"
+		| "/flowdesk-abort"
+		| "/flowdesk-export-debug"
+	)[];
 	statusCommandRef: "/flowdesk-status";
 	debugCommandRef: "/flowdesk-export-debug";
 }
@@ -702,6 +730,7 @@ function buildLaneProgressCards(
 	const taskResultByLane = new Map<
 		string,
 		{
+			taskId?: string;
 			completionStatus?: string;
 			outputKind?: string;
 			usableForSynthesis?: boolean;
@@ -762,6 +791,7 @@ function buildLaneProgressCards(
 			if (laneId !== undefined) {
 				taskResultLaneIds.add(laneId);
 				taskResultByLane.set(laneId, {
+					taskId: getStringField(entry.record, "task_id"),
 					completionStatus: getStringField(entry.record, "completion_status"),
 					outputKind: getStringField(entry.record, "output_kind"),
 					...(typeof entry.record.usable_for_synthesis === "boolean"
@@ -810,6 +840,7 @@ function buildLaneProgressCards(
 		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
+		const taskId = context?.taskId ?? taskResult?.taskId;
 		const verdictLabel =
 			meta?.verdictRef === undefined
 				? undefined
@@ -817,7 +848,7 @@ function buildLaneProgressCards(
 		return {
 			workflowId,
 			laneId: entry.laneId,
-			...(context?.taskId === undefined ? {} : { taskId: context.taskId }),
+			...(taskId === undefined ? {} : { taskId }),
 			attemptId: entry.attemptId,
 			state: projectedState,
 			classification: entry.classification,
@@ -878,6 +909,39 @@ function buildLaneProgressAggregate(cards: readonly FlowDeskStatusLiveLaneProgre
 		normalCompleted,
 		autoNextStepEligible: expected > 0 && normalCompleted === expected,
 	};
+}
+
+function buildSubtaskActivityRows(
+	cards: readonly FlowDeskStatusLiveLaneProgressCardV1[],
+): readonly FlowDeskStatusLiveSubtaskActivityRowV1[] {
+	return cards.map((card) => {
+		const recoveryActionRefs =
+			card.failureHint !== undefined ||
+			card.classification === "stalled" ||
+			card.classification === "progressing_late"
+				? (["/flowdesk-status", "/flowdesk-retry", "/flowdesk-resume", "/flowdesk-abort", "/flowdesk-export-debug"] as const)
+				: (["/flowdesk-status", "/flowdesk-export-debug"] as const);
+		return {
+			workflowId: card.workflowId,
+			laneId: card.laneId,
+			...(card.taskId === undefined ? {} : { taskId: card.taskId }),
+			...(card.attemptId === undefined ? {} : { attemptId: card.attemptId }),
+			...(card.state === undefined ? {} : { state: card.state }),
+			classification: card.classification,
+			...(card.progressPhase === undefined ? {} : { progressPhase: card.progressPhase }),
+			...(card.progressLabel === undefined ? {} : { progressLabel: card.progressLabel }),
+			...(card.progressObservedAt === undefined ? {} : { lastObservedAt: card.progressObservedAt }),
+			...(card.nudgeCount === undefined ? {} : { nudgeCount: card.nudgeCount }),
+			...(card.completionStatus === undefined ? {} : { completionStatus: card.completionStatus }),
+			...(card.outputKind === undefined ? {} : { outputKind: card.outputKind }),
+			...(card.usableForSynthesis === undefined ? {} : { usableForSynthesis: card.usableForSynthesis }),
+			...(card.verdictLabel === undefined ? {} : { verdictLabel: card.verdictLabel }),
+			...(card.failureHint === undefined ? {} : { failureHint: card.failureHint }),
+			recoveryActionRefs,
+			statusCommandRef: "/flowdesk-status" as const,
+			debugCommandRef: "/flowdesk-export-debug" as const,
+		};
+	});
 }
 
 function summarizeLatestProviderUsageSnapshot(
@@ -1004,6 +1068,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			projectionReload,
 			projection,
 		);
+		summary.subtaskActivityRows = buildSubtaskActivityRows(summary.laneProgressCards);
 		summary.laneProgressAggregate = buildLaneProgressAggregate(summary.laneProgressCards);
 		workflows.push(summary);
 	}
@@ -1064,6 +1129,12 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		requestedWorkflowId,
 	});
 
+	materializeSubtaskActivitySidebarCacheV1({
+		rootDir,
+		observedAt,
+		workflows,
+	});
+
 	return {
 		status: "status_live_collected",
 		observedAt,
@@ -1088,6 +1159,42 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			statusEvidenceObserved: observed,
 		},
 	};
+}
+
+function materializeSubtaskActivitySidebarCacheV1(input: {
+	rootDir: string;
+	observedAt: string;
+	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
+}): void {
+	try {
+		const rows = input.workflows.flatMap((workflow) => workflow.subtaskActivityRows ?? []).slice(0, 8);
+		const uiDir = join(input.rootDir, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+					observed_at: input.observedAt,
+					expires_at: new Date(Date.parse(input.observedAt) + 120_000).toISOString(),
+					rows,
+					authority: {
+						displayOnly: true,
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+	} catch {
+		// The sidebar cache is a best-effort display artifact only.
+	}
 }
 
 function buildStatusLiveSummaryForUser(input: {
@@ -1146,7 +1253,19 @@ function buildStatusLiveSummaryForUser(input: {
 			})
 			.join(", ");
 		const laneText = lanePreview.length > 0 ? `, lanes=${lanePreview}` : "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}`;
+		const subtaskPreview = (workflow.subtaskActivityRows ?? [])
+			.slice(0, 3)
+			.map((row) => {
+				const actions = (row.recoveryActionRefs ?? [])
+					.slice(0, 5)
+					.map((action) => action.replace("/flowdesk-", ""))
+					.join("|");
+				const compact = `${row.laneId}:${row.state ?? "unknown"}/${row.classification}${actions.length > 0 ? `[${actions}]` : ""}`;
+				return compact.length > 96 ? `${compact.slice(0, 95)}…` : compact;
+			})
+			.join("; ");
+		const subtaskText = subtaskPreview.length > 0 ? `, subtasks=${subtaskPreview}` : "";
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

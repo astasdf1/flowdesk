@@ -170,6 +170,7 @@ export const flowdeskWorkflowDispatchPlanToolOption =
 export const flowdeskWorkflowDispatchOption = "workflowDispatch" as const;
 export const flowdeskControlledWriteApplyOption =
 	"controlledWriteApply" as const;
+export const flowdeskUiProbeOption = "uiProbe" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskWatchdogOption = "watchdog" as const;
@@ -199,6 +200,7 @@ export const flowdeskControlledWriteApplyToolName =
 	"flowdesk_controlled_write_apply" as const;
 export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
+export const flowdeskUiProbeToolName = "flowdesk_ui_probe" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -256,6 +258,15 @@ interface FlowDeskRuntimeReviewerExecutionOptionsV1 {
 type FlowDeskOpenCodeTool = ReturnType<typeof tool>;
 type FlowDeskOpenCodeToolArgs = Parameters<typeof tool>[0]["args"];
 type FlowDeskOpenCodeToolArg = z.ZodType;
+
+interface FlowDeskUiProbeEventObservationV1 {
+	observedAt: string;
+	eventType: string;
+	sessionId?: string;
+	messageId?: string;
+	partId?: string;
+	keys: string[];
+}
 
 export interface FlowDeskManagedDispatchRunRouteOptionsV1 {
 	client?: FlowDeskManagedDispatchBetaOpenCodeClientV1;
@@ -4157,6 +4168,119 @@ export function createFlowDeskStatusLiveOptInTools(
 	};
 }
 
+function isFlowDeskUiProbeEnabled(options?: PluginOptions): boolean {
+	const raw = options?.[flowdeskUiProbeOption];
+	return process.env.FLOWDESK_UI_PROBE === "1" || raw === true || (isRecord(raw) && raw.enabled === true);
+}
+
+function boundedUiProbeString(value: unknown, maxLength = 160): string | undefined {
+	if (typeof value !== "string" || value.length === 0) return undefined;
+	return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+}
+
+function summarizeFlowDeskUiProbeEventV1(event: unknown, observedAt: string): FlowDeskUiProbeEventObservationV1 {
+	const rec = isRecord(event) ? event : {};
+	const properties = Object.keys(rec).sort().slice(0, 20);
+	const nested = (name: string): Record<string, unknown> | undefined => {
+		const value = rec[name];
+		return isRecord(value) ? value : undefined;
+	};
+	const session = nested("session") ?? nested("sessionID") ?? nested("sessionId");
+	const message = nested("message");
+	const part = nested("part");
+	const sessionId =
+		boundedUiProbeString(rec.sessionID) ??
+		boundedUiProbeString(rec.sessionId) ??
+		boundedUiProbeString(session?.id);
+	return {
+		observedAt,
+		eventType: boundedUiProbeString(rec.type, 120) ?? boundedUiProbeString(rec.event, 120) ?? "unknown",
+		...(sessionId === undefined ? {} : { sessionId }),
+		...(boundedUiProbeString(message?.id) === undefined ? {} : { messageId: boundedUiProbeString(message?.id) }),
+		...(boundedUiProbeString(part?.id) === undefined ? {} : { partId: boundedUiProbeString(part?.id) }),
+		keys: properties,
+	};
+}
+
+function createFlowDeskUiProbeTools(
+	observations: FlowDeskUiProbeEventObservationV1[],
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskUiProbeToolName]: tool({
+			description: [
+				"Developer-only FlowDesk UI renderer/event probe. Enabled only when FLOWDESK_UI_PROBE=1.",
+				"It emits bounded markdown/details/link/code-fence/long-log samples and reports redacted OpenCode event observations captured by the plugin event hook.",
+				"No dispatch, provider call, write authority, fallback authority, or hard chat control is granted.",
+			].join(" "),
+			args: {
+				mode: tool.schema
+					.string()
+					.optional()
+					.describe("Probe mode: render, events, or all. Defaults to all."),
+				limit: tool.schema
+					.number()
+					.optional()
+					.describe("Maximum recent event observations to return; clamped to 1..50."),
+			},
+			async execute(input) {
+				const mode = isRecord(input) && typeof input.mode === "string" ? input.mode : "all";
+				const requestedLimit = isRecord(input) && typeof input.limit === "number" ? Math.floor(input.limit) : 20;
+				const limit = Math.max(1, Math.min(50, requestedLimit));
+				const includeRender = mode === "all" || mode === "render";
+				const includeEvents = mode === "all" || mode === "events";
+				const longLog = Array.from({ length: 40 }, (_, index) => {
+					const n = String(index + 1).padStart(2, "0");
+					return `${n}. ui-probe timeline event ${n}: message/status/log renderer sample`;
+				});
+				return JSON.stringify({
+					schema_version: "flowdesk.ui_probe_result.v1",
+					status: "ui_probe_collected",
+					probeEnabled: true,
+					mode,
+					authority: {
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						actualLaneLaunch: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+					...(includeRender
+						? {
+								renderSamples: {
+									markdownDetails: [
+										"<details>",
+										"<summary>FlowDesk UI probe: details summary</summary>",
+										"",
+										"[FlowDesk markdown link probe](https://example.com/flowdesk-ui-probe)",
+										"",
+										"```text",
+										...longLog.slice(0, 8),
+										"```",
+										"</details>",
+									].join("\n"),
+									longLogText: ["FlowDesk UI probe long log", ...longLog].join("\n"),
+									observationInstructions: [
+										"1. Check whether markdownDetails renders as collapsible UI or plain text.",
+										"2. Click the markdown link and re-run mode=events to see whether any click/navigation event reached Hooks.event.",
+										"3. Check whether longLogText is folded, scrollable, or fully expanded by OpenCode's tool-output renderer.",
+									].join("\n"),
+								},
+							}
+						: {}),
+					...(includeEvents
+						? {
+								recentEventObservations: observations.slice(-limit),
+								recentEventObservationCount: Math.min(observations.length, limit),
+								totalBufferedEventObservationCount: observations.length,
+							}
+						: {}),
+				});
+			},
+		}),
+	};
+}
+
 export function createFlowDeskProviderUsageLiveOptInTools(
 	config: FlowDeskProviderUsageLiveConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
@@ -4640,6 +4764,9 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const orchestrateConfig = orchestrateToolConfigFromOptions(input, options);
 	if (orchestrateConfig !== undefined)
 		Object.assign(tools, createFlowDeskOrchestrateOptInTools(orchestrateConfig));
+	const uiProbeEnabled = isFlowDeskUiProbeEnabled(options);
+	const uiProbeEventObservations: FlowDeskUiProbeEventObservationV1[] = [];
+	if (uiProbeEnabled) Object.assign(tools, createFlowDeskUiProbeTools(uiProbeEventObservations));
 
 	// P8 Background Watchdog
 	const watchdogConfig = watchdogConfigFromOptions(options);
@@ -4740,10 +4867,18 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	}
 
 	const eventRootDir = durableStateRootFromOptions(options);
-	const eventHook = eventRootDir === undefined
+	const eventHook = eventRootDir === undefined && !uiProbeEnabled
 		? undefined
 		: async (input: { event: unknown }) => {
-				await observeFlowDeskOpenCodeEventV1({ rootDir: eventRootDir, event: input.event });
+				if (uiProbeEnabled) {
+					uiProbeEventObservations.push(
+						summarizeFlowDeskUiProbeEventV1(input.event, new Date().toISOString()),
+					);
+					if (uiProbeEventObservations.length > 200) uiProbeEventObservations.splice(0, uiProbeEventObservations.length - 200);
+				}
+				if (eventRootDir !== undefined) {
+					await observeFlowDeskOpenCodeEventV1({ rootDir: eventRootDir, event: input.event });
+				}
 			};
 
 	if (!naturalLanguageRoutingEnabled) return eventHook === undefined ? { tool: tools } : { tool: tools, event: eventHook };

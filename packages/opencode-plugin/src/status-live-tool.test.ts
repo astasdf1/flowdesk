@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -350,6 +350,24 @@ test("status live does not materialize inconsistency when finalizing has task_re
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.outputKind, "process_notes");
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.usableForSynthesis, true);
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.classification, "terminal");
+		assert.equal(result.workflows[0].subtaskActivityRows?.length, 1);
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.laneId, laneId);
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.taskId, "task-finalizing-result-1");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.state, "task_result");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.classification, "terminal");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.progressPhase, "finalizing");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.completionStatus, "partial");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.outputKind, "process_notes");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.usableForSynthesis, true);
+		assert.deepEqual(result.workflows[0].subtaskActivityRows?.[0]?.recoveryActionRefs, ["/flowdesk-status", "/flowdesk-export-debug"]);
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.statusCommandRef, "/flowdesk-status");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.debugCommandRef, "/flowdesk-export-debug");
+		assert.match(result.summaryForUser ?? "", /subtasks=lane-task-finalizing-result-1:task_result\/terminal\[status\|export-debug\]/);
+		const sidebarCache = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(sidebarCache.schema_version, "flowdesk.subtask_activity_sidebar_cache.v1");
+		const sidebarRows = sidebarCache.rows as Array<Record<string, unknown>>;
+		assert.equal(sidebarRows[0]?.laneId, laneId);
+		assert.equal(sidebarRows[0]?.state, "task_result");
 		assert.equal(result.workflows[0].laneProgressAggregate?.expected, 1);
 		assert.equal(result.workflows[0].laneProgressAggregate?.normalCompleted, 0);
 		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, false);
@@ -387,6 +405,14 @@ test("status live does not materialize inconsistency when finalizing has task_fa
 		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
 		assert.equal(result.totalStalledLaneCount, 0);
 		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "invocation_failed");
+		assert.deepEqual(result.workflows[0].subtaskActivityRows?.[0]?.recoveryActionRefs, [
+			"/flowdesk-status",
+			"/flowdesk-retry",
+			"/flowdesk-resume",
+			"/flowdesk-abort",
+			"/flowdesk-export-debug",
+		]);
+		assert.match(result.summaryForUser ?? "", /subtasks=lane-task-finalizing-failed-1:invocation_failed\/terminal\[status\|retry\|resume\|abort\|export-debug\]/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

@@ -6,6 +6,11 @@ import {
 	loadFlowDeskTuiUsageSnapshotViewV1,
 	type FlowDeskTuiUsageSnapshotViewV1,
 } from "./tui-usage-snapshot.js";
+import {
+	formatFlowDeskTuiSubtaskActivityCompactLines,
+	loadFlowDeskTuiSubtaskActivityViewV1,
+	type FlowDeskTuiSubtaskActivityViewV1,
+} from "./tui-subtask-activity.js";
 
 interface FlowDeskTuiPluginOptionsV1 {
 	durableStateRootDir?: string;
@@ -21,11 +26,37 @@ type UsageSnapshotState = {
 	dispose: () => void;
 };
 
+type SubtaskActivityState = {
+	view: () => FlowDeskTuiSubtaskActivityViewV1;
+	dispose: () => void;
+};
+
 function createUsageSnapshotState(options: FlowDeskTuiPluginOptionsV1): UsageSnapshotState {
 	const read = (): FlowDeskTuiUsageSnapshotViewV1 =>
 		loadFlowDeskTuiUsageSnapshotViewV1({
 			rootDir: options.durableStateRootDir,
 			workflowId: options.usageWorkflowId,
+		});
+
+	const [view, setView] = createSignal(read());
+	const refresh = () => {
+		setView(read());
+	};
+
+	const intervalId = setInterval(refresh, USAGE_SIDEBAR_REFRESH_INTERVAL_MS);
+
+	return {
+		view: () => view(),
+		dispose: () => {
+			clearInterval(intervalId);
+		},
+	};
+}
+
+function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): SubtaskActivityState {
+	const read = (): FlowDeskTuiSubtaskActivityViewV1 =>
+		loadFlowDeskTuiSubtaskActivityViewV1({
+			rootDir: options.durableStateRootDir,
 		});
 
 	const [view, setView] = createSignal(read());
@@ -81,13 +112,16 @@ function formatObservedAt(iso: string): string {
 	return `updated ${hh}:${mm}:${ss}`;
 }
 
-function usageSidebar(state: UsageSnapshotState): JSX.Element {
-	const view = state.view();
+function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState): JSX.Element {
+	const view = usageState.view();
+	const subtaskView = subtaskState.view();
 	return box(
 		[
 			...formatFlowDeskTuiUsageSnapshotCompactLines(view).map((line) => textLine(line)),
 			textLine(formatObservedAt(view.observedAt)),
 			textLine(view.status === "loaded" ? "cache readable" : "run /flowdesk-usage"),
+			textLine(""),
+			...formatFlowDeskTuiSubtaskActivityCompactLines(subtaskView).map((line) => textLine(line)),
 		],
 		{ flexShrink: 0, paddingTop: 1, paddingBottom: 1 },
 	);
@@ -102,12 +136,14 @@ function usageBadge(state: UsageSnapshotState): JSX.Element {
 const tui: TuiPlugin = async (api, rawOptions) => {
 	const options = optionsFrom(rawOptions);
 	const usageSnapshotState = createUsageSnapshotState(options);
+	const subtaskActivityState = createSubtaskActivityState(options);
 	api.lifecycle.onDispose(usageSnapshotState.dispose);
+	api.lifecycle.onDispose(subtaskActivityState.dispose);
 
 	api.slots.register({
 		slots: {
 			sidebar_content() {
-				return usageSidebar(usageSnapshotState);
+				return usageSidebar(usageSnapshotState, subtaskActivityState);
 			},
 			...(options.showAppBottom === true
 				? {

@@ -584,3 +584,61 @@ test("monitorChildSessions skips terminal lanes", async () => {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("monitorChildSessions skips lanes with task_result even when lifecycle is still running", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-terminal-result-"));
+	try {
+		const workflowId = "workflow-terminal-result-1";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId: "task-terminal-result-1",
+			laneId: "lane-terminal-result-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({ messages: async () => [] }),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "task-result-terminal-result-1",
+			record: {
+				schema_version: "flowdesk.task_result.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-terminal-result-1",
+				task_id: "task-terminal-result-1",
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				task_prompt_sha256: "a".repeat(64),
+				result_text: "already done",
+				result_text_truncated: false,
+				result_text_sha256: "b".repeat(64),
+				created_at: "2026-05-29T00:00:00.000Z",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(prepared.ok, true, prepared.errors?.join("; "));
+		if (!prepared.ok || prepared.writeIntent === undefined) return;
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent]);
+		assert.equal(applied.ok, true);
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "duplicate" }, { type: "step-finish", reason: "stop" }] }]),
+			}),
+			now: new Date("2026-05-29T00:05:00.000Z"),
+		});
+		assert.equal(monResult.lanesPolled, 0, "task_result-backed lane should be skipped even if lifecycle still says running");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.entries.filter(e => e.evidenceClass === "task_result").length, 1);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
