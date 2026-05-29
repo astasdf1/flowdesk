@@ -53,8 +53,8 @@ test("TUI subtask activity view renders cached read-only rows", () => {
 		assert.equal(view.rows.length, 2);
 		assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view), [
 			"Subtasks:",
-			"…unning-1234567890 running/progressing_normal [status|export-debug]",
-			"…failed-1234567890 invocation_failed/terminal [status|retry|resume|abort|export-debug]",
+			"… Running task g-1234567890 [status|export]",
+			"✕ Failed task d-1234567890 [status|retry|resume|abort|export]",
 		]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -70,6 +70,30 @@ test("TUI subtask activity view degrades to command fallback when cache is absen
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("TUI subtask activity compact lines use friendly labels for key states", () => {
+	const lines = formatFlowDeskTuiSubtaskActivityCompactLines({
+		status: "loaded",
+		observedAt: "2026-05-29T00:00:00.000Z",
+		rootDir: ".flowdesk",
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		rows: [
+			{ workflowId: "w", laneId: "lane-task-done-1", taskId: "task-done-1", state: "task_result", classification: "terminal", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+			{ workflowId: "w", laneId: "lane-task-final-1", taskId: "task-final-1", state: "running", classification: "progressing_normal", progressPhase: "finalizing", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+			{ workflowId: "w", laneId: "lane-task-perm-1", taskId: "task-perm-1", state: "running", classification: "progressing_normal", progressPhase: "awaiting_permission", recoveryActionRefs: ["/flowdesk-status"] },
+			{ workflowId: "w", laneId: "lane-task-slow-1", taskId: "task-slow-1", state: "running", classification: "progressing_late", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+			{ workflowId: "w", laneId: "lane-task-stall-1", taskId: "task-stall-1", state: "running", classification: "stalled", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-retry", "/flowdesk-resume", "/flowdesk-abort"] },
+		],
+	}, 5);
+	assert.deepEqual(lines, [
+		"Subtasks:",
+		"✓ Done task done-1 [status|export]",
+		"… Finalizing task final-1 [status|export]",
+		"! Needs permission task perm-1 [status]",
+		"! Slow task slow-1 [status|export]",
+		"!! Stalled task stall-1 [status|retry|resume|abort]",
+	]);
 });
 
 test("TUI auto-next ready view renders cached ready workflows", () => {
@@ -96,7 +120,7 @@ test("TUI auto-next ready view renders cached ready workflows", () => {
 		assert.equal(view.workflows.length, 1);
 		assert.deepEqual(formatFlowDeskTuiAutoNextReadyCompactLines(view), [
 			"Auto-next ready:",
-			"…o-next-ready-1234567890 2/2 done [status|export-debug]",
+			"✓ 2/2 done …o-next-ready-1234567890 [status|export]",
 		]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

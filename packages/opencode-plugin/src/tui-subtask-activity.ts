@@ -171,12 +171,26 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 	}
 }
 
-function shortLaneId(value: string): string {
-	return value.length <= 18 ? value : `…${value.slice(-17)}`;
+function shortTaskLabel(row: FlowDeskTuiSubtaskActivityRowV1): string {
+	const source = row.taskId ?? row.laneId;
+	const compact = source.replace(/^task-/, "").replace(/^lane-task-/, "");
+	return `task ${compact.length <= 12 ? compact : compact.slice(-12)}`;
 }
 
 function actionLabels(actions: readonly string[]): string {
-	return actions.map((action) => action.replace(/^\/flowdesk-/, "")).join("|");
+	return actions.map((action) => action.replace(/^\/flowdesk-export-debug$/, "export").replace(/^\/flowdesk-/, "")).join("|");
+}
+
+function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
+	if (row.progressPhase === "awaiting_permission") return "! Needs permission";
+	if (row.classification === "stalled") return "!! Stalled";
+	if (row.classification === "progressing_late") return "! Slow";
+	if (row.classification === "inconsistent_finalizing_without_terminal") return "! Needs check";
+	if (row.state === "invocation_failed" || row.state === "task_failed") return "✕ Failed";
+	if (row.state === "task_result" && row.classification === "terminal") return "✓ Done";
+	if (row.progressPhase === "finalizing") return "… Finalizing";
+	if (row.state === "running" || row.classification === "progressing_normal") return "… Running";
+	return "? Unknown";
 }
 
 export function formatFlowDeskTuiSubtaskActivityCompactLines(
@@ -186,8 +200,7 @@ export function formatFlowDeskTuiSubtaskActivityCompactLines(
 	if (view.rows.length === 0) return [view.status === "loaded" ? "Subtasks: none" : "Subtasks: run /flowdesk-status"];
 	const lines = ["Subtasks:"];
 	for (const row of view.rows.slice(0, Math.max(1, limit))) {
-		const state = row.state ?? row.progressPhase ?? "unknown";
-		lines.push(`${shortLaneId(row.laneId)} ${state}/${row.classification} [${actionLabels(row.recoveryActionRefs)}]`);
+		lines.push(`${displayState(row)} ${shortTaskLabel(row)} [${actionLabels(row.recoveryActionRefs)}]`);
 	}
 	if (view.rows.length > limit) lines.push(`… ${view.rows.length - limit} more`);
 	return lines;
@@ -201,7 +214,7 @@ export function formatFlowDeskTuiAutoNextReadyCompactLines(
 	const lines = ["Auto-next ready:"];
 	for (const workflow of view.workflows.slice(0, Math.max(1, limit))) {
 		const workflowLabel = workflow.workflowId.length <= 24 ? workflow.workflowId : `…${workflow.workflowId.slice(-23)}`;
-		lines.push(`${workflowLabel} ${workflow.completed}/${workflow.expected} done [status|export-debug]`);
+		lines.push(`✓ ${workflow.completed}/${workflow.expected} done ${workflowLabel} [status|export]`);
 	}
 	if (view.workflows.length > limit) lines.push(`… ${view.workflows.length - limit} more ready`);
 	return lines;
