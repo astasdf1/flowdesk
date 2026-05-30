@@ -5468,14 +5468,10 @@ test("chat.message appends compact usage snapshot lines from sidebar cache", asy
 		const serialized = JSON.stringify(output);
 		assert.match(
 			serialized,
-			new RegExp(`CL: 77% \\(5h, r ${formatLocalResetTimeForTest("2026-05-27T19:20:00.000Z", "5h")}\\)`),
+			new RegExp(`CL Sonnet\\s+34% \\(1w, r ${formatLocalResetTimeForTest("2026-06-03T12:00:00.000Z", "1w")}\\)`),
 		);
-		assert.match(
-			serialized,
-			new RegExp(`34% \\(1w, r ${formatLocalResetTimeForTest("2026-06-03T12:00:00.000Z", "1w")}\\)`),
-		);
-		assert.match(serialized, /OA: ✗/);
-		assert.match(serialized, /GM: ✗/);
+		assert.match(serialized, /OA ✗/);
+		assert.match(serialized, /GM ✗/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
