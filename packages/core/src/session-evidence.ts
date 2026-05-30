@@ -38,6 +38,7 @@ import {
 	validateFlowDeskTaskFailedV1,
 	validateFlowDeskAgentTaskProgressV1,
 	validateFlowDeskAgentTaskInconsistencyV1,
+	validateFlowDeskCoordinatorRetryDecisionV1,
 } from "./task-result.js";
 import { validateFlowDeskTaskAgentAssignmentV1 } from "./task-agent-assignment.js";
 import { validateFlowDeskTaskGraphV1 } from "./task-graph.js";
@@ -146,6 +147,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	task_model_selection: "flowdesk.task_model_selection.v1",
 	workflow_synthesis_result: "flowdesk.workflow_synthesis_result.v1",
 	workflow_dispatch_plan: "flowdesk.workflow_dispatch_plan.v1",
+	coordinator_retry_decision: "flowdesk.coordinator_retry_decision.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -834,6 +836,8 @@ function validateEvidenceShape(
 		return validateFlowDeskAgentTaskProgressV1(record);
 	if (evidenceClass === "agent_task_inconsistency")
 		return validateFlowDeskAgentTaskInconsistencyV1(record);
+	if (evidenceClass === "coordinator_retry_decision")
+		return validateFlowDeskCoordinatorRetryDecisionV1(record);
 	if (evidenceClass === "pending_retry_plan")
 		return validateFlowDeskPendingRetryPlanV1(record);
 	if (evidenceClass === "retry_executed")

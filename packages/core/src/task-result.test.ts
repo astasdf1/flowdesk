@@ -5,6 +5,8 @@ import {
 	validateFlowDeskTaskFailedV1,
 	validateFlowDeskAgentTaskProgressV1,
 	validateFlowDeskAgentTaskInconsistencyV1,
+	validateFlowDeskCoordinatorRetryDecisionV1,
+	evaluateFlowDeskCoordinatorRetryDecisionV1,
 	VALID_TASK_FAILURE_CATEGORIES,
 } from "./task-result.js";
 
@@ -290,4 +292,108 @@ test("agent task inconsistency validator rejects invalid grace and action", () =
 	);
 	assert.equal(action.ok, false);
 	assert.ok(action.errors.some((e) => /safe_next_actions/.test(e)));
+});
+
+// ---------------------------------------------------------------------------
+// Coordinator retry decision (judgement layer)
+// ---------------------------------------------------------------------------
+
+const retryEvalBase = {
+	workflowId: "workflow-judge-abc123",
+	judgedLaneId: "lane-task-abc123",
+	judgedTaskId: "task-abc123",
+	judgedAttemptId: "attempt-task-abc123",
+	judgedReasonLabel: "refusal_text",
+	observedAt: "2026-05-31T10:00:00.000Z",
+};
+
+test("coordinator retry evaluator accepts a successful judgement", () => {
+	const record = evaluateFlowDeskCoordinatorRetryDecisionV1({
+		...retryEvalBase,
+		judgedOutcome: "success",
+		judgedReasonLabel: "substantive_answer",
+		priorRetryCount: 0,
+	});
+	assert.equal(record.decision, "accept");
+	assert.equal(record.fallback_authority, false);
+	assert.equal(record.dispatch_authority_enabled, false);
+	assert.equal(validateFlowDeskCoordinatorRetryDecisionV1(record).ok, true);
+});
+
+test("coordinator retry evaluator re-selects a different model under the cap", () => {
+	const record = evaluateFlowDeskCoordinatorRetryDecisionV1({
+		...retryEvalBase,
+		judgedOutcome: "failure",
+		observed: { outputKind: "process_notes", looksLikeRefusalOrError: true },
+		priorRetryCount: 0,
+		reselection: {
+			providerQualifiedModelId: "openai/gpt-5.5",
+			agentRef: "agent-reviewer-gpt-frontier",
+			newAttemptId: "attempt-task-retry-1",
+		},
+	});
+	assert.equal(record.decision, "retry_reselect");
+	assert.equal(record.retry_seq, 1);
+	assert.equal(record.reselected_provider_qualified_model_id, "openai/gpt-5.5");
+	assert.equal(record.new_attempt_id, "attempt-task-retry-1");
+	assert.equal(record.reselection_basis, "usage_aware_routing");
+	const result = validateFlowDeskCoordinatorRetryDecisionV1(record);
+	assert.equal(result.ok, true, result.errors.join("; "));
+});
+
+test("coordinator retry evaluator abandons at the cap and without a candidate", () => {
+	const atCap = evaluateFlowDeskCoordinatorRetryDecisionV1({
+		...retryEvalBase,
+		judgedOutcome: "failure",
+		priorRetryCount: 2,
+		reselection: { providerQualifiedModelId: "openai/gpt-5.5", agentRef: "agent-x", newAttemptId: "attempt-y" },
+	});
+	assert.equal(atCap.decision, "abandon");
+	assert.equal(atCap.new_attempt_id, undefined);
+	const noCandidate = evaluateFlowDeskCoordinatorRetryDecisionV1({
+		...retryEvalBase,
+		judgedOutcome: "partial",
+		priorRetryCount: 0,
+	});
+	assert.equal(noCandidate.decision, "abandon");
+	assert.equal(validateFlowDeskCoordinatorRetryDecisionV1(atCap).ok, true);
+	assert.equal(validateFlowDeskCoordinatorRetryDecisionV1(noCandidate).ok, true);
+});
+
+test("coordinator retry validator rejects fallback authority and dispatch authority", () => {
+	const base = evaluateFlowDeskCoordinatorRetryDecisionV1({
+		...retryEvalBase,
+		judgedOutcome: "success",
+		priorRetryCount: 0,
+	});
+	const fallback = validateFlowDeskCoordinatorRetryDecisionV1({ ...base, fallback_authority: true });
+	assert.equal(fallback.ok, false);
+	assert.ok(fallback.errors.some((e) => /fallback/i.test(e)));
+	const dispatch = validateFlowDeskCoordinatorRetryDecisionV1({ ...base, dispatch_authority_enabled: true });
+	assert.equal(dispatch.ok, false);
+	assert.ok(dispatch.errors.some((e) => /dispatch authority/i.test(e)));
+});
+
+test("coordinator retry validator rejects retry_reselect missing new attempt id", () => {
+	const result = validateFlowDeskCoordinatorRetryDecisionV1({
+		schema_version: "flowdesk.coordinator_retry_decision.v1",
+		workflow_id: "workflow-judge-abc123",
+		judged_lane_id: "lane-task-abc123",
+		judged_task_id: "task-abc123",
+		judged_attempt_id: "attempt-task-abc123",
+		judged_outcome: "failure",
+		judged_reason_label: "off_topic",
+		decision: "retry_reselect",
+		retry_seq: 1,
+		max_retries: 2,
+		reselected_provider_qualified_model_id: "openai/gpt-5.5",
+		reselected_agent_ref: "agent-x",
+		reselection_basis: "usage_aware_routing",
+		observed_at: "2026-05-31T10:00:00.000Z",
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+		fallback_authority: false,
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.some((e) => /new_attempt_id/.test(e)));
 });

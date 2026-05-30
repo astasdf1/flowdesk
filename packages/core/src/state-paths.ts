@@ -148,6 +148,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"task_model_selection",
 	"workflow_synthesis_result",
 	"workflow_dispatch_plan",
+	"coordinator_retry_decision",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -201,6 +202,7 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	task_model_selection: "task-model-selection",
 	workflow_synthesis_result: "workflow-synthesis-result",
 	workflow_dispatch_plan: "workflow-dispatch-plan",
+	coordinator_retry_decision: "coordinator-retry-decision",
 };
 
 export function sessionEvidenceDirectoryPath(
