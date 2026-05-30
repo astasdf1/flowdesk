@@ -663,6 +663,7 @@ export function backfillTerminalAgentTaskFailedLanesV1(input: {
 	rootDir: string;
 	workflowId: string;
 	now?: Date;
+	refreshCompletionUiCaches?: boolean;
 }): FlowDeskAgentTaskTerminalBackfillResultV1 {
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
 	if (!reloaded.ok) return { status: "backfill_skipped", workflowId: input.workflowId, reason: "session_evidence_reload_failed" };
@@ -747,7 +748,10 @@ export function backfillTerminalAgentTaskFailedLanesV1(input: {
 		}
 	}
 
-	if (terminalEvidenceIds.length > 0 || latestFailure.size > 0) {
+	if (
+		(input.refreshCompletionUiCaches ?? true) &&
+		(terminalEvidenceIds.length > 0 || latestFailure.size > 0)
+	) {
 		refreshFlowDeskCompletionUiCachesV1({
 			rootDir: input.rootDir,
 			workflowId: input.workflowId,
@@ -1596,7 +1600,7 @@ async function pollChildSessionOutput(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | null> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean } | null> {
 	const messages = client.session.messages;
 	if (typeof messages !== "function") return null;
 	try {
@@ -1616,7 +1620,7 @@ async function pollChildSessionOutput(
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.terminalObserved && observed.latestText !== undefined && observed.latestText.trim().length > 0)
-			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis };
+			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError };
 		return null;
 	} catch {
 		return null;
@@ -1627,7 +1631,7 @@ async function pollChildSessionCandidate(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | null> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean } | null> {
 	const messages = client.session.messages;
 	if (typeof messages !== "function") return null;
 	try {
@@ -1643,7 +1647,7 @@ async function pollChildSessionCandidate(
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.latestText !== undefined && observed.latestText.trim().length > 0)
-			return { text: observed.latestText, completionStatus: observed.terminalObserved ? "final" : "partial", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis };
+			return { text: observed.latestText, completionStatus: observed.terminalObserved ? "final" : "partial", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError };
 		return null;
 	} catch {
 		return null;
@@ -1956,6 +1960,8 @@ export async function monitorChildSessionsV1(input: {
 				output_kind: resultObservation.outputKind,
 				usable_for_synthesis: resultObservation.usableForSynthesis,
 				missing_contract: false,
+				finalization_reason: "terminal_marker",
+				looks_like_refusal_or_error: resultObservation.looksLikeRefusalOrError,
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
 			});
@@ -2040,7 +2046,11 @@ export async function monitorChildSessionsV1(input: {
 					completion_status: "partial",
 					output_kind: partialObservation.outputKind,
 					usable_for_synthesis: partialObservation.usableForSynthesis,
-					missing_contract: true,
+					// Captured partial text is still a usable result, not a contract
+					// failure. The coordinator judges substance from the advisory fields.
+					missing_contract: false,
+					finalization_reason: "timeout_partial",
+					looks_like_refusal_or_error: partialObservation.looksLikeRefusalOrError,
 					created_at: abortedAt,
 					dispatch_authority_enabled: false,
 				});

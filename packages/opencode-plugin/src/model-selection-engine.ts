@@ -30,6 +30,10 @@ export interface ModelSelectionResult {
 	usageNote: string;
 }
 
+export interface WorkingModelSelectionInput {
+	availableModelIds?: readonly string[];
+}
+
 // ---------------------------------------------------------------------------
 // Model catalog – ordered by preference within each tier
 // ---------------------------------------------------------------------------
@@ -106,16 +110,19 @@ function usageNote(usage: ProviderUsageInput | undefined): string {
 export function selectModelForTask(
 	role: FlowDeskAgentRegistryRoleCategoryV1,
 	usageByFamily: Map<string, ProviderUsageInput>,
+	selectionContext: WorkingModelSelectionInput = {},
 	now?: () => Date,
 ): ModelSelectionResult | undefined {
 	void now; // reserved for future TTL checks
 	const mapping = ROLE_TIER_MAP[role];
 	if (!mapping) return undefined;
+	const allowedModelIds = selectionContext.availableModelIds === undefined ? undefined : new Set(selectionContext.availableModelIds);
 
 	// Deduplicate by providerQualifiedModelId and compute weights
 	const seen = new Set<string>();
 	const weighted: ModelSelectionResult[] = [];
 	for (const candidate of mapping.candidates) {
+		if (allowedModelIds !== undefined && !allowedModelIds.has(candidate.providerQualifiedModelId)) continue;
 		if (seen.has(candidate.providerQualifiedModelId)) continue;
 		seen.add(candidate.providerQualifiedModelId);
 		const usage = usageByFamily.get(candidate.usageKey ?? candidate.providerFamily) ?? usageByFamily.get(candidate.providerFamily);

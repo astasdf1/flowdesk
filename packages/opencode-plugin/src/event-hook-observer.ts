@@ -45,6 +45,52 @@ function compactLabel(value: string): string {
 	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
 }
 
+function firstString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function errorDetailFromRecord(value: unknown): string | undefined {
+	if (!isRecord(value)) return firstString(value);
+	const message = firstString(value.message) ?? firstString(value.reason) ?? firstString(value.error);
+	const code = firstString(value.code) ?? firstString(value.name);
+	const stack = firstString(value.stack)?.split(/\r?\n/)[0];
+	const cause = isRecord(value.cause) ? firstString(value.cause.message) ?? firstString(value.cause.reason) ?? firstString(value.cause.error) : undefined;
+	const details = [
+		message === undefined ? undefined : `message=${compactLabel(message)}`,
+		code === undefined ? undefined : `code=${compactLabel(code)}`,
+		stack === undefined ? undefined : `stack=${compactLabel(stack)}`,
+		cause === undefined ? undefined : `cause=${compactLabel(cause)}`,
+	].filter((part): part is string => part !== undefined);
+	return details.length === 0 ? undefined : details.join("; ");
+}
+
+function recordShapeSummary(value: unknown, label: string): string | undefined {
+	if (!isRecord(value)) return undefined;
+	const keys = Object.keys(value).sort();
+	if (keys.length === 0) return `${label}=empty`;
+	const keySummary = keys
+		.slice(0, 12)
+		.map((key) => `${key}:${typeof value[key]}`)
+		.join(",");
+	return `${label} keys=[${keySummary}${keys.length > 12 ? ",…" : ""}]`;
+}
+
+function sessionErrorSummary(event: unknown): string {
+	const properties = eventProperties(event);
+	const direct = errorDetailFromRecord(properties?.error);
+	const message =
+		direct ??
+		errorDetailFromRecord(properties) ??
+		recordShapeSummary(properties, "properties") ??
+		firstString(properties?.error) ??
+		firstString(properties?.message) ??
+		firstString(properties?.reason) ??
+		recordShapeSummary(event, "event");
+	return message === undefined
+		? "OpenCode session.error event observed for FlowDesk child session"
+		: `OpenCode session.error observed: ${compactLabel(message)}`;
+}
+
 function eventProperties(event: unknown): Record<string, unknown> | undefined {
 	const record = isRecord(event) ? event : undefined;
 	return isRecord(record?.properties) ? record.properties : undefined;
@@ -126,6 +172,18 @@ function writeProgress(rootDir: string, binding: ChildSessionBinding, event: unk
 function writeSessionErrorTerminal(rootDir: string, binding: ChildSessionBinding, event: unknown): number {
 	const digest = shortHash(event);
 	const observedAt = new Date().toISOString();
+	const redactedReason = sessionErrorSummary(event);
+	const redactedErrorDetails = compactLabel([
+		"session.error details",
+		firstString(eventProperties(event)?.sessionID) === undefined ? undefined : `session=${firstString(eventProperties(event)?.sessionID)}`,
+		errorDetailFromRecord(eventProperties(event)?.error),
+		recordShapeSummary(eventProperties(event)?.error, "error"),
+		recordShapeSummary(eventProperties(event), "properties"),
+		recordShapeSummary(event, "event"),
+		firstString(eventProperties(event)?.message) === undefined ? undefined : `message=${firstString(eventProperties(event)?.message)}`,
+		firstString(eventProperties(event)?.reason) === undefined ? undefined : `reason=${firstString(eventProperties(event)?.reason)}`,
+		firstString(eventProperties(event)?.code) === undefined ? undefined : `code=${firstString(eventProperties(event)?.code)}`,
+	].filter((part): part is string => part !== undefined).join("; "));
 	let written = 0;
 	if (writeEvidence(rootDir, binding.workflowId, `task-failed-${binding.taskId}-event-session-error-${digest}`, {
 		schema_version: "flowdesk.task_failed.v1",
@@ -135,7 +193,8 @@ function writeSessionErrorTerminal(rootDir: string, binding: ChildSessionBinding
 		agent_ref: binding.agentRef,
 		provider_qualified_model_id: binding.providerQualifiedModelId,
 		failure_category: "unknown",
-		redacted_reason: "OpenCode session.error event observed for FlowDesk child session",
+		redacted_reason: redactedReason,
+		redacted_error_details: redactedErrorDetails,
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	})) written++;
@@ -169,7 +228,7 @@ function eventProgress(event: unknown): { phase: FlowDeskAgentTaskProgressV1["ph
 	const properties = eventProperties(event);
 	if (type === "permission.updated") return { phase: "awaiting_permission", label: "agent task awaiting OpenCode permission response" };
 	if (type === "permission.replied") return { phase: "waiting", label: "agent task OpenCode permission response observed" };
-	if (type === "session.error") return { phase: "failed", label: "agent task session error observed" };
+	if (type === "session.error") return { phase: "failed", label: compactLabel(sessionErrorSummary(event)) };
 	if (type === "session.idle") return { phase: "finalizing", label: "agent task session idle event observed" };
 	if (type === "session.status") {
 		const status = isRecord(properties?.status) ? properties.status : undefined;

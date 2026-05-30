@@ -995,7 +995,7 @@ export function validateGuardApprovedDispatchV1(value: unknown): ValidationResul
     validateOpaqueId(value.attempt_id, "attempt_id"),
     validateProviderFamily(family),
     family === "unknown" || family === "all" ? invalid("dispatch provider_family must be concrete") : valid(),
-    validateProviderQualifiedModelId(value.provider_qualified_model_id),
+    validateConcreteProviderQualifiedModelId(value.provider_qualified_model_id),
     typeof family === "string" && modelProvider !== undefined && modelProvider !== family ? invalid("provider_qualified_model_id provider must match provider_family") : valid(),
     validateOpaqueRef(value.usage_snapshot_ref, "usage_snapshot_ref"),
     validateOpaqueRef(value.provider_health_snapshot_ref, "provider_health_snapshot_ref"),
@@ -1023,7 +1023,7 @@ function validateProviderAndModelBinding(value: { provider_family?: unknown; pro
   return combine([
     validateProviderFamily(family),
     family === "unknown" || family === "all" ? invalid(`${label}.provider_family must be concrete`) : valid(),
-    validateProviderQualifiedModelId(value.provider_qualified_model_id),
+    validateConcreteProviderQualifiedModelId(value.provider_qualified_model_id),
     typeof family === "string" && modelProvider !== undefined && modelProvider !== family ? invalid(`${label}.provider_qualified_model_id provider mismatch`) : valid(),
     options?.expectedProviderFamily !== undefined && family !== options.expectedProviderFamily ? invalid(`${label}.provider_family mismatch`) : valid(),
     options?.expectedProviderQualifiedModelId !== undefined && value.provider_qualified_model_id !== options.expectedProviderQualifiedModelId ? invalid(`${label}.provider_qualified_model_id mismatch`) : valid()

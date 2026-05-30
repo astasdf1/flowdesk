@@ -46,6 +46,18 @@ export interface FlowDeskWorkflowDispatchToolResultV1 {
 	laneId?: string;
 	taskId?: string;
 	taskResultEvidenceId?: string;
+	/**
+	 * ADVISORY capture metadata for the coordinator's substance judgement. The
+	 * workflow dispatch tool only confirms that a lane captured text; it does NOT
+	 * judge whether the text actually satisfies the task. The coordinator reads
+	 * this to decide success/failure and whether to re-select a model and retry.
+	 */
+	captureAdvisory?: {
+		outputKind?: string;
+		completionStatus?: string;
+		finalizationReason?: string;
+		looksLikeRefusalOrError?: boolean;
+	};
 	redactedBlockReason?: string;
 	summaryForUser: string;
 	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
@@ -205,24 +217,31 @@ function terminalEvidencePresent(input: {
 	return terminalLifecycle && terminalTaskEvidence;
 }
 
-function missingOutputContract(input: {
+function captureAdvisoryFor(input: {
 	rootDir: string;
 	workflowId: string;
 	laneId: string;
 	taskId: string;
-}): boolean {
+}): FlowDeskWorkflowDispatchToolResultV1["captureAdvisory"] | undefined {
 	const reload = reloadFlowDeskSessionEvidenceV1({
 		workflowId: input.workflowId,
 		rootDir: input.rootDir,
 	});
-	if (!reload.ok || reload.blocked.length > 0) return false;
-	return reload.entries.some(
-		(entry) =>
-			entry.evidenceClass === "task_result" &&
-			entry.record.lane_id === input.laneId &&
-			entry.record.task_id === input.taskId &&
-			entry.record.missing_contract === true,
+	if (!reload.ok || reload.blocked.length > 0) return undefined;
+	const entry = reload.entries.find(
+		(e) =>
+			e.evidenceClass === "task_result" &&
+			e.record.lane_id === input.laneId &&
+			e.record.task_id === input.taskId,
 	);
+	if (entry === undefined) return undefined;
+	const record = entry.record as Record<string, unknown>;
+	return {
+		...(typeof record.output_kind === "string" ? { outputKind: record.output_kind } : {}),
+		...(typeof record.completion_status === "string" ? { completionStatus: record.completion_status } : {}),
+		...(typeof record.finalization_reason === "string" ? { finalizationReason: record.finalization_reason } : {}),
+		...(typeof record.looks_like_refusal_or_error === "boolean" ? { looksLikeRefusalOrError: record.looks_like_refusal_or_error } : {}),
+	};
 }
 
 function planningLabel(value: string): string {
@@ -380,25 +399,13 @@ export async function executeFlowDeskWorkflowDispatchToolV1(input: {
 			planPersisted: true,
 			actualLaneLaunchAttempted: true,
 		});
-	if (completed && missingOutputContract({ rootDir: input.config.rootDir, workflowId, laneId, taskId }))
-		return {
-			status: "workflow_dispatch_incomplete",
-			rootDir: input.config.rootDir,
-			workflowId,
-			planRevisionId,
-			parentSessionId: request.parentSessionId,
-			laneId,
-			taskId,
-			redactedBlockReason: "output contract not satisfied",
-			summaryForUser:
-				`FlowDesk dev-mode workflow dispatch launched one lane but ended incomplete: output contract not satisfied. Default Release 1 dispatch authority remains disabled.`,
-			safeNextActions: safeNextActions(),
-			authority: authority({
-				developerModeAcknowledged: true,
-				planPersisted: true,
-				actualLaneLaunchAttempted: true,
-			}),
-		};
+	// Capture/judgement separation: if the lane captured any text we report it as
+	// completed (captured) and surface advisory metadata. We do NOT mark the
+	// dispatch incomplete just because the captured text "looks like" process
+	// notes or lacks a strict format — the coordinator judges substance.
+	const captureAdvisory = completed
+		? captureAdvisoryFor({ rootDir: input.config.rootDir, workflowId, laneId, taskId })
+		: undefined;
 
 	return {
 		status: completed ? "workflow_dispatch_completed" : "workflow_dispatch_incomplete",
@@ -409,9 +416,10 @@ export async function executeFlowDeskWorkflowDispatchToolV1(input: {
 		laneId,
 		taskId,
 		...(completed ? { taskResultEvidenceId: taskResult.taskResultEvidenceId } : { redactedBlockReason: taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async mode" : "unknown" }),
+		...(captureAdvisory === undefined ? {} : { captureAdvisory }),
 		summaryForUser: completed
-			? `FlowDesk dev-mode workflow dispatch completed one lane for ${workflowId}. Default Release 1 dispatch authority remains disabled.`
-			: `FlowDesk dev-mode workflow dispatch launched one lane but ended incomplete: ${taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async lane launched" : "unknown"}. Default Release 1 dispatch authority remains disabled.`,
+			? `FlowDesk dev-mode workflow dispatch captured one lane result for ${workflowId} (advisory: ${captureAdvisory?.outputKind ?? "unknown"}${captureAdvisory?.looksLikeRefusalOrError ? ", looks-like-refusal/error" : ""}). The coordinator judges substance. Default Release 1 dispatch authority remains disabled.`
+			: `FlowDesk dev-mode workflow dispatch launched one lane but captured no result: ${taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async lane launched" : "unknown"}. Default Release 1 dispatch authority remains disabled.`,
 		safeNextActions: safeNextActions(),
 		authority: authority({
 			developerModeAcknowledged: true,

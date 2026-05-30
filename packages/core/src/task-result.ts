@@ -21,6 +21,17 @@ export interface FlowDeskTaskResultV1 {
 	output_kind?: "final_answer" | "partial_findings" | "process_notes" | "tool_trace_only" | "empty";
 	usable_for_synthesis?: boolean;
 	missing_contract?: boolean;
+	/**
+	 * ADVISORY ONLY. How the capture layer decided this text was the result.
+	 * Never a success/failure gate — the coordinator judges substance.
+	 */
+	finalization_reason?: "terminal_marker" | "finish_reason" | "stable_idle" | "timeout_partial" | "nudge_exhausted_partial";
+	/**
+	 * ADVISORY ONLY. The captured text superficially looks like a refusal or an
+	 * error message. The coordinator must consult this when judging substance,
+	 * but capture never drops the result because of it.
+	 */
+	looks_like_refusal_or_error?: boolean;
 	created_at: string;
 	dispatch_authority_enabled: false;
 }
@@ -40,6 +51,7 @@ export interface FlowDeskTaskFailedV1 {
 		| "response_too_large"
 		| "unknown";
 	redacted_reason: string;
+	redacted_error_details?: string;
 	created_at: string;
 	dispatch_authority_enabled: false;
 }
@@ -116,6 +128,13 @@ const VALID_AGENT_TASK_INCONSISTENCY_ACTIONS = new Set([
 ]);
 const VALID_TASK_RESULT_COMPLETION_STATUS = new Set(["final", "partial"]);
 const VALID_TASK_RESULT_OUTPUT_KIND = new Set(["final_answer", "partial_findings", "process_notes", "tool_trace_only", "empty"]);
+const VALID_TASK_RESULT_FINALIZATION_REASON = new Set([
+	"terminal_marker",
+	"finish_reason",
+	"stable_idle",
+	"timeout_partial",
+	"nudge_exhausted_partial",
+]);
 
 // ---------------------------------------------------------------------------
 // Local helpers
@@ -194,6 +213,8 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 		"output_kind",
 		"usable_for_synthesis",
 		"missing_contract",
+		"finalization_reason",
+		"looks_like_refusal_or_error",
 		"created_at",
 		"dispatch_authority_enabled",
 	]);
@@ -220,6 +241,10 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 		errors.push("usable_for_synthesis must be a boolean");
 	if (record.missing_contract !== undefined && typeof record.missing_contract !== "boolean")
 		errors.push("missing_contract must be a boolean");
+	if (record.finalization_reason !== undefined && !VALID_TASK_RESULT_FINALIZATION_REASON.has(record.finalization_reason))
+		errors.push("finalization_reason is invalid");
+	if (record.looks_like_refusal_or_error !== undefined && typeof record.looks_like_refusal_or_error !== "boolean")
+		errors.push("looks_like_refusal_or_error must be a boolean");
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("task result cannot enable dispatch authority");
@@ -239,11 +264,12 @@ export function validateFlowDeskTaskFailedV1(value: unknown): ValidationResult {
 		"task_id",
 		"agent_ref",
 		"provider_qualified_model_id",
-		"failure_category",
-		"redacted_reason",
-		"created_at",
-		"dispatch_authority_enabled",
-	]);
+			"failure_category",
+			"redacted_reason",
+			"redacted_error_details",
+			"created_at",
+			"dispatch_authority_enabled",
+		]);
 	for (const key of Object.keys(record)) if (!allowed.has(key)) errors.push(`unknown property: ${key}`);
 	errors.push(...exactString(record.schema_version, "flowdesk.task_failed.v1", "schema_version").errors);
 	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
@@ -254,6 +280,8 @@ export function validateFlowDeskTaskFailedV1(value: unknown): ValidationResult {
 	if (!VALID_TASK_FAILURE_CATEGORIES.has(record.failure_category ?? ""))
 		errors.push("failure_category is invalid");
 	errors.push(...nonEmptyString(record.redacted_reason, "redacted_reason").errors);
+	if (record.redacted_error_details !== undefined)
+		errors.push(...nonEmptyString(record.redacted_error_details, "redacted_error_details").errors);
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("task failed record cannot enable dispatch authority");

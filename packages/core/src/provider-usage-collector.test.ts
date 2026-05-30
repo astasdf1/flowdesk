@@ -21,7 +21,7 @@ const observedAtMs = Date.parse(observedAt);
 
 function target(overrides: Partial<FlowDeskProviderUsageCollectorTargetV1> = {}): FlowDeskProviderUsageCollectorTargetV1 {
   const providerFamily = overrides.providerFamily ?? "claude";
-  const modelFamily = overrides.modelFamily ?? (providerFamily === "openai" ? "gpt-5" : providerFamily === "gemini" ? "gemini-pro" : "sonnet-4");
+  const modelFamily = overrides.modelFamily ?? (providerFamily === "openai" ? "gpt-5.5" : providerFamily === "gemini" ? "gemini-pro" : "sonnet-4");
   return {
     providerFamily,
     providerQualifiedModelId: `${providerFamily}/${modelFamily}`,
@@ -98,9 +98,10 @@ test("Codex/OpenAI collector produces provider-native usage authority evidence",
     return response({ rate_limit_status: { rate_limit: { primary_window: { remaining_percent: 80, reset_after_seconds: 3600 } } } });
   };
 
-  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5", modelFamily: "gpt-5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem, fetch: fetcher, execFile: () => { throw new Error("no keychain in tests"); }, now: () => observedAtMs });
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5.5", modelFamily: "gpt-5.5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem, fetch: fetcher, execFile: () => { throw new Error("no keychain in tests"); }, now: () => observedAtMs });
 
   assertCollectorEvidenceValid(result);
+  assert.equal(result.usageSnapshot.model_family, "gpt-5.5");
   assert.equal(result.usageSnapshot.reset_bucket, "openai-gpt-5h");
 });
 
@@ -110,7 +111,7 @@ test("Codex/OpenAI collector preserves known 0 percent remaining without dispatc
   });
   const fetcher: FlowDeskProviderUsageFetchV1 = async () => response({ rate_limit_status: { rate_limit: { primary_window: { remaining_percent: 0, reset_after_seconds: 3600 } } } });
 
-  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5", modelFamily: "gpt-5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem, fetch: fetcher, execFile: () => { throw new Error("no keychain in tests"); }, now: () => observedAtMs });
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5.5", modelFamily: "gpt-5.5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem, fetch: fetcher, execFile: () => { throw new Error("no keychain in tests"); }, now: () => observedAtMs });
 
   assert.equal(result.ok, false);
   assert.equal(validateUsageSnapshotV1(result.usageSnapshot).ok, true);
@@ -224,7 +225,7 @@ test("provider usage collector fails closed when acquisition or auth evidence is
   assert.equal(disabled.usageSnapshot.uncertainty_flags.includes("unknown"), true);
   assert.equal(disabled.usageAuthorityEvidence, undefined);
 
-  const missingAuth = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5", modelFamily: "gpt-5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem: memoryFilesystem({}), fetch: async () => response({}), now: () => observedAtMs });
+  const missingAuth = await collectManagedDispatchBetaUsageEvidenceV1(target({ providerFamily: "openai", providerQualifiedModelId: "openai/gpt-5.5", modelFamily: "gpt-5.5" }), { enabled: true, homeDir: "/home/test", providers: ["openai"] }, { filesystem: memoryFilesystem({}), fetch: async () => response({}), now: () => observedAtMs });
   assert.equal(missingAuth.ok, false);
   assert.equal(missingAuth.usageSnapshot.dispatchability, "non_dispatchable");
   assert.equal(missingAuth.providerHealthSnapshot.failure_class, "auth_missing");

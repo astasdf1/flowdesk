@@ -318,31 +318,32 @@ async function collectClaudeUsage(acquisition: FlowDeskProviderUsageAcquisitionC
 }
 
 async function collectCodexUsage(acquisition: FlowDeskProviderUsageAcquisitionConfigV1, options: FlowDeskProviderUsageCollectorOptionsV1, observedAt: number): Promise<ProviderCollection> {
-  if (acquisition.codexLiveUsage === false) return refusedCollection("openai", "gpt", "codex live usage is disabled");
+  const exactModelFamily = "gpt-5.5";
+  if (acquisition.codexLiveUsage === false) return refusedCollection("openai", exactModelFamily, "codex live usage is disabled");
   const fetcher = options.fetch ?? (globalThis as { fetch?: FlowDeskProviderUsageFetchV1 }).fetch;
-  if (!fetcher) return refusedCollection("openai", "gpt", "fetch is unavailable");
+  if (!fetcher) return refusedCollection("openai", exactModelFamily, "fetch is unavailable");
   const homeDir = normalizeHomeDir(acquisition.homeDir, options.env);
   const filesystem = options.filesystem ?? defaultFilesystem;
   const configDirs = codexConfigDirs(homeDir, options.env);
   const credentials = readCodexCredentials(configDirs, filesystem, options);
-  if (!credentials) return refusedCollection("openai", "gpt", "codex auth evidence is missing");
+  if (!credentials) return refusedCollection("openai", exactModelFamily, "codex auth evidence is missing");
   const tokens = isRecord(credentials.auth.tokens) ? credentials.auth.tokens : undefined;
   const accessToken = tokens ? stringField(tokens, "access_token") : "";
-  if (!accessToken) return refusedCollection("openai", "gpt", "codex access token is missing");
+  if (!accessToken) return refusedCollection("openai", exactModelFamily, "codex access token is missing");
   const accountId = tokens ? firstNonEmpty(stringField(tokens, "account_id"), stringField(credentials.auth, "account_id")) : stringField(credentials.auth, "account_id");
   try {
     const response = await fetcher(codexUsageUrl(resolveCodexBaseUrl(credentials.configDir, filesystem)), {
       method: "GET",
       headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", ...(accountId ? { "ChatGPT-Account-Id": accountId } : {}), "User-Agent": "codex-cli" }
     });
-    if (!response.ok) return refusedCollection("openai", "gpt", "codex usage endpoint refused");
+    if (!response.ok) return refusedCollection("openai", exactModelFamily, "codex usage endpoint refused");
     const buckets = codexLiveBuckets(JSON.parse(await response.text()), observedAt);
     const primaryBucket = firstDispatchableBucket(buckets) ?? buckets[0] ?? bucket("openai-gpt-5h", "%", null, undefined, "unknown");
     const additionalBuckets = buckets.filter((b) => b !== primaryBucket);
-    const collection = availableCollection("openai", "gpt", "codex-live", firstNonEmpty(accountId, "codex-account"), primaryBucket);
+    const collection = availableCollection("openai", exactModelFamily, "codex-live", firstNonEmpty(accountId, "codex-account"), primaryBucket);
     return { ...collection, additionalBuckets };
   } catch {
-    return refusedCollection("openai", "gpt", "codex usage collection failed");
+    return refusedCollection("openai", exactModelFamily, "codex usage collection failed");
   }
 }
 

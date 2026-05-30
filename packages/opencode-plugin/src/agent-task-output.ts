@@ -16,6 +16,48 @@ export interface FlowDeskAgentTaskOutputObservationV1 {
 	messageCount: number;
 	outputKind: FlowDeskAgentTaskOutputKindV1;
 	usableForSynthesis: boolean;
+	/**
+	 * ADVISORY ONLY. The captured text superficially resembles a refusal or an
+	 * error message. This is a hint for the coordinator's substance judgement; it
+	 * NEVER causes the capture layer to drop or fail the result.
+	 */
+	looksLikeRefusalOrError: boolean;
+}
+
+/**
+ * ADVISORY heuristic for the coordinator: does this text look like a refusal or
+ * a bare error message rather than a substantive answer? Capture never gates on
+ * this; the main coordinator uses it to decide whether to re-select and retry.
+ */
+export function flowDeskTextLooksLikeRefusalOrErrorV1(text: string | undefined): boolean {
+	const normalized = text?.trim().toLowerCase() ?? "";
+	if (normalized.length === 0) return false;
+	const patterns = [
+		"i cannot",
+		"i can't",
+		"i can not",
+		"i'm unable",
+		"i am unable",
+		"i'm sorry, but i can",
+		"i am sorry, but i can",
+		"i won't be able",
+		"i will not be able",
+		"as an ai",
+		"i'm not able to",
+		"i am not able to",
+		"error:",
+		"exception:",
+		"traceback (most recent call last)",
+		"rate limit",
+		"rate-limited",
+		"request failed",
+		"failed to",
+		"unable to complete",
+	];
+	// Only treat as refusal/error when the text is short-ish and dominated by the
+	// pattern, to avoid false positives on long answers that merely mention them.
+	const head = normalized.slice(0, 240);
+	return patterns.some(pattern => head.includes(pattern));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -201,6 +243,10 @@ export function observeFlowDeskAgentTaskOutputV1(response: unknown): FlowDeskAge
 		reasoningPartCount,
 		messageCount: items.length,
 		outputKind,
+		// Capture-side usability = "there is some text to keep". This is advisory
+		// transport metadata, NOT a substance/quality judgement (that is the
+		// coordinator's job). Only genuinely empty/tool-only captures are unusable.
 		usableForSynthesis: outputKind !== "empty" && outputKind !== "tool_trace_only",
+		looksLikeRefusalOrError: flowDeskTextLooksLikeRefusalOrErrorV1(latestText),
 	};
 }

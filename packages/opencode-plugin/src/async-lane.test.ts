@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION } from "./agent-task-runner.js";
+import { flowDeskTextLooksLikeRefusalOrErrorV1 } from "./agent-task-output.js";
 import { monitorChildSessionsV1 } from "./stall-recovery.js";
 import { applyFlowDeskSessionEvidenceWriteIntentsV1, prepareFlowDeskSessionEvidenceWriteIntentV1, reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
@@ -228,6 +229,49 @@ test("monitorChildSessions preserves marker-like task_result text", async () => 
 		assert.equal(record.result_text, "I saw the prompt and packages/core/src/example.ts plus /Users/example/project details.");
 		assert.equal(record.result_text_truncated, false);
 		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("refusal/error advisory detector flags refusals but not normal answers", () => {
+	assert.equal(flowDeskTextLooksLikeRefusalOrErrorV1("I cannot help with that request."), true);
+	assert.equal(flowDeskTextLooksLikeRefusalOrErrorV1("Error: rate limit exceeded"), true);
+	assert.equal(flowDeskTextLooksLikeRefusalOrErrorV1("Here is the analysis: the function looks correct."), false);
+	assert.equal(flowDeskTextLooksLikeRefusalOrErrorV1("   "), false);
+	assert.equal(flowDeskTextLooksLikeRefusalOrErrorV1(undefined), false);
+});
+
+test("capture records advisory finalization_reason and refusal flag without dropping the result", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-capture-advisory-"));
+	try {
+		const client = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [
+				{ type: "text", text: "I cannot complete this task as specified." },
+				{ type: "step-finish", reason: "stop" },
+			] }]),
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-capture-advisory",
+			taskId: "task-capture-advisory",
+			laneId: "lane-capture-advisory",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		// Capture never drops a refusal-looking answer: it is still task_completed.
+		assert.equal(result.status, "task_completed");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-capture-advisory" });
+		const record = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown>;
+		assert.ok(record);
+		assert.equal(record.missing_contract, false);
+		assert.equal(record.finalization_reason, "terminal_marker");
+		assert.equal(record.looks_like_refusal_or_error, true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

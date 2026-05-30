@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	validateFlowDeskTaskAgentAssignmentV1,
 	validateFlowDeskTaskModelSelectionV1,
@@ -33,6 +35,13 @@ function blocked(reason: string, workflowId?: string): FlowDeskWorkflowAssignToo
 	return { status: "blocked_before_assignments", workflowId, redactedBlockReason: reason, summaryForUser: `Blocked: ${reason}`, safeNextActions: ["/flowdesk-status", "/flowdesk-doctor"], authority: SAFE_AUTHORITY };
 }
 
+function loadWorkingModelIds(rootDir: string): string[] {
+	const snapshotPath = join(rootDir, "model-availability/working-models.json");
+	const raw = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
+	const ids = raw.available_model_ids;
+	return Array.isArray(ids) ? ids.filter((value): value is string => typeof value === "string" && value.includes("/")).filter((value, index, array) => array.indexOf(value) === index) : [];
+}
+
 export function executeFlowDeskWorkflowAssignToolV1(input: {
 	workflowId: string;
 	rootDir: string;
@@ -53,6 +62,13 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 
 	const rows = input.sidebarCacheRows ?? [];
 	if (rows.length === 0) return blocked("no provider usage data available – run flowdesk_provider_usage_live first", input.workflowId);
+	let workingModelIds: string[];
+	try {
+		workingModelIds = loadWorkingModelIds(input.rootDir);
+	} catch {
+		return blocked("working-model cache missing – run models refresh first", input.workflowId);
+	}
+	if (workingModelIds.length === 0) return blocked("working-model cache empty – run models refresh first", input.workflowId);
 
 	const createdAt = new Date().toISOString();
 	const evidenceRefs: string[] = [];
@@ -64,7 +80,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		if (!taskId) continue;
 
 		const usageMap = buildUsageMapFromProviders(rows);
-		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap);
+		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds });
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		const assignmentId = `assignment-${randomBytes(4).toString("hex")}`;

@@ -106,8 +106,19 @@ test("model selection prefers distinct models for each task independently", () =
 		{ providerFamily: "gemini", remainingPercent: 80, alertLevel: "ok" },
 	]);
 	const roles = ["security", "implementation", "documentation"] as const;
-	const selections = roles.map(role => selectModelForTask(role, usageMap));
-	assert.ok(selections.every(s => s !== undefined), "all roles should get a selection");
+  const selections = roles.map(role => selectModelForTask(role, usageMap));
+  assert.ok(selections.every(s => s !== undefined), "all roles should get a selection");
+});
+
+test("model selection respects allowed model ids from working cache", () => {
+	const usageMap = buildUsageMapFromProviders([
+		{ providerFamily: "claude", remainingPercent: 80, alertLevel: "ok" },
+		{ providerFamily: "openai", remainingPercent: 80, alertLevel: "ok" },
+		{ providerFamily: "gemini", remainingPercent: 80, alertLevel: "ok" },
+	]);
+	const result = selectModelForTask("architecture", usageMap, { availableModelIds: ["openai/gpt-5.5"] });
+	assert.ok(result);
+	assert.equal(result?.candidate.providerQualifiedModelId, "openai/gpt-5.5");
 });
 
 test("Gemini model selection uses pro, flash, and flash-lite usage buckets separately", () => {

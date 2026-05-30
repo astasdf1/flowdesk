@@ -3199,6 +3199,56 @@ function parseProviderQualifiedModelId(
 	return { providerID, modelID };
 }
 
+function workingModelCacheAllowsDispatch(input: {
+	durableStateRootDir?: string;
+	providerQualifiedModelId: string;
+}): { ok: true } | { ok: false; reason: string } {
+	if (input.durableStateRootDir === undefined || input.durableStateRootDir.trim().length === 0) {
+		return { ok: true };
+	}
+
+	try {
+		const root = resolve(input.durableStateRootDir);
+		const snapshotPath = resolve(root, "model-availability", "working-models.json");
+		if (snapshotPath !== root && !snapshotPath.startsWith(`${root}${sep}`)) {
+			return {
+				ok: false,
+				reason:
+					"Working-model evidence path validation failed; refresh working-model evidence before managed dispatch.",
+			};
+		}
+
+		if (!existsSync(snapshotPath)) {
+			return {
+				ok: false,
+				reason:
+					"Working-model snapshot is missing; refresh working-model evidence before managed dispatch.",
+			};
+		}
+
+		const raw = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
+		const availableModelIds = Array.isArray(raw.available_model_ids)
+			? raw.available_model_ids.filter((value): value is string => typeof value === "string")
+			: [];
+
+		if (!availableModelIds.includes(input.providerQualifiedModelId)) {
+			return {
+				ok: false,
+				reason:
+					"Requested provider-qualified model is not present in cached working-model snapshot; refresh working-model evidence before managed dispatch.",
+			};
+		}
+
+		return { ok: true };
+	} catch {
+		return {
+			ok: false,
+			reason:
+				"Working-model snapshot is missing or unreadable; refresh working-model evidence before managed dispatch.",
+		};
+	}
+}
+
 function opencodeRuntimeProviderIDForFlowDeskProviderFamily(
 	providerFamily: string,
 ): string | undefined {
@@ -4260,6 +4310,14 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			guardDecision,
 			"Guard-approved provider family is not mapped to an OpenCode runtime provider.",
 		);
+	}
+
+	const workingModelGate = workingModelCacheAllowsDispatch({
+		durableStateRootDir: input.durableStateRootDir,
+		providerQualifiedModelId: approvedProviderQualifiedModelId,
+	});
+	if (!workingModelGate.ok) {
+		return blocked(input.boundaryInput, guardDecision, workingModelGate.reason);
 	}
 
 	const text = promptTextFrom(input.request);

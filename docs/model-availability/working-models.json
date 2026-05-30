@@ -1,0 +1,305 @@
+{
+  "schema_version": "flowdesk.working_model_snapshot.v1",
+  "observed_at": "2026-05-30T21:04:42.950Z",
+  "source_snapshot": "docs/model-availability/opencode-model-availability.json",
+  "available_model_ids": [
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-haiku-4-5-20251001",
+    "anthropic/claude-opus-4-0",
+    "anthropic/claude-opus-4-1",
+    "anthropic/claude-opus-4-1-20250805",
+    "anthropic/claude-opus-4-20250514",
+    "anthropic/claude-opus-4-5",
+    "anthropic/claude-opus-4-5-20251101",
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-opus-4-7",
+    "anthropic/claude-opus-4-8",
+    "anthropic/claude-sonnet-4-0",
+    "anthropic/claude-sonnet-4-20250514",
+    "anthropic/claude-sonnet-4-5",
+    "anthropic/claude-sonnet-4-5-20250929",
+    "anthropic/claude-sonnet-4-6",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
+    "google/gemini-2.5-pro",
+    "google/gemini-3-flash-preview",
+    "google/gemini-3-pro-preview",
+    "google/gemini-3.1-flash-lite",
+    "google/gemini-3.1-flash-lite-preview",
+    "google/gemini-3.1-pro-preview",
+    "openai/gpt-5.2",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.3-codex-spark",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-fast",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.4-mini-fast",
+    "openai/gpt-5.5",
+    "openai/gpt-5.5-fast",
+    "opencode/big-pickle",
+    "opencode/deepseek-v4-flash-free",
+    "opencode/mimo-v2.5-free",
+    "opencode/nemotron-3-super-free"
+  ],
+  "available_model_details": [
+    {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "provider_family": "anthropic",
+      "duration_ms": 2966,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-haiku-4-5-20251001",
+      "provider_family": "anthropic",
+      "duration_ms": 3287,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-0",
+      "provider_family": "anthropic",
+      "duration_ms": 8471,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-1",
+      "provider_family": "anthropic",
+      "duration_ms": 10160,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-1-20250805",
+      "provider_family": "anthropic",
+      "duration_ms": 10817,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-20250514",
+      "provider_family": "anthropic",
+      "duration_ms": 4828,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-5",
+      "provider_family": "anthropic",
+      "duration_ms": 5059,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-5-20251101",
+      "provider_family": "anthropic",
+      "duration_ms": 3238,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-6",
+      "provider_family": "anthropic",
+      "duration_ms": 4353,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-7",
+      "provider_family": "anthropic",
+      "duration_ms": 3361,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-opus-4-8",
+      "provider_family": "anthropic",
+      "duration_ms": 3469,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-sonnet-4-0",
+      "provider_family": "anthropic",
+      "duration_ms": 3127,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-sonnet-4-20250514",
+      "provider_family": "anthropic",
+      "duration_ms": 3170,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-sonnet-4-5",
+      "provider_family": "anthropic",
+      "duration_ms": 4068,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-sonnet-4-5-20250929",
+      "provider_family": "anthropic",
+      "duration_ms": 3884,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "anthropic/claude-sonnet-4-6",
+      "provider_family": "anthropic",
+      "duration_ms": 4353,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-2.5-flash",
+      "provider_family": "google",
+      "duration_ms": 4028,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-2.5-flash-lite",
+      "provider_family": "google",
+      "duration_ms": 3629,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-2.5-pro",
+      "provider_family": "google",
+      "duration_ms": 4833,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-3-flash-preview",
+      "provider_family": "google",
+      "duration_ms": 13480,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-3-pro-preview",
+      "provider_family": "google",
+      "duration_ms": 5940,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-3.1-flash-lite",
+      "provider_family": "google",
+      "duration_ms": 4720,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-3.1-flash-lite-preview",
+      "provider_family": "google",
+      "duration_ms": 4027,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "google/gemini-3.1-pro-preview",
+      "provider_family": "google",
+      "duration_ms": 6103,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.2",
+      "provider_family": "openai",
+      "duration_ms": 3325,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.3-codex",
+      "provider_family": "openai",
+      "duration_ms": 4101,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.3-codex-spark",
+      "provider_family": "openai",
+      "duration_ms": 3035,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.4",
+      "provider_family": "openai",
+      "duration_ms": 4453,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.4-fast",
+      "provider_family": "openai",
+      "duration_ms": 4105,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.4-mini",
+      "provider_family": "openai",
+      "duration_ms": 4269,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.4-mini-fast",
+      "provider_family": "openai",
+      "duration_ms": 4937,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.5",
+      "provider_family": "openai",
+      "duration_ms": 3724,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "openai/gpt-5.5-fast",
+      "provider_family": "openai",
+      "duration_ms": 6413,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "opencode/big-pickle",
+      "provider_family": "opencode",
+      "duration_ms": 4869,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "opencode/deepseek-v4-flash-free",
+      "provider_family": "opencode",
+      "duration_ms": 4373,
+      "final_text": "OK.",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "opencode/mimo-v2.5-free",
+      "provider_family": "opencode",
+      "duration_ms": 4516,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    },
+    {
+      "model_id": "opencode/nemotron-3-super-free",
+      "provider_family": "opencode",
+      "duration_ms": 10773,
+      "final_text": "OK",
+      "observed_at": "2026-05-30T21:04:42.950Z"
+    }
+  ]
+}

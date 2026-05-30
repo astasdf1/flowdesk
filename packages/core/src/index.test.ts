@@ -454,6 +454,7 @@ test("Guard dispatch boundary rejects unqualified models and missing authority e
   };
   assert.equal(validateGuardApprovedDispatchV1(dispatch).ok, false);
   assert.equal(validateGuardApprovedDispatchV1({ ...dispatch, provider_qualified_model_id: "claude/sonnet-4" }).ok, true);
+  assert.equal(validateGuardApprovedDispatchV1({ ...dispatch, provider_qualified_model_id: "claude/latest" }).ok, false);
   assert.equal(validateGuardApprovedDispatchV1({ ...dispatch, provider_family: "unknown", provider_qualified_model_id: "claude/sonnet-4" }).ok, false);
   assert.equal(validateGuardApprovedDispatchV1({ ...dispatch, provider_qualified_model_id: "claude/sonnet-4", dispatch_authorized: true }).ok, false);
   assert.equal(validateGuardApprovedDispatchV1({ ...dispatch, provider_qualified_model_id: "claude/sonnet-4", guard_bypassed: true }).ok, false);

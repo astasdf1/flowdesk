@@ -123,6 +123,34 @@ test("task result validator accepts optional output quality metadata", () => {
 	assert.equal(result.ok, true, result.errors.join("; "));
 });
 
+test("task result validator accepts advisory finalization_reason and looks_like_refusal_or_error", () => {
+	for (const finalization_reason of [
+		"terminal_marker",
+		"finish_reason",
+		"stable_idle",
+		"timeout_partial",
+		"nudge_exhausted_partial",
+	]) {
+		const result = validateFlowDeskTaskResultV1(
+			taskResult({ finalization_reason, looks_like_refusal_or_error: true }),
+		);
+		assert.equal(result.ok, true, result.errors.join("; "));
+	}
+});
+
+test("task result validator rejects invalid finalization_reason and non-boolean refusal flag", () => {
+	const badReason = validateFlowDeskTaskResultV1(
+		taskResult({ finalization_reason: "made_up_reason" }),
+	);
+	assert.equal(badReason.ok, false);
+	assert.ok(badReason.errors.some((e) => /finalization_reason/.test(e)));
+	const badFlag = validateFlowDeskTaskResultV1(
+		taskResult({ looks_like_refusal_or_error: "yes" }),
+	);
+	assert.equal(badFlag.ok, false);
+	assert.ok(badFlag.errors.some((e) => /looks_like_refusal_or_error/.test(e)));
+});
+
 test("task result validator rejects dispatch_authority_enabled: true", () => {
 	const result = validateFlowDeskTaskResultV1(
 		taskResult({ dispatch_authority_enabled: true }),
@@ -178,6 +206,13 @@ test("task failed validator accepts valid record", () => {
 	const result = validateFlowDeskTaskFailedV1(taskFailed());
 	assert.equal(result.ok, true, result.errors.join("; "));
 	assert.deepEqual(result.errors, []);
+});
+
+test("task failed validator accepts redacted error details", () => {
+	const result = validateFlowDeskTaskFailedV1(
+		taskFailed({ redacted_error_details: "{\"event_type\":\"session.error\",\"properties\":{\"message\":\"boom\",\"code\":\"E_CHILD_SESSION\"}}" }),
+	);
+	assert.equal(result.ok, true, result.errors.join("; "));
 });
 
 test("task failed validator accepts all failure categories", () => {

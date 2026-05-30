@@ -68,6 +68,26 @@ export type FlowDeskAgentTaskResultV1 =
 /** Schema version for async child session tracking evidence */
 export const AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION = "flowdesk.agent_task_child_session.v1" as const;
 
+/**
+ * Result of the permissive capture layer. The capture layer's ONLY job is to
+ * reliably surface whatever assistant text the child session produced plus
+ * advisory transport metadata. It never judges substance/quality — the main
+ * coordinator reads this and decides success/failure/retry.
+ */
+type FlowDeskAgentTaskCaptureResultV1 = {
+	text: string;
+	completionStatus: FlowDeskAgentTaskCompletionStatusV1;
+	outputKind: string;
+	usableForSynthesis: boolean;
+	finalizationReason: "terminal_marker" | "stable_idle" | "nudge_exhausted_partial";
+	looksLikeRefusalOrError: boolean;
+};
+
+/** Stable-idle finalization thresholds for non-terminal captured text. */
+const STABLE_IDLE_MIN_CYCLES = 3;
+const STABLE_IDLE_MIN_MS = 12_000;
+const STABLE_IDLE_MIN_LEN = 16;
+
 export function sanitizeFlowDeskTaskResultTextV1(text: string): { text: string; changed: boolean; truncated: boolean } {
 	return {
 		text: text.length > TASK_RESULT_MAX_TEXT ? text.slice(0, TASK_RESULT_MAX_TEXT) : text,
@@ -154,7 +174,7 @@ async function extractAssistantTextFromResponse(
 		messagesTimeoutMs?: number;      // per-call cap for session.messages (default 3000ms)
 		heartbeatFn?: (elapsedMs: number) => void;
 	},
-): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | undefined> {
+): Promise<FlowDeskAgentTaskCaptureResultV1 | undefined> {
 	const messages = client.session.messages;
 	if (messages === undefined) return undefined;
 
@@ -221,6 +241,12 @@ async function extractAssistantTextFromResponse(
 	let lastHeartbeatMs = startMs;
 	let nudgeCount = 0;
 	let latestCandidate: ReturnType<typeof observeFlowDeskAgentTaskOutputV1> | undefined;
+	// Stable-idle tracking: capture non-terminal text once it has settled, so a
+	// good answer is not lost just because the SDK shape never surfaced an
+	// explicit terminal/finish marker.
+	let stableText: string | undefined;
+	let stableCount = 0;
+	let firstStableMs = 0;
 
 	try {
 		while (true) {
@@ -246,9 +272,36 @@ async function extractAssistantTextFromResponse(
 			}
 
 			const observed = observe(response);
-			if (observed?.latestText !== undefined && observed.latestText.trim().length > 0) latestCandidate = observed;
+			if (observed?.latestText !== undefined && observed.latestText.trim().length > 0) {
+				latestCandidate = observed;
+				// Track text stability for idle finalization. Active tool runs reset
+				// stability so we never finalize mid tool-call.
+				if (observed.hasRunningTool) {
+					stableText = undefined;
+					stableCount = 0;
+				} else if (observed.latestText === stableText) {
+					stableCount++;
+				} else {
+					stableText = observed.latestText;
+					stableCount = 1;
+					firstStableMs = nowMs;
+				}
+			}
 			if (observed?.terminalObserved === true && observed.latestText !== undefined && observed.latestText.trim().length > 0) {
-				return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis };
+				return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, finalizationReason: "terminal_marker", looksLikeRefusalOrError: observed.looksLikeRefusalOrError };
+			}
+			// Stable-idle: non-terminal text that has been unchanged across several
+			// poll cycles and a minimum interval is treated as captured (not a
+			// semantic success claim — completion_status stays "final" but the
+			// finalization_reason records that this was idle-based capture).
+			if (
+				latestCandidate?.latestText !== undefined &&
+				stableText !== undefined &&
+				stableText.trim().length >= STABLE_IDLE_MIN_LEN &&
+				stableCount >= STABLE_IDLE_MIN_CYCLES &&
+				nowMs - firstStableMs >= STABLE_IDLE_MIN_MS
+			) {
+				return { text: latestCandidate.latestText, completionStatus: "final", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "stable_idle", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError };
 			}
 
 			const silenceMs = nowMs - lastActivityMs;
@@ -270,7 +323,7 @@ async function extractAssistantTextFromResponse(
 			} else {
 				// Exhausted all nudges. Preserve usable candidate text as partial output.
 				if (latestCandidate?.latestText !== undefined && latestCandidate.latestText.trim().length > 0) {
-					return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis };
+					return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "nudge_exhausted_partial", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError };
 				}
 				return undefined;
 			}
@@ -706,7 +759,7 @@ export async function executeFlowDeskAgentTaskV1(
 		return { status: "task_launched", laneId: input.laneId, childSessionId: resolvedChildId };
 	}
 
-	let resultObservation: { text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean } | undefined;
+	let resultObservation: FlowDeskAgentTaskCaptureResultV1 | undefined;
 	if (childSessionId !== undefined) {
 		const runtimeModel = launchResult.status === "lane_launch_started" && typeof launchResult.model === "string"
 			? launchResult.model : undefined;
@@ -850,10 +903,17 @@ export async function executeFlowDeskAgentTaskV1(
 		completion_status: resultObservation?.completionStatus ?? "final",
 		output_kind: resultObservation?.outputKind as FlowDeskTaskResultV1["output_kind"] ?? "final_answer",
 		usable_for_synthesis: resultObservation?.usableForSynthesis ?? true,
-		missing_contract:
-			input.outputContract === "final_assistant_text" &&
-			(resultObservation?.completionStatus !== "final" ||
-				["empty", "process_notes", "tool_trace_only"].includes(String(resultObservation?.outputKind ?? ""))),
+		// Capture/judgement separation: text was captured, so this is NOT a
+		// contract failure. output_kind/completion_status/looks_like_refusal_or_error
+		// are advisory inputs for the coordinator's substance judgement, never a
+		// capture-side drop. missing_contract is only ever true when an explicit
+		// contract was requested AND no text was captured (that path returns
+		// task_failed above, so here it is always false).
+		missing_contract: false,
+		...(resultObservation?.finalizationReason === undefined
+			? {}
+			: { finalization_reason: resultObservation.finalizationReason }),
+		looks_like_refusal_or_error: resultObservation?.looksLikeRefusalOrError ?? false,
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	};

@@ -2515,7 +2515,7 @@ test("workflow dispatch tool completes one fake SDK task and preserves default a
 	}
 });
 
-test("workflow dispatch tool terminalizes process-only output as contract-incomplete task_result", async () => {
+test("workflow dispatch tool captures process-only output as a result for coordinator judgement", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-workflow-dispatch-process-only-"));
 	try {
 		const hooks = await flowdeskOpenCodeServerPlugin.server(
@@ -2551,8 +2551,14 @@ test("workflow dispatch tool terminalizes process-only output as contract-incomp
 				),
 			),
 		) as Record<string, unknown>;
-		assert.equal(result.status, "workflow_dispatch_incomplete");
-		assert.match(String(result.redactedBlockReason), /output contract/);
+		// Capture/judgement separation: the lane captured text, so the dispatch is
+		// reported as completed (captured) with advisory metadata. It is NOT marked
+		// incomplete for "format"; the coordinator judges substance from the
+		// advisory output_kind / looks_like_refusal_or_error fields.
+		assert.equal(result.status, "workflow_dispatch_completed");
+		const advisory = result.captureAdvisory as Record<string, unknown> | undefined;
+		assert.ok(advisory, "captureAdvisory should be surfaced for coordinator judgement");
+		assert.equal(advisory.outputKind, "process_notes");
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-dispatch-process-only-1", rootDir: root });
 		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
 		assert.equal(typeof result.laneId, "string");
@@ -2563,7 +2569,7 @@ test("workflow dispatch tool terminalizes process-only output as contract-incomp
 					entry.evidenceClass === "task_result" &&
 					entry.record.lane_id === result.laneId &&
 					entry.record.task_id === result.taskId &&
-					entry.record.missing_contract === true &&
+					entry.record.missing_contract === false &&
 					entry.record.output_kind === "process_notes" &&
 					entry.record.dispatch_authority_enabled === false,
 			),
@@ -7280,10 +7286,19 @@ test("event hook maps child session errors to terminal task failure", async () =
 			},
 		)) as ChatMessageHooks;
 		assert.ok(hooks.event);
-		await hooks.event({ event: { type: "session.error", properties: { sessionID: "child-event-hook-error" } } });
+		await hooks.event({ event: { type: "session.error", properties: { sessionID: "child-event-hook-error", error: { message: "boom from child session", code: "E_CHILD_SESSION" } } } });
 
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
-		assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "task_failed" && entry.record.lane_id === "lane-event-hook-error"));
+		assert.ok(reloaded.entries.some((entry) =>
+			entry.evidenceClass === "task_failed" &&
+			entry.record.lane_id === "lane-event-hook-error" &&
+			typeof entry.record.redacted_reason === "string" &&
+			entry.record.redacted_reason.includes("boom from child session") &&
+			entry.record.redacted_reason.includes("E_CHILD_SESSION") &&
+			typeof entry.record.redacted_error_details === "string" &&
+			entry.record.redacted_error_details.includes("boom from child session") &&
+			entry.record.redacted_error_details.includes("E_CHILD_SESSION"),
+		));
 		assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "lane_lifecycle" && entry.record.lane_id === "lane-event-hook-error" && entry.record.state === "invocation_failed"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });

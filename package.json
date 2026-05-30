@@ -10,7 +10,10 @@
   "scripts": {
     "build": "tsc -b packages/core packages/opencode-plugin",
     "typecheck": "tsc -b packages/core packages/opencode-plugin --pretty false",
-    "test": "npm run build && node --test packages/*/dist/**/*.test.js"
+    "test": "npm run build && node --test packages/*/dist/**/*.test.js",
+    "models:list": "opencode models",
+    "models:refresh": "node scripts/refresh-opencode-model-availability.mjs",
+    "models:working": "node scripts/export-working-models.mjs"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.15.6",

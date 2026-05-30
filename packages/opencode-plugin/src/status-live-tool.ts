@@ -1071,6 +1071,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			workflowId,
 			rootDir,
 			now: new Date(observedAt),
+			refreshCompletionUiCaches: false,
 		});
 		let reload = reloadFlowDeskSessionEvidenceV1({
 			workflowId,

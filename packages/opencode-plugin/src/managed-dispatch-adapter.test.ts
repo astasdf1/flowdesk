@@ -120,6 +120,14 @@ async function withTempRoot<T>(
 	}
 }
 
+function writeWorkingModels(rootDir: string, ids = ["claude/sonnet-4"]): void {
+	mkdirSync(join(rootDir, "model-availability"), { recursive: true });
+	writeFileSync(
+		join(rootDir, "model-availability", "working-models.json"),
+		JSON.stringify({ available_model_ids: ids }),
+	);
+}
+
 function dispatchIdempotencySnapshots(
 	rootDir: string,
 ): FlowDeskDispatchIdempotencySnapshotV1[] {
@@ -2716,6 +2724,28 @@ test("managed dispatch beta adapter maps FlowDesk Claude binding to OpenCode Ant
 	);
 });
 
+test("managed dispatch beta adapter requires working-model evidence when durable root is available", async () => {
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir, ["claude/sonnet-4"]);
+		const { client, promptCalls, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
+
+		assert.equal(result.status, "dispatch_accepted");
+		assert.equal(promptCalls.length, 0);
+		assert.equal(promptAsyncCalls.length, 1);
+		assert.equal(reservation.reserveCalls.length, 1);
+	});
+});
+
 test("managed dispatch beta adapter can call prompt once for completed dispatch without noReply or tools", async () => {
 	const { client, promptCalls, promptAsyncCalls } = fakeClient();
 	const reservation = fakeReservationStore();
@@ -2766,6 +2796,24 @@ test("managed dispatch beta adapter requires manifest and durable evidence befor
 	);
 	assert.equal(promptCalls.length, 0);
 	assert.equal(promptAsyncCalls.length, 0);
+
+	await withTempRoot(async (rootDir) => {
+		const blockedClient = fakeClient();
+		const blocked = await dispatchManagedDispatchBetaPromptV1({
+			client: blockedClient.client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: fakeReservationStore().store,
+			durableStateRootDir: rootDir,
+		});
+
+		assert.equal(blocked.status, "blocked_before_dispatch");
+		assert.match(blocked.redactedBlockReason, /Working-model snapshot is missing/);
+		assert.equal(blockedClient.promptCalls.length, 0);
+		assert.equal(blockedClient.promptAsyncCalls.length, 0);
+	});
 
 	const badManifest = await dispatchManagedDispatchBetaPromptV1({
 		client,
@@ -2830,6 +2878,7 @@ test("durable reservation store materializes reserved and completed evidence aro
 
 test("managed dispatch beta can launch an actual runtime lane and persist lifecycle evidence", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const { client, createCalls, promptAsyncCalls } = fakeRuntimeLaneClient();
 		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
 			rootDir,
@@ -3476,6 +3525,7 @@ test("default managed-dispatch authorization gate blocks registration when forge
 
 test("managed dispatch beta server can build durable reservation store from state root", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const { client, promptAsyncCalls } = fakeClient();
 		const hooks = await flowdeskOpenCodeServerPlugin.server(
 			{ client } as never,
@@ -3520,6 +3570,7 @@ test("managed dispatch beta server can build durable reservation store from stat
 
 test("managed dispatch beta server reloads durable evidence from state root", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const { client, promptAsyncCalls } = fakeClient();
 		const durableEvidence = reloadedEvidence();
 		const intents = durableEvidence.entries.map((entry) => {
