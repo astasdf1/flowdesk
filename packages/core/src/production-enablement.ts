@@ -44,6 +44,13 @@ export const FLOWDESK_PRODUCTION_ENABLEMENT_BLOCKER_LABELS = [
 	"external_auth_provider_policy_result_missing",
 	"external_auth_provider_policy_invalid",
 	"external_auth_provider_policy_failed",
+	"provider_health_snapshot_missing",
+	"provider_health_snapshot_not_fresh",
+	"provider_health_snapshot_not_dispatchable",
+	"production_approval_source_missing",
+	"dispatch_idempotency_missing",
+	"pre_dispatch_audit_mismatched",
+	"dispatch_idempotency_reservation_missing",
 	"approval_missing",
 	"approval_denied",
 	"approval_mismatched",
@@ -100,6 +107,8 @@ export interface FlowDeskProductionEnablementInputV1 {
 	laneConformanceRefs?: string[];
 	allowIncompleteConformance?: boolean;
 	approvalDecision?: FlowDeskProductionApprovalDecisionV1;
+	attemptId?: string;
+	idempotencyKey?: string;
 }
 
 export interface FlowDeskProductionEnablementEvaluationV1
@@ -238,6 +247,15 @@ const REQUIRED_SESSION_EVIDENCE_CLASSES: FlowDeskSessionEvidenceClass[] = [
 	"telemetry_correlation",
 ];
 
+const REQUIRED_PRECALL_EVIDENCE_CLASSES: Array<[
+	FlowDeskSessionEvidenceClass,
+	FlowDeskProductionEnablementBlockerLabelV1,
+]> = [
+	["pre_dispatch_audit", "pre_dispatch_audit_missing"],
+	["production_approval_source", "production_approval_source_missing"],
+	["dispatch_idempotency", "dispatch_idempotency_missing"],
+];
+
 function unique<T>(items: readonly T[]): T[] {
 	return [...new Set(items)];
 }
@@ -358,9 +376,19 @@ function evidenceRefsFromReload(
 		const refKey =
 			entry.evidenceClass === "usage_authority"
 				? "authority_ref"
+				: entry.evidenceClass === "provider_usage_snapshot"
+					? "snapshot_id"
 				: entry.evidenceClass === "runtime_echo"
 					? "runtime_echo_ref"
-					: "telemetry_ref";
+					: entry.evidenceClass === "provider_health_snapshot"
+						? "snapshot_id"
+						: entry.evidenceClass === "pre_dispatch_audit"
+							? "pre_dispatch_audit_ref"
+							: entry.evidenceClass === "production_approval_source"
+								? "approval_id"
+								: entry.evidenceClass === "dispatch_idempotency"
+									? "snapshot_ref"
+						: "telemetry_ref";
 		const ref = entry.record[refKey];
 		return typeof ref === "string" && validateOpaqueRef(ref, refKey).ok
 			? ref
@@ -373,6 +401,84 @@ function hasEvidenceClass(
 	evidenceClass: FlowDeskSessionEvidenceClass,
 ): boolean {
 	return reload.entries.some((entry) => entry.evidenceClass === evidenceClass);
+}
+
+function providerHealthSnapshotBlockers(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): FlowDeskProductionEnablementBlockerLabelV1[] {
+	const healthEntries = reload.entries.filter(
+		(entry) => entry.evidenceClass === "provider_health_snapshot",
+	);
+	const usageEntries = reload.entries.filter(
+		(entry) => entry.evidenceClass === "provider_usage_snapshot",
+	);
+	const hasFreshDispatchableUsage = usageEntries.some((entry) => {
+		const record = entry.record;
+		return record.freshness === "fresh" && record.dispatchability === "dispatchable";
+	});
+	if (hasFreshDispatchableUsage) return [];
+	if (healthEntries.length === 0) return ["provider_health_snapshot_missing"];
+	const hasFreshDispatchable = healthEntries.some((entry) => {
+		const record = entry.record;
+		return (
+			record.freshness === "fresh" &&
+			record.dispatchability === "dispatchable" &&
+			record.availability_state === "healthy" &&
+			record.failure_class === "none"
+		);
+	});
+	if (hasFreshDispatchable) return [];
+	const blockers: FlowDeskProductionEnablementBlockerLabelV1[] = [];
+	if (!healthEntries.some((entry) => entry.record.freshness === "fresh"))
+		blockers.push("provider_health_snapshot_not_fresh");
+	if (!healthEntries.some((entry) => entry.record.dispatchability === "dispatchable"))
+		blockers.push("provider_health_snapshot_not_dispatchable");
+	if (blockers.length === 0) blockers.push("provider_health_snapshot_not_dispatchable");
+	return blockers;
+}
+
+function reloadedPreDispatchAuditMatches(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+	input: FlowDeskProductionEnablementInputV1,
+): boolean {
+	return reload.entries.some((entry) => {
+		if (entry.evidenceClass !== "pre_dispatch_audit") return false;
+		const record = entry.record;
+		if (record.workflow_id !== input.workflowId) return false;
+		if (record.pre_dispatch_audit_ref !== input.preDispatchAuditRef) return false;
+		if (input.attemptId !== undefined && record.attempt_id !== input.attemptId)
+			return false;
+		if (
+			input.approvalDecision !== undefined &&
+			record.approval_ref !== undefined &&
+			record.approval_ref !== input.approvalDecision.approval_id
+		)
+			return false;
+		return true;
+	});
+}
+
+function reloadedIdempotencyHasReservation(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+	attemptId: string | undefined,
+	idempotencyKey: string | undefined,
+): boolean {
+	if (attemptId === undefined && idempotencyKey === undefined) return true;
+	return reload.entries.some((entry) => {
+		if (entry.evidenceClass !== "dispatch_idempotency") return false;
+		const entries = entry.record.entries;
+		if (!Array.isArray(entries)) return false;
+		return entries.some((ledgerEntry) => {
+			if (typeof ledgerEntry !== "object" || ledgerEntry === null)
+				return false;
+			const record = ledgerEntry as Record<string, unknown>;
+			return (
+				record.state === "reserved" &&
+				(attemptId === undefined || record.attempt_id === attemptId) &&
+				(idempotencyKey === undefined || record.idempotency_key === idempotencyKey)
+			);
+		});
+	});
 }
 
 function missingRequiredApprovalRefs(
@@ -767,6 +873,30 @@ export function evaluateFlowDeskProductionEnablementV1(
 			);
 		}
 	}
+	for (const [evidenceClass, blocker] of REQUIRED_PRECALL_EVIDENCE_CLASSES) {
+		if (!hasEvidenceClass(input.evidenceReload, evidenceClass))
+			blockerLabels.push(blocker);
+	}
+	blockerLabels.push(...providerHealthSnapshotBlockers(input.evidenceReload));
+	if (
+		input.preDispatchAuditRef !== undefined &&
+		hasEvidenceClass(input.evidenceReload, "pre_dispatch_audit") &&
+		!reloadedPreDispatchAuditMatches(input.evidenceReload, input)
+	)
+		blockerLabels.push("pre_dispatch_audit_mismatched");
+	if (
+		hasEvidenceClass(input.evidenceReload, "dispatch_idempotency") &&
+		!reloadedIdempotencyHasReservation(
+			input.evidenceReload,
+			input.attemptId,
+			input.idempotencyKey,
+		)
+	)
+		blockerLabels.push("dispatch_idempotency_reservation_missing");
+	if (input.attemptId !== undefined)
+		errors.push(...validateOpaqueId(input.attemptId, "attempt_id").errors);
+	if (input.idempotencyKey !== undefined)
+		errors.push(...validateOpaqueRef(input.idempotencyKey, "idempotency_key").errors);
 
 	const requiredRefs: Array<
 		[FlowDeskProductionEnablementBlockerLabelV1, string | undefined, string]

@@ -6,6 +6,7 @@ import {
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	type FlowDeskAgentTaskProgressV1,
 } from "@flowdesk/core";
+import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
 export interface FlowDeskEventHookObservationResultV1 {
 	matched: boolean;
@@ -198,6 +199,12 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 	const progress = eventProgress(input.event);
 	const progressWritten = progress === undefined ? false : writeProgress(input.rootDir, binding, input.event, progress.phase, progress.label);
 	const terminalWritten = type === "session.error" ? writeSessionErrorTerminal(input.rootDir, binding, input.event) : 0;
+	if (terminalWritten > 0) {
+		refreshFlowDeskCompletionUiCachesV1({
+			rootDir: input.rootDir,
+			workflowId: binding.workflowId,
+		});
+	}
 	return {
 		matched: true,
 		eventType: type,

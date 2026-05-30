@@ -56,7 +56,7 @@ test("TUI subtask activity view renders cached read-only rows", () => {
 		assert.equal(view.rows.length, 2);
 		assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view), [
 			"Subtasks:",
-			"… Running Repo scan",
+			"… Repo scan #567890",
 			"✕ Failed task d-1234567890",
 		]);
 	} finally {
@@ -70,6 +70,36 @@ test("TUI subtask activity view degrades to command fallback when cache is absen
 		const view = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root });
 		assert.equal(view.status, "missing");
 		assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view), ["Subtasks: run /flowdesk-status"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI subtask activity view filters rows by current parent session when configured", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-session-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [
+					{ workflowId: "workflow-current", laneId: "lane-task-current", taskId: "task-current", parentSessionRef: "ses-current", state: "task_result", classification: "terminal", recoveryActionRefs: ["/flowdesk-status"] },
+					{ workflowId: "workflow-other", laneId: "lane-task-other", taskId: "task-other", parentSessionRef: "ses-other", state: "task_result", classification: "terminal", recoveryActionRefs: ["/flowdesk-status"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		const unfiltered = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(unfiltered.rows.length, 2);
+
+		const filtered = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, currentParentSessionRef: "ses-current", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(filtered.rows.length, 1);
+		assert.equal(filtered.rows[0]?.workflowId, "workflow-current");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -95,7 +125,43 @@ test("TUI subtask activity compact lines use friendly labels for key states", ()
 		"!! Stalled task stall-1",
 		"! Slow task slow-1",
 		"… Finalizing task final-1",
-		"✓ Done Review API",
+		"✓ Review API #done-1",
+	]);
+});
+
+test("TUI subtask activity compact lines distinguish duplicate summaries with task ids", () => {
+	const lines = formatFlowDeskTuiSubtaskActivityCompactLines({
+		status: "loaded",
+		observedAt: "2026-05-29T00:00:00.000Z",
+		rootDir: ".flowdesk",
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		rows: [
+			{ workflowId: "w", laneId: "lane-task-smoke-111111", taskId: "task-smoke-111111", taskSummary: "Live smoke", state: "task_result", classification: "terminal", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+			{ workflowId: "w", laneId: "lane-task-smoke-222222", taskId: "task-smoke-222222", taskSummary: "Live smoke", state: "task_result", classification: "terminal", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+		],
+	}, 5);
+	assert.deepEqual(lines, [
+		"Subtasks:",
+		"✓ Live smoke #222222",
+		"✓ Live smoke #111111",
+	]);
+});
+
+test("TUI subtask activity compact lines prefer newer rows before state priority", () => {
+	const lines = formatFlowDeskTuiSubtaskActivityCompactLines({
+		status: "loaded",
+		observedAt: "2026-05-29T00:00:00.000Z",
+		rootDir: ".flowdesk",
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		rows: [
+			{ workflowId: "w", laneId: "lane-task-old-done", taskId: "task-old-done", taskSummary: "Old done", state: "task_result", classification: "terminal", progressPhase: "finalizing", lastObservedAt: "2026-05-29T00:01:00.000Z", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+			{ workflowId: "w", laneId: "lane-task-new-run", taskId: "task-new-run", taskSummary: "New run", state: "running", classification: "progressing_normal", progressPhase: "waiting", lastObservedAt: "2026-05-29T00:02:00.000Z", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+		],
+	}, 5);
+	assert.deepEqual(lines, [
+		"Subtasks:",
+		"… New run #ew-run",
+		"✓ Old done #d-done",
 	]);
 });
 
@@ -118,7 +184,7 @@ test("TUI subtask activity compact lines mark stale cache freshness", () => {
 		],
 	}), [
 		"Subtasks (stale):",
-		"… Running Repo scan",
+		"… Repo scan #ning-1",
 	]);
 });
 
@@ -135,6 +201,7 @@ test("TUI auto-next ready view renders cached ready workflows", () => {
 				expires_at: "2026-05-29T00:02:00.000Z",
 				workflows: [{
 					workflowId: "workflow-auto-next-ready-1234567890",
+					parentSessionRef: "ses-current",
 					laneProgressAggregate: { expected: 2, normalCompleted: 2, autoNextStepEligible: true, nextActionAvailable: true, nextActionKind: "synthesis" },
 					taskResultRefs: ["task-a", "task-b"],
 					taskSummaries: ["Review API"],
@@ -146,10 +213,37 @@ test("TUI auto-next ready view renders cached ready workflows", () => {
 		const view = loadFlowDeskTuiAutoNextReadyViewV1({ rootDir: root, now: () => new Date("2026-05-29T00:01:00.000Z") });
 		assert.equal(view.status, "loaded");
 		assert.equal(view.workflows.length, 1);
-		assert.deepEqual(formatFlowDeskTuiAutoNextReadyCompactLines(view), [
-			"Next ready:",
-			"✓ 2/2 synthesis Review API",
-		]);
+		assert.deepEqual(formatFlowDeskTuiAutoNextReadyCompactLines(view), []);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI auto-next ready view filters workflows by current parent session when configured", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-auto-next-session-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "auto-next-ready.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.auto_next_ready_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				workflows: [
+					{ workflowId: "workflow-current", parentSessionRef: "ses-current", laneProgressAggregate: { expected: 1, normalCompleted: 1, nextActionAvailable: true, nextActionKind: "synthesis" }, taskResultRefs: ["task-current"], taskSummaries: ["Current"] },
+					{ workflowId: "workflow-other", parentSessionRef: "ses-other", laneProgressAggregate: { expected: 1, normalCompleted: 1, nextActionAvailable: true, nextActionKind: "synthesis" }, taskResultRefs: ["task-other"], taskSummaries: ["Other"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		const unfiltered = loadFlowDeskTuiAutoNextReadyViewV1({ rootDir: root, now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(unfiltered.workflows.length, 2);
+
+		const filtered = loadFlowDeskTuiAutoNextReadyViewV1({ rootDir: root, currentParentSessionRef: "ses-current", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(filtered.workflows.length, 1);
+		assert.equal(filtered.workflows[0]?.workflowId, "workflow-current");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -170,10 +264,7 @@ test("TUI auto-next ready compact lines mark stale cache freshness", () => {
 			nextActionKind: "synthesis",
 			nextActionAvailable: true,
 		}],
-	}), [
-		"Next ready (stale):",
-		"✓ 1/1 synthesis Review API",
-	]);
+	}), []);
 });
 
 test("TUI latest synthesis view renders cached display-only synthesis", () => {

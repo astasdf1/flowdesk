@@ -22,6 +22,11 @@ const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
 const INVALID_PARENT_SESSION_REF = "ses-invalid-parent-session-binding" as const;
 
+export interface FlowDeskAgentTaskFallbackBindingV1 {
+	agentRef: string;
+	providerQualifiedModelId: string;
+}
+
 export interface FlowDeskAgentTaskInputV1 {
 	workflowId: string;
 	taskId: string;
@@ -40,12 +45,19 @@ export interface FlowDeskAgentTaskInputV1 {
 	 * The coordinator polls flowdesk_status_live to detect terminal state.
 	 */
 	asyncMode?: boolean;
+	/**
+	 * When provided and the primary attempt fails with no_response,
+	 * automatically retry once with this fallback agent/model binding.
+	 */
+	fallbackBinding?: FlowDeskAgentTaskFallbackBindingV1;
 	/** Override quiet period before nudge — for testing only */
 	_nudgeQuietPeriodMs?: number;
 	/** Override messages poll timeout — for testing only (default 3000ms in prod) */
 	_messagesTimeoutMs?: number;
 	/** Override launch timeout — for testing only (default 300000ms = 5min in prod) */
 	_launchTimeoutMs?: number;
+	/** Internal: true when this is already a fallback retry (prevents infinite retry) */
+	_isFallbackRetry?: boolean;
 }
 
 export type FlowDeskAgentTaskResultV1 =
@@ -614,6 +626,11 @@ export async function executeFlowDeskAgentTaskV1(
 			updatedAt: new Date().toISOString(),
 			timeoutMs: input.timeoutMs,
 		});
+		refreshFlowDeskCompletionUiCachesV1({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			observedAt,
+		});
 
 		return {
 			status: "task_failed",
@@ -635,6 +652,11 @@ export async function executeFlowDeskAgentTaskV1(
 		state: "running",
 		observedAt,
 		progressSummaryLabel: `agent task lane launch heartbeat`,
+	});
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		observedAt,
 	});
 
 	// Extract child session ID
@@ -675,6 +697,11 @@ export async function executeFlowDeskAgentTaskV1(
 			phase: "waiting",
 			progressSeq: 2,
 			progressLabel: "agent task waiting for async child result",
+		});
+		refreshFlowDeskCompletionUiCachesV1({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			observedAt: new Date().toISOString(),
 		});
 		return { status: "task_launched", laneId: input.laneId, childSessionId: resolvedChildId };
 	}
@@ -760,6 +787,39 @@ export async function executeFlowDeskAgentTaskV1(
 			updatedAt: new Date().toISOString(),
 			timeoutMs: input.timeoutMs,
 		});
+		refreshFlowDeskCompletionUiCachesV1({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			observedAt: new Date().toISOString(),
+		});
+
+		// Auto-retry with fallback binding if configured and this is not already a retry
+		if (input.fallbackBinding !== undefined && !input._isFallbackRetry) {
+			const retryToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+			const retryTaskId = `${input.taskId}-retry-${retryToken.slice(0, 6)}`;
+			const retryLaneId = `${input.laneId}-retry`;
+			writeAgentTaskProgress({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId: retryLaneId,
+				taskId: retryTaskId,
+				agentRef: input.fallbackBinding.agentRef,
+				providerQualifiedModelId: input.fallbackBinding.providerQualifiedModelId,
+				phase: "retrying",
+				progressSeq: 0,
+				progressLabel: `auto-retry with ${input.fallbackBinding.providerQualifiedModelId} after ${failureCategory}`,
+			});
+			return executeFlowDeskAgentTaskV1({
+				...input,
+				taskId: retryTaskId,
+				laneId: retryLaneId,
+				agentRef: input.fallbackBinding.agentRef,
+				providerQualifiedModelId: input.fallbackBinding.providerQualifiedModelId,
+				fallbackBinding: undefined,
+				_isFallbackRetry: true,
+			});
+		}
+
 		return {
 			status: "task_failed",
 			failureCategory,
@@ -797,20 +857,69 @@ export async function executeFlowDeskAgentTaskV1(
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	};
-	const taskResultWritten = writeSessionEvidence({
-		rootDir: input.rootDir,
-		workflowId: input.workflowId,
-		evidenceId: taskResultEvidenceId,
-		record: taskResultRecord as unknown as Record<string, unknown>,
-	});
-	if (!taskResultWritten) {
-		return {
-			status: "task_failed",
-			failureCategory: "unknown",
-			redactedReason: "task_result evidence persistence failed",
-			laneId: input.laneId,
-		};
-	}
+		const taskResultWritten = writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: taskResultEvidenceId,
+			record: taskResultRecord as unknown as Record<string, unknown>,
+		});
+		if (!taskResultWritten) {
+			const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}-result-write`;
+			const redactedReason = "task_result evidence persistence failed";
+			writeSessionEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				evidenceId: taskFailedEvidenceId,
+				record: {
+					schema_version: "flowdesk.task_failed.v1",
+					workflow_id: input.workflowId,
+					lane_id: input.laneId,
+					task_id: input.taskId,
+					agent_ref: input.agentRef,
+					provider_qualified_model_id: input.providerQualifiedModelId,
+					failure_category: "unknown",
+					redacted_reason: redactedReason,
+					created_at: observedAt,
+					dispatch_authority_enabled: false,
+				} as unknown as Record<string, unknown>,
+			});
+			writeAgentTaskProgress({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId: input.laneId,
+				taskId: input.taskId,
+				agentRef: input.agentRef,
+				providerQualifiedModelId: input.providerQualifiedModelId,
+				phase: "failed",
+				progressSeq: 4,
+				progressLabel: "agent task result persistence failed",
+			});
+			writeAgentTaskTerminalLifecycle({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId: input.laneId,
+				attemptId,
+				parentSessionRef,
+				agentRef: input.agentRef,
+				providerQualifiedModelId: input.providerQualifiedModelId,
+				state: "invocation_failed",
+				evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-result-write`,
+				createdAt: observedAt,
+				updatedAt: new Date().toISOString(),
+				timeoutMs: input.timeoutMs,
+			});
+			refreshFlowDeskCompletionUiCachesV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				observedAt,
+			});
+			return {
+				status: "task_failed",
+				failureCategory: "unknown",
+				redactedReason,
+				laneId: input.laneId,
+			};
+		}
 	writeAgentTaskProgress({
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,

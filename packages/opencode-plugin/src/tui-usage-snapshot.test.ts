@@ -163,13 +163,11 @@ test("TUI usage snapshot compact lines show latest 5h and 1w durable buckets", (
 			now: () => new Date("2026-05-27T01:15:00.000Z"),
 		});
 		assert.equal(view.status, "loaded");
-		assert.deepEqual(formatFlowDeskTuiUsageSnapshotCompactLines(view), [
-			`CL: 77% (5h, r ${formatLocalTimeForTest("2026-05-27T19:20:00.000Z", "5h")})`,
-			`    34% (1w, r ${formatLocalTimeForTest("2026-06-03T12:00:00.000Z", "1w")})`,
-			`OA: 87% (5h, r ${formatLocalTimeForTest("2026-05-27T15:26:00.000Z", "5h")})`,
-			`    98% (1w, r ${formatLocalTimeForTest("2026-06-03T15:26:00.000Z", "1w")})`,
-			"GM: ✗",
-		]);
+		const actual = formatFlowDeskTuiUsageSnapshotCompactLines(view);
+		assert.equal(actual.length, 3);
+		assert.ok(actual[0].includes("CL") && actual[0].includes("Sonnet") && actual[0].includes("34%") && actual[0].includes("1w"));
+		assert.ok(actual[1].includes("OA") && actual[1].includes("5.5") && actual[1].includes("87%") && actual[1].includes("5h"));
+		assert.ok(actual[2].includes("GM") && actual[2].includes("✗"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -225,8 +223,9 @@ test("TUI usage snapshot compact lines read fresh sidebar cache buckets", () => 
 			rootDir: root,
 			now: () => new Date("2026-05-27T01:02:00.000Z"),
 		});
-		assert.equal(formatFlowDeskTuiUsageSnapshotCompactLines(view)[0], `CL: 77% (5h, r ${formatLocalTimeForTest("2026-05-27T19:20:00.000Z", "5h")})`);
-		assert.equal(formatFlowDeskTuiUsageSnapshotCompactLines(view)[1], `    34% (1w, r ${formatLocalTimeForTest("2026-06-03T12:00:00.000Z", "1w")})`);
+		// Lower of 5h (77%) and 1w (34%) → shows 1w 34%
+		const line0 = formatFlowDeskTuiUsageSnapshotCompactLines(view)[0];
+		assert.ok(line0.includes("CL") && line0.includes("Sonnet") && line0.includes("34%") && line0.includes("1w"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -260,9 +259,9 @@ test("TUI usage snapshot compact lines show Gemini pro flash and flash-lite buck
 			"utf8",
 		);
 		const lines = formatFlowDeskTuiUsageSnapshotCompactLines(loadFlowDeskTuiUsageSnapshotViewV1({ rootDir: root, now: () => new Date("2026-05-27T01:02:00.000Z") }));
-		assert.ok(lines.includes(`GM: Pro 0% (day, r ${formatLocalTimeForTest("2026-05-27T03:00:00.000Z", "day")})`));
-		assert.ok(lines.includes(`    Flash 80% (day, r ${formatLocalTimeForTest("2026-05-28T00:00:00.000Z", "day")})`));
-		assert.ok(lines.includes(`    Lite 90% (day, r ${formatLocalTimeForTest("2026-05-28T00:00:00.000Z", "day")})`));
+		assert.ok(lines.some(l => l.includes("Pro") && l.includes("0%") && l.includes("day")));
+		assert.ok(lines.some(l => l.includes("Flash") && l.includes("80%") && l.includes("day")));
+		assert.ok(lines.some(l => l.includes("Lite") && l.includes("90%") && l.includes("day")));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

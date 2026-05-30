@@ -993,6 +993,15 @@ function redactedManagedDispatchBetaToolResult(
 					sessionId: result.sessionId,
 					agent: result.agent,
 					model: result.model,
+					...(!("laneId" in result) || result.laneId === undefined
+						? {}
+						: { laneId: result.laneId }),
+					...(!("childSessionRef" in result) || result.childSessionRef === undefined
+						? {}
+						: { childSessionRef: result.childSessionRef }),
+					...(!("messageRef" in result) || result.messageRef === undefined
+						? {}
+						: { messageRef: result.messageRef }),
 					...("redactedErrorCategory" in result
 						? { redactedErrorCategory: result.redactedErrorCategory }
 						: {}),
@@ -1489,6 +1498,9 @@ async function evaluateFlowDeskManagedDispatchRunRoute(
 		...(options.reservationStore === undefined
 			? {}
 			: { reservationStore: options.reservationStore }),
+		...(options.durableStateRootDir === undefined
+			? {}
+			: { durableStateRootDir: options.durableStateRootDir }),
 	});
 	return {
 		runRouteProfile: "flowdesk_run_default_managed_dispatch_route",
@@ -1567,8 +1579,9 @@ export function createFlowDeskManagedDispatchBetaOptInTools(
 					dispatchManifest:
 						record.dispatchManifest as unknown as FlowDeskDispatchAttemptManifestV1,
 					...(reloadedEvidence === undefined ? {} : { reloadedEvidence }),
-					...(reservationStore === undefined ? {} : { reservationStore }),
-				});
+			...(reservationStore === undefined ? {} : { reservationStore }),
+			...(durableStateRootDir === undefined ? {} : { durableStateRootDir }),
+		});
 				return JSON.stringify(redactedManagedDispatchBetaToolResult(result));
 			},
 		}),

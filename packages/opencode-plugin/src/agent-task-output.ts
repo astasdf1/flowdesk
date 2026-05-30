@@ -31,7 +31,20 @@ export function flowDeskAgentTaskMessageItems(value: unknown): unknown[] {
 	if (Array.isArray(data)) return data;
 	if (!isRecord(data)) return [];
 	if (Array.isArray(data.items)) return data.items;
-	return Array.isArray(data.messages) ? data.messages : [];
+	if (Array.isArray(data.messages)) return data.messages;
+	// Gemini candidates wrapper: { candidates: [{ content: { role, parts }, finishReason }] }
+	if (Array.isArray(data.candidates)) {
+		const msgs: unknown[] = [];
+		for (const candidate of data.candidates) {
+			if (!isRecord(candidate)) continue;
+			const content = isRecord(candidate.content) ? candidate.content : candidate;
+			const finishReason = typeof candidate.finishReason === "string" ? candidate.finishReason
+				: typeof candidate.finish_reason === "string" ? candidate.finish_reason : undefined;
+			msgs.push({ ...content, _finishReason: finishReason });
+		}
+		return msgs;
+	}
+	return [];
 }
 
 function partText(part: Record<string, unknown>): string | undefined {
@@ -46,6 +59,25 @@ function isTerminalPart(part: Record<string, unknown>): boolean {
 		(type === "step-finish" || type === "step_finish" || type === "finish") &&
 		(reason === "stop" || reason === "complete" || reason === "completed")
 	);
+}
+
+/** Check message-level terminal signals (OpenAI finish_reason, Gemini finishReason). */
+function isTerminalMessage(msg: Record<string, unknown>): { terminal: boolean; reason: string | undefined } {
+	// OpenAI: finish_reason at message or choice level
+	const fr = typeof msg.finish_reason === "string" ? msg.finish_reason
+		: typeof msg.finishReason === "string" ? msg.finishReason
+		: typeof msg._finishReason === "string" ? msg._finishReason : undefined;
+	if (fr !== undefined) {
+		const normalized = fr.toLowerCase();
+		if (normalized === "stop" || normalized === "end_turn" || normalized === "complete" || normalized === "completed") {
+			return { terminal: true, reason: fr };
+		}
+	}
+	// OpenAI status field
+	if (msg.status === "completed" || msg.status === "complete") {
+		return { terminal: true, reason: String(msg.status) };
+	}
+	return { terminal: false, reason: undefined };
 }
 
 function terminalReason(part: Record<string, unknown>): string | undefined {
@@ -96,11 +128,46 @@ export function observeFlowDeskAgentTaskOutputV1(response: unknown): FlowDeskAge
 		const msgRec = isRecord(msg) ? msg : undefined;
 		const info = isRecord(msgRec?.info) ? msgRec.info : msgRec;
 		const role = info?.role;
-		const parts = Array.isArray(msgRec?.parts)
-			? msgRec.parts
+		// Accept "assistant" and "model" (Gemini uses "model" for assistant role)
+		const isAssistantRole = role === "assistant" || role === "model";
+
+		// Check message-level terminal signals (OpenAI/Gemini)
+		if (msgRec !== undefined) {
+			const msgTerminal = isTerminalMessage(msgRec);
+			if (!msgTerminal.terminal && info !== undefined && info !== msgRec) {
+				const infoTerminal = isTerminalMessage(info as Record<string, unknown>);
+				if (infoTerminal.terminal) {
+					terminalObserved = true;
+					observedTerminalReason = infoTerminal.reason;
+				}
+			} else if (msgTerminal.terminal) {
+				terminalObserved = true;
+				observedTerminalReason = msgTerminal.reason;
+			}
+		}
+
+		// Collect parts from msg.parts, msg.info.parts, or msg.content (when content is array of parts)
+		let parts: unknown[] = Array.isArray(msgRec?.parts)
+			? msgRec!.parts
 			: Array.isArray(info?.parts)
-				? info.parts
+				? info!.parts
 				: [];
+		// OpenAI multi-part content: content is array of part objects
+		if (parts.length === 0 && msgRec !== undefined && Array.isArray(msgRec.content)) {
+			parts = msgRec.content;
+		}
+
+		// Message-level content string (OpenAI Chat Completions: { role: "assistant", content: "..." })
+		if (parts.length === 0 && isAssistantRole && msgRec !== undefined && typeof msgRec.content === "string" && msgRec.content.trim().length > 0) {
+			latestText = msgRec.content as string;
+			textPartCount++;
+		}
+		// Also check info-level content string
+		if (parts.length === 0 && isAssistantRole && info !== undefined && info !== msgRec && typeof info.content === "string" && (info.content as string).trim().length > 0) {
+			latestText = info.content as string;
+			textPartCount++;
+		}
+
 		for (const rawPart of parts) {
 			const part = isRecord(rawPart) ? rawPart : undefined;
 			if (part === undefined) continue;
@@ -113,8 +180,9 @@ export function observeFlowDeskAgentTaskOutputV1(response: unknown): FlowDeskAge
 				reasoningPartCount++;
 				continue;
 			}
-			if (role !== "assistant") continue;
-			if (part.type !== undefined && part.type !== "text") continue;
+			if (!isAssistantRole) continue;
+			// Accept text, output_text (OpenAI Responses API), or undefined type
+			if (part.type !== undefined && part.type !== "text" && part.type !== "output_text") continue;
 			const text = partText(part);
 			if (typeof text === "string" && text.trim().length > 0) {
 				latestText = text;

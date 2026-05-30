@@ -1,6 +1,6 @@
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { createElement, createTextNode, insert, setProp, type JSX } from "@opentui/solid";
-import { createSignal } from "solid-js";
+import { createElement, insert, setProp, type JSX } from "@opentui/solid";
+import { createMemo, createSignal } from "solid-js";
 import {
 	formatFlowDeskTuiUsageSnapshotCompactLines,
 	loadFlowDeskTuiUsageSnapshotViewV1,
@@ -18,11 +18,14 @@ import {
 interface FlowDeskTuiPluginOptionsV1 {
 	durableStateRootDir?: string;
 	usageWorkflowId?: string;
+	currentParentSessionRef?: string;
+	currentSessionRef?: string;
 	showAppBottom?: boolean;
 	showSessionPromptRight?: boolean;
 }
 
 const USAGE_SIDEBAR_REFRESH_INTERVAL_MS = 30_000;
+const SUBTASK_ACTIVITY_REFRESH_INTERVAL_MS = 1_000;
 
 type UsageSnapshotState = {
 	view: () => FlowDeskTuiUsageSnapshotViewV1;
@@ -61,10 +64,12 @@ function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): Subtas
 	const read = (): FlowDeskTuiSubtaskActivityViewV1 =>
 		loadFlowDeskTuiSubtaskActivityViewV1({
 			rootDir: options.durableStateRootDir,
+			currentParentSessionRef: options.currentParentSessionRef ?? options.currentSessionRef,
 		});
 	const readAutoNext = (): FlowDeskTuiAutoNextReadyViewV1 =>
 		loadFlowDeskTuiAutoNextReadyViewV1({
 			rootDir: options.durableStateRootDir,
+			currentParentSessionRef: options.currentParentSessionRef ?? options.currentSessionRef,
 		});
 	const [view, setView] = createSignal(read());
 	const [autoNextView, setAutoNextView] = createSignal(readAutoNext());
@@ -73,7 +78,7 @@ function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): Subtas
 		setAutoNextView(readAutoNext());
 	};
 
-	const intervalId = setInterval(refresh, USAGE_SIDEBAR_REFRESH_INTERVAL_MS);
+	const intervalId = setInterval(refresh, SUBTASK_ACTIVITY_REFRESH_INTERVAL_MS);
 
 	return {
 		view: () => view(),
@@ -92,6 +97,8 @@ function optionsFrom(value: unknown): FlowDeskTuiPluginOptionsV1 {
 			? { durableStateRootDir: record.durableStateRootDir }
 			: {}),
 		...(typeof record.usageWorkflowId === "string" ? { usageWorkflowId: record.usageWorkflowId } : {}),
+		...(typeof record.currentParentSessionRef === "string" ? { currentParentSessionRef: record.currentParentSessionRef } : {}),
+		...(typeof record.currentSessionRef === "string" ? { currentSessionRef: record.currentSessionRef } : {}),
 		...(typeof record.showAppBottom === "boolean" ? { showAppBottom: record.showAppBottom } : {}),
 		...(typeof record.showSessionPromptRight === "boolean"
 			? { showSessionPromptRight: record.showSessionPromptRight }
@@ -99,9 +106,9 @@ function optionsFrom(value: unknown): FlowDeskTuiPluginOptionsV1 {
 	};
 }
 
-function textLine(value: string): JSX.Element {
+function textLine(value: string | (() => string)): JSX.Element {
 	const node = createElement("text");
-	insert(node, createTextNode(value));
+	insert(node, value);
 	return node as unknown as JSX.Element;
 }
 
@@ -123,19 +130,38 @@ function formatObservedAt(iso: string): string {
 }
 
 function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState): JSX.Element {
-	const view = usageState.view();
-	const subtaskView = subtaskState.view();
-	const autoNextLines = formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView());
+	const usageLines = createMemo(() => formatFlowDeskTuiUsageSnapshotCompactLines(usageState.view()));
+	const observedLine = createMemo(() => formatObservedAt(usageState.view().observedAt));
+	const statusLine = createMemo(() => usageState.view().status === "loaded" ? "cache readable" : "run /flowdesk-usage");
+	const autoNextLines = createMemo(() => formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()));
+	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view()));
+	// Build all lines dynamically so empty sections don't leave blank gaps
+	const allLines = createMemo(() => {
+		const lines: (string | (() => string))[] = [];
+		// Usage lines (variable count)
+		for (const line of usageLines()) lines.push(line);
+		lines.push(observedLine());
+		lines.push(statusLine());
+		// Auto-next lines (only if non-empty)
+		const anl = autoNextLines();
+		if (anl.length > 0) {
+			lines.push("");
+			for (const line of anl) lines.push(line);
+		}
+		// Subtask lines (only if non-empty)
+		const stl = subtaskLines();
+		if (stl.length > 0) {
+			lines.push("");
+			for (const line of stl) lines.push(line);
+		}
+		return lines;
+	});
+	// Max slots: usage(7) + observed(1) + status(1) + sep(1) + autoNext(3) + sep(1) + subtask(6) = 20
 	return box(
-		[
-			...formatFlowDeskTuiUsageSnapshotCompactLines(view).map((line) => textLine(line)),
-			textLine(formatObservedAt(view.observedAt)),
-			textLine(view.status === "loaded" ? "cache readable" : "run /flowdesk-usage"),
-			textLine(""),
-			...autoNextLines.map((line) => textLine(line)),
-			...(autoNextLines.length > 0 ? [textLine("")] : []),
-			...formatFlowDeskTuiSubtaskActivityCompactLines(subtaskView).map((line) => textLine(line)),
-		],
+		Array.from({ length: 20 }, (_, index) => textLine(() => {
+			const lines = allLines();
+			return index < lines.length ? (typeof lines[index] === "function" ? (lines[index] as () => string)() : lines[index] as string) : "";
+		})),
 		{ flexShrink: 0, paddingTop: 1, paddingBottom: 1 },
 	);
 }

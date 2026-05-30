@@ -429,6 +429,24 @@ function compactNamedBucketSegment(bucket: FlowDeskTuiUsageProviderBucketV1 | un
 	return `${compactPercent(bucket?.remainingPercent ?? null)} (${label}, r ${displayResetTime(bucket?.resetTime, label)})`;
 }
 
+/** Pick the bucket with the lower remaining percent from 5h and weekly; show that one. */
+function lowerBucket(
+	fiveHour: FlowDeskTuiUsageProviderBucketV1 | undefined,
+	weekly: FlowDeskTuiUsageProviderBucketV1 | undefined,
+): { bucket: FlowDeskTuiUsageProviderBucketV1 | undefined; label: string } {
+	const fiveHourPct = fiveHour?.remainingPercent ?? null;
+	const weeklyPct = weekly?.remainingPercent ?? null;
+	if (fiveHourPct === null && weeklyPct === null) return { bucket: fiveHour ?? weekly, label: fiveHour !== undefined ? "5h" : "1w" };
+	if (fiveHourPct === null) return { bucket: weekly, label: "1w" };
+	if (weeklyPct === null) return { bucket: fiveHour, label: "5h" };
+	return weeklyPct <= fiveHourPct ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
+}
+
+function modelLine(prefix: string, modelLabel: string, bucket: FlowDeskTuiUsageProviderBucketV1 | undefined, periodLabel: string): string {
+	const pct = compactPercent(bucket?.remainingPercent ?? null).padStart(4);
+	return `${prefix} ${modelLabel.padEnd(6)} ${pct} (${periodLabel}, r ${displayResetTime(bucket?.resetTime, periodLabel)})`;
+}
+
 function bucketForCompactLabel(
 	provider: FlowDeskTuiUsageProviderRowV1,
 	label: "5h" | "1w",
@@ -468,22 +486,45 @@ export function formatFlowDeskTuiUsageSnapshotCompactLines(
 		const label = compactProviderLabels[family];
 		const hasKnownBuckets = (provider?.buckets ?? []).some((bucket) => bucket.remainingPercent !== null || bucket.resetTime !== undefined);
 		if (provider === undefined || (provider.connected !== true && !hasKnownBuckets)) {
-			lines.push(`${label}: ✗`);
+			lines.push(`${label} ✗`);
 			continue;
 		}
+
+		if (family === "claude") {
+			const fiveHour = bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
+			const weekly = bucketForCompactLabel(provider, "1w");
+			const { bucket, label: periodLabel } = lowerBucket(fiveHour, weekly);
+			lines.push(modelLine(label, "Sonnet", bucket, periodLabel));
+			continue;
+		}
+
+		if (family === "openai") {
+			const gpt5h = bucketForResetBucketPrefix(provider, "openai-gpt-5h") ?? bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
+			const weekly = bucketForCompactLabel(provider, "1w");
+			const { bucket: gptBucket, label: gptPeriod } = lowerBucket(gpt5h, weekly);
+			lines.push(modelLine(label, "5.5", gptBucket, gptPeriod));
+			const spark = bucketForResetBucketPrefix(provider, "openai-spark") ?? bucketForResetBucketPrefix(provider, "openai-5.3") ?? bucketForResetBucketPrefix(provider, "spark");
+			if (spark !== undefined) {
+				lines.push(modelLine(label, "Spark", spark, spark.resetBucket?.includes("weekly") ? "1w" : "5h"));
+			}
+			continue;
+		}
+
 		if (family === "gemini") {
 			const pro = bucketForResetBucketPrefix(provider, "gemini-pro-daily") ?? bucketForResetBucketPrefix(provider, "gemini-pro");
 			const flash = bucketForResetBucketPrefix(provider, "gemini-flash-daily");
 			const lite = bucketForResetBucketPrefix(provider, "gemini-flash-lite-daily");
-			lines.push(`${label}: Pro ${compactNamedBucketSegment(pro, pro?.resetBucket?.includes("weekly") ? "1w" : "day")}`);
-			lines.push(`    Flash ${compactNamedBucketSegment(flash, "day")}`);
-			lines.push(`    Lite ${compactNamedBucketSegment(lite, "day")}`);
+			lines.push(modelLine(label, "Pro", pro, "day"));
+			lines.push(modelLine(label, "Flash", flash, "day"));
+			lines.push(modelLine(label, "Lite", lite, "day"));
 			continue;
 		}
+
+		// Fallback for unknown families
 		const fiveHour = bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
 		const weekly = bucketForCompactLabel(provider, "1w");
-		lines.push(`${label}: ${compactBucketSegment(fiveHour, "5h")}`);
-		lines.push(`    ${compactBucketSegment(weekly, "1w")}`);
+		const { bucket, label: periodLabel } = lowerBucket(fiveHour, weekly);
+		lines.push(modelLine(label, "?", bucket, periodLabel));
 	}
 	return lines;
 }

@@ -377,6 +377,11 @@ export function validateAndAbortFlowDeskLaneEvidenceV1(input: {
 			entry.record.state === "aborted",
 	);
 	if (!persisted) return { status: "write_failed", reason: "abort_evidence_not_persisted" };
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflow_id,
+		observedAt: observedAt,
+	});
 	return {
 		status: "aborted",
 		lane_id: input.lane_id,
@@ -740,6 +745,14 @@ export function backfillTerminalAgentTaskFailedLanesV1(input: {
 		if (writeEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, evidenceId, record: terminalRecord as unknown as Record<string, unknown> })) {
 			terminalEvidenceIds.push(evidenceId);
 		}
+	}
+
+	if (terminalEvidenceIds.length > 0 || latestFailure.size > 0) {
+		refreshFlowDeskCompletionUiCachesV1({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			observedAt,
+		});
 	}
 
 	return {
@@ -1705,6 +1718,70 @@ function laneAlreadyHasTerminalTaskEvidence(input: {
 	});
 }
 
+type FlowDeskTerminalLaneEndStateV1 = {
+	laneId: string;
+	state: string;
+	observedAtMs: number;
+	hasTaskResult: boolean;
+};
+
+function terminalEvidenceObservedAtMs(record: Record<string, unknown>): number {
+	const value = typeof record.updated_at === "string"
+		? record.updated_at
+		: typeof record.created_at === "string"
+			? record.created_at
+			: typeof record.observed_at === "string"
+				? record.observed_at
+				: undefined;
+	const parsed = value === undefined ? Number.NaN : Date.parse(value);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function chooseLaterTerminalEndState(
+	existing: FlowDeskTerminalLaneEndStateV1 | undefined,
+	candidate: FlowDeskTerminalLaneEndStateV1,
+): FlowDeskTerminalLaneEndStateV1 {
+	if (existing === undefined) return candidate;
+	if (candidate.observedAtMs > existing.observedAtMs) return candidate;
+	if (candidate.observedAtMs < existing.observedAtMs) return existing;
+	// Prefer task_result for equal timestamps; otherwise keep the existing entry so
+	// duplicate event-session-error / failed-child evidence is idempotent.
+	return candidate.hasTaskResult && !existing.hasTaskResult ? candidate : existing;
+}
+
+function collectTerminalLaneEndStatesV1(entries: readonly { evidenceClass: string; record: unknown }[]): Map<string, FlowDeskTerminalLaneEndStateV1> {
+	const terminalByLane = new Map<string, FlowDeskTerminalLaneEndStateV1>();
+	for (const entry of entries) {
+		const rec = entry.record as Record<string, unknown>;
+		const laneId = typeof rec.lane_id === "string" ? rec.lane_id : undefined;
+		if (laneId === undefined) continue;
+		let state: string | undefined;
+		let hasTaskResult = false;
+		if (entry.evidenceClass === "lane_lifecycle") {
+			state = typeof rec.state === "string" && TERMINAL_LANE_STATES.has(rec.state) ? rec.state : undefined;
+		} else if (entry.evidenceClass === "task_result") {
+			state = "complete";
+			hasTaskResult = true;
+		} else if (entry.evidenceClass === "task_failed") {
+			state = rec.failure_category === "no_response" ? "no_output" : "invocation_failed";
+		}
+		if (state === undefined) continue;
+		terminalByLane.set(laneId, chooseLaterTerminalEndState(terminalByLane.get(laneId), {
+			laneId,
+			state,
+			observedAtMs: terminalEvidenceObservedAtMs(rec),
+			hasTaskResult,
+		}));
+	}
+	return terminalByLane;
+}
+
+function latestTerminalObservedAtIso(endStates: Iterable<FlowDeskTerminalLaneEndStateV1>, fallbackMs: number): string {
+	let latest = 0;
+	for (const state of endStates) latest = Math.max(latest, state.observedAtMs);
+	return new Date(latest > 0 ? latest : fallbackMs).toISOString();
+}
+
 function childProgressLabel(value: string): string {
 	const compact = value.replace(/\s+/g, " ").trim();
 	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
@@ -1781,9 +1858,12 @@ export async function monitorChildSessionsV1(input: {
 		.map(e => e.record as Record<string, unknown>)
 		.filter(r => r.schema_version === AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION);
 
-	// Find lanes that are NOT yet terminal (by lifecycle state or by task_result/task_failed evidence)
-	const terminalLaneIds = new Set<string>();
-	const terminalTaskResultLaneIds = new Set<string>();
+	// Find lanes that are NOT yet terminal. Terminal evidence can come from
+	// task_result, task_failed (including event-session-error records), or a
+	// lifecycle terminal state. The map keeps the extracted end-state timestamp so
+	// cache refreshes are monotonic/idempotent even when no task_result exists.
+	const terminalEndStates = collectTerminalLaneEndStatesV1(reloaded.entries);
+	const terminalLaneIds = new Set<string>(terminalEndStates.keys());
 	const awaitingPermissionLaneIds = new Set<string>();
 	const latestProgressByLane = new Map<string, { observedAtMs: number; phase: string }>();
 	for (const entry of reloaded.entries) {
@@ -1798,15 +1878,8 @@ export async function monitorChildSessionsV1(input: {
 				latestProgressByLane.set(laneIdVal, { observedAtMs, phase });
 			}
 		}
-		if (entry.evidenceClass === "lane_lifecycle") {
-			const s = rec.state;
-			if (s === "complete" || s === "invocation_failed" || s === "no_output" || s === "incomplete")
-				terminalLaneIds.add(laneIdVal);
-		} else if (entry.evidenceClass === "task_result" || entry.evidenceClass === "task_failed") {
-			terminalLaneIds.add(laneIdVal);
-			if (entry.evidenceClass === "task_result") terminalTaskResultLaneIds.add(laneIdVal);
-		}
 	}
+	const terminalRefreshObservedAt = latestTerminalObservedAtIso(terminalEndStates.values(), nowMs);
 	for (const [laneId, progress] of latestProgressByLane) {
 		if (progress.phase === "awaiting_permission") awaitingPermissionLaneIds.add(laneId);
 	}
@@ -1820,17 +1893,25 @@ export async function monitorChildSessionsV1(input: {
 		if (rec.phase === "waiting" && typeof rec.progress_label === "string" && rec.progress_label.includes("permission response") && typeof rec.lane_id === "string") awaitingPermissionLaneIds.delete(rec.lane_id);
 	}
 
+	let uiCacheRefreshed = false;
 	for (const record of childRecords) {
 		const laneId = typeof record.lane_id === "string" ? record.lane_id : "";
 		const childSessionId = typeof record.child_session_id === "string" ? record.child_session_id : "";
 		if (!laneId || !childSessionId) continue;
 		if (terminalLaneIds.has(laneId)) {
-			if (terminalTaskResultLaneIds.has(laneId)) {
+			// Refresh the completion UI cache for terminal lanes so stale "running"
+			// rows are promoted to terminal. This must run for any terminal lane,
+			// including lanes that only have lane_lifecycle/task_failed evidence and
+			// no task_result (e.g. reviewer execution bridge writing only
+			// lane_lifecycle=invocation_failed). Without this, the sidebar row stays
+			// stuck at progressing_normal/running until a task_result appears.
+			if (!uiCacheRefreshed) {
 				refreshFlowDeskCompletionUiCachesV1({
 					rootDir: input.rootDir,
 					workflowId: input.workflowId,
-					observedAt: new Date(nowMs).toISOString(),
+					observedAt: terminalRefreshObservedAt,
 				});
+				uiCacheRefreshed = true;
 			}
 			continue; // already done
 		}
@@ -1903,13 +1984,18 @@ export async function monitorChildSessionsV1(input: {
 					progressLabel: "async agent task result persistence failed",
 					observedAt: completedAt,
 				});
+				refreshFlowDeskCompletionUiCachesV1({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					observedAt: completedAt,
+				});
 				continue;
 			}
-			writeAgentTaskProgressEvidence({
-				rootDir: input.rootDir,
-				workflowId: input.workflowId,
-				laneId,
-				taskId,
+				writeAgentTaskProgressEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
 				agentRef,
 				providerQualifiedModelId: modelId,
 				phase: "finalizing",
@@ -2005,12 +2091,17 @@ export async function monitorChildSessionsV1(input: {
 				providerQualifiedModelId: modelId,
 				phase: "failed",
 				progressSeq: 20 + nudgeCount,
-				progressLabel: "async agent task aborted after no response",
-				observedAt: abortedAt,
-			});
-			result.lanesAborted++;
-			continue;
-		}
+					progressLabel: "async agent task aborted after no response",
+					observedAt: abortedAt,
+				});
+				refreshFlowDeskCompletionUiCachesV1({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					observedAt: abortedAt,
+				});
+				result.lanesAborted++;
+				continue;
+			}
 
 		// 3. Nudge if silence threshold exceeded
 		if (silenceMs >= nudgeQuietPeriodMs && nudgeCount < maxNudges) {
@@ -2042,6 +2133,21 @@ export async function monitorChildSessionsV1(input: {
 				last_nudge_at: new Date(nowMs).toISOString(),
 			});
 		}
+	}
+
+	// Invariant: terminal/failure lanes observed during this cycle MUST cause a
+	// completion UI cache refresh, even when the failed lane has no paired
+	// `agent_task_child_session` record (e.g. reviewer execution bridge wrote
+	// only `lane_lifecycle=invocation_failed`, or `task_failed`/`no_output`
+	// arrived via the event hook without a task_result). Without this defensive
+	// refresh, the `subtask-activity-sidebar` and `auto-next-ready` caches stay
+	// stuck at `progressing_normal/running` until the next backfill pass.
+	if (!uiCacheRefreshed && terminalLaneIds.size > 0) {
+		refreshFlowDeskCompletionUiCachesV1({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			observedAt: terminalRefreshObservedAt,
+		});
 	}
 
 	return result;

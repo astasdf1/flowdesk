@@ -109,7 +109,9 @@ When FlowDesk is loaded in the active OpenCode profile and the natural-language 
 6. `flowdesk_auto_continue_preview` for “what would continue next?” checks against durable plan evidence. Preview only; no execution.
 7. `flowdesk_workflow_synthesis_preview` for provider-free summaries of already completed task results. Local preview only; no synthesis lane.
 
-None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence.
+For explicit review work, the supported route is `flowdesk_agent_task_run`. The older `flowdesk_quick_reviewer_run` helper remains quarantined until revalidated by current coordinator policy.
+
+None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence. Watchdog auto-abort, auto-retry, and stall handling are opt-in diagnostics/recovery behaviors, not default Release 1 authority.
 
 ### Stalled Lane Alerts
 

@@ -142,8 +142,15 @@ function isProviderFamily(
 
 function modelFamilyDefault(
 	family: FlowDeskProviderUsageLiveProviderFamilyV1,
+	modelHint?: string,
 ): string {
-	if (family === "openai") return "gpt-5";
+	if (family === "openai") {
+		if (modelHint !== undefined) {
+			const hint = modelHint.toLowerCase();
+			if (hint.includes("spark") || hint.includes("5.3") || hint.includes("5-3")) return "gpt-5.3-spark";
+		}
+		return "gpt-5.5";
+	}
 	if (family === "gemini") return "gemini-pro";
 	return "sonnet-4";
 }
@@ -352,11 +359,17 @@ function rowFromUsageSnapshot(
 		providerHealthSnapshotRef: `cached-health-${snapshot.snapshot_id}`,
 		providerHealth: {
 			snapshotRef: `cached-health-${snapshot.snapshot_id}`,
-			freshness: "unknown",
-			availabilityState: "unknown",
-			failureClass: "telemetry_ambiguous",
-			dispatchability: "diagnostic_only",
-			sourceSurface: "unknown",
+			freshness: snapshot.freshness,
+			availabilityState:
+				snapshot.dispatchability === "dispatchable" && snapshot.freshness === "fresh"
+					? "healthy"
+					: "unknown",
+			failureClass:
+				snapshot.dispatchability === "dispatchable" && snapshot.freshness === "fresh"
+					? "none"
+					: "telemetry_ambiguous",
+			dispatchability: snapshot.dispatchability,
+			sourceSurface: "usage_collector",
 		},
 		usageAuthorityAcquired: true,
 	};
@@ -555,7 +568,14 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 interface ReusableSidebarCacheUsageRow {
 	providerFamily: FlowDeskProviderUsageLiveProviderFamilyV1;
 	usageSnapshotRef: string;
+	dispatchability: FlowDeskProviderUsageLiveProviderRowV1["dispatchability"];
+	freshness: FlowDeskProviderUsageLiveProviderRowV1["freshness"];
+	resetBucket?: string;
+	resetTime?: string;
 	remainingPercent: number;
+	alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	modelFamily?: string;
+	uncertaintyFlags: readonly string[];
 }
 
 function alertLevelForRemainingPercent(
@@ -608,23 +628,86 @@ function loadReusableSidebarCacheUsageRows(
 			const row = item as Record<string, unknown>;
 			if (typeof row.providerFamily !== "string" || !isProviderFamily(row.providerFamily))
 				continue;
-			if (typeof row.usageSnapshotRef !== "string") continue;
-			if (
-				typeof row.remainingPercent !== "number" ||
-				!Number.isFinite(row.remainingPercent)
-			)
-				continue;
-			rows.set(row.usageSnapshotRef, {
-				providerFamily: row.providerFamily,
-				usageSnapshotRef: row.usageSnapshotRef,
-				remainingPercent: row.remainingPercent,
-			});
+			appendReusableSidebarRow(rows, row.providerFamily, row, observedAt);
+			if (Array.isArray(row.buckets)) {
+				for (const bucket of row.buckets) {
+					if (
+						typeof bucket === "object" &&
+						bucket !== null &&
+						!Array.isArray(bucket)
+					) {
+						appendReusableSidebarRow(
+							rows,
+							row.providerFamily,
+							{
+								...bucket,
+								modelFamily: row.modelFamily,
+								uncertaintyFlags: row.uncertaintyFlags,
+							},
+							observedAt,
+						);
+					}
+				}
+			}
 		}
 	} catch {
 		return rows;
 	}
 
 	return rows;
+}
+
+function appendReusableSidebarRow(
+	rows: Map<string, ReusableSidebarCacheUsageRow>,
+	providerFamily: FlowDeskProviderUsageLiveProviderFamilyV1,
+	row: Record<string, unknown>,
+	observedAt: string,
+): void {
+	if (typeof row.usageSnapshotRef !== "string") return;
+	if (
+		typeof row.remainingPercent !== "number" ||
+		!Number.isFinite(row.remainingPercent)
+	)
+		return;
+	const resetTime = typeof row.resetTime === "string" ? row.resetTime : undefined;
+	if (resetTime !== undefined && resetTime !== "unknown") {
+		const resetTimeMs = Date.parse(resetTime);
+		if (Number.isFinite(resetTimeMs) && resetTimeMs <= Date.parse(observedAt))
+			return;
+	}
+	const freshness =
+		row.freshness === "fresh" ||
+		row.freshness === "stale" ||
+		row.freshness === "unknown"
+			? row.freshness
+			: "unknown";
+	rows.set(row.usageSnapshotRef, {
+		providerFamily,
+		usageSnapshotRef: row.usageSnapshotRef,
+		dispatchability:
+			row.dispatchability === "dispatchable" ||
+			row.dispatchability === "diagnostic_only" ||
+			row.dispatchability === "non_dispatchable"
+				? row.dispatchability
+				: "diagnostic_only",
+		freshness,
+		...(typeof row.resetBucket === "string" ? { resetBucket: row.resetBucket } : {}),
+		...(resetTime === undefined ? {} : { resetTime }),
+		remainingPercent: row.remainingPercent,
+		alertLevel:
+			typeof row.alertLevel === "string" &&
+			["ok", "warning", "critical", "exhausted", "stale", "unknown"].includes(
+				row.alertLevel,
+			)
+				? (row.alertLevel as FlowDeskProviderUsageLiveAlertLevelV1)
+				: alertLevelForRemainingPercent(freshness, row.remainingPercent),
+		...(typeof row.modelFamily === "string" ? { modelFamily: row.modelFamily } : {}),
+		uncertaintyFlags: Array.isArray(row.uncertaintyFlags)
+			? row.uncertaintyFlags.filter(
+					(flag): flag is string => typeof flag === "string",
+				)
+			: [],
+	});
 }
 
 function enrichProviderRowsFromReusableSidebarCache(
@@ -636,6 +719,48 @@ function enrichProviderRowsFromReusableSidebarCache(
 	if (reusable.size === 0) return providers;
 
 	return providers.map((row) => {
+		const transientFailure =
+			row.usageAuthorityAcquired !== true ||
+			row.remainingPercent === null ||
+			row.dispatchability !== "dispatchable" ||
+			row.freshness !== "fresh";
+		const reusableByFamily = [...reusable.values()].find(
+			(cached) =>
+				cached.providerFamily === row.providerFamily &&
+				cached.dispatchability === "dispatchable" &&
+				cached.freshness === "fresh",
+		);
+		if (transientFailure && reusableByFamily !== undefined) {
+			return {
+				...row,
+				ok: true,
+				dispatchability: reusableByFamily.dispatchability,
+				freshness: reusableByFamily.freshness,
+				...(reusableByFamily.resetBucket === undefined
+					? {}
+					: { resetBucket: reusableByFamily.resetBucket }),
+				...(reusableByFamily.resetTime === undefined
+					? {}
+					: { resetTime: reusableByFamily.resetTime }),
+				remainingPercent: reusableByFamily.remainingPercent,
+				alertLevel: reusableByFamily.alertLevel,
+				modelFamily: reusableByFamily.modelFamily ?? row.modelFamily,
+				redactedReason: undefined,
+				usageSnapshotRef: reusableByFamily.usageSnapshotRef,
+				providerHealthSnapshotRef: `cached-health-${reusableByFamily.usageSnapshotRef}`,
+				providerHealth: {
+					snapshotRef: `cached-health-${reusableByFamily.usageSnapshotRef}`,
+					freshness: "fresh",
+					availabilityState: "healthy",
+					failureClass: "none",
+					dispatchability: "dispatchable",
+					sourceSurface: "usage_collector",
+				},
+				usageAuthorityAcquired: true,
+				uncertaintyFlags: [...reusableByFamily.uncertaintyFlags],
+				recommendation: `${row.providerFamily} kept the previous fresh usage snapshot and preserved ${reusableByFamily.remainingPercent.toFixed(1)}% remaining because the latest usage refresh did not acquire fresh dispatchable evidence.`,
+			};
+		}
 		if (row.remainingPercent !== null || row.usageSnapshotRef === undefined)
 			return row;
 		const cached = reusable.get(row.usageSnapshotRef);
@@ -940,26 +1065,45 @@ function persistProviderUsageSnapshots(
 	>["writeIntent"][];
 	for (const { family, result } of collectorResults) {
 		if (result === undefined) {
-			skippedReasons.push(`${family}: collector result missing`);
+			skippedReasons.push(
+				`${family}: collector result missing; preserving previous durable snapshot if present`,
+			);
 			continue;
 		}
-		const healthEvidenceId = `provider-health-snapshot-${family}-${stamp}`;
-		const healthPrep = prepareFlowDeskSessionEvidenceWriteIntentV1({
-			workflowId,
-			evidenceId: healthEvidenceId,
-			record: result.providerHealthSnapshot as unknown as Record<string, unknown>,
-		});
-		if (healthPrep.ok && healthPrep.writeIntent !== undefined) {
-			intents.push(healthPrep.writeIntent);
-			persistedIds.push(healthEvidenceId);
+		const healthDispatchable =
+			result.providerHealthSnapshot.freshness === "fresh" &&
+			result.providerHealthSnapshot.dispatchability === "dispatchable" &&
+			result.providerHealthSnapshot.availability_state === "healthy" &&
+			result.providerHealthSnapshot.failure_class === "none";
+		if (result.usageAuthorityEvidence?.usage_acquired !== true) {
+			skippedReasons.push(
+				`${family}: usage authority not acquired; preserving previous durable snapshot if present`,
+			);
+			if (!healthDispatchable)
+				skippedReasons.push(
+					`${family}: provider health snapshot not persisted because refresh did not produce fresh dispatchable health`,
+				);
+			continue;
+		}
+		if (healthDispatchable) {
+			const healthEvidenceId = `provider-health-snapshot-${family}-${stamp}`;
+			const healthPrep = prepareFlowDeskSessionEvidenceWriteIntentV1({
+				workflowId,
+				evidenceId: healthEvidenceId,
+				record: result.providerHealthSnapshot as unknown as Record<string, unknown>,
+			});
+			if (healthPrep.ok && healthPrep.writeIntent !== undefined) {
+				intents.push(healthPrep.writeIntent);
+				persistedIds.push(healthEvidenceId);
+			} else {
+				skippedReasons.push(
+					`${family}: provider health snapshot prepare failed (${healthPrep.errors.join("; ")})`,
+				);
+			}
 		} else {
 			skippedReasons.push(
-				`${family}: provider health snapshot prepare failed (${healthPrep.errors.join("; ")})`,
+				`${family}: provider health snapshot not persisted because refresh did not produce fresh dispatchable health`,
 			);
-		}
-		if (result.usageAuthorityEvidence?.usage_acquired !== true) {
-			skippedReasons.push(`${family}: usage authority not acquired`);
-			continue;
 		}
 		const evidenceId = `provider-usage-snapshot-${family}-${stamp}`;
 		const prep = prepareFlowDeskSessionEvidenceWriteIntentV1({

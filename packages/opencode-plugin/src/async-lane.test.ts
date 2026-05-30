@@ -9,6 +9,7 @@ import { applyFlowDeskSessionEvidenceWriteIntentsV1, prepareFlowDeskSessionEvide
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
 
 function makeClient(overrides: Partial<{
+	create: (o: unknown) => unknown;
 	prompt: (o: unknown) => unknown;
 	promptAsync: (o: unknown) => unknown;
 	messages: (o: unknown) => Promise<unknown>;
@@ -16,7 +17,7 @@ function makeClient(overrides: Partial<{
 }>): FlowDeskManagedDispatchBetaOpenCodeClientV1 {
 	return {
 		session: {
-			create: async () => ({ id: "ses-child-test-01" }),
+			create: overrides.create ?? (async () => ({ id: "ses-child-test-01" })),
 			prompt: overrides.prompt ?? (async () => ({})),
 			...(overrides.promptAsync === undefined ? {} : { promptAsync: overrides.promptAsync }),
 			messages: overrides.messages ?? (async () => []),
@@ -57,6 +58,52 @@ test("asyncMode returns task_launched immediately after lane launch", async () =
 		assert.equal((childEvidence?.record as Record<string, unknown>).schema_version, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION);
 		assert.equal((childEvidence?.record as Record<string, unknown>).lane_id, "lane-async-1");
 		assert.equal((childEvidence?.record as Record<string, unknown>).nudge_count, 0);
+		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(subtaskCache.schema_version, "flowdesk.subtask_activity_sidebar_cache.v1");
+		const rows = subtaskCache.rows as Array<Record<string, unknown>>;
+		assert.equal(rows[0]?.workflowId, "workflow-async-test");
+		assert.equal(rows[0]?.laneId, "lane-async-1");
+		assert.equal(rows[0]?.state, "running");
+		assert.equal(rows[0]?.classification, "progressing_normal");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("agent-task launch failure refreshes completion cache to terminal", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-launch-failed-"));
+	try {
+		const client = makeClient({
+			create: () => ({}),
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-launch-failed-1",
+			taskId: "task-launch-failed-1",
+			laneId: "lane-launch-failed-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "hello",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_failed");
+		assert.equal(result.failureCategory, "sdk_create_failed");
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-launch-failed-1" });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some((entry) => entry.evidenceClass === "task_failed"), true);
+
+		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		const rows = subtaskCache.rows as Array<Record<string, unknown>>;
+		const row = rows.find((entry) => entry.workflowId === "workflow-launch-failed-1");
+		assert.equal(row?.workflowId, "workflow-launch-failed-1");
+		assert.equal(row?.state, "invocation_failed");
+		assert.equal(row?.classification, "terminal");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -548,6 +595,12 @@ test("monitorChildSessions aborts lane after exhausting nudges and abort thresho
 		const taskFailed = reloaded2.entries.find(e => e.evidenceClass === "task_failed");
 		assert.ok(taskFailed, "task_failed evidence should be written after abort");
 		assert.equal((taskFailed?.record as Record<string, unknown>).failure_category, "sdk_prompt_timeout");
+		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		const rows = subtaskCache.rows as Array<Record<string, unknown>>;
+		const row = rows.find((entry) => entry.workflowId === "workflow-abort-1");
+		assert.equal(row?.workflowId, "workflow-abort-1");
+		assert.equal(row?.state, "invocation_failed");
+		assert.equal(row?.classification, "terminal");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -586,6 +639,109 @@ test("monitorChildSessions skips terminal lanes", async () => {
 			now: new Date(),
 		});
 		assert.equal(monResult.lanesPolled, 0, "terminal lane should be skipped");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions promotes UI row to terminal when lane has only lane_lifecycle invocation_failed (no task_result, no task_failed)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-lifecycle-only-terminal-"));
+	try {
+		const workflowId = "workflow-lifecycle-only-terminal-1";
+		const laneId = "lane-lifecycle-only-terminal-1";
+		const taskId = "task-lifecycle-only-terminal-1";
+		// Launch the lane so an agent_task_child_session record exists and is
+		// reachable from monitorChildSessionsV1's childRecords iteration.
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-lifecycle-only-1",
+			rootDir: root,
+			client: makeClient({ messages: async () => [] }),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		// Simulate the reviewer-execution-bridge style outcome: a terminal
+		// lane_lifecycle=invocation_failed evidence with NO task_result and NO
+		// task_failed companion. Before the fix this leaves the sidebar row stuck
+		// at state=running / classification=progressing_normal.
+		const lifecyclePrepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: `lifecycle-task-terminal-${laneId}-only-lifecycle`,
+			record: {
+				schema_version: "flowdesk.lane_lifecycle_record.v1",
+				workflow_id: workflowId,
+				attempt_id: `attempt-${laneId}`,
+				lane_id: laneId,
+				parent_session_ref: "ses-parent-lifecycle-only-1",
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				state: "invocation_failed",
+				timeout_ms: 0,
+				orphan_max_age_ms: 0,
+				retry_count: 0,
+				created_at: "2026-05-29T00:00:00.000Z",
+				updated_at: "2026-05-29T00:00:00.000Z",
+				dispatch_authority_enabled: false,
+				providerCall: false,
+				actualLaneLaunch: false,
+				runtimeExecution: false,
+			},
+		});
+		assert.equal(lifecyclePrepared.ok, true, lifecyclePrepared.errors?.join("; "));
+		if (!lifecyclePrepared.ok || lifecyclePrepared.writeIntent === undefined) return;
+		const lifecycleApplied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [lifecyclePrepared.writeIntent]);
+		assert.equal(lifecycleApplied.ok, true);
+
+		// Confirm no task_result / task_failed evidence is present — this is the
+		// pre-condition for the regression.
+		const beforeReload = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(beforeReload.entries.filter(e => e.evidenceClass === "task_result").length, 0);
+		assert.equal(beforeReload.entries.filter(e => e.evidenceClass === "task_failed").length, 0);
+		assert.equal(
+			beforeReload.entries.some(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).state === "invocation_failed"),
+			true,
+		);
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({ messages: async () => [] }),
+			now: new Date("2026-05-29T00:05:00.000Z"),
+		});
+		// The lane is already terminal-by-lifecycle, so monitor must not re-poll it.
+		assert.equal(monResult.lanesPolled, 0, "lifecycle-only terminal lane should be treated as terminal and skipped");
+
+		// The completion UI cache must reflect the terminal/failed classification
+		// even though no task_result and no task_failed evidence exist.
+		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		const rows = subtaskCache.rows as Array<Record<string, unknown>>;
+		const row = rows.find((entry) => entry.workflowId === workflowId && entry.laneId === laneId);
+		assert.ok(row, "sidebar row must be present for the lifecycle-only terminal lane");
+		assert.equal(row?.state, "invocation_failed", "state must reflect lifecycle terminal even without task_failed evidence");
+		assert.equal(row?.classification, "terminal", "classification must be terminal (not progressing_normal)");
+		assert.equal(row?.progressPhase, "failed");
+		// Recovery actions must include retry/resume/abort because the row is a
+		// terminal-without-success.
+		const actions = row?.recoveryActionRefs as string[] | undefined;
+		assert.ok(actions?.includes("/flowdesk-retry"), "failed recovery actions must include /flowdesk-retry");
+		assert.ok(actions?.includes("/flowdesk-abort"), "failed recovery actions must include /flowdesk-abort");
+
+		// The workflow must NOT be marked auto-next-ready because the lane is not
+		// task_result-backed.
+		const autoNextCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
+		const workflows = autoNextCache.workflows as Array<Record<string, unknown>>;
+		assert.equal(
+			workflows.some((w) => w.workflowId === workflowId),
+			false,
+			"lifecycle-only terminal lane must not appear in auto-next ready workflows",
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -650,6 +806,68 @@ test("monitorChildSessions skips lanes with task_result even when lifecycle is s
 		const aggregate = workflows[0]?.laneProgressAggregate as Record<string, unknown>;
 		assert.equal(aggregate.nextActionAvailable, true);
 		assert.equal(aggregate.nextActionKind, "synthesis");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions refreshes UI cache for terminal lanes without task_result", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-terminal-failed-"));
+	try {
+		const workflowId = "workflow-terminal-failed-1";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId: "task-terminal-failed-1",
+			laneId: "lane-terminal-failed-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({ messages: async () => [] }),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "task-failed-terminal-failed-1",
+			record: {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-terminal-failed-1",
+				task_id: "task-terminal-failed-1",
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				failure_category: "sdk_create_failed",
+				redacted_reason: "crash",
+				created_at: "2026-05-29T00:00:00.000Z",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(prepared.ok, true, prepared.errors?.join("; "));
+		if (!prepared.ok || prepared.writeIntent === undefined) return;
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent]);
+		assert.equal(applied.ok, true);
+
+		// Remove any existing UI cache
+		rmSync(join(root, ".flowdesk", "ui"), { recursive: true, force: true });
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({ messages: async () => [] }),
+			now: new Date("2026-05-29T00:05:00.000Z"),
+		});
+		assert.equal(monResult.lanesPolled, 0, "task_failed-backed lane should be skipped");
+		
+		const sidebarStr = readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8");
+		const sidebar = JSON.parse(sidebarStr) as Record<string, unknown>;
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		assert.equal(rows[0]?.laneId, "lane-terminal-failed-1");
+		assert.equal(rows[0]?.state, "invocation_failed", "row should be cached as terminal (invocation_failed)");
+		assert.equal(rows[0]?.classification, "terminal");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

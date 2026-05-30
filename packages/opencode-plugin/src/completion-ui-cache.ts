@@ -9,6 +9,7 @@ type UiRow = {
 	workflowId: string;
 	laneId: string;
 	taskId?: string;
+	parentSessionRef?: string;
 	state?: string;
 	classification: "progressing_normal" | "progressing_late" | "stalled" | "terminal" | "unknown";
 	progressPhase?: string;
@@ -32,6 +33,7 @@ type SynthesisCacheRow = {
 };
 
 const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch|fallback|reselect/i;
+const SUBTASK_ACTIVITY_CACHE_ROW_LIMIT = 20;
 
 const GENERIC_TASK_SUMMARY_WORDS = new Set([
 	"architecture",
@@ -65,7 +67,10 @@ function latestByLane(entries: readonly FlowDeskSessionEvidenceReloadEntryV1[], 
 		if (entry.evidenceClass !== evidenceClass) continue;
 		const laneId = getString(entry.record, "lane_id");
 		if (laneId === undefined) continue;
-		byLane.set(laneId, entry);
+		const existing = byLane.get(laneId);
+		const entryTime = observedTime(getString(entry.record, "updated_at") ?? getString(entry.record, "created_at") ?? getString(entry.record, "observed_at"));
+		const existingTime = existing === undefined ? -1 : observedTime(getString(existing.record, "updated_at") ?? getString(existing.record, "created_at") ?? getString(existing.record, "observed_at"));
+		if (existing === undefined || entryTime >= existingTime) byLane.set(laneId, entry);
 	}
 	return byLane;
 }
@@ -88,6 +93,61 @@ function observedTime(value: unknown): number {
 	return typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
 }
 
+function monotonicObservedAt(candidate: string, existing: unknown): string {
+	const candidateMs = observedTime(candidate);
+	const existingMs = observedTime(existing);
+	if (existingMs > candidateMs && typeof existing === "string") return existing;
+	return candidate;
+}
+
+function rowTerminalRank(row: UiRow): number {
+	return row.classification === "terminal" || row.state === "task_result" || row.state === "invocation_failed" || row.state === "no_output" || row.state === "task_failed" ? 1 : 0;
+}
+
+function rowRichness(row: UiRow): number {
+	return [row.taskId, row.parentSessionRef, row.taskSummary, row.completionStatus, row.outputKind]
+		.filter((value) => typeof value === "string" && value.length > 0).length + (row.usableForSynthesis === undefined ? 0 : 1);
+}
+
+/**
+ * Canonical row merge invariants:
+ *   1. Terminal-rank MUST be monotonic. Once a lane row reaches terminal
+ *      classification (task_result / invocation_failed / no_output /
+ *      task_failed), no later candidate may regress it to progressing_normal
+ *      regardless of timestamp ordering.
+ *   2. Within the same terminal rank, the later `lastObservedAt` wins; ties
+ *      break on row richness (more populated fields wins).
+ *   3. Merging NEVER mutates the input `existing` or `candidate` objects —
+ *      every returned row is a fresh object built via spread, so callers may
+ *      keep references to the originals without surprise. (Race-safe: a
+ *      concurrent reader of the previous cache copy cannot observe a torn row.)
+ *   4. When the winning side is `existing`, its terminal-only fields
+ *      (state, classification, progressPhase, completionStatus, outputKind,
+ *      usableForSynthesis) are NEVER overwritten by undefined-bearing keys on
+ *      the candidate.
+ */
+function choosePreferredRow(existing: UiRow | undefined, candidate: UiRow): UiRow {
+	if (existing === undefined) return { ...candidate };
+	const existingRank = rowTerminalRank(existing);
+	const candidateRank = rowTerminalRank(candidate);
+	if (candidateRank > existingRank) return { ...existing, ...candidate };
+	if (candidateRank < existingRank) return { ...existing };
+	const existingTime = observedTime(existing.lastObservedAt);
+	const candidateTime = observedTime(candidate.lastObservedAt);
+	if (candidateTime > existingTime) return { ...existing, ...candidate };
+	if (candidateTime < existingTime) return { ...existing };
+	return rowRichness(candidate) >= rowRichness(existing) ? { ...existing, ...candidate } : { ...existing };
+}
+
+function choosePreferredWorkflow(existing: Record<string, unknown> | undefined, candidate: Record<string, unknown>): Record<string, unknown> {
+	if (existing === undefined) return candidate;
+	const existingTime = observedTime(existing.readyAt);
+	const candidateTime = observedTime(candidate.readyAt);
+	if (candidateTime > existingTime) return { ...existing, ...candidate };
+	if (candidateTime < existingTime) return existing;
+	return { ...existing, ...candidate };
+}
+
 function compactTaskSummary(value: string | undefined): string | undefined {
 	if (value === undefined) return undefined;
 	const firstSentence = value
@@ -100,9 +160,9 @@ function compactTaskSummary(value: string | undefined): string | undefined {
 	const words = source.match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
 	const usefulWords = words.filter((word) => !GENERIC_TASK_SUMMARY_WORDS.has(word.toLocaleLowerCase()));
 	const labelWords = usefulWords.length > 0 ? usefulWords : words;
-	const joined = labelWords.slice(0, 2).join(" ");
+	const joined = labelWords.slice(0, 4).join(" ");
 	const compact = (joined.length > 0 ? joined : source).replace(/[^\p{L}\p{N}_ -]/gu, "").trim();
-	return compact.length > 0 ? compact.slice(0, 10) : undefined;
+	return compact.length > 0 ? compact.slice(0, 30) : undefined;
 }
 
 function safeSummaryPreview(value: string | undefined): string | undefined {
@@ -117,25 +177,36 @@ function mergeRowsByWorkflowLane(input: {
 	workflowId: string;
 	rows: readonly UiRow[];
 }): readonly UiRow[] {
+	// Invariant: merge key is (workflowId, laneId) only — NOT
+	// (parentSessionRef, workflowId, laneId). A lane row may legitimately arrive
+	// first with no `parent_session_ref` (e.g. a terminal `task_failed` without
+	// a paired `agent_task_context`) and later be enriched once lifecycle/
+	// context records that DO carry `parent_session_ref` arrive. Keying on
+	// `parentSessionRef ?? "global"` would split that single logical lane into
+	// two distinct sidebar rows, violating the "one row per lane" guarantee.
 	const merged = new Map<string, UiRow>();
 	if (Array.isArray(input.existing)) {
 		for (const row of input.existing) {
 			if (!isRecord(row)) continue;
 			const workflowId = getString(row, "workflowId");
 			const laneId = getString(row, "laneId");
-			if (workflowId === undefined || laneId === undefined || workflowId === input.workflowId) continue;
+			if (workflowId === undefined || laneId === undefined) continue;
 			merged.set(`${workflowId}\u0000${laneId}`, row as UiRow);
 		}
 	}
-	for (const row of input.rows) merged.set(`${row.workflowId}\u0000${row.laneId}`, row);
+	for (const row of input.rows) {
+		const key = `${row.workflowId}\u0000${row.laneId}`;
+		merged.set(key, choosePreferredRow(merged.get(key), row));
+	}
 	return [...merged.values()]
 		.sort((left, right) => observedTime(right.lastObservedAt) - observedTime(left.lastObservedAt))
-		.slice(0, 8);
+		.slice(0, SUBTASK_ACTIVITY_CACHE_ROW_LIMIT);
 }
 
 function mergeReadyWorkflows(input: {
 	existing: unknown;
 	workflowId: string;
+	parentSessionRef?: string;
 	workflow: Record<string, unknown> | undefined;
 }): readonly Record<string, unknown>[] {
 	const merged = new Map<string, Record<string, unknown>>();
@@ -144,10 +215,14 @@ function mergeReadyWorkflows(input: {
 			if (!isRecord(workflow)) continue;
 			const workflowId = getString(workflow, "workflowId");
 			if (workflowId === undefined || workflowId === input.workflowId) continue;
-			merged.set(workflowId, workflow);
+			const parentSessionRef = getString(workflow, "parentSessionRef") ?? "global";
+			merged.set(`${parentSessionRef}\u0000${workflowId}`, workflow);
 		}
 	}
-	if (input.workflow !== undefined) merged.set(input.workflowId, input.workflow);
+	if (input.workflow !== undefined) {
+		const key = `${input.parentSessionRef ?? "global"}\u0000${input.workflowId}`;
+		merged.set(key, choosePreferredWorkflow(merged.get(key), input.workflow));
+	}
 	return [...merged.values()]
 		.sort((left, right) => observedTime(right.readyAt) - observedTime(left.readyAt))
 		.slice(0, 8);
@@ -166,7 +241,7 @@ function mergeSynthesisRows(input: {
 			const synthesisId = getString(row, "synthesisId");
 			const summaryPreview = getString(row, "summaryPreview");
 			const observedAt = getString(row, "observedAt");
-			if (workflowId === undefined || synthesisId === undefined || summaryPreview === undefined || observedAt === undefined || workflowId === input.workflowId) continue;
+			if (workflowId === undefined || synthesisId === undefined || summaryPreview === undefined || observedAt === undefined) continue;
 			merged.set(workflowId, {
 				workflowId,
 				synthesisId,
@@ -177,7 +252,14 @@ function mergeSynthesisRows(input: {
 			});
 		}
 	}
-	if (input.row !== undefined) merged.set(input.workflowId, input.row);
+	if (input.row !== undefined) {
+		const existing = merged.get(input.workflowId);
+		if (existing !== undefined && observedTime(input.row.observedAt) < observedTime(existing.observedAt)) {
+			merged.set(input.workflowId, existing);
+		} else {
+			merged.set(input.workflowId, input.row);
+		}
+	}
 	return [...merged.values()]
 		.sort((left, right) => observedTime(right.observedAt) - observedTime(left.observedAt))
 		.slice(0, 5);
@@ -189,34 +271,88 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 	observedAt?: string;
 }): void {
 	try {
-		const observedAt = input.observedAt ?? new Date().toISOString();
+		const requestedObservedAt = input.observedAt ?? new Date().toISOString();
 		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
 		if (!reload.ok) return;
+		const uiDir = join(input.rootDir, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		const sidebarCachePath = join(uiDir, "subtask-activity-sidebar.json");
+		const autoNextCachePath = join(uiDir, "auto-next-ready.json");
+		const synthesisCachePath = join(uiDir, "latest-synthesis.json");
+		const existingSidebar = readJsonRecord(sidebarCachePath);
+		const existingAutoNext = readJsonRecord(autoNextCachePath);
+		const existingSynthesis = readJsonRecord(synthesisCachePath);
+		// Invariant: the file-level `observed_at` MUST be monotonic across every
+		// previously persisted cache file. A back-dated/duplicate terminal event
+		// (e.g. an older `task_failed` arriving after a newer one was already
+		// merged) must never regress the visible `observed_at`. We fold in
+		// sidebar, auto-next, AND synthesis observed_at so any one of them can
+		// pin monotonicity.
+		const observedAt = monotonicObservedAt(
+			monotonicObservedAt(
+				monotonicObservedAt(requestedObservedAt, existingSidebar?.observed_at),
+				existingAutoNext?.observed_at,
+			),
+			existingSynthesis?.observed_at,
+		);
 		const resultByLane = latestByLane(reload.entries, "task_result");
 		const failedByLane = latestByLane(reload.entries, "task_failed");
 		const contextByLane = latestByLane(reload.entries, "agent_task_context");
+		// Some lanes reach a terminal state via lane_lifecycle alone (e.g. reviewer
+		// execution bridge writes only lane_lifecycle=invocation_failed without a
+		// task_failed companion). Pick the latest terminal lifecycle per lane so the
+		// UI cache can promote those rows to terminal/failed instead of leaving them
+		// stale at progressing_normal/running.
+		const TERMINAL_LIFECYCLE_STATES = new Set(["complete", "invocation_failed", "no_output", "task_failed", "incomplete", "aborted", "timeout"]);
+		const terminalLifecycleByLane = new Map<string, FlowDeskSessionEvidenceReloadEntryV1>();
+		for (const entry of reload.entries) {
+			if (entry.evidenceClass !== "lane_lifecycle") continue;
+			const laneId = getString(entry.record, "lane_id");
+			if (laneId === undefined) continue;
+			const stateValue = entry.record.state;
+			if (typeof stateValue !== "string" || !TERMINAL_LIFECYCLE_STATES.has(stateValue)) continue;
+			const previous = terminalLifecycleByLane.get(laneId);
+			if (previous === undefined || observedTime(getString(previous.record, "updated_at") ?? getString(previous.record, "created_at")) <= observedTime(getString(entry.record, "updated_at") ?? getString(entry.record, "created_at"))) {
+				terminalLifecycleByLane.set(laneId, entry);
+			}
+		}
 		const synthesisEntries = reload.entries.filter((entry) => entry.evidenceClass === "workflow_synthesis_result");
 		const latestSynthesisEntry = synthesisEntries[synthesisEntries.length - 1];
 		const synthesisAlreadyRecorded = latestSynthesisEntry !== undefined;
-		const laneIds = new Set<string>([...contextByLane.keys(), ...resultByLane.keys(), ...failedByLane.keys()]);
+		const laneIds = new Set<string>([...contextByLane.keys(), ...resultByLane.keys(), ...failedByLane.keys(), ...terminalLifecycleByLane.keys()]);
 		const rows: UiRow[] = [...laneIds].map((laneId) => {
 			const result = resultByLane.get(laneId)?.record;
 			const failed = failedByLane.get(laneId)?.record;
 			const context = contextByLane.get(laneId)?.record;
-			const taskId = getString(result ?? failed ?? context ?? {}, "task_id");
+			const lifecycle = terminalLifecycleByLane.get(laneId)?.record;
+			const lifecycleState = typeof lifecycle?.state === "string" ? lifecycle.state : undefined;
+			// A lane is terminal-without-success when lifecycle reports a non-complete
+			// terminal state but no task_result and no task_failed evidence exists.
+			const lifecycleTerminalFailureOnly = result === undefined && failed === undefined && lifecycleState !== undefined && lifecycleState !== "complete";
+			const taskId = getString(result ?? failed ?? context ?? lifecycle ?? {}, "task_id");
+			const parentSessionRef = getString(context ?? lifecycle ?? {}, "parent_session_ref");
 			const taskSummary = compactTaskSummary(getString(context ?? {}, "prompt_text"));
-			const state = result !== undefined ? "task_result" : failed !== undefined ? "invocation_failed" : "running";
-			const actions = failed !== undefined
+			const state = result !== undefined
+				? "task_result"
+				: failed !== undefined
+					? "invocation_failed"
+					: lifecycleTerminalFailureOnly
+						? lifecycleState as string
+						: "running";
+			const isTerminal = result !== undefined || failed !== undefined || lifecycleTerminalFailureOnly;
+			const isFailedLike = failed !== undefined || lifecycleTerminalFailureOnly;
+			const actions = isFailedLike
 				? ["/flowdesk-status", "/flowdesk-retry", "/flowdesk-resume", "/flowdesk-abort", "/flowdesk-export-debug"]
 				: ["/flowdesk-status", "/flowdesk-export-debug"];
 			return {
 				workflowId: input.workflowId,
 				laneId,
 				...(taskId === undefined ? {} : { taskId }),
+				...(parentSessionRef === undefined ? {} : { parentSessionRef }),
 				state,
-				classification: result !== undefined || failed !== undefined ? "terminal" : "progressing_normal",
-				progressPhase: result !== undefined ? "finalizing" : failed !== undefined ? "failed" : "waiting",
-				lastObservedAt: getString(result ?? failed ?? context ?? {}, "created_at") ?? observedAt,
+				classification: isTerminal ? "terminal" : "progressing_normal",
+				progressPhase: result !== undefined ? "finalizing" : isFailedLike ? "failed" : "waiting",
+				lastObservedAt: getString(result ?? failed ?? lifecycle ?? context ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? context ?? {}, "created_at") ?? observedAt,
 				...(getString(result ?? {}, "completion_status") === undefined ? {} : { completionStatus: getString(result ?? {}, "completion_status") }),
 				...(getString(result ?? {}, "output_kind") === undefined ? {} : { outputKind: getString(result ?? {}, "output_kind") }),
 				...(typeof result?.usable_for_synthesis === "boolean" ? { usableForSynthesis: result.usable_for_synthesis } : {}),
@@ -226,14 +362,6 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				debugCommandRef: "/flowdesk-export-debug",
 			};
 		});
-		const uiDir = join(input.rootDir, ".flowdesk", "ui");
-		mkdirSync(uiDir, { recursive: true });
-		const sidebarCachePath = join(uiDir, "subtask-activity-sidebar.json");
-		const autoNextCachePath = join(uiDir, "auto-next-ready.json");
-		const synthesisCachePath = join(uiDir, "latest-synthesis.json");
-		const existingSidebar = readJsonRecord(sidebarCachePath);
-		const existingAutoNext = readJsonRecord(autoNextCachePath);
-		const existingSynthesis = readJsonRecord(synthesisCachePath);
 		const sidebarRows = mergeRowsByWorkflowLane({
 			existing: existingSidebar?.rows,
 			workflowId: input.workflowId,
@@ -249,8 +377,11 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 
 		const ready = !synthesisAlreadyRecorded && rows.length > 0 && rows.every((row) => row.state === "task_result" && row.completionStatus !== "partial" && row.usableForSynthesis !== false);
 		const readyAt = rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0);
+		const parentSessionRefs = [...new Set(rows.map((row) => row.parentSessionRef).filter((value): value is string => typeof value === "string" && value.length > 0))];
+		const parentSessionRef = parentSessionRefs.length === 1 ? parentSessionRefs[0] : undefined;
 		const readyWorkflow = ready ? {
 			workflowId: input.workflowId,
+			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
 			readyAt: Number.isFinite(readyAt) && readyAt > 0 ? new Date(readyAt).toISOString() : observedAt,
 			laneProgressAggregate: { expected: rows.length, terminal: rows.length, taskResult: rows.length, failed: 0, awaitingPermission: 0, normalCompleted: rows.length, autoNextStepEligible: true, nextActionAvailable: true, nextActionKind: "synthesis", nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
 			taskResultRefs: rows.map((row) => row.taskId ?? row.laneId).slice(0, 32),
@@ -261,6 +392,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const readyWorkflows = mergeReadyWorkflows({
 			existing: existingAutoNext?.workflows,
 			workflowId: input.workflowId,
+			parentSessionRef,
 			workflow: readyWorkflow,
 		});
 		writeFileSync(join(uiDir, "auto-next-ready.json"), `${JSON.stringify({

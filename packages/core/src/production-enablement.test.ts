@@ -48,6 +48,93 @@ function reloadResult(overrides: Partial<FlowDeskSessionEvidenceReloadResultV1> 
           schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
           telemetry_ref: "telemetry-1"
         }
+      },
+      {
+        evidenceClass: "provider_health_snapshot",
+        evidenceId: "evidence-provider-health-1",
+        path: ".flowdesk/sessions/workflow-prod-1/evidence/provider-health-snapshot/evidence-provider-health-1.json",
+        record: {
+          schema_version: "flowdesk.provider_health_snapshot.v1",
+          snapshot_id: "provider-health-1",
+          provider_family: "claude",
+          observed_at: "2026-05-20T00:00:00.000Z",
+          freshness: "fresh",
+          freshness_ttl: "5m",
+          source_surface: "test",
+          availability_state: "healthy",
+          failure_class: "none",
+          dispatchability: "dispatchable",
+          source_ref: "provider-health-source-1",
+          safe_remediation: ["/flowdesk-status"]
+        }
+      },
+      {
+        evidenceClass: "pre_dispatch_audit",
+        evidenceId: "evidence-pre-dispatch-audit-1",
+        path: ".flowdesk/sessions/workflow-prod-1/evidence/pre-dispatch-audit/evidence-pre-dispatch-audit-1.json",
+        record: {
+          schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+          workflow_id: workflowId,
+          pre_dispatch_audit_ref: "audit-1",
+          observed_at: "2026-05-20T00:00:00.000Z",
+          attempt_id: "attempt-prod-1",
+          approval_ref: "approval-1",
+          dispatch_authority_enabled: false,
+          providerCall: false,
+          actualLaneLaunch: false,
+          runtimeExecution: false
+        }
+      },
+      {
+        evidenceClass: "production_approval_source",
+        evidenceId: "evidence-production-approval-source-1",
+        path: ".flowdesk/sessions/workflow-prod-1/evidence/production-approval-source/evidence-production-approval-source-1.json",
+        record: {
+          schema_version: "flowdesk.production_approval_source.v1",
+          approval_id: "approval-source-1",
+          workflow_id: workflowId,
+          attempt_id: "attempt-prod-1",
+          action_type: "managed_dispatch_beta",
+          issuer_boundary: "external_user_confirmation",
+          approval_method: "typed_phrase",
+          actor_ref: "actor-user-1",
+          profile_ref: "profile-dev-1",
+          provider_qualified_model_id: "claude/sonnet-4",
+          provider_binding_hash: "hash-provider-binding-1",
+          evidence_bundle_hash: "hash-evidence-bundle-1",
+          guard_decision_ref: "guard-decision-1",
+          issuance_audit_ref: "issuance-audit-1",
+          nonce_ref: "nonce-1",
+          issued_at: "2026-05-20T00:00:00.000Z",
+          expires_at: "2026-05-20T00:10:00.000Z",
+          revoked: false,
+          consume_strategy: "atomic_compare_and_swap_required",
+          dispatch_authority_enabled: false
+        }
+      },
+      {
+        evidenceClass: "dispatch_idempotency",
+        evidenceId: "evidence-dispatch-idempotency-1",
+        path: ".flowdesk/sessions/workflow-prod-1/evidence/dispatch-idempotency/evidence-dispatch-idempotency-1.json",
+        record: {
+          schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+          workflow_id: workflowId,
+          snapshot_ref: "idempotency-1",
+          observed_at: "2026-05-20T00:00:00.000Z",
+          entries: [
+            {
+              attempt_id: "attempt-prod-1",
+              idempotency_key: "idempotency-key-1",
+              state: "reserved",
+              recorded_at: "2026-05-20T00:00:00.000Z"
+            }
+          ],
+          dispatch_authority_enabled: false,
+          realOpenCodeDispatch: false,
+          actualLaneLaunch: false,
+          providerCall: false,
+          runtimeExecution: false
+        }
       }
     ],
     realOpenCodeDispatch: false,
@@ -170,6 +257,8 @@ test("production enablement becomes dispatch-capable only after explicit approva
     workflowId,
     evidenceReload: reloadResult(),
     ...baseRefs(),
+    attemptId: "attempt-prod-1",
+    idempotencyKey: "idempotency-key-1",
     laneConformanceRefs: ["lane-conformance-1"],
     approvalDecision: approval
   });
@@ -181,6 +270,168 @@ test("production enablement becomes dispatch-capable only after explicit approva
   assert.equal(result.dispatch_authority_enabled, false, "diagnostic readiness is not dispatch authorization");
   assert.equal(result.approval_decision, "approve");
   assert.equal(result.approval_ref, "approval-1");
+});
+
+test("production enablement fails closed when provider health is missing, stale, or non-dispatchable", () => {
+  const approval = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+  });
+  const healthyReload = reloadResult();
+  const withoutHealth = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({ entries: healthyReload.entries.filter((entry) => entry.evidenceClass !== "provider_health_snapshot") }),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+  assert.equal(withoutHealth.state, "blocked");
+  assert.ok(withoutHealth.blocker_labels.includes("provider_health_snapshot_missing"));
+  assert.equal(withoutHealth.managed_dispatch_ready, false);
+
+  const withReusableUsageSnapshot = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({
+      entries: [
+        ...healthyReload.entries.filter((entry) => entry.evidenceClass !== "provider_health_snapshot"),
+        {
+          evidenceClass: "provider_usage_snapshot",
+          evidenceId: "provider-usage-snapshot-claude-20260520T000000000Z",
+          path: ".flowdesk/sessions/workflow-prod-1/evidence/provider-usage-snapshot/provider-usage-snapshot-claude-20260520T000000000Z.json",
+          record: {
+            schema_version: "flowdesk.usage_snapshot.v1",
+            snapshot_id: "usage-live-claude-20260520T000000000Z",
+            provider_family: "claude",
+            model_family: "sonnet-4",
+            freshness: "fresh",
+            freshness_ttl: 5,
+            reset_time: "2026-05-20T05:00:00.000Z",
+            reset_bucket: "80% until reset",
+            dispatchability: "dispatchable",
+            uncertainty_flags: [],
+            source_ref: "usage-live-source-claude-20260520T000000000Z"
+          }
+        }
+      ]
+    }),
+    ...baseRefs(),
+    attemptId: "attempt-prod-1",
+    idempotencyKey: "idempotency-key-1",
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+  assert.equal(withReusableUsageSnapshot.state, "dispatch_capable");
+  assert.equal(withReusableUsageSnapshot.managed_dispatch_ready, true);
+  assert.equal(withReusableUsageSnapshot.blocker_labels.includes("provider_health_snapshot_missing"), false);
+
+  const staleHealth = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({
+      entries: healthyReload.entries.map((entry) =>
+        entry.evidenceClass === "provider_health_snapshot"
+          ? {
+              ...entry,
+              record: {
+                ...entry.record,
+                freshness: "stale",
+                availability_state: "unknown",
+                failure_class: "telemetry_ambiguous",
+                dispatchability: "non_dispatchable"
+              }
+            }
+          : entry
+      )
+    }),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+  assert.ok(staleHealth.blocker_labels.includes("provider_health_snapshot_not_fresh"));
+  assert.ok(staleHealth.blocker_labels.includes("provider_health_snapshot_not_dispatchable"));
+  assert.equal(staleHealth.managed_dispatch_ready, false);
+
+  const diagnosticHealth = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({
+      entries: healthyReload.entries.map((entry) =>
+        entry.evidenceClass === "provider_health_snapshot"
+          ? {
+              ...entry,
+              record: {
+                ...entry.record,
+                availability_state: "degraded",
+                failure_class: "telemetry_ambiguous",
+                dispatchability: "diagnostic_only"
+              }
+            }
+          : entry
+      )
+    }),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+  assert.deepEqual(diagnosticHealth.blocker_labels, ["provider_health_snapshot_not_dispatchable"]);
+  assert.equal(diagnosticHealth.state, "blocked");
+});
+
+test("production enablement fails closed without durable pre-call approval source and idempotency evidence", () => {
+  const approval = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+  });
+  const fullReload = reloadResult();
+  const missingPrecall = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({
+      entries: fullReload.entries.filter(
+        (entry) =>
+          entry.evidenceClass !== "pre_dispatch_audit" &&
+          entry.evidenceClass !== "production_approval_source" &&
+          entry.evidenceClass !== "dispatch_idempotency"
+      )
+    }),
+    ...baseRefs(),
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+
+  assert.equal(missingPrecall.state, "blocked");
+  assert.ok(missingPrecall.blocker_labels.includes("pre_dispatch_audit_missing"));
+  assert.ok(missingPrecall.blocker_labels.includes("production_approval_source_missing"));
+  assert.ok(missingPrecall.blocker_labels.includes("dispatch_idempotency_missing"));
+  assert.equal(missingPrecall.managed_dispatch_ready, false);
+  assert.equal(missingPrecall.dispatch_authority_enabled, false);
+});
+
+test("production enablement fails closed when pre-call evidence drifts from target attempt", () => {
+  const approval = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+  });
+  const drifted = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult(),
+    ...baseRefs(),
+    attemptId: "attempt-prod-2",
+    idempotencyKey: "idempotency-key-2",
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+
+  assert.equal(drifted.state, "blocked");
+  assert.ok(drifted.blocker_labels.includes("pre_dispatch_audit_mismatched"));
+  assert.ok(drifted.blocker_labels.includes("dispatch_idempotency_reservation_missing"));
+  assert.equal(drifted.managed_dispatch_ready, false);
 });
 
 test("default managed dispatch promotion readiness remains diagnostic and non-authorizing", () => {
@@ -380,7 +631,7 @@ test("production enablement does not echo invalid approval artifacts", () => {
 
 test("production enablement records incomplete conformance as non-blocking uncertainty when opted in", () => {
   const approval = createFlowDeskProductionApprovalDecisionV1({
-    approvalId: "approval-2",
+    approvalId: "approval-1",
     workflowId,
     decision: "approve",
     createdAt: "2026-05-20T00:00:00.000Z",

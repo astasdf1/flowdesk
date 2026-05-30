@@ -13,6 +13,7 @@ export interface FlowDeskTuiSubtaskActivityRowV1 {
 	workflowId: string;
 	laneId: string;
 	taskId?: string;
+	parentSessionRef?: string;
 	state?: string;
 	classification: FlowDeskTuiSubtaskActivityClassificationV1;
 	progressPhase?: string;
@@ -32,6 +33,7 @@ export interface FlowDeskTuiSubtaskActivityViewV1 {
 
 export interface FlowDeskTuiAutoNextReadyWorkflowV1 {
 	workflowId: string;
+	parentSessionRef?: string;
 	expected: number;
 	completed: number;
 	taskResultRefs: readonly string[];
@@ -105,6 +107,7 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		workflowId,
 		laneId,
 		...(stringField(record, "taskId") === undefined ? {} : { taskId: stringField(record, "taskId") }),
+		...(stringField(record, "parentSessionRef") === undefined ? {} : { parentSessionRef: stringField(record, "parentSessionRef") }),
 		...(stringField(record, "state") === undefined ? {} : { state: stringField(record, "state") }),
 		classification,
 		...(stringField(record, "progressPhase") === undefined ? {} : { progressPhase: stringField(record, "progressPhase") }),
@@ -116,6 +119,7 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 
 export function loadFlowDeskTuiSubtaskActivityViewV1(input: {
 	rootDir?: string;
+	currentParentSessionRef?: string;
 	now?: () => Date;
 } = {}): FlowDeskTuiSubtaskActivityViewV1 {
 	const observedAt = (input.now ? input.now() : new Date()).toISOString();
@@ -134,9 +138,12 @@ export function loadFlowDeskTuiSubtaskActivityViewV1(input: {
 			};
 		}
 		const expiresAtMs = typeof cache.expires_at === "string" ? Date.parse(cache.expires_at) : Number.NaN;
-		const rows = Array.isArray(cache.rows)
+		const loadedRows = Array.isArray(cache.rows)
 			? cache.rows.filter(isRecord).map(rowFromRecord).filter((row): row is FlowDeskTuiSubtaskActivityRowV1 => row !== undefined)
 			: [];
+		const rows = input.currentParentSessionRef === undefined
+			? loadedRows
+			: loadedRows.filter((row) => row.parentSessionRef === input.currentParentSessionRef);
 		return {
 			status: Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs ? "stale" : "loaded",
 			observedAt: typeof cache.observed_at === "string" ? cache.observed_at : observedAt,
@@ -159,6 +166,7 @@ export function loadFlowDeskTuiSubtaskActivityViewV1(input: {
 
 export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 	rootDir?: string;
+	currentParentSessionRef?: string;
 	now?: () => Date;
 } = {}): FlowDeskTuiAutoNextReadyViewV1 {
 	const observedAt = (input.now ? input.now() : new Date()).toISOString();
@@ -170,10 +178,11 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 			return { status: "missing", observedAt, rootDir, workflows: [], redactedReason: "auto-next ready cache missing", safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
 		}
 		const expiresAtMs = typeof cache.expires_at === "string" ? Date.parse(cache.expires_at) : Number.NaN;
-		const workflows = Array.isArray(cache.workflows)
+		const loadedWorkflows = Array.isArray(cache.workflows)
 			? cache.workflows.filter(isRecord).map((workflow): FlowDeskTuiAutoNextReadyWorkflowV1 | undefined => {
 				const workflowId = stringField(workflow, "workflowId");
 				if (workflowId === undefined) return undefined;
+				const parentSessionRef = stringField(workflow, "parentSessionRef");
 				const aggregate = isRecord(workflow.laneProgressAggregate) ? workflow.laneProgressAggregate : {};
 				const expected = typeof aggregate.expected === "number" && Number.isFinite(aggregate.expected) ? aggregate.expected : 0;
 				const completed = typeof aggregate.normalCompleted === "number" && Number.isFinite(aggregate.normalCompleted) ? aggregate.normalCompleted : 0;
@@ -182,9 +191,12 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 				const nextActionKindRaw = typeof workflow.nextActionKind === "string" ? workflow.nextActionKind : aggregate.nextActionKind;
 				const nextActionKind = nextActionKindRaw === "synthesis" ? "synthesis" as const : undefined;
 				const nextActionAvailable = workflow.nextActionAvailable === true || aggregate.nextActionAvailable === true || nextActionKind !== undefined;
-				return { workflowId, expected, completed, taskResultRefs, taskSummaries, nextActionAvailable, ...(nextActionKind === undefined ? {} : { nextActionKind }) };
+				return { workflowId, ...(parentSessionRef === undefined ? {} : { parentSessionRef }), expected, completed, taskResultRefs, taskSummaries, nextActionAvailable, ...(nextActionKind === undefined ? {} : { nextActionKind }) };
 			}).filter((workflow): workflow is FlowDeskTuiAutoNextReadyWorkflowV1 => workflow !== undefined)
 			: [];
+		const workflows = input.currentParentSessionRef === undefined
+			? loadedWorkflows
+			: loadedWorkflows.filter((workflow) => workflow.parentSessionRef === input.currentParentSessionRef);
 		return {
 			status: Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs ? "stale" : "loaded",
 			observedAt: typeof cache.observed_at === "string" ? cache.observed_at : observedAt,
@@ -242,10 +254,20 @@ export function loadFlowDeskTuiLatestSynthesisViewV1(input: {
 }
 
 function shortTaskLabel(row: FlowDeskTuiSubtaskActivityRowV1): string {
-	if (row.taskSummary !== undefined && row.taskSummary.trim().length > 0) return row.taskSummary.slice(0, 10);
+	const suffix = shortTaskIdSuffix(row);
+	if (row.taskSummary !== undefined && row.taskSummary.trim().length > 0) {
+		return `${row.taskSummary.slice(0, 40)} ${suffix}`.trim();
+	}
 	const source = row.taskId ?? row.laneId;
 	const compact = source.replace(/^task-/, "").replace(/^lane-task-/, "");
 	return `task ${compact.length <= 12 ? compact : compact.slice(-12)}`;
+}
+
+function shortTaskIdSuffix(row: FlowDeskTuiSubtaskActivityRowV1): string {
+	const source = row.taskId ?? row.laneId;
+	const compact = source.replace(/^lane-task-/, "").replace(/^task-/, "").trim();
+	if (compact.length === 0) return "";
+	return `#${compact.length <= 6 ? compact : compact.slice(-6)}`;
 }
 
 function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
@@ -254,9 +276,9 @@ function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
 	if (row.classification === "progressing_late") return "! Slow";
 	if (row.classification === "inconsistent_finalizing_without_terminal") return "! Needs check";
 	if (row.state === "invocation_failed" || row.state === "task_failed") return "✕ Failed";
-	if (row.state === "task_result" && row.classification === "terminal") return "✓ Done";
+	if (row.state === "task_result" && row.classification === "terminal") return "✓";
 	if (row.progressPhase === "finalizing") return "… Finalizing";
-	if (row.state === "running" || row.classification === "progressing_normal") return "… Running";
+	if (row.state === "running" || row.classification === "progressing_normal") return "…";
 	return "? Unknown";
 }
 
@@ -279,9 +301,11 @@ function observedAtMs(row: FlowDeskTuiSubtaskActivityRowV1): number {
 
 function sortedRows(rows: readonly FlowDeskTuiSubtaskActivityRowV1[]): readonly FlowDeskTuiSubtaskActivityRowV1[] {
 	return [...rows].sort((left, right) => {
+		const byObservedAt = observedAtMs(right) - observedAtMs(left);
+		if (byObservedAt !== 0) return byObservedAt;
 		const byRank = rowSortRank(left) - rowSortRank(right);
 		if (byRank !== 0) return byRank;
-		return observedAtMs(right) - observedAtMs(left);
+		return (right.taskId ?? right.laneId).localeCompare(left.taskId ?? left.laneId);
 	});
 }
 
@@ -306,21 +330,7 @@ export function formatFlowDeskTuiAutoNextReadyCompactLines(
 	view: FlowDeskTuiAutoNextReadyViewV1,
 	limit = 2,
 ): readonly string[] {
-	if (view.workflows.length === 0) return [];
-	const lines = [view.status === "stale" ? "Next ready (stale):" : "Next ready:"];
-	for (const workflow of view.workflows.slice(0, Math.max(1, limit))) {
-		const workflowLabel = workflow.taskSummaries[0] ?? workflow.workflowId
-			.replace(/^workflow-/, "")
-			.replace(/-202\d.*$/, "")
-			.split("-")
-			.filter(Boolean)
-			.slice(-2)
-			.join("-")
-			.slice(0, 14);
-		const nextLabel = workflow.nextActionAvailable ? workflow.nextActionKind ?? "next" : "ready";
-		lines.push(`✓ ${workflow.completed}/${workflow.expected} ${nextLabel} ${workflowLabel || "workflow"}`);
-	}
-	return lines;
+	return [];
 }
 
 export function formatFlowDeskTuiLatestSynthesisCompactLines(

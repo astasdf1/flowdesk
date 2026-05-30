@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -24,6 +24,7 @@ import {
 	computeGuardSignOffHmacV1,
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
+	monitorChildSessionsV1,
 	backfillTerminalAgentTaskFailedLanesV1,
 	reconcileStalePendingRetryPlansV1,
 	isAutoAbortEnabledV1,
@@ -57,6 +58,42 @@ function lifecycleRecord(overrides: Partial<FlowDeskLaneLifecycleRecordV1> = {})
 }
 
 function writeLifecycle(rootDir: string, record: FlowDeskLaneLifecycleRecordV1, evidenceId = "lifecycle-running-123") {
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: record.workflow_id,
+		evidenceId,
+		record,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writeAgentTaskChildSession(
+	rootDir: string,
+	input: {
+		workflowId?: string;
+		laneId?: string;
+		taskId?: string;
+		childSessionId?: string;
+		createdAt?: string;
+	} = {},
+	evidenceId = "agent-task-child-session-123",
+): void {
+	const record = {
+		schema_version: "flowdesk.agent_task_child_session.v1",
+		workflow_id: input.workflowId ?? "workflow-quick-reviewer-123",
+		lane_id: input.laneId ?? "lane-quick-policy-security-123",
+		task_id: input.taskId ?? "task-quick-policy-security-123",
+		child_session_id: input.childSessionId ?? "ses-child-terminal-123",
+		parent_session_ref: "ses-parent-123",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		agent_ref: "agent-reviewer-123",
+		nudge_count: 0,
+		last_nudge_at: null,
+		created_at: input.createdAt ?? "2026-05-26T10:00:00.000Z",
+		dispatch_authority_enabled: false,
+	};
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 		workflowId: record.workflow_id,
 		evidenceId,
@@ -289,6 +326,60 @@ test("guarded auto-abort stays manual when disabled, responsive, or legacy-owned
 		}).status,
 		"manual_recommended",
 	);
+});
+
+test("watchdog treats terminal lifecycle-only child lanes as completed and refreshes caches", async () => {
+	for (const state of ["no_output", "incomplete", "invocation_failed"] as const) {
+		const rootDir = mkdtempSync(join(tmpdir(), `flowdesk-watchdog-terminal-${state}-`));
+		const workflowId = `workflow-quick-reviewer-terminal-${state}`;
+		const laneId = `lane-quick-policy-security-terminal-${state}`;
+		writeAgentTaskChildSession(rootDir, { workflowId, laneId, childSessionId: `ses-child-terminal-${state}` });
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state,
+				updated_at: "2026-05-26T10:02:00.000Z",
+			}),
+			`lifecycle-terminal-${state}`,
+		);
+
+		let messagesCalls = 0;
+		let promptCalls = 0;
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:05:00.000Z"),
+			client: {
+				session: {
+					messages: async () => {
+						messagesCalls += 1;
+						return { messages: [{ role: "assistant", parts: [{ type: "text", text: "late output" }] }] };
+					},
+					prompt: async () => {
+						promptCalls += 1;
+						return {};
+					},
+					abort: async () => {
+						abortCalls += 1;
+						return {};
+					},
+				},
+			} as never,
+		});
+
+		assert.deepEqual(result, { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 });
+		assert.equal(messagesCalls, 0, `${state} must not be polled/resumed`);
+		assert.equal(promptCalls, 0, `${state} must not be nudged`);
+		assert.equal(abortCalls, 0, `${state} must not be aborted`);
+
+		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		const row = (sidebar.rows as Array<Record<string, unknown>>).find((entry) => entry.laneId === laneId);
+		assert.equal(row?.state, state);
+		assert.equal(row?.classification, "terminal");
+	}
 });
 
 // ---------------------------------------------------------------------------

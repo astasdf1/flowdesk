@@ -880,10 +880,15 @@ function failingPromptAsyncClient() {
 }
 
 function fakeReservationStore(
-	overrides: { reserveOk?: boolean; failureRecordOk?: boolean } = {},
+	overrides: { reserveOk?: boolean; completedRecordOk?: boolean; failureRecordOk?: boolean } = {},
 ) {
 	const reserveCalls: Array<
 		Parameters<FlowDeskManagedDispatchBetaReservationStoreV1["reserve"]>[0]
+	> = [];
+	const completedCalls: Array<
+		Parameters<
+			NonNullable<FlowDeskManagedDispatchBetaReservationStoreV1["recordDispatchCompleted"]>
+		>[0]
 	> = [];
 	const failureCalls: Array<
 		Parameters<
@@ -901,6 +906,16 @@ function fakeReservationStore(
 					: {}),
 			};
 		},
+		recordDispatchCompleted(input) {
+			completedCalls.push(input);
+			return {
+				ok: overrides.completedRecordOk ?? true,
+				reservationEvidenceReloaded: overrides.completedRecordOk ?? true,
+				...(overrides.completedRecordOk === false
+					? { redactedFailureReason: "completed update failed" }
+					: {}),
+			};
+		},
 		recordDispatchFailure(input) {
 			failureCalls.push(input);
 			return {
@@ -912,7 +927,7 @@ function fakeReservationStore(
 			};
 		},
 	};
-	return { store, reserveCalls, failureCalls };
+	return { store, reserveCalls, completedCalls, failureCalls };
 }
 
 function observingClient(
@@ -2682,6 +2697,7 @@ test("managed dispatch beta adapter maps FlowDesk Claude binding to OpenCode Ant
 	assert.equal(promptCalls.length, 0);
 	assert.equal(promptAsyncCalls.length, 1);
 	assert.equal(reservation.reserveCalls.length, 1);
+	assert.equal(reservation.completedCalls.length, 1);
 	assert.equal(reservation.failureCalls.length, 0);
 	assert.deepEqual(promptAsyncCalls[0], {
 		path: { id: "session-123" },
@@ -2720,6 +2736,7 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
 	assert.equal(promptCalls.length, 1);
 	assert.equal(promptAsyncCalls.length, 0);
 	assert.equal(reservation.reserveCalls.length, 1);
+	assert.equal(reservation.completedCalls.length, 1);
 	assert.equal(reservation.failureCalls.length, 0);
 	assert.equal(
 		promptCalls[0].body.parts[0]?.text,
@@ -2763,7 +2780,7 @@ test("managed dispatch beta adapter requires manifest and durable evidence befor
 	assert.equal(promptAsyncCalls.length, 0);
 });
 
-test("durable reservation store materializes reserved evidence before SDK calls", async () => {
+test("durable reservation store materializes reserved and completed evidence around SDK calls", async () => {
 	await withTempRoot(async (rootDir) => {
 		const { client, promptAsyncCalls } = fakeClient();
 		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
@@ -2782,9 +2799,17 @@ test("durable reservation store materializes reserved evidence before SDK calls"
 		assert.equal(result.status, "dispatch_accepted");
 		assert.equal(promptAsyncCalls.length, 1);
 		const snapshots = dispatchIdempotencySnapshots(rootDir);
-		assert.equal(snapshots.length, 1);
-		assert.equal(snapshots[0].snapshot_ref, "idempotency-attempt-123-reserved");
-		assert.deepEqual(snapshots[0].entries, [
+		assert.equal(snapshots.length, 2);
+		const reserved = snapshots.find(
+			(snapshot) => snapshot.snapshot_ref === "idempotency-attempt-123-reserved",
+		);
+		const completed = snapshots.find(
+			(snapshot) =>
+				snapshot.snapshot_ref === "idempotency-attempt-123-dispatch-completed",
+		);
+		assert.ok(reserved);
+		assert.ok(completed);
+		assert.deepEqual(reserved.entries, [
 			{
 				attempt_id: "attempt-123",
 				idempotency_key: "idempotency-123",
@@ -2792,6 +2817,68 @@ test("durable reservation store materializes reserved evidence before SDK calls"
 				recorded_at: now,
 			},
 		]);
+		assert.deepEqual(completed.entries, [
+			{
+				attempt_id: "attempt-123",
+				idempotency_key: "idempotency-123",
+				state: "dispatch_completed",
+				recorded_at: now,
+			},
+		]);
+	});
+});
+
+test("managed dispatch beta can launch an actual runtime lane and persist lifecycle evidence", async () => {
+	await withTempRoot(async (rootDir) => {
+		const { client, createCalls, promptAsyncCalls } = fakeRuntimeLaneClient();
+		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
+			rootDir,
+			now: () => new Date(now),
+		});
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest({
+				dispatchMode: "lane_launch",
+				allowActualLaneLaunch: true,
+				sessionId: "parent-123",
+				laneId: "lane-managed-dispatch-123",
+				laneTitle: "Managed dispatch live lane",
+			}),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: store,
+			durableStateRootDir: rootDir,
+		});
+
+		assert.equal(result.status, "dispatch_accepted");
+		assert.equal(result.dispatchAttempted, true);
+		assert.equal(result.authority.actualLaneLaunch, true);
+		assert.equal(result.laneId, "lane-managed-dispatch-123");
+		assert.equal(result.childSessionRef, "ses-child-123");
+		assert.equal(createCalls.length, 1);
+		assert.equal(promptAsyncCalls.length, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-123",
+			rootDir,
+		});
+		assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+		assert.equal(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.lane_id === "lane-managed-dispatch-123" &&
+					entry.record.state === "running" &&
+					entry.record.child_session_ref === "ses-child-123",
+			),
+			true,
+		);
+		assert.equal(
+			dispatchIdempotencySnapshots(rootDir).some((snapshot) =>
+				snapshot.entries.some((entry) => entry.state === "dispatch_completed"),
+			),
+			true,
+		);
 	});
 });
 
@@ -2845,7 +2932,7 @@ test("durable reservation store preserves existing idempotency ledger entries", 
 		assert.equal(promptAsyncCalls.length, 1);
 		const reserved = dispatchIdempotencySnapshots(rootDir).find(
 			(snapshot) =>
-				snapshot.snapshot_ref === "idempotency-attempt-123-reserved",
+				snapshot.snapshot_ref === "idempotency-attempt-123-dispatch-completed",
 		);
 		assert.ok(reserved);
 		assert.deepEqual(
@@ -3415,8 +3502,19 @@ test("managed dispatch beta server can build durable reservation store from stat
 		assert.equal(result.status, "dispatch_accepted");
 		assert.equal(promptAsyncCalls.length, 1);
 		const snapshots = dispatchIdempotencySnapshots(rootDir);
-		assert.equal(snapshots.length, 1);
-		assert.equal(snapshots[0].entries[0].state, "reserved");
+		assert.equal(snapshots.length, 2);
+		assert.equal(
+			snapshots.some((snapshot) =>
+				snapshot.entries.some((entry) => entry.state === "reserved"),
+			),
+			true,
+		);
+		assert.equal(
+			snapshots.some((snapshot) =>
+				snapshot.entries.some((entry) => entry.state === "dispatch_completed"),
+			),
+			true,
+		);
 	});
 });
 
@@ -3465,10 +3563,16 @@ test("managed dispatch beta server reloads durable evidence from state root", as
 		assert.equal(result.dispatchAttempted, true);
 		assert.equal(promptAsyncCalls.length, 1);
 		const snapshots = dispatchIdempotencySnapshots(rootDir);
-		assert.equal(snapshots.length, 2);
+		assert.equal(snapshots.length, 3);
 		assert.equal(
 			snapshots.some((snapshot) =>
 				snapshot.entries.some((entry) => entry.state === "reserved"),
+			),
+			true,
+		);
+		assert.equal(
+			snapshots.some((snapshot) =>
+				snapshot.entries.some((entry) => entry.state === "dispatch_completed"),
 			),
 			true,
 		);

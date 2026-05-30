@@ -128,7 +128,7 @@ test("provider usage live persistence reports durable root, workflow id, and an 
 		);
 		const persisted = result.snapshotPersistence?.persistedEvidenceIds ?? [];
 		const skipped = result.snapshotPersistence?.skippedReasons ?? [];
-		const allowedReason = /usage authority not acquired|collector result missing/;
+		const allowedReason = /usage authority not acquired|collector result missing|provider health snapshot not persisted/;
 		for (const reason of skipped) assert.match(reason, allowedReason);
 		const evidenceDir = join(
 			root,
@@ -206,8 +206,8 @@ test("provider usage live reuses a fresh durable snapshot before collecting prov
 		);
 		assert.equal(result.providers[0]?.remainingPercent, 80);
 		assert.equal(result.providers[0]?.alertLevel, "ok");
-		assert.equal(result.providers[0]?.providerHealth?.freshness, "unknown");
-		assert.equal(result.providers[0]?.providerHealth?.dispatchability, "diagnostic_only");
+		assert.equal(result.providers[0]?.providerHealth?.freshness, "fresh");
+		assert.equal(result.providers[0]?.providerHealth?.dispatchability, "dispatchable");
 		assert.match(
 			result.providers[0]?.recommendation ?? "",
 			/Reused a fresh durable usage snapshot/i,
@@ -305,6 +305,165 @@ test("provider usage live preserves sidebar cache percent when reusing bucket-la
 		) as { providers?: Array<{ remainingPercent?: unknown; alertLevel?: unknown }> };
 		assert.equal(rewritten.providers?.[0]?.remainingPercent, 77);
 		assert.equal(rewritten.providers?.[0]?.alertLevel, "ok");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("provider usage live preserves fresh sidebar row when refresh fails", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-sidebar-failure-"));
+	try {
+		const uiDir = join(root, ".flowdesk/ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-24T00:00:00.000Z",
+					expires_at: "2026-05-24T00:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "openai",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							resetBucket: "openai-gpt-5h",
+							resetTime: "2026-05-24T05:00:00.000Z",
+							remainingPercent: 64,
+							alertLevel: "ok",
+							modelFamily: "gpt-5",
+							usageSnapshotRef: "usage-live-openai-20260524T000000000Z",
+							uncertaintyFlags: [],
+						},
+					],
+					authority: {
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						actualLaneLaunch: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["openai"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistSidebarCache: true,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "openai" },
+			now: fixedNow,
+		});
+
+		assert.equal(result.providers[0]?.dispatchability, "dispatchable");
+		assert.equal(result.providers[0]?.freshness, "fresh");
+		assert.equal(result.providers[0]?.remainingPercent, 64);
+		assert.equal(
+			result.providers[0]?.usageSnapshotRef,
+			"usage-live-openai-20260524T000000000Z",
+		);
+		assert.match(result.providers[0]?.recommendation ?? "", /kept the previous fresh usage snapshot/i);
+		const rewritten = JSON.parse(
+			readFileSync(join(uiDir, "provider-usage-sidebar.json"), "utf8"),
+		) as { providers?: Array<{ dispatchability?: unknown; remainingPercent?: unknown; usageSnapshotRef?: unknown }> };
+		assert.equal(rewritten.providers?.[0]?.dispatchability, "dispatchable");
+		assert.equal(rewritten.providers?.[0]?.remainingPercent, 64);
+		assert.equal(
+			rewritten.providers?.[0]?.usageSnapshotRef,
+			"usage-live-openai-20260524T000000000Z",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("provider usage live preserves fresh sidebar bucket when primary row refresh fails", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-sidebar-bucket-"));
+	try {
+		const uiDir = join(root, ".flowdesk/ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-24T00:00:00.000Z",
+					expires_at: "2026-05-24T00:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "openai",
+							connected: false,
+							dispatchability: "non_dispatchable",
+							freshness: "unknown",
+							resetBucket: "unknown",
+							resetTime: "unknown",
+							remainingPercent: null,
+							alertLevel: "unknown",
+							modelFamily: "gpt-5",
+							usageSnapshotRef: "usage-live-openai-failed-20260524T000000000Z",
+							uncertaintyFlags: ["unknown"],
+							buckets: [
+								{
+									resetBucket: "openai-weekly",
+									resetTime: "2026-05-31T10:05:59.000Z",
+									remainingPercent: 34,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+									usageSnapshotRef: "usage-live-openai-20260524T000000000Z",
+								},
+							],
+						},
+					],
+					authority: {
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						actualLaneLaunch: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["openai"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistSidebarCache: true,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "openai" },
+			now: fixedNow,
+		});
+
+		assert.equal(result.providers[0]?.dispatchability, "dispatchable");
+		assert.equal(result.providers[0]?.freshness, "fresh");
+		assert.equal(result.providers[0]?.resetBucket, "openai-weekly");
+		assert.equal(result.providers[0]?.remainingPercent, 34);
+		assert.equal(
+			result.providers[0]?.usageSnapshotRef,
+			"usage-live-openai-20260524T000000000Z",
+		);
+		const rewritten = JSON.parse(
+			readFileSync(join(uiDir, "provider-usage-sidebar.json"), "utf8"),
+		) as { providers?: Array<{ resetBucket?: unknown; remainingPercent?: unknown }> };
+		assert.equal(rewritten.providers?.[0]?.resetBucket, "openai-weekly");
+		assert.equal(rewritten.providers?.[0]?.remainingPercent, 34);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

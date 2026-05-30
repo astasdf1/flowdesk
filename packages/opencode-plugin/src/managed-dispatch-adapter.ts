@@ -51,6 +51,7 @@ import {
 	validateFlowDeskPermissionAskDecisionV1,
 	validateFlowDeskPromptNoReplyDecisionV1,
 	validateFlowDeskRuntimeLaneLaunchPlanV1,
+	planFlowDeskRuntimeLaneLaunchV1,
 	validateFlowDeskSessionAbortDecisionV1,
 	validateNoForbiddenRawPayloads,
 	validateTopTierReviewVerdictV1,
@@ -77,6 +78,11 @@ export interface FlowDeskManagedDispatchBetaDispatchRequestV1 {
 	promptSummary?: string;
 	directory?: string;
 	dispatchMethod?: FlowDeskManagedDispatchBetaDispatchMethodV1;
+	dispatchMode?: "prompt" | "lane_launch";
+	allowActualLaneLaunch?: boolean;
+	laneId?: string;
+	launchRequestId?: string;
+	laneTitle?: string;
 }
 
 export interface FlowDeskManagedDispatchBetaAuthoritySummaryV1 {
@@ -423,6 +429,9 @@ export interface FlowDeskManagedDispatchBetaDispatchResultV1 {
 		modelID: string;
 	};
 	directory?: string;
+	laneId?: string;
+	childSessionRef?: string;
+	messageRef?: string;
 	response?: unknown;
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1;
 	verification: FlowDeskManagedDispatchBetaVerificationStatusV1;
@@ -551,6 +560,12 @@ export interface FlowDeskManagedDispatchBetaReservationStoreResultV1 {
 
 export interface FlowDeskManagedDispatchBetaReservationStoreV1 {
 	reserve(input: {
+		manifest: FlowDeskDispatchAttemptManifestV1;
+		reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
+	}):
+		| Promise<FlowDeskManagedDispatchBetaReservationStoreResultV1>
+		| FlowDeskManagedDispatchBetaReservationStoreResultV1;
+	recordDispatchCompleted?(input: {
 		manifest: FlowDeskDispatchAttemptManifestV1;
 		reloadedEvidence: FlowDeskSessionEvidenceReloadResultV1;
 	}):
@@ -3018,6 +3033,62 @@ export function createFlowDeskManagedDispatchBetaDurableReservationStoreV1(
 					: { redactedFailureReason: materialized.redactedFailureReason }),
 			};
 		},
+		recordDispatchCompleted(input) {
+			const recordedAt = now().toISOString();
+			const evidenceId = snapshotRefFor(input.manifest, "dispatch-completed");
+			const current = currentIdempotencySnapshot(
+				options.rootDir,
+				input.manifest.workflow_id,
+			);
+			if (!current.ok) {
+				return {
+					ok: false,
+					reservationEvidenceReloaded: false,
+					redactedFailureReason: current.redactedFailureReason,
+				};
+			}
+			const stateUpdate = prepareFlowDeskDispatchIdempotencyStateUpdateV1({
+				workflowId: input.manifest.workflow_id,
+				attemptId: input.manifest.attempt_id,
+				idempotencyKey: input.manifest.idempotency_key,
+				snapshotRef: evidenceId,
+				recordedAt,
+				nextState: "dispatch_completed",
+				existingSnapshot:
+					reservedSnapshots.get(reservationKey(input.manifest)) ??
+					current.snapshot ??
+					existingIdempotencySnapshot(input.reloadedEvidence),
+			});
+			if (
+				!stateUpdate.state_update_prepared ||
+				stateUpdate.snapshot === undefined
+			) {
+				return {
+					ok: false,
+					reservationEvidenceReloaded: false,
+					redactedFailureReason: "completed state preparation blocked",
+				};
+			}
+			const materialized = materializeSnapshot({
+				rootDir: options.rootDir,
+				manifest: input.manifest,
+				evidenceId,
+				snapshot: stateUpdate.snapshot,
+				expectedState: "dispatch_completed",
+			});
+			if (materialized.ok && materialized.snapshot !== undefined)
+				reservedSnapshots.set(
+					reservationKey(input.manifest),
+					materialized.snapshot,
+				);
+			return {
+				ok: materialized.ok,
+				reservationEvidenceReloaded: materialized.reservationEvidenceReloaded,
+				...(materialized.redactedFailureReason === undefined
+					? {}
+					: { redactedFailureReason: materialized.redactedFailureReason }),
+			};
+		},
 		recordDispatchFailure(input) {
 			const recordedAt = now().toISOString();
 			const evidenceId = snapshotRefFor(input.manifest, "dispatch-failed");
@@ -4105,6 +4176,42 @@ function dispatchOptions(
 	};
 }
 
+function managedDispatchLaneLaunchPlan(input: {
+	boundaryInput: ManagedDispatchBetaBoundaryInputV1;
+	request: FlowDeskManagedDispatchBetaDispatchRequestV1;
+	manifest: FlowDeskDispatchAttemptManifestV1;
+	sdkClientAvailable: boolean;
+}): FlowDeskRuntimeLaneLaunchPlanV1 {
+	const laneId = input.request.laneId ?? `lane-${input.manifest.attempt_id}`;
+	return planFlowDeskRuntimeLaneLaunchV1({
+		request: {
+			schema_version: "flowdesk.runtime_lane_launch_request.v1",
+			launch_request_id:
+				input.request.launchRequestId ??
+				`launch-request-${input.manifest.attempt_id}`,
+			workflow_id: input.manifest.workflow_id,
+			attempt_id: input.manifest.attempt_id,
+			lane_id: laneId,
+			parent_session_ref: refFrom("ses", input.request.sessionId),
+			agent_ref: refFrom("agent", input.request.agent),
+			provider_qualified_model_id: input.request.provider_qualified_model_id,
+			launch_reason: "managed_dispatch",
+			pre_launch_audit_ref: input.manifest.pre_dispatch_audit_ref,
+			lane_launch_approval_ref: input.manifest.consumed_approval_ref,
+			requested_at: input.manifest.created_at,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 180_000,
+			retry_budget: 0,
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		},
+		sdkClientAvailable: input.sdkClientAvailable,
+		durableEvidenceRootRef: `evidence-root-${input.manifest.workflow_id}`,
+	});
+}
+
 export async function dispatchManagedDispatchBetaPromptV1(input: {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	boundaryInput: ManagedDispatchBetaBoundaryInputV1;
@@ -4112,6 +4219,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 	dispatchManifest?: FlowDeskDispatchAttemptManifestV1;
 	reloadedEvidence?: FlowDeskSessionEvidenceReloadResultV1;
 	reservationStore?: FlowDeskManagedDispatchBetaReservationStoreV1;
+	durableStateRootDir?: string;
 }): Promise<FlowDeskManagedDispatchBetaAdapterResultV1> {
 	const guardDecision = evaluateManagedDispatchBetaGuardBoundaryV1(
 		input.boundaryInput,
@@ -4263,6 +4371,126 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			`Dispatch idempotency reservation materialization blocked: ${reservation.redactedFailureReason ?? "reload not proven"}.`,
 		);
 	}
+	const dispatchMode = input.request.dispatchMode ?? "prompt";
+	if (dispatchMode === "lane_launch") {
+		const launchPlan = managedDispatchLaneLaunchPlan({
+			boundaryInput: input.boundaryInput,
+			request: input.request,
+			manifest: input.dispatchManifest,
+			sdkClientAvailable: input.client.session.create !== undefined,
+		});
+		const launchResult = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
+			client: input.client,
+			launchPlan,
+			request: {
+				allowActualLaneLaunch: input.request.allowActualLaneLaunch === true,
+				parentSessionId: input.request.sessionId,
+				promptText: text,
+				...(input.request.directory === undefined
+					? {}
+					: { directory: input.request.directory }),
+				dispatchMethod,
+				...(input.request.laneTitle === undefined
+					? {}
+					: { title: input.request.laneTitle }),
+			},
+		});
+		if (launchResult.status !== "lane_launch_started") {
+			return {
+				adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
+				status: "dispatch_failed",
+				dispatchAttempted: true,
+				dispatchMethod,
+				guardDecision,
+				sessionId: input.request.sessionId,
+				agent: input.request.agent,
+				model: runtimeModel,
+				...(input.request.directory === undefined
+					? {}
+					: { directory: input.request.directory }),
+				redactedErrorCategory: "runtime",
+				authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
+				verification: verificationFor(input.boundaryInput),
+			};
+		}
+		if (input.durableStateRootDir !== undefined) {
+			const lifecycle = materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1({
+				rootDir: input.durableStateRootDir,
+				launchPlan,
+				launchResult,
+				evidenceId: `lifecycle-managed-dispatch-${launchPlan.lane_id}`,
+				observedAt: new Date().toISOString(),
+				timeoutMs: 60_000,
+				orphanMaxAgeMs: 180_000,
+				retryCount: 0,
+			});
+			if (lifecycle.status !== "lane_lifecycle_recorded") {
+				return {
+					adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
+					status: "dispatch_failed",
+					dispatchAttempted: true,
+					dispatchMethod,
+					guardDecision,
+					sessionId: input.request.sessionId,
+					agent: input.request.agent,
+					model: runtimeModel,
+					...(input.request.directory === undefined
+						? {}
+						: { directory: input.request.directory }),
+					redactedErrorCategory: "runtime",
+					authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
+					verification: verificationFor(input.boundaryInput),
+				};
+			}
+		}
+		const completedRecord =
+			input.reservationStore.recordDispatchCompleted === undefined
+				? { ok: true, reservationEvidenceReloaded: true }
+				: await input.reservationStore.recordDispatchCompleted({
+						manifest: input.dispatchManifest,
+						reloadedEvidence: input.reloadedEvidence,
+					});
+		if (!completedRecord.ok || completedRecord.reservationEvidenceReloaded !== true) {
+			return {
+				adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
+				status: "dispatch_failed",
+				dispatchAttempted: true,
+				dispatchMethod,
+				guardDecision,
+				sessionId: input.request.sessionId,
+				agent: input.request.agent,
+				model: runtimeModel,
+				...(input.request.directory === undefined
+					? {}
+					: { directory: input.request.directory }),
+				redactedErrorCategory: "runtime",
+				authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
+				verification: verificationFor(input.boundaryInput),
+			};
+		}
+		return {
+			adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
+			status: "dispatch_accepted",
+			dispatchAttempted: true,
+			dispatchMethod,
+			guardDecision,
+			sessionId: input.request.sessionId,
+			agent: input.request.agent,
+			model: runtimeModel,
+			...(input.request.directory === undefined
+				? {}
+				: { directory: input.request.directory }),
+			...(launchResult.laneId === undefined ? {} : { laneId: launchResult.laneId }),
+			...(launchResult.childSessionRef === undefined
+				? {}
+				: { childSessionRef: launchResult.childSessionRef }),
+			...(launchResult.messageRef === undefined
+				? {}
+				: { messageRef: launchResult.messageRef }),
+			authority: { ...enabledDispatchAuthority(), actualLaneLaunch: true },
+			verification: verificationFor(input.boundaryInput),
+		};
+	}
 
 	const options = dispatchOptions(input.request, runtimeModel, text);
 	let response: unknown;
@@ -4289,6 +4517,31 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 				failureRecord.ok && failureRecord.reservationEvidenceReloaded
 					? "provider_api"
 					: "runtime",
+			authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
+			verification: verificationFor(input.boundaryInput),
+		};
+	}
+	const completedRecord =
+		input.reservationStore.recordDispatchCompleted === undefined
+			? { ok: true, reservationEvidenceReloaded: true }
+			: await input.reservationStore.recordDispatchCompleted({
+					manifest: input.dispatchManifest,
+					reloadedEvidence: input.reloadedEvidence,
+				});
+	if (!completedRecord.ok || completedRecord.reservationEvidenceReloaded !== true) {
+		return {
+			adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
+			status: "dispatch_failed",
+			dispatchAttempted: true,
+			dispatchMethod,
+			guardDecision,
+			sessionId: input.request.sessionId,
+			agent: input.request.agent,
+			model: runtimeModel,
+			...(input.request.directory === undefined
+				? {}
+				: { directory: input.request.directory }),
+			redactedErrorCategory: "runtime",
 			authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 			verification: verificationFor(input.boundaryInput),
 		};

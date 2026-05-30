@@ -18,6 +18,7 @@ export const FLOWDESK_RUNTIME_LANE_LAUNCH_REASONS = [
 	"runtime_observation",
 	"diagnostic_lane",
 	"agent_task",
+	"managed_dispatch",
 ] as const;
 export type FlowDeskRuntimeLaneLaunchReasonV1 =
 	(typeof FLOWDESK_RUNTIME_LANE_LAUNCH_REASONS)[number];
