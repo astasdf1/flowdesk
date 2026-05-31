@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	computeFlowDeskEvidenceBundleHashV1,
 	consumeFlowDeskProductionApprovalSourceV1,
+	issueFlowDeskProductionApprovalSourceV1,
 	validateFlowDeskProductionApprovalSourceV1,
+	type FlowDeskProductionApprovalEvidenceEntryV1,
+	type FlowDeskProductionApprovalIssueInputV1,
 	type FlowDeskProductionApprovalSourceV1,
 } from "./index.js";
 
@@ -207,4 +211,115 @@ test("production approval source rejects consumed-state drift", () => {
 	);
 	assert.equal(result.ok, false);
 	assert.match(result.errors.join("; "), /consumed_by_attempt_id/);
+});
+
+// ── Issuer ──────────────────────────────────────────────────────────────────
+
+function evidenceEntry(
+	overrides: Partial<FlowDeskProductionApprovalEvidenceEntryV1> = {},
+): FlowDeskProductionApprovalEvidenceEntryV1 {
+	return {
+		evidenceClass: "usage_authority",
+		evidenceId: "usage-authority-1",
+		path: ".flowdesk/sessions/workflow-1/evidence/usage-authority/usage-authority-1.json",
+		record: { schema_version: "x", value: 1 },
+		...overrides,
+	};
+}
+
+function issueInput(
+	overrides: Partial<FlowDeskProductionApprovalIssueInputV1> = {},
+): FlowDeskProductionApprovalIssueInputV1 {
+	return {
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		actionType: "managed_dispatch_beta",
+		actorRef: "actor-user-1",
+		profileRef: "profile-prod-1",
+		providerQualifiedModelId: "claude/claude-opus-4-5",
+		evidenceEntries: [
+			evidenceEntry(),
+			evidenceEntry({ evidenceClass: "runtime_echo", evidenceId: "runtime-echo-1", path: ".flowdesk/sessions/workflow-1/evidence/runtime-echo/runtime-echo-1.json", record: { schema_version: "y", echo: "abc" } }),
+			evidenceEntry({ evidenceClass: "telemetry_correlation", evidenceId: "telem-1", path: ".flowdesk/sessions/workflow-1/evidence/telemetry-correlation/telem-1.json", record: { schema_version: "z", corr: "def" } }),
+		],
+		requiredEvidenceClasses: ["usage_authority", "runtime_echo", "telemetry_correlation"],
+		confirmation: {
+			method: "typed_phrase",
+			issuerBoundary: "external_user_confirmation",
+			expectedPhrase: "APPROVE PRODUCTION DISPATCH",
+			providedPhrase: "APPROVE PRODUCTION DISPATCH",
+		},
+		guardDecisionRef: "guard-decision-1",
+		issuanceAuditRef: "audit-issuance-1",
+		nonceRef: "nonce-1",
+		issuedAt: "2026-05-21T00:00:00.000Z",
+		ttlMs: 10 * 60_000,
+		now: "2026-05-21T00:00:30.000Z",
+		...overrides,
+	};
+}
+
+test("issuer issues a valid non-authorizing approval on genuine confirmation and complete evidence", () => {
+	const result = issueFlowDeskProductionApprovalSourceV1(issueInput());
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.state, "issued");
+	assert.ok(result.approval);
+	assert.equal(result.approval?.dispatch_authority_enabled, false);
+	// Computed hashes must match the deterministic bundle hash and be bound.
+	assert.equal(
+		result.evidence_bundle_hash,
+		computeFlowDeskEvidenceBundleHashV1(issueInput().evidenceEntries),
+	);
+	assert.match(String(result.provider_binding_hash), /^sha256-/);
+	// Issued record itself must pass full validation.
+	assert.equal(
+		validateFlowDeskProductionApprovalSourceV1(result.approval, "workflow-1").ok,
+		true,
+	);
+});
+
+test("issuer fails closed on phrase mismatch", () => {
+	const result = issueFlowDeskProductionApprovalSourceV1(
+		issueInput({ confirmation: { method: "typed_phrase", issuerBoundary: "external_user_confirmation", expectedPhrase: "APPROVE PRODUCTION DISPATCH", providedPhrase: "approve" } }),
+	);
+	assert.equal(result.ok, false);
+	assert.equal(result.state, "blocked");
+	assert.match(result.errors.join("; "), /confirmation phrase mismatch/);
+});
+
+test("issuer fails closed when a gate-required evidence class is missing", () => {
+	const result = issueFlowDeskProductionApprovalSourceV1(
+		issueInput({ evidenceEntries: [evidenceEntry()], requiredEvidenceClasses: ["usage_authority", "runtime_echo", "telemetry_correlation"] }),
+	);
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /missing required evidence class: runtime_echo/);
+	assert.match(result.errors.join("; "), /missing required evidence class: telemetry_correlation/);
+});
+
+test("issuer fails closed on excessive TTL and on clock skew", () => {
+	const longTtl = issueFlowDeskProductionApprovalSourceV1(issueInput({ ttlMs: 60 * 60_000 }));
+	assert.equal(longTtl.ok, false);
+	assert.match(longTtl.errors.join("; "), /ttlMs exceeds/);
+
+	const skew = issueFlowDeskProductionApprovalSourceV1(issueInput({ now: "2026-05-21T01:00:00.000Z" }));
+	assert.equal(skew.ok, false);
+	assert.match(skew.errors.join("; "), /clock skew/);
+});
+
+test("issuer evidence bundle hash changes when evidence content changes (tamper-evident)", () => {
+	const base = computeFlowDeskEvidenceBundleHashV1(issueInput().evidenceEntries);
+	const tampered = computeFlowDeskEvidenceBundleHashV1(
+		issueInput().evidenceEntries.map((e, i) => (i === 0 ? { ...e, record: { ...e.record, value: 999 } } : e)),
+	);
+	assert.notEqual(base, tampered);
+});
+
+test("issuer never enables dispatch authority even when blocked", () => {
+	const result = issueFlowDeskProductionApprovalSourceV1(issueInput({ ttlMs: -1 }));
+	assert.equal(result.ok, false);
+	assert.equal(result.dispatch_authority_enabled, false);
+	assert.equal(result.realOpenCodeDispatch, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
 });
