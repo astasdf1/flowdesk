@@ -8,18 +8,18 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.1.15` is the current Release 1 candidate in this repository:
+Version `0.1.16` is the current Release 1 candidate in this repository:
 
 ```bash
-npm install @flowdesk/core@^0.1.15 @flowdesk/opencode-plugin@^0.1.15
+npm install @flowdesk/core@^0.1.16 @flowdesk/opencode-plugin@^0.1.16
 ```
 
-Add the plugin to your OpenCode config. The plugin entry must point at the
-`/server` subpath; the package root only exports helper types:
+Add the plugin to your OpenCode config. Use the package root as the plugin
+entry; OpenCode resolves npm plugin packages at the package root:
 
 ```json
 {
-  "plugin": ["@flowdesk/opencode-plugin/server"]
+  "plugin": ["@flowdesk/opencode-plugin"]
 }
 ```
 
@@ -30,7 +30,7 @@ opt-in set for the description-driven natural-language tools is:
 {
   "plugin": [
     [
-      "@flowdesk/opencode-plugin/server",
+      "@flowdesk/opencode-plugin",
       {
         "providerUsageLive": {
           "enabled": true,
@@ -129,7 +129,7 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
 
 - [x] **Phase 3: OpenCode plugin command path (about 95%)**
   - `@flowdesk/opencode-plugin`, command-backed handlers, `/flowdesk-*` command files, bootstrap installer, safe local tools, chat intake/steering, pending confirmation behavior, status/recovery/diagnostics, and Release 1 production-eligible non-dispatch registration exist.
-  - Packages are prepared as `@flowdesk/core@0.1.15` and `@flowdesk/opencode-plugin@0.1.15` for the next Release 1 package publication.
+  - Packages are prepared as `@flowdesk/core@0.1.16` and `@flowdesk/opencode-plugin@0.1.16` for the next Release 1 package publication.
   - Remaining: user-facing hardening and continued proof that default behavior stays non-dispatch.
 
 - [ ] **Phase 4: OpenCode conformance (about 58%)**

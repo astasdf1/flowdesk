@@ -353,7 +353,7 @@ Set `chatMessageStallAlert.includeProgressingLate=true` if you also want a softe
 
 ```bash
 node --input-type=module -e "
-import plugin from '@flowdesk/opencode-plugin/server';
+import plugin from '@flowdesk/opencode-plugin';
 const hooks = await plugin.server(undefined, {
   quickReviewerRun: { enabled: true, providerQualifiedModelId: 'openai/gpt-5.4-mini-fast', runtimeAgent: 'reviewer-gpt-frontier' },
   providerUsageLive: { enabled: true, providers: ['claude', 'openai', 'gemini'], claudeOAuthUsage: true, codexLiveUsage: true, geminiQuota: true },

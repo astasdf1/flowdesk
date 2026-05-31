@@ -6,18 +6,18 @@ registration plus opt-in description-driven natural-language tools.
 ## Install
 
 ```bash
-npm install @flowdesk/opencode-plugin@^0.1.15
+npm install @flowdesk/opencode-plugin@^0.1.16
 ```
 
 ## Configure
 
-The OpenCode plugin entry must point at the `/server` subpath. The package
-root only exports helper types and an id; the actual default plugin object
-is exposed under `/server`:
+Use the package root as the OpenCode plugin entry. OpenCode resolves npm
+plugin packages at the package root, and the package root exports the default
+FlowDesk plugin object plus helper APIs:
 
 ```json
 {
-  "plugin": ["@flowdesk/opencode-plugin/server"]
+  "plugin": ["@flowdesk/opencode-plugin"]
 }
 ```
 
@@ -27,7 +27,7 @@ The minimum opt-in set for the natural-language tools is:
 {
   "plugin": [
     [
-      "@flowdesk/opencode-plugin/server",
+      "@flowdesk/opencode-plugin",
       {
         "providerUsageLive": {
           "enabled": true,

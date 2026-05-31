@@ -45,7 +45,7 @@ import {
 	flowdeskPluginId,
 	flowdeskPluginScaffold,
 	hasProductionOpenCodeRegistration,
-} from "./index.js";
+} from "./metadata.js";
 import { observeFlowDeskOpenCodeEventV1 } from "./event-hook-observer.js";
 import {
 	type FlowDeskLaneHeartbeatWriteRequestV1,
