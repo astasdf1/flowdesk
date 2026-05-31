@@ -1,8 +1,8 @@
 # Working OpenCode models
 
-Observed at: 2026-05-30T21:04:42.950Z
+Observed at: 2026-05-31T08:45:51.251Z
 Source snapshot: docs/model-availability/opencode-model-availability.json
-Available models: 37
+Available models: 36
 
 - `anthropic/claude-haiku-4-5`
 - `anthropic/claude-haiku-4-5-20251001`
@@ -23,7 +23,6 @@ Available models: 37
 - `google/gemini-2.5-flash`
 - `google/gemini-2.5-flash-lite`
 - `google/gemini-2.5-pro`
-- `google/gemini-3-flash-preview`
 - `google/gemini-3-pro-preview`
 - `google/gemini-3.1-flash-lite`
 - `google/gemini-3.1-flash-lite-preview`

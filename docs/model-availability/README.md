@@ -19,3 +19,4 @@ Typical periodic schedule:
 ```
 
 Use `--limit N` for a quick smoke run and `--timeout-ms N` to tune the per-model probe window.
+Use `--include-family anthropic,google` or `--exclude-family openai` when a provider quota bucket is critical and the refresh should avoid probing that provider while still keeping a redacted partial snapshot.

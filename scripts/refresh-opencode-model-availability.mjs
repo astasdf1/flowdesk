@@ -20,6 +20,16 @@ function readInteger(name, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function readFamilySet(name) {
+  const raw = readValue(name, "");
+  return new Set(
+    raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+}
+
 function parseModelIds(text) {
   return [...new Set(text.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(line)))].sort((a, b) => a.localeCompare(b));
 }
@@ -187,6 +197,8 @@ function buildMarkdown(snapshot) {
 function main() {
   const timeoutMs = readInteger("--timeout-ms", 15000);
   const limit = readInteger("--limit", 0);
+  const includeFamilies = readFamilySet("--include-family");
+  const excludeFamilies = readFamilySet("--exclude-family");
   const prompt = readValue("--prompt", "Reply with exactly OK.");
   const jsonOutput = resolve(repoRoot, readValue("--output", "docs/model-availability/opencode-model-availability.json"));
   const markdownOutput = resolve(repoRoot, readValue("--markdown-output", "docs/model-availability/opencode-model-availability.md"));
@@ -211,9 +223,15 @@ function main() {
   const previousTemporaryUnavailableModelIds = modelIds.filter(
     (modelId) => !skippedUnsupportedModelIds.includes(modelId) && classifyPreviousUnavailability(modelId, previousSnapshot) === "temporary_or_account_specific",
   );
-  const selectedModelIds = (limit > 0 ? modelIds.slice(0, limit) : modelIds).filter(
-    (modelId) => !shouldExcludeModelId(modelId) && !shouldSkipAsUnsupported(modelId, previousSnapshot),
-  );
+  const selectedModelIds = (limit > 0 ? modelIds.slice(0, limit) : modelIds).filter((modelId) => {
+    const family = modelId.split("/")[0] ?? "unknown";
+    return (
+      !shouldExcludeModelId(modelId) &&
+      !shouldSkipAsUnsupported(modelId, previousSnapshot) &&
+      (includeFamilies.size === 0 || includeFamilies.has(family)) &&
+      !excludeFamilies.has(family)
+    );
+  });
   const results = [];
 
   for (const modelId of selectedModelIds) {
@@ -251,6 +269,8 @@ function main() {
     timeout_ms: timeoutMs,
     catalog_model_ids: modelIds,
     selected_model_ids: selectedModelIds,
+    include_families: [...includeFamilies],
+    exclude_families: [...excludeFamilies],
     excluded_model_ids: excludedModelIds,
     results,
     available_model_ids: results.filter((entry) => entry.available).map((entry) => entry.model_id),
