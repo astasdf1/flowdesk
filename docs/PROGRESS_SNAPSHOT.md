@@ -46,7 +46,7 @@ On 2026-05-31, managed-dispatch beta and Release 2.5 verification were re-run af
 Release 1 can be considered complete when the following are true and documented:
 
 1. README, quickstart, user manual, and progress snapshot all reference the current npm version and accurately distinguish default non-dispatch behavior from opt-in provider-calling helpers.
-2. A fresh install smoke from npm `0.1.14` passes in an isolated OpenCode profile: plugin load, command registration, `/flowdesk-doctor`, `/flowdesk-status`, `/flowdesk-usage`, chat steering, local preview tools, and bootstrap preview/install.
+2. A fresh install smoke from npm `0.1.15` passes in an isolated OpenCode profile: plugin load, command registration, `/flowdesk-doctor`, `/flowdesk-status`, `/flowdesk-usage`, chat steering, local preview tools, and bootstrap preview/install.
 3. Active profile smoke passes after restart: `flowdesk_pre_spike_doctor`, provider usage, quick reviewer subset smoke, and status follow-up with no stalled lanes left unresolved or undocumented.
 4. Debug export is verified on a recent workflow and contains only redacted manifest/section files.
 5. Any active guarded auto-abort/auto-retry/watchdog options are documented as explicit opt-in diagnostics/recovery, not default Release 1 authority.

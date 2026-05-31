@@ -77,7 +77,7 @@ When `/flowdesk-export-debug` runs with durable state enabled, FlowDesk writes a
 1. Install the published Release 1 packages and use the bootstrap CLI from `@flowdesk/opencode-plugin`:
 
    ```text
-   npm install @flowdesk/core@0.1.14 @flowdesk/opencode-plugin@0.1.14
+   npm install @flowdesk/core@0.1.15 @flowdesk/opencode-plugin@0.1.15
    ```
 
    Reviewed local builds are still allowed for development or compatibility testing, but they should record package provenance separately.
