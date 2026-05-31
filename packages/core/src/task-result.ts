@@ -45,6 +45,7 @@ export interface FlowDeskTaskFailedV1 {
 	provider_qualified_model_id: string;
 	failure_category:
 		| "sdk_create_failed"
+		| "provider_dispatch_error"
 		| "sdk_prompt_timeout"
 		| "network_interrupted"
 		| "no_response"
@@ -141,6 +142,7 @@ export interface FlowDeskCoordinatorRetryDecisionV1 {
 
 export const VALID_TASK_FAILURE_CATEGORIES = new Set([
 	"sdk_create_failed",
+	"provider_dispatch_error",
 	"sdk_prompt_timeout",
 	"network_interrupted",
 	"no_response",

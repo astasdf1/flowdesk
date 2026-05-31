@@ -110,6 +110,48 @@ test("agent-task launch failure refreshes completion cache to terminal", async (
 	}
 });
 
+test("agent-task surfaces a provider dispatch error distinctly from sdk_create_failed", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-provider-dispatch-"));
+	try {
+		// Child session creates fine, but the prompt call returns a provider/runtime
+		// error response (mirrors an in-process SDK server rejecting an anthropic
+		// prompt with UnknownError while the session was created successfully).
+		const client = makeClient({
+			create: async () => ({ id: "ses-child-provider-err-01" }),
+			promptAsync: async () => ({
+				error: { name: "UnknownError", data: { message: "Unexpected server error.", ref: "err_test" } },
+			}),
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-provider-dispatch-1",
+			taskId: "task-provider-dispatch-1",
+			laneId: "lane-provider-dispatch-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "anthropic/claude-opus-4-7",
+			promptText: "hello",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_failed");
+		if (result.status !== "task_failed") return;
+		assert.equal(result.failureCategory, "provider_dispatch_error");
+		assert.match(result.redactedReason, /provider rejected the lane dispatch/);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-provider-dispatch-1" });
+		assert.ok(reloaded.ok);
+		const failed = reloaded.entries.find((entry) => entry.evidenceClass === "task_failed");
+		assert.ok(failed, "task_failed evidence should be written");
+		assert.equal((failed?.record as Record<string, unknown>).failure_category, "provider_dispatch_error");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("agent task launch prefers promptAsync when available", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-promptasync-"));
 	try {

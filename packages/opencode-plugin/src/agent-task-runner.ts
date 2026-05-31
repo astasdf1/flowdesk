@@ -718,9 +718,25 @@ export async function executeFlowDeskAgentTaskV1(
 			progressSummaryLabel: `agent task lane launch failed`,
 		});
 
-		// Write task_failed evidence
-		const failureCategory = launchResult.status === "lane_launch_failed" ? "sdk_create_failed" : "unknown";
-		const redactedReason = launchResult.redactedBlockReason ?? launchResult.redactedErrorCategory ?? "lane launch did not start";
+		// Write task_failed evidence. Distinguish a provider-side dispatch error
+		// (the runtime accepted the lane create but the prompt call returned a
+		// provider/runtime error, e.g. expired provider OAuth in an in-process
+		// SDK server) from a generic SDK session-create failure, so diagnostics
+		// and retries can tell "provider rejected dispatch" apart from "could not
+		// open a child session at all". This only changes the advisory failure
+		// label/reason; capture behavior and all authority flags are unchanged.
+		const failureCategory =
+			launchResult.status === "lane_launch_failed"
+				? launchResult.redactedErrorCategory === "provider_api"
+					? "provider_dispatch_error"
+					: "sdk_create_failed"
+				: "unknown";
+		const redactedReason =
+			launchResult.redactedBlockReason ??
+			(launchResult.redactedErrorCategory === "provider_api"
+				? "provider rejected the lane dispatch (provider_api error); the runtime created the child session but the provider returned an error before producing output"
+				: launchResult.redactedErrorCategory) ??
+			"lane launch did not start";
 		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}`;
 		const taskFailedRecord: FlowDeskTaskFailedV1 = {
 			schema_version: "flowdesk.task_failed.v1",
