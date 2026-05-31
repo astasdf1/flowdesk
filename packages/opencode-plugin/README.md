@@ -6,7 +6,7 @@ registration plus opt-in description-driven natural-language tools.
 ## Install
 
 ```bash
-npm install @flowdesk/opencode-plugin@^0.1.16
+npm install @flowdesk/opencode-plugin@^0.1.17
 ```
 
 ## Configure
