@@ -39,6 +39,8 @@ On 2026-05-31, the first implementation slice for period-normalized usage select
 
 On 2026-05-31, async agent-task nudge/restart timing was shortened for future lanes: the default quiet period is now 10 seconds, the two automatic nudges occur at approximately 10s and 20s of silence, and async watchdog abort/terminal failure occurs at approximately 30s when both nudges are exhausted. The synchronous capture helper and lane launch timeout were also aligned to the 10s/30s policy where applicable. The project/global FlowDesk main-agent prompt and async-lane conformance notes were updated to use `nudgeQuietPeriodMs: 10000`. Focused verification passed with plugin build, async-lane tests, stall-recovery tests, and `git diff --check`.
 
+On 2026-05-31, managed-dispatch beta and Release 2.5 verification were re-run after the period-normalized routing and nudge-timeout changes. Targeted managed-dispatch verification passed with `npm run build` plus built core/plugin tests covering production enablement, session evidence, dispatch attempt manifests, authority promotion, managed-dispatch adapter, command handlers, and server managed-dispatch routes (250/250). A full repository test run then passed (764/764). This closes the current code/test verification pass for managed-dispatch beta/R2.5 in this branch. Remaining gaps are live/release-gate evidence rather than failing code tests: production authority promotion remains later-gated, default Release 1 dispatch authority remains disabled, and any future production promotion still requires fresh Guard-approved conformance/approval evidence.
+
 ## Release 1 Completion Checklist
 
 Release 1 can be considered complete when the following are true and documented:
