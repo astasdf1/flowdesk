@@ -3339,8 +3339,8 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				parentSessionId: tool.schema.string().optional().describe("Parent session id"),
 				developerModeAcknowledged: tool.schema.boolean(),
 				allowProviderCall: tool.schema.boolean(),
-				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Milliseconds of silence before sending a nudge prompt. Default 20000ms (20s). Recommended: always pass 20000. At 20s silence → nudge 1, 40s → nudge 2, 60s+ → lane fails and watchdog retries."),
-			asyncMode: tool.schema.boolean().optional().describe("When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 20s/40s, and aborts at 60s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
+				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Milliseconds of silence before sending a nudge prompt. Default 10000ms (10s). Recommended: always pass 10000. At 10s silence → nudge 1, 20s → nudge 2, 30s+ → lane fails and watchdog retries."),
+			asyncMode: tool.schema.boolean().optional().describe("When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 10s/20s, and aborts at 30s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
 			},
 			async execute(args, ctx) {
 				const record: Record<string, unknown> = isRecord(args) ? args : {};

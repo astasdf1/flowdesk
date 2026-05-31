@@ -227,3 +227,143 @@ The key design choice is:
 > **Agent = role binding, Model = score-based selection among eligible models**
 
 This gives deterministic behavior, uses existing usage/availability evidence, and keeps the main agent focused on orchestration only.
+
+---
+
+## 9. Period-normalized usage selection addendum
+
+**Status**: design update recorded 2026-05-31 after multi-lane critical review. This addendum supersedes any raw-`remainingPercent`-only usage scoring in this document.
+
+### 9.1 Scope and authority
+
+Period-normalized usage selection is an **advisory ranking input** only. It does not grant dispatch, fallback, reselection, runtime, hard-chat, or Guard authority. Any managed-dispatch or fallback path must still pass the normal FlowDesk Guard gates and durable approval evidence.
+
+Provider health diagnostics remain separate from usage ranking. The period-normalized usage code must not import provider-health modules or merge Provider Health Snapshot state into the quota score.
+
+### 9.2 Bucket descriptor
+
+Every quota bucket used for model selection or sidebar representative-bucket selection should first be normalized into a typed descriptor:
+
+```ts
+type UsageBucketDescriptor = {
+  bucketRef: string;
+  providerFamily: string;
+  providerQualifiedModelId?: string;
+  windowKind: "rolling_5h" | "daily" | "weekly" | "unknown";
+  windowDurationMs: number;
+  resetAt: string | null;
+  collectedAt: string;
+  remainingPercent: number | null;
+  freshness: "fresh" | "stale" | "unknown" | "malformed";
+};
+```
+
+Selectors must preserve the `bucketRef` that pins the final pessimistic score so later redacted audit can explain which bucket drove the choice without exposing raw provider payloads.
+
+### 9.3 Quota health score
+
+For a fresh, well-formed bucket:
+
+```text
+timeRemainingFraction = clamp((resetAt - now) / windowDurationMs, 0, 1)
+remainingFraction = clamp(remainingPercent / 100, 0, 1)
+QHS = remainingFraction - timeRemainingFraction
+```
+
+Interpretation:
+
+- `QHS > 0`: quota is ahead of the expected linear burn curve.
+- `QHS = 0`: quota is exactly on the expected burn curve.
+- `QHS < 0`: quota is behind the expected burn curve and should be de-prioritized.
+
+The initial implementation may use the linear burn curve as a conservative baseline, but the policy should leave room for later provider-specific burn models.
+
+### 9.4 Fail-closed and clock-skew handling
+
+Return a fail-closed classification instead of a score when any of these hold:
+
+1. `freshness !== "fresh"`.
+2. `remainingPercent` is missing, non-numeric, or outside the bounded percent range before clamping.
+3. `windowDurationMs <= 0`.
+4. `resetAt` is missing where the bucket kind requires it.
+5. `resetAt - collectedAt` exceeds `windowDurationMs + toleranceMs`.
+6. `resetAt - now < -clockSkewToleranceMs`.
+7. Any parsed timestamp is invalid.
+
+Small clock skew within tolerance may be clamped to zero remaining time, but negative time beyond tolerance is fail-closed. Tests must explicitly cover negative QHS sorting and past-reset handling.
+
+### 9.5 Versioned selection policy
+
+Reserve/floor/veto values must live in a versioned policy config rather than in selector logic. The policy should include:
+
+- `policyVersion`
+- allowed bucket kinds and durations
+- `clockSkewToleranceMs`
+- `resetWindowToleranceMs`
+- task-cost-class reserve/floor/veto thresholds
+- explicit alert ordering: `ok > warning > critical > exhausted > stale > unknown > malformed`
+- sidebar equal-QHS tie-break order
+
+If `taskCostClass` is missing, malformed, or caller-controlled, default to the highest reserve/highest-cost class.
+
+### 9.6 Model selection algorithm
+
+For each candidate model already proven available in the working-model cache:
+
+1. Load its relevant usage buckets.
+2. Normalize them into `UsageBucketDescriptor` values.
+3. If any relevant bucket fails closed, exclude the candidate from this selector pass and record a coarse exclusion reason.
+4. Compute QHS for all fresh buckets.
+5. Use the pessimistic minimum QHS as the candidate's usage score and retain the pinned `bucketRef`.
+6. Apply hard veto near the floor according to the versioned policy.
+7. Rank remaining candidates by:
+   1. explicit alert-level order,
+   2. QHS descending,
+   3. task/model fit,
+   4. `providerQualifiedModelId` ascending for deterministic tie-break.
+
+The deterministic final tie-break is intentional and non-authorizing. It must not be described as provider preference or fallback authority.
+
+### 9.7 Redacted selection rationale
+
+Each selection should emit a redacted rationale record with only bounded/coarse data:
+
+- `policyVersion`
+- `inputsHash`
+- `taskCostClass`
+- candidate count
+- chosen provider-qualified model id
+- chosen pinned bucket ref
+- coarse QHS class, e.g. `ahead`, `near_expected`, `behind`, `fail_closed`
+- coarse exclusion reason labels
+- tie-breaker path labels
+- fail-closed classification counters
+
+Do not emit raw remaining percentages, raw reset timestamps, raw provider payloads, raw threshold values, or prompt/transcript text into the rationale.
+
+### 9.8 Sidebar/TUI representative bucket rule
+
+The passive sidebar/TUI usage display should change **only the representative bucket selection criterion**:
+
+```text
+old: choose the 5h/daily/weekly bucket with the lower raw remainingPercent
+new: choose the bucket with the lower period-normalized QHS
+```
+
+The visible display method must remain unchanged: same labels, same percent formatting, same reset formatting, same redaction class, and same passive/no-provider-call authority boundary. Equal-QHS or all-fail-closed cases must use a stable policy-defined tie-breaker to avoid UI flapping.
+
+### 9.9 Required tests
+
+Add regression coverage for:
+
+- stale/unknown/malformed bucket fail-closed behavior
+- zero/negative window duration
+- past reset time and clock skew tolerance
+- negative QHS sorting
+- pessimistic multi-bucket minimum with pinned `bucketRef`
+- hard veto threshold and anti-flapping edge cases
+- missing task cost class defaulting to high reserve
+- deterministic candidate and sidebar tie-breakers
+- provider-health/usage-ranking import boundary
+- redacted rationale: no raw percentages, reset timestamps, threshold values, provider payloads, prompts, or transcripts
+- sidebar snapshot/display invariants proving only the selected bucket changes, not the display format

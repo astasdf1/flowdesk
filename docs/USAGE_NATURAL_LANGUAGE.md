@@ -31,7 +31,7 @@ Debug-export requests route to `/flowdesk-export-debug`. With a durable state ro
 
 ## Tool 1: `flowdesk_quick_reviewer_run` / explicit reviewer lanes
 
-3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model. This is an explicit opt-in provider-calling helper, not part of default non-dispatch command routing. Current coordinator policy quarantines this helper until revalidated, so review intent should be satisfied through explicit `flowdesk_agent_task_run` reviewer lanes with concrete agent/model bindings and `nudgeQuietPeriodMs: 20000`.
+3-perspective FlowDesk reviewer fan-out (`policy_security`, `architecture`, `verification_implementation`) against an injected OpenCode SDK reviewer agent/model. This is an explicit opt-in provider-calling helper, not part of default non-dispatch command routing. Current coordinator policy quarantines this helper until revalidated, so review intent should be satisfied through explicit `flowdesk_agent_task_run` reviewer lanes with concrete agent/model bindings and `nudgeQuietPeriodMs: 10000`.
 
 ### Trigger phrases
 

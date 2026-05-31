@@ -57,7 +57,7 @@ export interface FlowDeskAgentTaskInputV1 {
 	_nudgeQuietPeriodMs?: number;
 	/** Override messages poll timeout — for testing only (default 3000ms in prod) */
 	_messagesTimeoutMs?: number;
-	/** Override launch timeout — for testing only (default 300000ms = 5min in prod) */
+	/** Override launch timeout — for testing only (default 30000ms in prod) */
 	_launchTimeoutMs?: number;
 	/** Internal: true when this is already a fallback retry (prevents infinite retry) */
 	_isFallbackRetry?: boolean;
@@ -170,7 +170,7 @@ async function extractAssistantTextFromResponse(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	opts?: {
-		quietPeriodMs?: number;          // silence before heartbeat / nudge (default 30s)
+		quietPeriodMs?: number;          // silence before heartbeat / nudge (default 10s)
 		maxNudges?: number;              // max nudge attempts (default 2)
 		runtimeModel?: string;           // OpenCode runtime model id for nudge prompt
 		agentName?: string;              // agent name for nudge prompt
@@ -181,7 +181,7 @@ async function extractAssistantTextFromResponse(
 	const messages = client.session.messages;
 	if (messages === undefined) return undefined;
 
-	const quietPeriodMs = opts?.quietPeriodMs ?? 30_000;
+	const quietPeriodMs = opts?.quietPeriodMs ?? 10_000;
 	const maxNudges = opts?.maxNudges ?? 2;
 	const MESSAGES_TIMEOUT_MS = opts?.messagesTimeoutMs ?? 3_000; // per-call cap — handles both snapshot and long-poll
 
@@ -637,9 +637,8 @@ export async function executeFlowDeskAgentTaskV1(
 	});
 
 	// Launch the lane — wrap in absolute timeout so session.prompt blocking doesn't hang forever.
-	// The launch phase timeout is longer (5 min) since promptAsync may queue work before responding.
-	// 1 min default — if session.prompt blocks for more than 1 min with no activity, give up
-	const LAUNCH_TIMEOUT_MS = input._launchTimeoutMs ?? 60_000;
+	// 30s default — if session.prompt blocks for more than 30s with no activity, give up.
+	const LAUNCH_TIMEOUT_MS = input._launchTimeoutMs ?? 30_000;
 	const launchTimeoutHandle = setTimeout(() => { /* no-op; just a handle */ }, LAUNCH_TIMEOUT_MS);
 	const dispatchMethod = input.client.session.promptAsync !== undefined ? "promptAsync" : "prompt";
 	const launchResult = await Promise.race([
@@ -842,7 +841,7 @@ export async function executeFlowDeskAgentTaskV1(
 		const agentName = launchResult.status === "lane_launch_started" && typeof launchResult.agent === "string"
 			? launchResult.agent : undefined;
 		resultObservation = await extractAssistantTextFromResponse(input.client, childSessionId, {
-			quietPeriodMs: input._nudgeQuietPeriodMs ?? 20_000,  // default 20s per policy
+			quietPeriodMs: input._nudgeQuietPeriodMs ?? 10_000,  // default 10s per policy
 			maxNudges: 2,
 			runtimeModel,
 			agentName,

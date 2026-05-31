@@ -1936,24 +1936,24 @@ export interface FlowDeskChildSessionMonitorResultV1 {
  * Called from the watchdog cycle once per interval:
  *   - Poll session.messages for each running child session
  *   - On result: write task_result evidence + terminal lifecycle
- *   - At 20s silence: nudge with noReply: true
- *   - At 40s: second nudge
- *   - At 60s+: session.abort + task_failed + terminal lifecycle
+ *   - At 10s silence: nudge with noReply: true
+ *   - At 20s: second nudge
+ *   - At 30s+: session.abort + task_failed + terminal lifecycle
  */
 export async function monitorChildSessionsV1(input: {
 	rootDir: string;
 	workflowId: string;
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	now?: Date;
-	nudgeQuietPeriodMs?: number;  // default 20_000
+	nudgeQuietPeriodMs?: number;  // default 10_000
 	maxNudges?: number;            // default 2
-	abortThresholdMs?: number;     // default 60_000
+	abortThresholdMs?: number;     // default 30_000
 	_forceTaskResultWriteFailureForTest?: boolean;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
-	const nudgeQuietPeriodMs = input.nudgeQuietPeriodMs ?? 20_000;
+	const nudgeQuietPeriodMs = input.nudgeQuietPeriodMs ?? 10_000;
 	const maxNudges = input.maxNudges ?? 2;
-	const abortThresholdMs = input.abortThresholdMs ?? 60_000;
+	const abortThresholdMs = input.abortThresholdMs ?? 30_000;
 	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
 
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });

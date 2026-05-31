@@ -35,7 +35,7 @@ Main Agent (flowdesk-main)
     │               (roles, dependencies, complexity)
     │
     ├── 2. DISPATCH — launch each task via flowdesk_agent_task_run
-    │               (asyncMode: true, nudgeQuietPeriodMs: 20000)
+    │               (asyncMode: true, nudgeQuietPeriodMs: 10000)
     │               → immediately returns laneId
     │               → watchdog handles nudge / abort / retry
     │
@@ -127,7 +127,7 @@ New option: `asyncMode: true` (default `false` for backward compatibility).
 
 **Behavior with `asyncMode: true`:**
 1. Call `session.prompt` to launch child session (still wrapped in
-   `LAUNCH_TIMEOUT_MS = 60s`).
+   `LAUNCH_TIMEOUT_MS = 30s`).
 2. Write `running` lane lifecycle + heartbeat evidence.
 3. Store `child_session_ref` in a new `agent_task_child_session.v1` evidence
    record so the watchdog can find it later.
@@ -182,18 +182,18 @@ For each running lane with child_session_id:
          c. Done (no nudge needed)
 
   2. Compute silence = now - last_activity
-     → silence < 20s: no action, continue polling next cycle
+     → silence < 10s: no action, continue polling next cycle
 
-  3. silence >= 20s AND nudge_count == 0:
+  3. silence >= 10s AND nudge_count == 0:
          a. sendNudgeWithTimeout(childSessionId, noReply=true, timeoutMs=5000)
          b. Update nudge_count = 1, last_nudge_at = now
          c. Write updated child_session evidence
 
-  4. silence >= 40s AND nudge_count == 1:
+  4. silence >= 20s AND nudge_count == 1:
          a. sendNudgeWithTimeout(childSessionId, noReply=true, timeoutMs=5000)
          b. Update nudge_count = 2, last_nudge_at = now
 
-  5. silence >= 60s AND nudge_count >= 2:
+  5. silence >= 30s AND nudge_count >= 2:
          a. Call session.abort(childSessionId) via abortFlowDeskSessionWithDecisionV1
          b. Write task_failed evidence (failure_category: "timeout")
          c. Write terminal invocation_failed lifecycle
@@ -204,10 +204,10 @@ For each running lane with child_session_id:
 
 | Silence | Action |
 |---------|--------|
-| 0–19s | Poll only |
-| 20s | `session.prompt(childId, noReply: true)` nudge 1 |
-| 40s | `session.prompt(childId, noReply: true)` nudge 2 |
-| 60s+ | `session.abort(childId)` → task_failed → watchdog retry |
+| 0–9s | Poll only |
+| 10s | `session.prompt(childId, noReply: true)` nudge 1 |
+| 20s | `session.prompt(childId, noReply: true)` nudge 2 |
+| 30s+ | `session.abort(childId)` → task_failed → watchdog retry |
 
 ### 4. sendNudgeWithTimeout
 
@@ -254,11 +254,11 @@ flowdesk_orchestrate(goalSummary)   ← main agent calls this
     │       ├─ main agent dispatches:
     │       │     flowdesk_agent_task_run(
     │       │       task: "decompose goal into typed task graph",
-    │       │       asyncMode: true, nudgeQuietPeriodMs: 20000
+    │       │       asyncMode: true, nudgeQuietPeriodMs: 10000
     │       │     ) → laneId-author
     │       │
     │       ├─ watchdog monitors laneId-author
-    │       │     (nudge@20s, nudge@40s, abort@60s+)
+    │       │     (nudge@10s, nudge@20s, abort@30s+)
     │       │
     │       └─ main agent polls: flowdesk_status_live(laneId-author)
     │               → task_result: FlowDeskTaskGraphV1 evidence
@@ -281,7 +281,7 @@ flowdesk_orchestrate(goalSummary)   ← main agent calls this
     │       │     ) → laneId-task-N
     │       │
     │       └─ watchdog monitors all task lanes in parallel
-    │               (nudge@20s, nudge@40s, abort@60s+ per lane)
+    │               (nudge@10s, nudge@20s, abort@30s+ per lane)
     │
     └── Phase 4: SYNTHESIZE (Synthesis lane)
             │

@@ -34,7 +34,7 @@ Your three jobs:
 
 ### ALL subtasks → `flowdesk_agent_task_run` (MANDATORY)
 
-Every delegated subtask — analysis, implementation, search, review, verification — **MUST** go through `flowdesk_agent_task_run`. No exceptions. Always include `nudgeQuietPeriodMs: 20000`.
+Every delegated subtask — analysis, implementation, search, review, verification — **MUST** go through `flowdesk_agent_task_run`. No exceptions. Always include `nudgeQuietPeriodMs: 10000`.
 
 ```
 flowdesk_agent_task_run({
@@ -43,7 +43,7 @@ flowdesk_agent_task_run({
   agentName: "reviewer-claude-opus",
   providerQualifiedModelId: "anthropic/claude-opus-4-7",
   parentSessionId: "",
-  nudgeQuietPeriodMs: 20000,
+  nudgeQuietPeriodMs: 10000,
   developerModeAcknowledged: true,
   allowProviderCall: true,
 })
@@ -85,13 +85,13 @@ Always state the actual agent/model used per perspective in the final synthesis.
 
 ## Nudge & Restart Policy
 
-All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 20000` (20 seconds). The behavior per subtask lane:
+All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 10000` (10 seconds). The behavior per subtask lane:
 
 | Time | Action |
 |------|--------|
-| t+20s silence | Auto-nudge 1: "Please provide your final answer now." |
-| t+40s silence | Auto-nudge 2: last chance |
-| t+60s+ | Lane fails → watchdog detects stall → auto-abort + retry |
+| t+10s silence | Auto-nudge 1: "Please provide your final answer now." |
+| t+20s silence | Auto-nudge 2: last chance |
+| t+30s+ | Lane fails → watchdog detects stall → auto-abort + retry |
 
 **Never manually wait** for a stalled lane. After dispatching, call `flowdesk_status_live` to observe stall classification and let the watchdog handle recovery.
 
@@ -112,7 +112,7 @@ All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 20000` (20 seconds)
    - Status/progress/"잘 됐어?"/"결과는?" → `flowdesk_status_live`
    - Provider switch → `flowdesk_quick_fallback_run`
    - Heartbeat → `flowdesk_lane_heartbeat_record`
-   - Delegate subtask to specific model → `flowdesk_agent_task_run` (always with `parentSessionId: ""` and `nudgeQuietPeriodMs: 20000`)
+   - Delegate subtask to specific model → `flowdesk_agent_task_run` (always with `parentSessionId: ""` and `nudgeQuietPeriodMs: 10000`)
 11. **Lane launch stability** — concurrent async `flowdesk_agent_task_run` launch has been revalidated for bounded 2-lane fan-out after the `promptAsync` launch and async child-message polling fixes. Prefer at most 2 concurrent lanes unless the user explicitly asks for a larger fan-out and usage is healthy. Always call `flowdesk_status_live` after launch. If any lane fails with `sdk_create_failed`, stop and report the blocker instead of opening more lanes.
 
 ## Typical Flow
@@ -121,8 +121,8 @@ All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 20000` (20 seconds)
 User: "이 코드 보안 분석하고 리팩토링 계획 세워줘"
 
 1. flowdesk_provider_usage_live() → 사용량 확인
-2. flowdesk_agent_task_run(보안 분석, claude-opus, nudgeQuietPeriodMs:20000) → lane-A
-3. flowdesk_agent_task_run(리팩토링 계획, gpt-frontier, nudgeQuietPeriodMs:20000) → lane-B
+2. flowdesk_agent_task_run(보안 분석, claude-opus, nudgeQuietPeriodMs:10000) → lane-A
+3. flowdesk_agent_task_run(리팩토링 계획, gpt-frontier, nudgeQuietPeriodMs:10000) → lane-B
 4. flowdesk_status_live() → 두 lane 완료 확인
 5. 결과 합산 → 사용자에게 요약 전달
 ```
@@ -136,4 +136,4 @@ User: "이 코드 보안 분석하고 리팩토링 계획 세워줘"
 - Do not drop, fail, or penalize a captured lane result because of its format/shape/JSON-ness; the only capture-side gate is redaction. Judge substance yourself instead.
 - Do not treat coordinator model re-selection as managed fallback authority; it is bounded (≤2) usage-aware pre-launch routing under a fresh attempt, never `flowdesk_quick_fallback_run`.
 - Do not use raw `task`, background task sessions, ad-hoc subagents, nested `opencode run`, OMO/OMC/Sisyphus, or any non-FlowDesk-owned lane for FlowDesk work; this is a hard boundary, not a preference.
-- Do not call `flowdesk_agent_task_run` without `nudgeQuietPeriodMs: 20000`
+- Do not call `flowdesk_agent_task_run` without `nudgeQuietPeriodMs: 10000`

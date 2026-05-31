@@ -143,7 +143,7 @@ test("TUI usage snapshot compact lines show latest 5h and 1w durable buckets", (
 		});
 		writeSnapshot(root, workflowId, "claude", "20260527T011000000Z", {
 			reset_bucket: "77% claude-5h",
-			reset_time: "2026-05-27T19:20:00.000Z",
+			reset_time: "2026-05-27T03:20:00.000Z",
 		});
 		writeSnapshot(root, workflowId, "claude", "20260527T011100000Z", {
 			reset_bucket: "34% claude-weekly",
@@ -196,7 +196,7 @@ test("TUI usage snapshot compact lines read fresh sidebar cache buckets", () => 
 							buckets: [
 								{
 									resetBucket: "claude-5h",
-									resetTime: "2026-05-27T19:20:00.000Z",
+									resetTime: "2026-05-27T03:20:00.000Z",
 									remainingPercent: 77,
 									freshness: "fresh",
 									dispatchability: "dispatchable",
@@ -226,6 +226,65 @@ test("TUI usage snapshot compact lines read fresh sidebar cache buckets", () => 
 		// Lower of 5h (77%) and 1w (34%) → shows 1w 34%
 		const line0 = formatFlowDeskTuiUsageSnapshotCompactLines(view)[0];
 		assert.ok(line0.includes("CL") && line0.includes("Sonnet") && line0.includes("34%") && line0.includes("1w"));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI compact lines choose representative bucket by period-normalized quota health without changing display format", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-sidebar-qhs-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-27T01:00:00.000Z",
+					expires_at: "2026-05-27T01:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "claude",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							remainingPercent: 20,
+							alertLevel: "warning",
+							buckets: [
+								{
+									resetBucket: "claude-5h",
+									resetTime: "2026-05-27T01:12:00.000Z",
+									remainingPercent: 20,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+								{
+									resetBucket: "claude-weekly",
+									resetTime: "2026-06-02T01:02:00.000Z",
+									remainingPercent: 30,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+							],
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		const view = loadFlowDeskTuiUsageSnapshotViewV1({
+			rootDir: root,
+			now: () => new Date("2026-05-27T01:02:00.000Z"),
+		});
+		const line0 = formatFlowDeskTuiUsageSnapshotCompactLines(view)[0];
+		assert.ok(line0.includes("CL") && line0.includes("Sonnet"));
+		assert.ok(line0.includes("30%") && line0.includes("1w"), line0);
+		assert.match(line0, /^CL Sonnet\s+30% \(1w, r /);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

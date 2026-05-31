@@ -429,13 +429,56 @@ function compactNamedBucketSegment(bucket: FlowDeskTuiUsageProviderBucketV1 | un
 	return `${compactPercent(bucket?.remainingPercent ?? null)} (${label}, r ${displayResetTime(bucket?.resetTime, label)})`;
 }
 
-/** Pick the bucket with the lower remaining percent from 5h and weekly; show that one. */
+function bucketWindowDurationMs(bucket: FlowDeskTuiUsageProviderBucketV1 | undefined, fallbackLabel: string): number | undefined {
+	const resetBucket = bucket?.resetBucket?.toLowerCase() ?? "";
+	const label = fallbackLabel.toLowerCase();
+	if (resetBucket.includes("5h") || label === "5h") return 5 * 60 * 60 * 1000;
+	if (resetBucket.includes("daily") || resetBucket.includes("day") || label === "day") return 24 * 60 * 60 * 1000;
+	if (resetBucket.includes("weekly") || resetBucket.includes("1w") || resetBucket.includes("7d") || label === "1w") return 7 * 24 * 60 * 60 * 1000;
+	return undefined;
+}
+
+function bucketQuotaHealth(
+	bucket: FlowDeskTuiUsageProviderBucketV1 | undefined,
+	label: string,
+	nowMs: number,
+): number | undefined {
+	if (bucket === undefined) return undefined;
+	if (bucket.freshness !== "fresh") return Number.NEGATIVE_INFINITY;
+	if (bucket.remainingPercent === null || !Number.isFinite(bucket.remainingPercent)) return Number.NEGATIVE_INFINITY;
+	if (bucket.remainingPercent < 0 || bucket.remainingPercent > 100) return Number.NEGATIVE_INFINITY;
+	const durationMs = bucketWindowDurationMs(bucket, label);
+	if (durationMs === undefined || durationMs <= 0) return Number.NEGATIVE_INFINITY;
+	let remainingMs: number | undefined;
+	if (typeof bucket.secondsUntilReset === "number" && Number.isFinite(bucket.secondsUntilReset)) {
+		remainingMs = bucket.secondsUntilReset * 1000;
+	} else if (bucket.resetTime !== undefined) {
+		const parsed = Date.parse(bucket.resetTime);
+		remainingMs = Number.isFinite(parsed) ? parsed - nowMs : undefined;
+	}
+	if (remainingMs === undefined || !Number.isFinite(remainingMs)) return Number.NEGATIVE_INFINITY;
+	if (remainingMs < -60_000) return Number.NEGATIVE_INFINITY;
+	if (remainingMs > durationMs + 5 * 60_000) return Number.NEGATIVE_INFINITY;
+	const timeRemainingFraction = Math.max(0, Math.min(1, remainingMs / durationMs));
+	const remainingFraction = Math.max(0, Math.min(1, bucket.remainingPercent / 100));
+	return remainingFraction - timeRemainingFraction;
+}
+
+/** Pick the bucket with the lower period-normalized quota health; display stays unchanged. */
 function lowerBucket(
 	fiveHour: FlowDeskTuiUsageProviderBucketV1 | undefined,
 	weekly: FlowDeskTuiUsageProviderBucketV1 | undefined,
+	nowMs: number,
 ): { bucket: FlowDeskTuiUsageProviderBucketV1 | undefined; label: string } {
 	const fiveHourPct = fiveHour?.remainingPercent ?? null;
 	const weeklyPct = weekly?.remainingPercent ?? null;
+	const fiveHourHealth = bucketQuotaHealth(fiveHour, "5h", nowMs);
+	const weeklyHealth = bucketQuotaHealth(weekly, "1w", nowMs);
+	if (fiveHourHealth !== undefined && weeklyHealth !== undefined && fiveHourHealth !== weeklyHealth) {
+		return weeklyHealth < fiveHourHealth ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
+	}
+	if (fiveHourHealth === undefined && weeklyHealth !== undefined) return { bucket: weekly, label: "1w" };
+	if (weeklyHealth === undefined && fiveHourHealth !== undefined) return { bucket: fiveHour, label: "5h" };
 	if (fiveHourPct === null && weeklyPct === null) return { bucket: fiveHour ?? weekly, label: fiveHour !== undefined ? "5h" : "1w" };
 	if (fiveHourPct === null) return { bucket: weekly, label: "1w" };
 	if (weeklyPct === null) return { bucket: fiveHour, label: "5h" };
@@ -481,6 +524,7 @@ export function formatFlowDeskTuiUsageSnapshotCompactLines(
 	view: FlowDeskTuiUsageSnapshotViewV1,
 ): string[] {
 	const lines: string[] = [];
+	const nowMs = Date.parse(view.observedAt);
 	for (const family of providerFamilies) {
 		const provider = view.providers.find((candidate) => candidate.providerFamily === family);
 		const label = compactProviderLabels[family];
@@ -493,7 +537,7 @@ export function formatFlowDeskTuiUsageSnapshotCompactLines(
 		if (family === "claude") {
 			const fiveHour = bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
 			const weekly = bucketForCompactLabel(provider, "1w");
-			const { bucket, label: periodLabel } = lowerBucket(fiveHour, weekly);
+			const { bucket, label: periodLabel } = lowerBucket(fiveHour, weekly, nowMs);
 			lines.push(modelLine(label, "Sonnet", bucket, periodLabel));
 			continue;
 		}
@@ -501,7 +545,7 @@ export function formatFlowDeskTuiUsageSnapshotCompactLines(
 		if (family === "openai") {
 			const gpt5h = bucketForResetBucketPrefix(provider, "openai-gpt-5h") ?? bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
 			const weekly = bucketForCompactLabel(provider, "1w");
-			const { bucket: gptBucket, label: gptPeriod } = lowerBucket(gpt5h, weekly);
+			const { bucket: gptBucket, label: gptPeriod } = lowerBucket(gpt5h, weekly, nowMs);
 			lines.push(modelLine(label, "5.5", gptBucket, gptPeriod));
 			const spark = bucketForResetBucketPrefix(provider, "openai-spark") ?? bucketForResetBucketPrefix(provider, "openai-5.3") ?? bucketForResetBucketPrefix(provider, "spark");
 			if (spark !== undefined) {
@@ -523,7 +567,7 @@ export function formatFlowDeskTuiUsageSnapshotCompactLines(
 		// Fallback for unknown families
 		const fiveHour = bucketForCompactLabel(provider, "5h") ?? (provider.resetBucket?.includes("5h") ? bucketFromRow(provider) : undefined);
 		const weekly = bucketForCompactLabel(provider, "1w");
-		const { bucket, label: periodLabel } = lowerBucket(fiveHour, weekly);
+		const { bucket, label: periodLabel } = lowerBucket(fiveHour, weekly, nowMs);
 		lines.push(modelLine(label, "?", bucket, periodLabel));
 	}
 	return lines;

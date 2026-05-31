@@ -70,7 +70,8 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 	}
 	if (workingModelIds.length === 0) return blocked("working-model cache empty – run models refresh first", input.workflowId);
 
-	const createdAt = new Date().toISOString();
+	const selectionNow = new Date();
+	const createdAt = selectionNow.toISOString();
 	const evidenceRefs: string[] = [];
 	const writeIntents: ReturnType<typeof prepareFlowDeskSessionEvidenceWriteIntentV1>[] = [];
 
@@ -79,8 +80,8 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		const agentRole = typeof node.agent_role === "string" ? node.agent_role : "implementation";
 		if (!taskId) continue;
 
-		const usageMap = buildUsageMapFromProviders(rows);
-		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds });
+		const usageMap = buildUsageMapFromProviders(rows, () => selectionNow);
+		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds }, () => selectionNow);
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		const assignmentId = `assignment-${randomBytes(4).toString("hex")}`;
