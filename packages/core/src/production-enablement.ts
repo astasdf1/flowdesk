@@ -1,5 +1,9 @@
 import type { FlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
 import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
+import {
+	assessFlowDeskPluginVerificationBoundaryV1,
+	type FlowDeskPluginBoundaryAssessmentV1,
+} from "./plugin-verification-boundary.js";
 import type { FlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import type { FlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
@@ -133,6 +137,11 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	provider_policy_ref?: string;
 	approval_decision?: FlowDeskProductionApprovalDecisionV1["decision"];
 	approval_ref?: string;
+	// Classifies the remaining blockers by the FlowDesk plugin verification
+	// boundary, so doctor/status can show that any residual blockers are outside
+	// the plugin's reach (OpenCode platform capability) rather than a FlowDesk
+	// defect. Present whenever there are blocker labels.
+	plugin_boundary_assessment?: FlowDeskPluginBoundaryAssessmentV1;
 }
 
 export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_STATES = [
@@ -1131,6 +1140,12 @@ export function evaluateFlowDeskProductionEnablementV1(
 					approval_decision: validApprovalDecision.decision,
 					approval_ref: validApprovalDecision.approval_id,
 				}),
+		...(uniqueBlockers.length > 0
+			? {
+					plugin_boundary_assessment:
+						assessFlowDeskPluginVerificationBoundaryV1(uniqueBlockers),
+				}
+			: {}),
 		safe_next_actions:
 			state === "dispatch_capable"
 				? ["/flowdesk-status"]
