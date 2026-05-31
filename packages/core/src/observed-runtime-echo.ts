@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	invalid,
 	type ValidationResult,
@@ -17,19 +18,37 @@ import {
 // Guard boundary). Two independent multi-model design reviews concluded that
 // emitting trusted from a caller-supplied observation is "trusted laundering",
 // and that genuine trusted echo needs a real OpenCode runtime attestation that
-// OpenCode does not expose. So this issuer:
+// OpenCode does not expose. Trust model (honest about what this does and does NOT do):
 //
-//  - reads the lane's OWN durable session evidence (it does NOT accept a
-//    caller-supplied "it matched" boolean as the trust anchor),
-//  - verifies the runtime-reported provider/model equals the requested binding,
-//  - verifies a per-attempt challenge nonce was echoed in the observed output,
-//  - emits runtime_echo_mode="untrusted" with attestation_strength
-//    ="observed_unattested" so nothing can be re-interpreted upstream as a
-//    production-grade trusted echo,
-//  - never enables any dispatch/runtime/lane/provider authority.
+//  - It does NOT accept a caller-supplied "it matched"/"echoed=true" boolean as
+//    the trust anchor. The caller supplies the OBSERVED values it read
+//    (runtime-reported model id, assistant output text, refs); THIS function
+//    re-derives the trust-bearing relationships itself: a byte-exact observed-vs-
+//    requested model match, and that the per-attempt challenge nonce appears
+//    inside a designated sentinel envelope in the observed text.
+//  - It does NOT itself reload durable session evidence or call the SDK; it is a
+//    pure verifier over the supplied observation. That is acceptable ONLY because
+//    the output is "observed_unattested" (never trusted). A caller wanting
+//    stronger provenance must read the observation from the lane's own durable
+//    evidence before calling and is responsible for that.
+//  - It emits runtime_echo_mode="untrusted" + attestation_strength=
+//    "observed_unattested" so nothing can be re-interpreted upstream as a
+//    production-grade trusted echo, and never enables any
+//    dispatch/runtime/lane/provider authority.
 //
 // It is suitable for diagnostics, observability, and audit — NOT for satisfying
 // the production managed-dispatch trusted-echo gate.
+//
+// The challenge nonce must be echoed inside a sentinel envelope (not merely
+// present anywhere) so a model that only parrots/quotes the prompt does not
+// pass: e.g. "<<FD-ECHO:abcd...>>". The caller embeds the same envelope in the
+// approved prompt instructions.
+export const FLOWDESK_OBSERVED_RUNTIME_ECHO_SENTINEL_PREFIX = "<<FD-ECHO:" as const;
+export const FLOWDESK_OBSERVED_RUNTIME_ECHO_SENTINEL_SUFFIX = ">>" as const;
+
+export function flowDeskObservedRuntimeEchoSentinelV1(nonce: string): string {
+	return `${FLOWDESK_OBSERVED_RUNTIME_ECHO_SENTINEL_PREFIX}${nonce}${FLOWDESK_OBSERVED_RUNTIME_ECHO_SENTINEL_SUFFIX}`;
+}
 
 export const FLOWDESK_OBSERVED_RUNTIME_ECHO_ATTESTATION_STRENGTH =
 	"observed_unattested" as const;
@@ -171,26 +190,36 @@ export function issueFlowDeskObservedRuntimeEchoV1(
 	if (!modelMatch)
 		errors.push("observed model binding does not byte-exactly match requested binding");
 
-	// 2) the per-attempt challenge nonce must actually appear in the observed
-	// assistant output. The issuer searches the text itself; it does not accept
-	// a caller "echoed=true" flag. Require a non-trivial nonce to avoid
-	// accidental/parrot matches.
-	const nonce = input.expectedChallengeNonce;
-	if (typeof nonce !== "string" || nonce.trim().length < 16)
+	// 2) the per-attempt challenge nonce must actually appear INSIDE the sentinel
+	// envelope in the observed assistant output. The issuer searches the text
+	// itself; it does not accept a caller "echoed=true" flag. Requiring the
+	// envelope (not a bare substring) resists a model that merely parrots/quotes
+	// the prompt. The nonce is canonicalized (trimmed) once and used for both the
+	// length check and the envelope search so they cannot diverge.
+	const nonce = typeof input.expectedChallengeNonce === "string"
+		? input.expectedChallengeNonce.trim()
+		: "";
+	if (nonce.length < 16)
 		errors.push("expected challenge nonce must be a non-trivial string (>=16 chars)");
+	const sentinel = flowDeskObservedRuntimeEchoSentinelV1(nonce);
 	const challengeEchoObserved =
-		typeof nonce === "string" &&
-		nonce.trim().length >= 16 &&
+		nonce.length >= 16 &&
 		typeof input.observedAssistantText === "string" &&
-		input.observedAssistantText.includes(nonce);
+		input.observedAssistantText.includes(sentinel);
 	if (!challengeEchoObserved)
-		errors.push("challenge nonce was not observed in the assistant output");
+		errors.push("challenge nonce sentinel was not observed in the assistant output");
 
 	if (errors.length > 0) return blockedEcho(...errors);
 
 	const evidence: FlowDeskObservedRuntimeEchoEvidenceV1 = {
 		schema_version: "flowdesk.observed_runtime_echo_evidence.v1",
-		observed_echo_ref: `observed-echo-${input.attemptId}-${input.challengeNonceRef}`.slice(0, 120),
+		// Stable, collision-resistant ref derived by hashing the binding inputs,
+		// rather than concatenating two opaque refs and truncating (which could
+		// alias across attempts with long nonce refs).
+		observed_echo_ref: `observed-echo-${createHash("sha256")
+			.update(`${input.workflowId}\u001f${input.attemptId}\u001f${input.challengeNonceRef}`, "utf8")
+			.digest("hex")
+			.slice(0, 32)}`,
 		workflow_id: input.workflowId,
 		attempt_id: input.attemptId,
 		lane_id: input.laneId,
@@ -263,8 +292,41 @@ export function validateFlowDeskObservedRuntimeEchoEvidenceV1(
 	]);
 	for (const key of Object.keys(record))
 		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
+	// Required-keys check symmetric to the allowlist, so a truncated/forged
+	// record missing a trust-bearing field cannot pass.
+	for (const requiredKey of allowed) {
+		if (!(requiredKey in record)) errors.push(`missing required field: ${requiredKey}`);
+	}
 	if (record.schema_version !== "flowdesk.observed_runtime_echo_evidence.v1")
 		errors.push("observed runtime echo evidence schema_version is invalid");
+	errors.push(...validateOpaqueRef(record.observed_echo_ref, "observed_echo_ref").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueId(record.attempt_id, "attempt_id").errors);
+	errors.push(...validateOpaqueId(record.lane_id, "lane_id").errors);
+	errors.push(...validateOpaqueRef(record.child_session_ref, "child_session_ref").errors);
+	errors.push(...validateOpaqueRef(record.observed_message_ref, "observed_message_ref").errors);
+	errors.push(...validateOpaqueRef(record.challenge_nonce_ref, "challenge_nonce_ref").errors);
+	errors.push(
+		...validateConcreteProviderQualifiedModelId(record.requested_provider_qualified_model_id).errors,
+	);
+	errors.push(
+		...validateConcreteProviderQualifiedModelId(record.observed_provider_qualified_model_id).errors,
+	);
+	if (
+		typeof record.requested_provider_qualified_model_id === "string" &&
+		typeof record.observed_provider_qualified_model_id === "string" &&
+		record.requested_provider_qualified_model_id !== record.observed_provider_qualified_model_id
+	)
+		errors.push("observed runtime echo requires observed model to byte-exactly match requested");
+	if (typeof record.provider_family !== "string" || record.provider_family.trim().length === 0)
+		errors.push("observed runtime echo provider_family is required");
+	if (typeof record.observed_at !== "string" || !Number.isFinite(Date.parse(record.observed_at)))
+		errors.push("observed runtime echo observed_at must be a parseable timestamp");
+	if (
+		!Array.isArray(record.uncertainty_labels) ||
+		!record.uncertainty_labels.includes("observed_runtime_binding_not_cryptographically_attested")
+	)
+		errors.push("observed runtime echo must carry the not-cryptographically-attested uncertainty label");
 	if (record.runtime_echo_mode !== "untrusted")
 		errors.push("observed runtime echo must not claim a trusted runtime echo mode");
 	if (record.attestation_strength !== "observed_unattested")

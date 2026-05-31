@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	flowDeskObservedRuntimeEchoSentinelV1,
 	issueFlowDeskObservedRuntimeEchoV1,
 	validateFlowDeskObservedRuntimeEchoEvidenceV1,
 	type FlowDeskObservedRuntimeEchoInputV1,
 } from "./index.js";
 
 const NONCE = "fd-challenge-9c1f2a7b4e6d8a30";
+const SENTINEL = flowDeskObservedRuntimeEchoSentinelV1(NONCE);
 
 function input(
 	overrides: Partial<FlowDeskObservedRuntimeEchoInputV1> = {},
@@ -22,7 +24,7 @@ function input(
 		observedMessageRef: "msg-echo-1",
 		challengeNonceRef: "nonce-ref-echo-1",
 		expectedChallengeNonce: NONCE,
-		observedAssistantText: `Understood. Proceeding. ${NONCE}`,
+		observedAssistantText: `Understood. Proceeding. ${SENTINEL}`,
 		observedAt: "2026-05-31T00:00:00.000Z",
 		...overrides,
 	};
@@ -65,7 +67,17 @@ test("observed runtime echo fails closed when the nonce is not echoed in output"
 		input({ observedAssistantText: "Understood. Proceeding without the token." }),
 	);
 	assert.equal(result.ok, false);
-	assert.match(result.errors.join("; "), /challenge nonce was not observed/);
+	assert.match(result.errors.join("; "), /challenge nonce sentinel was not observed/);
+});
+
+test("observed runtime echo fails closed when only a bare nonce (no sentinel) is parroted", () => {
+	// A model that merely quotes the bare nonce — without the sentinel envelope —
+	// must NOT pass; this resists prompt parroting.
+	const result = issueFlowDeskObservedRuntimeEchoV1(
+		input({ observedAssistantText: `You asked me to include ${NONCE} somewhere.` }),
+	);
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /challenge nonce sentinel was not observed/);
 });
 
 test("observed runtime echo rejects a trivial (too short) nonce to resist parroting", () => {
