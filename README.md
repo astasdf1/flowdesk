@@ -8,10 +8,10 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.1.17` is the current Release 1 candidate in this repository:
+Version `0.1.19` is the current Release 1 candidate in this repository:
 
 ```bash
-npm install @flowdesk/core@^0.1.17 @flowdesk/opencode-plugin@^0.1.17
+npm install @flowdesk/core@^0.1.19 @flowdesk/opencode-plugin@^0.1.19
 ```
 
 Add the plugin to your OpenCode config. Use the package root as the plugin
@@ -129,7 +129,7 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
 
 - [x] **Phase 3: OpenCode plugin command path (about 95%)**
   - `@flowdesk/opencode-plugin`, command-backed handlers, `/flowdesk-*` command files, bootstrap installer, safe local tools, chat intake/steering, pending confirmation behavior, status/recovery/diagnostics, and Release 1 production-eligible non-dispatch registration exist.
-  - Packages are prepared as `@flowdesk/core@0.1.17` and `@flowdesk/opencode-plugin@0.1.17` for the next Release 1 package publication.
+  - Packages are prepared as `@flowdesk/core@0.1.19` and `@flowdesk/opencode-plugin@0.1.19` for the next Release 1 package publication.
   - Remaining: user-facing hardening and continued proof that default behavior stays non-dispatch.
 
 - [ ] **Phase 4: OpenCode conformance (about 58%)**

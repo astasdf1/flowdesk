@@ -441,12 +441,9 @@ test("Gemini Code Assist collector falls closed when cached token is expired and
   const result = await collectManagedDispatchBetaUsageEvidenceV1(
     target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
     { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
-    { filesystem, fetch: fetcher, now: () => observedAtMs },
+    { filesystem, fetch: fetcher, env: {}, now: () => observedAtMs },
   );
 
   assert.equal(result.ok, false);
-  assert.match(
-    String(result.redacted_reason),
-    /cached access token is expired/,
-  );
+  assert.match(String(result.redacted_reason), /cached access token is expired/);
 });
