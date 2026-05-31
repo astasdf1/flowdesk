@@ -59,6 +59,8 @@ export interface FlowDeskAgentTaskInputV1 {
 	_messagesTimeoutMs?: number;
 	/** Override launch timeout — for testing only (default 30000ms in prod) */
 	_launchTimeoutMs?: number;
+	/** Override heavy-model pre-first-token grace — for testing only */
+	_heavyFirstTokenGraceMs?: number;
 	/** Internal: true when this is already a fallback retry (prevents infinite retry) */
 	_isFallbackRetry?: boolean;
 }
@@ -158,6 +160,42 @@ function validateAgentTaskParentSessionId(parentSessionId: string): { ok: true; 
 const AGENT_TASK_NUDGE_TEXT = "Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
 
 /**
+ * Pre-first-token grace for heavy models. Some heavy models (e.g. Claude Opus,
+ * non-fast GPT-5.x, Codex) can take much longer than the light-model quiet
+ * period to emit their FIRST assistant token on a large prompt, while still
+ * working normally. Measured Claude Opus first-token latency on a long review
+ * prompt was ~48s, which the default 10s/20s/30s policy mis-classified as
+ * no_response. For heavy models only, the silence window BEFORE the first
+ * assistant token is widened to 30s/60s/90s (nudge at 30s and 60s, give up at
+ * 90s if still no first token). Once the first token arrives, the normal
+ * 10s/20s/30s quiet/nudge policy applies for the rest of the stream. Light
+ * models (mini/fast/spark/flash/flash-lite/haiku, plus gemini pro and sonnet)
+ * keep the unchanged short policy throughout.
+ */
+const AGENT_TASK_HEAVY_FIRST_TOKEN_GRACE_MS = 30_000 as const;
+
+/**
+ * Classify a provider-qualified model id as "heavy" (slow to first token on
+ * large prompts). Only these get the widened pre-first-token grace. The check
+ * is conservative and explicitly excludes light/fast variants and the models
+ * the operator does not consider heavy (gemini pro, sonnet).
+ */
+export function isFlowDeskHeavyFirstTokenModelV1(providerQualifiedModelId: string | undefined): boolean {
+	if (typeof providerQualifiedModelId !== "string") return false;
+	const id = providerQualifiedModelId.toLowerCase();
+	// Light/fast variants are never heavy, regardless of base family.
+	if (/(mini|fast|spark|flash|flash-lite|haiku)/.test(id)) return false;
+	// Operator decision: gemini pro and sonnet are NOT treated as heavy.
+	if (/gemini[^/]*pro/.test(id)) return false;
+	if (/sonnet/.test(id)) return false;
+	// Heavy: Claude Opus, non-fast GPT-5.x main, and Codex models.
+	if (/opus/.test(id)) return true;
+	if (/codex/.test(id)) return true;
+	if (/openai\/gpt-5(\.\d+)?$/.test(id)) return true;
+	return false;
+}
+
+/**
  * Polls `session.messages` with a per-call 3-second cap so it works whether the SDK
  * uses snapshot (returns immediately) or long-poll (blocks until output) semantics.
  *
@@ -175,6 +213,7 @@ async function extractAssistantTextFromResponse(
 		runtimeModel?: string;           // OpenCode runtime model id for nudge prompt
 		agentName?: string;              // agent name for nudge prompt
 		messagesTimeoutMs?: number;      // per-call cap for session.messages (default 3000ms)
+		firstTokenGraceMs?: number;      // widened silence window BEFORE first assistant token (heavy models)
 		heartbeatFn?: (elapsedMs: number) => void;
 	},
 ): Promise<FlowDeskAgentTaskCaptureResultV1 | undefined> {
@@ -183,6 +222,10 @@ async function extractAssistantTextFromResponse(
 
 	const quietPeriodMs = opts?.quietPeriodMs ?? 10_000;
 	const maxNudges = opts?.maxNudges ?? 2;
+	// Pre-first-token grace only widens the FIRST silence window (before any
+	// assistant token). Never smaller than the normal quiet period.
+	const firstTokenGraceMs = Math.max(quietPeriodMs, opts?.firstTokenGraceMs ?? quietPeriodMs);
+	let firstTokenSeen = false;
 	const MESSAGES_TIMEOUT_MS = opts?.messagesTimeoutMs ?? 3_000; // per-call cap — handles both snapshot and long-poll
 
 	const method = messages as (options: unknown) => unknown | Promise<unknown>;
@@ -276,6 +319,7 @@ async function extractAssistantTextFromResponse(
 
 			const observed = observe(response);
 			if (observed?.latestText !== undefined && observed.latestText.trim().length > 0) {
+				firstTokenSeen = true;
 				latestCandidate = observed;
 				// Track text stability for idle finalization. Active tool runs reset
 				// stability so we never finalize mid tool-call.
@@ -308,9 +352,33 @@ async function extractAssistantTextFromResponse(
 			}
 
 			const silenceMs = nowMs - lastActivityMs;
+			const totalElapsedMs = nowMs - startMs;
 
+			// Heavy-model pre-first-token grace: while NO assistant token has
+			// appeared yet, do NOT nudge. Nudging a heavy model that is still
+			// producing its first token (a noReply prompt) only interferes with
+			// the in-flight turn. Instead wait quietly until the first-token
+			// deadline (the widened grace), emitting heartbeats so the lane still
+			// looks alive, and only give up if no first token arrives in time.
+			if (!firstTokenSeen && firstTokenGraceMs > quietPeriodMs) {
+				const firstTokenDeadlineMs = firstTokenGraceMs * (maxNudges + 1); // e.g. 30s*3 = 90s
+				if (totalElapsedMs >= firstTokenGraceMs && nowMs - lastHeartbeatMs >= firstTokenGraceMs) {
+					lastHeartbeatMs = nowMs;
+					opts?.heartbeatFn?.(totalElapsedMs);
+				}
+				if (totalElapsedMs >= firstTokenDeadlineMs) {
+					// No first token within the heavy grace deadline — give up.
+					return undefined;
+				}
+				// Keep waiting quietly for the first token.
+				const yieldMs = Math.max(10, Math.min(1_000, Math.floor(quietPeriodMs / 10)));
+				await new Promise<void>(resolve => setTimeout(resolve, yieldMs));
+				continue;
+			}
+
+			// Normal quiet/nudge policy (light models, or after the first token).
 			if (silenceMs >= quietPeriodMs) {
-				// Emit heartbeat on first quiet-period expiry of each silence window
+				// Emit heartbeat on first window expiry of each silence window
 				if (nowMs - lastHeartbeatMs >= quietPeriodMs) {
 					lastHeartbeatMs = nowMs;
 					opts?.heartbeatFn?.(nowMs - startMs);
@@ -856,9 +924,16 @@ export async function executeFlowDeskAgentTaskV1(
 			? launchResult.model : undefined;
 		const agentName = launchResult.status === "lane_launch_started" && typeof launchResult.agent === "string"
 			? launchResult.agent : undefined;
+		// Heavy models (e.g. Claude Opus, non-fast GPT-5.x, Codex) can be slow to
+		// the FIRST token on large prompts; give them a widened pre-first-token
+		// grace so a genuinely-working slow start is not mis-read as no_response.
+		// Light models (mini/fast/spark/flash/haiku, plus gemini pro and sonnet)
+		// keep the unchanged short policy.
+		const heavyFirstToken = isFlowDeskHeavyFirstTokenModelV1(input.providerQualifiedModelId);
 		resultObservation = await extractAssistantTextFromResponse(input.client, childSessionId, {
 			quietPeriodMs: input._nudgeQuietPeriodMs ?? 10_000,  // default 10s per policy
 			maxNudges: 2,
+			...(heavyFirstToken ? { firstTokenGraceMs: input._heavyFirstTokenGraceMs ?? AGENT_TASK_HEAVY_FIRST_TOKEN_GRACE_MS } : {}),
 			runtimeModel,
 			agentName,
 			messagesTimeoutMs: input._messagesTimeoutMs,

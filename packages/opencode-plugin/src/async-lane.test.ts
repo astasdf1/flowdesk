@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, isFlowDeskHeavyFirstTokenModelV1 } from "./agent-task-runner.js";
 import { flowDeskTextLooksLikeRefusalOrErrorV1 } from "./agent-task-output.js";
 import { monitorChildSessionsV1 } from "./stall-recovery.js";
 import { applyFlowDeskSessionEvidenceWriteIntentsV1, prepareFlowDeskSessionEvidenceWriteIntentV1, reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
@@ -147,6 +147,68 @@ test("agent-task surfaces a provider dispatch error distinctly from sdk_create_f
 		const failed = reloaded.entries.find((entry) => entry.evidenceClass === "task_failed");
 		assert.ok(failed, "task_failed evidence should be written");
 		assert.equal((failed?.record as Record<string, unknown>).failure_category, "provider_dispatch_error");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("heavy first-token model classification matches the operator policy", () => {
+	// Heavy: Claude Opus, non-fast GPT-5.x main, Codex.
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("anthropic/claude-opus-4-7"), true);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("openai/gpt-5.5"), true);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("openai/gpt-5.4"), true);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("openai/gpt-5.3-codex"), true);
+	// Light/fast variants are never heavy.
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("openai/gpt-5.4-mini"), false);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("openai/gpt-5.5-fast"), false);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("openai/gpt-5.3-codex-spark"), false);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("anthropic/claude-haiku-4-5"), false);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("google/gemini-3.1-flash-lite"), false);
+	// Operator decision: gemini pro and sonnet are NOT heavy.
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("google/gemini-3.1-pro-preview"), false);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1("anthropic/claude-sonnet-4-6"), false);
+	assert.equal(isFlowDeskHeavyFirstTokenModelV1(undefined), false);
+});
+
+test("heavy model captures a slow first token that exceeds the light quiet period", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-heavy-first-token-"));
+	try {
+		// Emit the first assistant token only after several empty polls, so the
+		// pre-first-token silence exceeds the short quiet period but stays within
+		// the heavy grace window. With a heavy model, capture must still succeed.
+		let polls = 0;
+		const client = makeClient({
+			create: async () => ({ id: "ses-heavy-first-token-01" }),
+			promptAsync: async () => ({}),
+			messages: async () => {
+				polls++;
+				if (polls < 4) return [];
+				return [{ role: "assistant", parts: [{ type: "text", text: "slow heavy answer" }, { type: "step-finish", reason: "stop" }] }];
+			},
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-heavy-first-token-1",
+			taskId: "task-heavy-first-token-1",
+			laneId: "lane-heavy-first-token-1",
+			agentRef: "agent-reviewer-claude-opus",
+			providerQualifiedModelId: "anthropic/claude-opus-4-7",
+			promptText: "hello",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			// Tiny quiet period so the test is fast; the heavy grace is derived
+			// internally as max(quietPeriod, AGENT_TASK_HEAVY_FIRST_TOKEN_GRACE_MS),
+			// but we shorten the messages cap so polls advance quickly.
+			_nudgeQuietPeriodMs: 50,
+			_heavyFirstTokenGraceMs: 1_200,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 20,
+		});
+
+		assert.equal(result.status, "task_completed");
+		if (result.status !== "task_completed") return;
+		assert.equal(result.resultText, "slow heavy answer");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
