@@ -45,6 +45,7 @@ import {
 	createFlowDeskManagedDispatchBetaDurableReservationStoreV1,
 	dispatchFlowDeskPromptNoReplyWithDecisionV1,
 	dispatchManagedDispatchBetaPromptV1,
+	observeAndFinalizeManagedDispatchLaneV1,
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
@@ -2928,6 +2929,97 @@ test("managed dispatch beta can launch an actual runtime lane and persist lifecy
 			),
 			true,
 		);
+	});
+});
+
+test("managed dispatch lane finalize observer terminalizes a lane from captured text without nudge or abort", async () => {
+	await withTempRoot(async (rootDir) => {
+		const promptCalls: unknown[] = [];
+		const abortCalls: unknown[] = [];
+		const client = {
+			session: {
+				messages: async () => ([{ role: "assistant", parts: [
+					{ type: "text", text: "Managed dispatch lane produced this final answer." },
+					{ type: "step-finish", reason: "stop" },
+				] }]),
+				prompt: (o: unknown) => { promptCalls.push(o); return Promise.resolve({}); },
+				promptAsync: (o: unknown) => { promptCalls.push(o); return Promise.resolve(undefined); },
+				abort: (o: unknown) => { abortCalls.push(o); return Promise.resolve(true); },
+			},
+		} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
+
+		const result = await observeAndFinalizeManagedDispatchLaneV1({
+			client,
+			rootDir,
+			workflowId: "workflow-123",
+			laneId: "lane-managed-dispatch-finalize-1",
+			attemptId: "attempt-managed-dispatch-finalize-1",
+			childSessionId: "child-md-1",
+			agentRef: "agent-reviewer-gpt-frontier",
+			providerQualifiedModelId: "openai/gpt-5.5",
+		});
+
+		assert.equal(result.status, "lane_finalized");
+		assert.equal(result.finalizationReason, "terminal_marker");
+		assert.equal(result.completionStatus, "final");
+		assert.equal(result.authority.nudgeOrAbortPerformed, false);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		// Observation must not nudge or abort the child session.
+		assert.equal(promptCalls.length, 0);
+		assert.equal(abortCalls.length, 0);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-123", rootDir });
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result" && (e.record as Record<string, unknown>).lane_id === "lane-managed-dispatch-finalize-1");
+		assert.ok(taskResult, "managed-dispatch task_result evidence should be written");
+		assert.equal((taskResult.record as Record<string, unknown>).result_text, "Managed dispatch lane produced this final answer.");
+		assert.equal((taskResult.record as Record<string, unknown>).missing_contract, false);
+		const lifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === "lane-managed-dispatch-finalize-1");
+		assert.ok(lifecycle, "terminal lane_lifecycle evidence should be written");
+		assert.equal((lifecycle.record as Record<string, unknown>).state, "incomplete");
+
+		// Idempotent: a second observation does not duplicate terminal evidence.
+		const again = await observeAndFinalizeManagedDispatchLaneV1({
+			client,
+			rootDir,
+			workflowId: "workflow-123",
+			laneId: "lane-managed-dispatch-finalize-1",
+			attemptId: "attempt-managed-dispatch-finalize-1",
+			childSessionId: "child-md-1",
+			agentRef: "agent-reviewer-gpt-frontier",
+			providerQualifiedModelId: "openai/gpt-5.5",
+		});
+		assert.equal(again.status, "lane_already_terminal");
+	});
+});
+
+test("managed dispatch lane finalize observer records no_output when no text is captured", async () => {
+	await withTempRoot(async (rootDir) => {
+		const client = {
+			session: {
+				messages: async () => ([]),
+				prompt: () => Promise.resolve({}),
+				abort: () => Promise.resolve(true),
+			},
+		} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
+
+		const result = await observeAndFinalizeManagedDispatchLaneV1({
+			client,
+			rootDir,
+			workflowId: "workflow-123",
+			laneId: "lane-managed-dispatch-finalize-empty",
+			attemptId: "attempt-managed-dispatch-finalize-empty",
+			childSessionId: "child-md-empty",
+			agentRef: "agent-x",
+			providerQualifiedModelId: "openai/gpt-5.5",
+		});
+
+		assert.equal(result.status, "lane_no_output");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: "workflow-123", rootDir });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result" && (e.record as Record<string, unknown>).lane_id === "lane-managed-dispatch-finalize-empty"), false);
+		const lifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === "lane-managed-dispatch-finalize-empty");
+		assert.ok(lifecycle);
+		assert.equal((lifecycle.record as Record<string, unknown>).state, "no_output");
 	});
 });
 

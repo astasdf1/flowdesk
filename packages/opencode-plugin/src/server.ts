@@ -66,6 +66,7 @@ import {
 	createFlowDeskOpenCodeMetadataProviderAcquisitionClientV1,
 	createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1,
 	dispatchManagedDispatchBetaPromptV1,
+	observeAndFinalizeManagedDispatchLaneV1,
 	type FlowDeskExactModelProviderAcquisitionClientV1,
 	type FlowDeskExactModelProviderAcquisitionLiveTestRequestV1,
 	type FlowDeskManagedDispatchBetaAdapterResultV1,
@@ -182,6 +183,8 @@ export const flowdeskWatchdogOption = "watchdog" as const;
 export const flowdeskWatchdogTriggerToolName = "flowdesk_watchdog_trigger" as const;
 export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
+export const flowdeskManagedDispatchLaneFinalizeToolName =
+	"flowdesk_managed_dispatch_lane_finalize" as const;
 export const flowdeskExactModelProviderAcquisitionLiveTestToolName =
 	"flowdesk_exact_model_provider_acquisition_live_test" as const;
 export const flowdeskRuntimeReviewerExecutionToolName =
@@ -1583,6 +1586,42 @@ export function createFlowDeskManagedDispatchBetaOptInTools(
 			...(durableStateRootDir === undefined ? {} : { durableStateRootDir }),
 		});
 				return JSON.stringify(redactedManagedDispatchBetaToolResult(result));
+			},
+		}),
+		[flowdeskManagedDispatchLaneFinalizeToolName]: tool({
+			description:
+				"FlowDesk managed-dispatch lane finalize observer; reads a launched managed-dispatch lane's child session once and records terminal task_result + lane_lifecycle evidence. Observation-only: never nudges, aborts, or enables dispatch/provider/runtime/fallback authority.",
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id that owns the managed-dispatch lane."),
+				laneId: tool.schema.string().describe("Lane id of the launched managed-dispatch lane."),
+				attemptId: tool.schema.string().describe("Attempt id bound to the lane."),
+				childSessionId: tool.schema.string().describe("Child session id to observe (raw OpenCode id)."),
+				agentRef: tool.schema.string().describe("Agent ref bound to the lane."),
+				providerQualifiedModelId: tool.schema.string().describe("Concrete provider-qualified model id for the lane."),
+				parentSessionRef: tool.schema.string().optional().describe("Optional parent ses- ref for lifecycle evidence."),
+			},
+			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				if (durableStateRootDir === undefined) {
+					return JSON.stringify({
+						adapterProfile: "managed_dispatch_lane_finalize_observer",
+						status: "blocked_before_finalize",
+						redactedBlockReason: "managed-dispatch lane finalize requires a configured durable state root.",
+						authority: { ...disabledAuthority, toolAuthority: false },
+					});
+				}
+				const result = await observeAndFinalizeManagedDispatchLaneV1({
+					client,
+					rootDir: durableStateRootDir,
+					workflowId: String(record.workflowId ?? ""),
+					laneId: String(record.laneId ?? ""),
+					attemptId: String(record.attemptId ?? ""),
+					childSessionId: String(record.childSessionId ?? ""),
+					agentRef: String(record.agentRef ?? "agent-managed-dispatch"),
+					providerQualifiedModelId: String(record.providerQualifiedModelId ?? "unknown/unknown"),
+					...(typeof record.parentSessionRef === "string" ? { parentSessionRef: record.parentSessionRef } : {}),
+				});
+				return JSON.stringify(result);
 			},
 		}),
 	};

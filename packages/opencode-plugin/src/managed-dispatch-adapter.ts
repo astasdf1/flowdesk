@@ -58,8 +58,12 @@ import {
 	FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES,
 } from "@flowdesk/core";
 
+import { observeFlowDeskAgentTaskOutputV1 } from "./agent-task-output.js";
+
 export const flowdeskManagedDispatchBetaAdapterProfile =
 	"managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
+
+const MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT = 32_768;
 
 export type FlowDeskManagedDispatchBetaDispatchMethodV1 =
 	| "promptAsync"
@@ -4006,6 +4010,244 @@ export function materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1(input: {
 		lifecycleState: record.state,
 		safeNextActions: ["/flowdesk-status"],
 		authority: runtimeLaneLaunchLifecycleAuthority(true),
+	};
+}
+
+/**
+ * Result of the managed-dispatch lane finalization/observation pass.
+ *
+ * This is a Release-2 managed-dispatch-specific terminal observer. Unlike the
+ * agent-task watchdog, it NEVER nudges or aborts the child session and never
+ * enables any dispatch/provider/runtime/fallback authority. It only reads the
+ * launched lane's child session once and records terminal evidence so a
+ * managed-dispatch lane_launch does not orphan as `running`.
+ */
+export interface FlowDeskManagedDispatchLaneFinalizeResultV1 {
+	adapterProfile: "managed_dispatch_lane_finalize_observer";
+	status:
+		| "lane_finalized"
+		| "lane_no_output"
+		| "lane_already_terminal"
+		| "blocked_before_finalize";
+	workflowId: string;
+	laneId: string;
+	taskResultEvidenceId?: string;
+	terminalLifecycleEvidenceId?: string;
+	finalizationReason?: string;
+	completionStatus?: "final" | "partial";
+	looksLikeRefusalOrError?: boolean;
+	redactedBlockReason?: string;
+	authority: {
+		realOpenCodeDispatch: false;
+		providerCall: false;
+		runtimeExecution: false;
+		actualLaneLaunch: false;
+		fallbackAuthority: false;
+		hardCancelOrNoReplyAuthority: false;
+		toolAuthority: false;
+		nudgeOrAbortPerformed: false;
+	};
+}
+
+function managedDispatchLaneFinalizeAuthority(): FlowDeskManagedDispatchLaneFinalizeResultV1["authority"] {
+	return {
+		realOpenCodeDispatch: false,
+		providerCall: false,
+		runtimeExecution: false,
+		actualLaneLaunch: false,
+		fallbackAuthority: false,
+		hardCancelOrNoReplyAuthority: false,
+		toolAuthority: false,
+		nudgeOrAbortPerformed: false,
+	};
+}
+
+function managedDispatchLaneHasTerminalTaskEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+}): boolean {
+	const reloaded = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.workflowId,
+		rootDir: input.rootDir,
+	});
+	if (!reloaded.ok) return false;
+	return reloaded.entries.some((entry) => {
+		if (entry.evidenceClass !== "task_result" && entry.evidenceClass !== "task_failed")
+			return false;
+		return (entry.record as Record<string, unknown>).lane_id === input.laneId;
+	});
+}
+
+/**
+ * Observe a launched managed-dispatch lane's child session once and record
+ * terminal evidence (task_result + terminal lane_lifecycle, or a no_output
+ * lifecycle). Observation-only: no nudge, no abort, no dispatch authority.
+ */
+export async function observeAndFinalizeManagedDispatchLaneV1(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	attemptId: string;
+	childSessionId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	parentSessionRef?: string;
+	messagesTimeoutMs?: number;
+	now?: () => Date;
+}): Promise<FlowDeskManagedDispatchLaneFinalizeResultV1> {
+	const baseAuthority = managedDispatchLaneFinalizeAuthority();
+	const blocked = (reason: string): FlowDeskManagedDispatchLaneFinalizeResultV1 => ({
+		adapterProfile: "managed_dispatch_lane_finalize_observer",
+		status: "blocked_before_finalize",
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		redactedBlockReason: reason,
+		authority: baseAuthority,
+	});
+	if (typeof input.rootDir !== "string" || input.rootDir.trim().length === 0)
+		return blocked("durable state root is required");
+	if (typeof input.laneId !== "string" || input.laneId.trim().length === 0)
+		return blocked("laneId is required");
+	if (typeof input.childSessionId !== "string" || input.childSessionId.trim().length === 0)
+		return blocked("childSessionId is required");
+
+	if (managedDispatchLaneHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId: input.laneId })) {
+		return {
+			adapterProfile: "managed_dispatch_lane_finalize_observer",
+			status: "lane_already_terminal",
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			authority: baseAuthority,
+		};
+	}
+
+	const observedAt = (input.now ? input.now() : new Date()).toISOString();
+	const messagesTimeoutMs = input.messagesTimeoutMs ?? 3_000;
+	const parentSessionRef = input.parentSessionRef ?? "ses-managed-dispatch";
+	const taskId = input.laneId.startsWith("task-") ? input.laneId : `task-${input.laneId}`;
+
+	// Read the child session once (no nudge/abort). Handle both legacy sessionID
+	// and current { path: { id } } SDK message shapes plus a timeout.
+	let raw: unknown = null;
+	const messages = input.client.session.messages;
+	if (typeof messages === "function") {
+		try {
+			const readMessages = async (): Promise<unknown> => {
+				const current = await (messages as (o: unknown) => Promise<unknown>).call(input.client.session, { sessionID: input.childSessionId });
+				const currentRecord = asRecord(current);
+				const currentData = asRecord(responseData(current));
+				if (currentRecord?.error === undefined && currentData?.error === undefined) return current;
+				return (messages as (o: unknown) => Promise<unknown>).call(input.client.session, { path: { id: input.childSessionId } });
+			};
+			raw = await Promise.race([
+				readMessages(),
+				new Promise<null>((resolve) => setTimeout(() => resolve(null), messagesTimeoutMs)),
+			]);
+		} catch {
+			raw = null;
+		}
+	}
+
+	const observed = raw === null ? undefined : observeFlowDeskAgentTaskOutputV1(raw);
+	const latestText = observed?.latestText;
+
+	const writeLifecycle = (state: FlowDeskLaneLifecycleRecordV1["state"], outputRef: string | undefined, evidenceId: string): boolean => {
+		const record: FlowDeskLaneLifecycleRecordV1 = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: input.laneId,
+			workflow_id: input.workflowId,
+			attempt_id: input.attemptId,
+			parent_session_ref: parentSessionRef,
+			child_session_ref: input.childSessionId.startsWith("ses-") ? input.childSessionId : `ses-${input.childSessionId}`,
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			state,
+			...(outputRef === undefined ? {} : { output_ref: outputRef }),
+			timeout_ms: 0,
+			orphan_max_age_ms: 0,
+			retry_count: 0,
+			created_at: observedAt,
+			updated_at: observedAt,
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		};
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId,
+			evidenceId,
+			record: record as unknown as Record<string, unknown>,
+		});
+		if (!prepared.ok || prepared.writeIntent === undefined) return false;
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+		return applied.ok && applied.writtenPaths.length > 0;
+	};
+
+	if (typeof latestText === "string" && latestText.trim().length > 0) {
+		const truncated = latestText.length > MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT;
+		const storedText = truncated ? latestText.slice(0, MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT) : latestText;
+		const completionStatus: "final" | "partial" = observed?.terminalObserved === true ? "final" : "partial";
+		const finalizationReason = observed?.terminalObserved === true ? "terminal_marker" : "timeout_partial";
+		const taskResultEvidenceId = `task-result-managed-dispatch-${input.laneId}`;
+		const taskResultRecord = {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: taskId,
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			task_prompt_sha256: createHash("sha256").update("managed-dispatch-lane-finalize").digest("hex"),
+			result_text: storedText,
+			result_text_truncated: truncated,
+			result_text_sha256: createHash("sha256").update(latestText).digest("hex"),
+			completion_status: completionStatus,
+			output_kind: observed?.outputKind ?? "final_answer",
+			usable_for_synthesis: observed?.usableForSynthesis ?? true,
+			missing_contract: false,
+			finalization_reason: finalizationReason,
+			looks_like_refusal_or_error: observed?.looksLikeRefusalOrError ?? false,
+			created_at: observedAt,
+			dispatch_authority_enabled: false,
+		};
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId,
+			evidenceId: taskResultEvidenceId,
+			record: taskResultRecord as unknown as Record<string, unknown>,
+		});
+		if (!prepared.ok || prepared.writeIntent === undefined)
+			return blocked(prepared.errors.join(", ") || "task_result evidence intent invalid");
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+		if (!applied.ok || applied.writtenPaths.length === 0)
+			return blocked("task_result evidence write failed");
+		const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
+		writeLifecycle("incomplete", `output-${taskResultEvidenceId}`, terminalLifecycleEvidenceId);
+		return {
+			adapterProfile: "managed_dispatch_lane_finalize_observer",
+			status: "lane_finalized",
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			taskResultEvidenceId,
+			terminalLifecycleEvidenceId,
+			finalizationReason,
+			completionStatus,
+			looksLikeRefusalOrError: observed?.looksLikeRefusalOrError ?? false,
+			authority: baseAuthority,
+		};
+	}
+
+	// No usable text observed — record a terminal no_output lifecycle so the lane
+	// stops projecting as running/stalled. No task_failed authority is implied.
+	const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
+	writeLifecycle("no_output", undefined, terminalLifecycleEvidenceId);
+	return {
+		adapterProfile: "managed_dispatch_lane_finalize_observer",
+		status: "lane_no_output",
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		terminalLifecycleEvidenceId,
+		authority: baseAuthority,
 	};
 }
 
