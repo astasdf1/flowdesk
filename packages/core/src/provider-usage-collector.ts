@@ -754,12 +754,36 @@ function openCodeAuthPaths(homeDir: string, env: Record<string, string | undefin
 }
 
 function openCodeGeminiAuthPackageEntrypoints(homeDir: string, env: Record<string, string | undefined> | undefined): string[] {
-  const cacheHome = firstNonEmpty(env?.OPENCODE_CACHE_DIR, env?.XDG_CACHE_HOME ? path.join(env.XDG_CACHE_HOME, "opencode") : undefined, path.join(homeDir, ".cache", "opencode"));
-  return uniqueNonEmpty([
-    cacheHome ? path.join(cacheHome, "packages", "opencode-gemini-auth@latest", "node_modules", "opencode-gemini-auth", "dist", "index.js") : undefined,
-    cacheHome ? path.join(cacheHome, "packages", "opencode-gemini-auth@latest", "dist", "index.js") : undefined,
-    cacheHome ? path.join(cacheHome, "packages", "opencode-gemini-auth", "node_modules", "opencode-gemini-auth", "dist", "index.js") : undefined,
+  // Consider every plausible OpenCode cache home, not only the env-derived one.
+  // The MCP/tool-host process can be launched with a different (or missing)
+  // OPENCODE_CACHE_DIR/XDG_CACHE_HOME than the active plugin, so always include
+  // the home-relative default in addition to the configured cache home. This
+  // keeps the public OAuth client metadata inference robust to env drift
+  // without storing any client secret in FlowDesk source.
+  const cacheHomes = uniqueNonEmpty([
+    env?.OPENCODE_CACHE_DIR,
+    env?.XDG_CACHE_HOME ? path.join(env.XDG_CACHE_HOME, "opencode") : undefined,
+    path.join(homeDir, ".cache", "opencode"),
   ]);
+  const relativeEntrypoints = [
+    path.join("packages", "opencode-gemini-auth@latest", "node_modules", "opencode-gemini-auth", "dist", "index.js"),
+    path.join("packages", "opencode-gemini-auth@latest", "dist", "index.js"),
+    path.join("packages", "opencode-gemini-auth", "node_modules", "opencode-gemini-auth", "dist", "index.js"),
+    path.join("node_modules", "opencode-gemini-auth", "dist", "index.js"),
+  ];
+  const candidates: string[] = [];
+  for (const cacheHome of cacheHomes) {
+    for (const relative of relativeEntrypoints) {
+      candidates.push(path.join(cacheHome, relative));
+    }
+  }
+  // Also try the local OpenCode config install location, where the user can have
+  // opencode-gemini-auth installed as a normal dependency.
+  const configHome = firstNonEmpty(env?.OPENCODE_CONFIG_DIR, path.join(homeDir, ".config", "opencode"));
+  if (configHome) {
+    candidates.push(path.join(configHome, "node_modules", "opencode-gemini-auth", "dist", "index.js"));
+  }
+  return uniqueNonEmpty(candidates);
 }
 
 function claudeKeychainServiceName(env: Record<string, string | undefined> | undefined): string {

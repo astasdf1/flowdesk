@@ -345,6 +345,86 @@ test("Gemini Code Assist collector refreshes OpenCode OAuth using cached opencod
   assert.equal(firstAuthHeader, "Bearer refreshed-access-token");
 });
 
+test("Gemini Code Assist collector infers the cached client from the home cache when no cache env is set", async () => {
+  const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
+  const pastExpiry = observedAtMs - 60_000;
+  const filesystem = memoryFilesystem({
+    "/home/test/.local/share/opencode/auth.json": JSON.stringify({
+      google: {
+        type: "oauth",
+        access: "expired-opencode-access-token",
+        refresh: "opencode-refresh-token|configured-project|managed-project",
+        expires: pastExpiry,
+      },
+    }),
+    "/home/test/.cache/opencode/packages/opencode-gemini-auth@latest/node_modules/opencode-gemini-auth/dist/index.js": 'var GEMINI_CLIENT_ID = "client-from-home-cache"; var GEMINI_CLIENT_SECRET = "secret-from-home-cache";',
+  });
+  let tokenRefreshBody = "";
+  let firstAuthHeader = "";
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url, init: FlowDeskProviderUsageFetchRequestV1) => {
+    if (url === "https://oauth2.googleapis.com/token") {
+      tokenRefreshBody = init.body ?? "";
+      return response({ access_token: "refreshed-access-token" });
+    }
+    if (url.endsWith(":loadCodeAssist")) {
+      firstAuthHeader = init.headers.Authorization ?? "";
+      return response({ cloudaicompanionProject: "managed-project" });
+    }
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-24T02:00:00.000Z" }] });
+  };
+
+  // Empty env: no OPENCODE_CACHE_DIR / XDG_CACHE_HOME. The collector must still
+  // resolve the home-relative cache entrypoint so a tool-host process launched
+  // without those vars can refresh the expired token.
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(
+    target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
+    { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
+    { filesystem, fetch: fetcher, env: {}, now: () => observedAtMs },
+  );
+
+  assertCollectorEvidenceValid(result);
+  assert.match(tokenRefreshBody, /client_id=client-from-home-cache/);
+  assert.match(tokenRefreshBody, /client_secret=secret-from-home-cache/);
+  assert.equal(firstAuthHeader, "Bearer refreshed-access-token");
+});
+
+test("Gemini Code Assist collector infers the client from a config-local install when only that path exists", async () => {
+  const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
+  const pastExpiry = observedAtMs - 60_000;
+  const filesystem = memoryFilesystem({
+    "/home/test/.local/share/opencode/auth.json": JSON.stringify({
+      google: {
+        type: "oauth",
+        access: "expired-opencode-access-token",
+        refresh: "opencode-refresh-token|configured-project|managed-project",
+        expires: pastExpiry,
+      },
+    }),
+    "/home/test/.config/opencode/node_modules/opencode-gemini-auth/dist/index.js": 'var GEMINI_CLIENT_ID = "client-from-config-local"; var GEMINI_CLIENT_SECRET = "secret-from-config-local";',
+  });
+  let tokenRefreshBody = "";
+  const fetcher: FlowDeskProviderUsageFetchV1 = async (url, init: FlowDeskProviderUsageFetchRequestV1) => {
+    if (url === "https://oauth2.googleapis.com/token") {
+      tokenRefreshBody = init.body ?? "";
+      return response({ access_token: "refreshed-access-token" });
+    }
+    if (url.endsWith(":loadCodeAssist")) {
+      return response({ cloudaicompanionProject: "managed-project" });
+    }
+    return response({ buckets: [{ modelId: "gemini-2.5-pro", tokenType: "REQUESTS", remainingFraction: 0.5, resetTime: "2026-05-24T02:00:00.000Z" }] });
+  };
+
+  const result = await collectManagedDispatchBetaUsageEvidenceV1(
+    target({ providerFamily: "gemini", providerQualifiedModelId: "gemini/gemini-pro", modelFamily: "gemini-pro" }),
+    { enabled: true, homeDir: "/home/test", providers: ["gemini"] },
+    { filesystem, fetch: fetcher, env: {}, now: () => observedAtMs },
+  );
+
+  assertCollectorEvidenceValid(result);
+  assert.match(tokenRefreshBody, /client_id=client-from-config-local/);
+  assert.match(tokenRefreshBody, /client_secret=secret-from-config-local/);
+});
+
 test("Gemini Code Assist collector falls closed when cached token is expired and no client id/secret is configured", async () => {
   const observedAtMs = Date.parse("2026-05-24T00:00:00.000Z");
   const pastExpiry = observedAtMs - 60_000;
