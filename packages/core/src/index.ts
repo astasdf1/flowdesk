@@ -65,6 +65,7 @@ export * from "./pre-dispatch-audit-record.js";
 export * from "./production-approval-source.js";
 export * from "./observed-runtime-echo.js";
 export * from "./plugin-verification-boundary.js";
+export * from "./plugin-satisfiable-preparation.js";
 export * from "./production-enablement.js";
 export * from "./production-verification.js";
 export * from "./provider-failures.js";
