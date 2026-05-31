@@ -310,6 +310,56 @@ test("executeFlowDeskAgentTaskV1 preserves synchronous marker-like task_result t
 	}
 });
 
+test("executeFlowDeskAgentTaskV1 materializes typed reviewer verdict and complete lifecycle", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-reviewer-verdict-"));
+	try {
+		const verdict = {
+			schema_version: "flowdesk.top_tier_review_verdict.v1",
+			verdict_id: "verdict-sync-agent-task",
+			workflow_id: "workflow-sync-reviewer-verdict",
+			lane_plan_ref: "lane-plan-sync-agent-task",
+			binding_ref: "binding-sync-agent-task",
+			perspective: "architecture",
+			source: "gpt_frontier",
+			created_at: "2026-05-31T00:00:00.000Z",
+			redaction_version: "v1",
+			findings: [],
+			evidence_refs: ["evidence-sync-agent-task"],
+			uncertainty: "low",
+			required_fixes: [],
+			verdict_label: "pass",
+			safe_next_actions: ["/flowdesk-status"],
+			dispatch_authority_enabled: false,
+		};
+		const client = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: JSON.stringify(verdict) }, { type: "step-finish", reason: "stop" }] }]),
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-sync-reviewer-verdict",
+			taskId: "task-sync-reviewer-verdict",
+			laneId: "lane-sync-reviewer-verdict",
+			agentRef: "agent-reviewer-gpt-frontier",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "return typed verdict",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_completed");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-sync-reviewer-verdict" });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "reviewer_verdict" && e.evidenceId === "verdict-sync-agent-task"), true);
+		const completeLifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).verdict_ref === "verdict-sync-agent-task");
+		assert.ok(completeLifecycle, "complete verdict-linked lifecycle should be written");
+		assert.equal((completeLifecycle.record as Record<string, unknown>).state, "complete");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("monitorChildSessions reads current SDK messages response shapes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-current-shape-"));
 	try {

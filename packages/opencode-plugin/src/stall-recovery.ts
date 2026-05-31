@@ -11,11 +11,13 @@ import {
 	type FlowDeskAgentTaskProgressV1,
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
+	type FlowDeskTopTierReviewVerdictV1,
 	type FlowDeskPendingRetryPlanV1,
 	type FlowDeskRetryExecutedV1,
 	type FlowDeskRetryFailedV1,
 	type FlowDeskAutoRetryResultV1,
 	type DisabledAutoRetryReason,
+	validateTopTierReviewVerdictV1,
 } from "@flowdesk/core";
 import { createHmac, createHash, timingSafeEqual, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -1705,6 +1707,107 @@ function writeChildSessionEvidence(
 	return applied.ok && applied.writtenPaths.length > 0;
 }
 
+function extractJsonBlocksFromText(raw: string): string[] {
+	const trimmed = raw.trim();
+	const results: string[] = [];
+	if (trimmed.startsWith("{") && trimmed.endsWith("}")) return [trimmed];
+	const fencePattern = /```(?:json)?\s*\n?(\{[\s\S]*?\})\s*\n?```/g;
+	for (const match of trimmed.matchAll(fencePattern)) {
+		if (match[1]) results.push(match[1].trim());
+	}
+	if (results.length > 0) return results;
+	let depth = 0;
+	let start = -1;
+	let lastBlock: string | undefined;
+	for (let i = 0; i < trimmed.length; i++) {
+		const ch = trimmed[i];
+		if (ch === "{") {
+			if (depth === 0) start = i;
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0 && start !== -1) {
+				lastBlock = trimmed.slice(start, i + 1).trim();
+				start = -1;
+			}
+		}
+	}
+	return lastBlock === undefined ? [] : [lastBlock];
+}
+
+function observedTopTierReviewerVerdictFromText(input: {
+	text: string;
+	workflowId: string;
+}): FlowDeskTopTierReviewVerdictV1 | undefined {
+	for (const block of extractJsonBlocksFromText(input.text)) {
+		try {
+			const candidate = JSON.parse(block) as unknown;
+			const validation = validateTopTierReviewVerdictV1(candidate);
+			if (!validation.ok) continue;
+			const verdict = candidate as FlowDeskTopTierReviewVerdictV1;
+			if (verdict.workflow_id === input.workflowId) return verdict;
+		} catch {
+			// Keep scanning candidates.
+		}
+	}
+	return undefined;
+}
+
+function persistObservedReviewerVerdict(input: {
+	rootDir: string;
+	workflowId: string;
+	verdict: FlowDeskTopTierReviewVerdictV1;
+}): boolean {
+	const evidenceId = input.verdict.verdict_id;
+	if (!writeChildSessionEvidence(input.rootDir, input.workflowId, evidenceId, input.verdict as unknown as Record<string, unknown>)) return false;
+	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
+	return reloaded.ok && reloaded.blocked.length === 0 && reloaded.entries.some((entry) =>
+		entry.evidenceClass === "reviewer_verdict" &&
+		entry.evidenceId === evidenceId &&
+		entry.record.verdict_id === input.verdict.verdict_id
+	);
+}
+
+function writeAgentTaskCompleteLifecycleForVerdict(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	attemptId: string;
+	parentSessionRef: string;
+	childSessionId: string;
+	taskResultEvidenceId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	verdictId: string;
+	observedAt: string;
+}): boolean {
+	return writeChildSessionEvidence(input.rootDir, input.workflowId, `lifecycle-agent-task-complete-${input.laneId}-${input.verdictId}`, {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: input.laneId,
+		workflow_id: input.workflowId,
+		attempt_id: input.attemptId,
+		parent_session_ref: input.parentSessionRef,
+		child_session_ref: input.childSessionId.startsWith("ses-") ? input.childSessionId : `ses-${input.childSessionId}`,
+		message_ref: `msg-${input.laneId}`,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		state: "complete",
+		verdict_ref: input.verdictId,
+		output_ref: `output-${input.taskResultEvidenceId}`,
+		runtime_echo_ref: `runtime-echo-${input.laneId}`,
+		telemetry_ref: `telemetry-${input.laneId}`,
+		timeout_ms: 0,
+		orphan_max_age_ms: 0,
+		retry_count: 0,
+		created_at: input.observedAt,
+		updated_at: input.observedAt,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	});
+}
+
 function laneAlreadyHasTerminalTaskEvidence(input: {
 	rootDir: string;
 	workflowId: string;
@@ -1997,6 +2100,36 @@ export async function monitorChildSessionsV1(input: {
 				});
 				continue;
 			}
+			const observedReviewerVerdict = observedTopTierReviewerVerdictFromText({
+				text: resultObservation.text,
+				workflowId: input.workflowId,
+			});
+			const reviewerVerdictPersisted = observedReviewerVerdict === undefined
+				? false
+				: persistObservedReviewerVerdict({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					verdict: observedReviewerVerdict,
+				});
+			const runningLifecycle = reloaded.entries.find((entry) => {
+				const lifecycle = entry.record as Record<string, unknown>;
+				return entry.evidenceClass === "lane_lifecycle" && lifecycle.lane_id === laneId && typeof lifecycle.attempt_id === "string";
+			})?.record as Record<string, unknown> | undefined;
+			if (reviewerVerdictPersisted && observedReviewerVerdict !== undefined) {
+				writeAgentTaskCompleteLifecycleForVerdict({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					attemptId: typeof runningLifecycle?.attempt_id === "string" ? runningLifecycle.attempt_id : `attempt-${laneId}`,
+					parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+					childSessionId,
+					taskResultEvidenceId,
+					agentRef,
+					providerQualifiedModelId: modelId,
+					verdictId: observedReviewerVerdict.verdict_id,
+					observedAt: completedAt,
+				});
+			}
 				writeAgentTaskProgressEvidence({
 					rootDir: input.rootDir,
 					workflowId: input.workflowId,
@@ -2006,7 +2139,9 @@ export async function monitorChildSessionsV1(input: {
 				providerQualifiedModelId: modelId,
 				phase: "finalizing",
 				progressSeq: 10 + nudgeCount,
-				progressLabel: "async agent task result captured by watchdog",
+				progressLabel: reviewerVerdictPersisted
+					? "async agent task result captured with reviewer verdict evidence"
+					: "async agent task result captured by watchdog",
 				observedAt: completedAt,
 			});
 			refreshFlowDeskCompletionUiCachesV1({

@@ -3208,7 +3208,11 @@ function workingModelCacheAllowsDispatch(input: {
 	providerQualifiedModelId: string;
 }): { ok: true } | { ok: false; reason: string } {
 	if (input.durableStateRootDir === undefined || input.durableStateRootDir.trim().length === 0) {
-		return { ok: true };
+		return {
+			ok: false,
+			reason:
+				"Working-model durable state root is required before managed dispatch.",
+		};
 	}
 
 	try {
@@ -4185,6 +4189,14 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 		return applied.ok && applied.writtenPaths.length > 0;
 	};
 
+	const reloadHas = (predicate: (entry: FlowDeskSessionEvidenceReloadResultV1["entries"][number]) => boolean): boolean => {
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			workflowId: input.workflowId,
+			rootDir: input.rootDir,
+		});
+		return reloaded.ok && reloaded.blocked.length === 0 && reloaded.entries.some(predicate);
+	};
+
 	if (typeof latestText === "string" && latestText.trim().length > 0) {
 		const truncated = latestText.length > MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT;
 		const storedText = truncated ? latestText.slice(0, MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT) : latestText;
@@ -4221,8 +4233,13 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
 		if (!applied.ok || applied.writtenPaths.length === 0)
 			return blocked("task_result evidence write failed");
+		if (!reloadHas((entry) => entry.evidenceClass === "task_result" && entry.evidenceId === taskResultEvidenceId && entry.record.lane_id === input.laneId))
+			return blocked("task_result evidence reload verification failed");
 		const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
-		writeLifecycle("incomplete", `output-${taskResultEvidenceId}`, terminalLifecycleEvidenceId);
+		if (!writeLifecycle("incomplete", `output-${taskResultEvidenceId}`, terminalLifecycleEvidenceId))
+			return blocked("terminal lane_lifecycle evidence write failed");
+		if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "incomplete"))
+			return blocked("terminal lane_lifecycle evidence reload verification failed");
 		return {
 			adapterProfile: "managed_dispatch_lane_finalize_observer",
 			status: "lane_finalized",
@@ -4240,7 +4257,10 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 	// No usable text observed — record a terminal no_output lifecycle so the lane
 	// stops projecting as running/stalled. No task_failed authority is implied.
 	const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
-	writeLifecycle("no_output", undefined, terminalLifecycleEvidenceId);
+	if (!writeLifecycle("no_output", undefined, terminalLifecycleEvidenceId))
+		return blocked("terminal no_output lane_lifecycle evidence write failed");
+	if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "no_output"))
+		return blocked("terminal no_output lane_lifecycle evidence reload verification failed");
 	return {
 		adapterProfile: "managed_dispatch_lane_finalize_observer",
 		status: "lane_no_output",
@@ -4554,14 +4574,6 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 		);
 	}
 
-	const workingModelGate = workingModelCacheAllowsDispatch({
-		durableStateRootDir: input.durableStateRootDir,
-		providerQualifiedModelId: approvedProviderQualifiedModelId,
-	});
-	if (!workingModelGate.ok) {
-		return blocked(input.boundaryInput, guardDecision, workingModelGate.reason);
-	}
-
 	const text = promptTextFrom(input.request);
 	if (
 		input.request.sessionId.trim().length === 0 ||
@@ -4670,6 +4682,13 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			guardDecision,
 			`Dispatch idempotency reservation materialization blocked: ${reservation.redactedFailureReason ?? "reload not proven"}.`,
 		);
+	}
+	const workingModelGate = workingModelCacheAllowsDispatch({
+		durableStateRootDir: input.durableStateRootDir,
+		providerQualifiedModelId: approvedProviderQualifiedModelId,
+	});
+	if (!workingModelGate.ok) {
+		return blocked(input.boundaryInput, guardDecision, workingModelGate.reason);
 	}
 	const dispatchMode = input.request.dispatchMode ?? "prompt";
 	if (dispatchMode === "lane_launch") {

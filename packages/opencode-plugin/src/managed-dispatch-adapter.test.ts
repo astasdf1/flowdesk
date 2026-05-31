@@ -2679,16 +2679,19 @@ test("prompt no-reply control adapter blocks mismatched agent and model decision
 });
 
 test("managed dispatch beta adapter maps FlowDesk Claude binding to OpenCode Anthropic provider", async () => {
-	const { client, promptCalls, promptAsyncCalls } = fakeClient();
-	const reservation = fakeReservationStore();
-	const result = await dispatchManagedDispatchBetaPromptV1({
-		client,
-		boundaryInput: managedDispatchInput(),
-		request: dispatchRequest(),
-		dispatchManifest: dispatchManifest(),
-		reloadedEvidence: reloadedEvidence(),
-		reservationStore: reservation.store,
-	});
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const { client, promptCalls, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
 
 	assert.equal(result.status, "dispatch_accepted");
 	assert.equal(result.dispatchAttempted, true);
@@ -2723,6 +2726,7 @@ test("managed dispatch beta adapter maps FlowDesk Claude binding to OpenCode Ant
 		/noReply|cancel|fallback|tools/.test(JSON.stringify(promptAsyncCalls[0])),
 		false,
 	);
+	});
 });
 
 test("managed dispatch beta adapter requires working-model evidence when durable root is available", async () => {
@@ -2748,20 +2752,23 @@ test("managed dispatch beta adapter requires working-model evidence when durable
 });
 
 test("managed dispatch beta adapter can call prompt once for completed dispatch without noReply or tools", async () => {
-	const { client, promptCalls, promptAsyncCalls } = fakeClient();
-	const reservation = fakeReservationStore();
-	const result = await dispatchManagedDispatchBetaPromptV1({
-		client,
-		boundaryInput: managedDispatchInput(),
-		request: dispatchRequest({
-			dispatchMethod: "prompt",
-			promptText: undefined,
-			promptSummary: "Summarized approved prompt.",
-		}),
-		dispatchManifest: dispatchManifest(),
-		reloadedEvidence: reloadedEvidence(),
-		reservationStore: reservation.store,
-	});
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const { client, promptCalls, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest({
+				dispatchMethod: "prompt",
+				promptText: undefined,
+				promptSummary: "Summarized approved prompt.",
+			}),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
 
 	assert.equal(result.status, "dispatch_completed");
 	assert.equal(promptCalls.length, 1);
@@ -2781,6 +2788,7 @@ test("managed dispatch beta adapter can call prompt once for completed dispatch 
 		/noReply|cancel|fallback|tools/.test(JSON.stringify(promptCalls[0])),
 		false,
 	);
+	});
 });
 
 test("managed dispatch beta adapter requires manifest and durable evidence before fake client calls", async () => {
@@ -2831,6 +2839,7 @@ test("managed dispatch beta adapter requires manifest and durable evidence befor
 
 test("durable reservation store materializes reserved and completed evidence around SDK calls", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const { client, promptAsyncCalls } = fakeClient();
 		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
 			rootDir,
@@ -2843,6 +2852,7 @@ test("durable reservation store materializes reserved and completed evidence aro
 			dispatchManifest: dispatchManifest(),
 			reloadedEvidence: reloadedEvidence(),
 			reservationStore: store,
+			durableStateRootDir: rootDir,
 		});
 
 		assert.equal(result.status, "dispatch_accepted");
@@ -3025,6 +3035,7 @@ test("managed dispatch lane finalize observer records no_output when no text is 
 
 test("durable reservation store preserves existing idempotency ledger entries", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const { client, promptAsyncCalls } = fakeClient();
 		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
 			rootDir,
@@ -3067,6 +3078,7 @@ test("durable reservation store preserves existing idempotency ledger entries", 
 				],
 			}),
 			reservationStore: store,
+			durableStateRootDir: rootDir,
 		});
 
 		assert.equal(result.status, "dispatch_accepted");
@@ -3085,6 +3097,7 @@ test("durable reservation store preserves existing idempotency ledger entries", 
 
 test("durable reservation store blocks stale replay before SDK calls", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
 			rootDir,
 			now: () => new Date(now),
@@ -3097,6 +3110,7 @@ test("durable reservation store blocks stale replay before SDK calls", async () 
 			dispatchManifest: dispatchManifest(),
 			reloadedEvidence: reloadedEvidence(),
 			reservationStore: store,
+			durableStateRootDir: rootDir,
 		});
 		assert.equal(first.status, "dispatch_accepted");
 		assert.equal(firstClient.promptAsyncCalls.length, 1);
@@ -3109,6 +3123,7 @@ test("durable reservation store blocks stale replay before SDK calls", async () 
 			dispatchManifest: dispatchManifest(),
 			reloadedEvidence: reloadedEvidence(),
 			reservationStore: store,
+			durableStateRootDir: rootDir,
 		});
 		assert.equal(replay.status, "blocked_before_dispatch");
 		assert.match(
@@ -3122,6 +3137,7 @@ test("durable reservation store blocks stale replay before SDK calls", async () 
 
 test("durable reservation store records dispatch_failed after SDK failure", async () => {
 	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
 		const { client, promptAsyncCalls } = failingPromptAsyncClient();
 		const store = createFlowDeskManagedDispatchBetaDurableReservationStoreV1({
 			rootDir,
@@ -3134,6 +3150,7 @@ test("durable reservation store records dispatch_failed after SDK failure", asyn
 			dispatchManifest: dispatchManifest(),
 			reloadedEvidence: reloadedEvidence(),
 			reservationStore: store,
+			durableStateRootDir: rootDir,
 		});
 
 		assert.equal(result.status, "dispatch_failed");
@@ -3193,22 +3210,26 @@ test("managed dispatch beta adapter requires reservation materialization before 
 });
 
 test("managed dispatch beta adapter records reservation failure state after SDK failure", async () => {
-	const { client, promptAsyncCalls } = failingPromptAsyncClient();
-	const reservation = fakeReservationStore();
-	const result = await dispatchManagedDispatchBetaPromptV1({
-		client,
-		boundaryInput: managedDispatchInput(),
-		request: dispatchRequest(),
-		dispatchManifest: dispatchManifest(),
-		reloadedEvidence: reloadedEvidence(),
-		reservationStore: reservation.store,
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const { client, promptAsyncCalls } = failingPromptAsyncClient();
+		const reservation = fakeReservationStore();
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
+		assert.equal(result.status, "dispatch_failed");
+		assert.equal(result.dispatchAttempted, true);
+		assert.equal(promptAsyncCalls.length, 1);
+		assert.equal(reservation.reserveCalls.length, 1);
+		assert.equal(reservation.failureCalls.length, 1);
+		assert.equal(reservation.failureCalls[0].manifest.attempt_id, "attempt-123");
 	});
-	assert.equal(result.status, "dispatch_failed");
-	assert.equal(result.dispatchAttempted, true);
-	assert.equal(promptAsyncCalls.length, 1);
-	assert.equal(reservation.reserveCalls.length, 1);
-	assert.equal(reservation.failureCalls.length, 1);
-	assert.equal(reservation.failureCalls[0].manifest.attempt_id, "attempt-123");
 });
 
 test("managed dispatch beta adapter requires promotion gate before fake client calls", async () => {
@@ -3359,11 +3380,13 @@ test("default server and plugin scaffold remain Release 1 non-dispatch", async (
 });
 
 test("managed dispatch beta server tool is explicit opt-in and redacts SDK response", async () => {
-	const { client, promptAsyncCalls } = fakeClient();
-	const reservation = fakeReservationStore();
-	const defaultHooks = await flowdeskOpenCodeServerPlugin.server({
-		client,
-	} as never);
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const { client, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server({
+			client,
+		} as never);
 	assert.equal(
 		Object.keys(defaultHooks.tool ?? {}).includes(
 			flowdeskManagedDispatchBetaToolName,
@@ -3376,6 +3399,7 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
 			enabled: true,
 			reservationStore: reservation.store,
 		},
+		[flowdeskDurableStateRootOption]: rootDir,
 		localNonDispatchAdapter: false,
 		naturalLanguageRouting: false,
 	});
@@ -3398,20 +3422,24 @@ test("managed dispatch beta server tool is explicit opt-in and redacts SDK respo
 	assert.equal("response" in result, false);
 	assert.equal(promptAsyncCalls.length, 1);
 	assert.equal(reservation.reserveCalls.length, 1);
+	});
 });
 
 test("default managed-dispatch authorization can register the SDK tool without beta option", async () => {
-	const { client, promptAsyncCalls } = fakeClient();
-	const reservation = fakeReservationStore();
-	const hooks = await flowdeskOpenCodeServerPlugin.server(
-		{ client, reservationStore: reservation.store } as never,
-		{
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const { client, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client, reservationStore: reservation.store } as never,
+			{
 			[flowdeskDefaultManagedDispatchAuthorizationOption]:
 				defaultManagedDispatchAuthorization(),
+			[flowdeskDurableStateRootOption]: rootDir,
 			localNonDispatchAdapter: false,
 			naturalLanguageRouting: false,
-		},
-	);
+			},
+		);
 	const betaTool = hooks.tool?.[flowdeskManagedDispatchBetaToolName];
 	assert.ok(betaTool);
 	const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
@@ -3439,6 +3467,7 @@ test("default managed-dispatch authorization can register the SDK tool without b
 	assert.equal(result.dispatchAttempted, true);
 	assert.equal(promptAsyncCalls.length, 1);
 	assert.equal(reservation.reserveCalls.length, 1);
+	});
 });
 
 test("/flowdesk-run managed-dispatch blocks without default authorization", async () => {
@@ -3538,17 +3567,20 @@ test("/flowdesk-run managed-dispatch rejects invalid run envelopes before adapte
 });
 
 test("/flowdesk-run managed-dispatch routes through default authorization and managed adapter", async () => {
-	const { client, promptAsyncCalls } = fakeClient();
-	const reservation = fakeReservationStore();
-	const hooks = await flowdeskOpenCodeServerPlugin.server(
-		{ client, reservationStore: reservation.store } as never,
-		{
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const { client, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client, reservationStore: reservation.store } as never,
+			{
 			[flowdeskDefaultManagedDispatchAuthorizationOption]:
 				defaultManagedDispatchAuthorization(),
+			[flowdeskDurableStateRootOption]: rootDir,
 			[flowdeskLocalNonDispatchAdapterOption]: true,
 			naturalLanguageRouting: false,
-		},
-	);
+			},
+		);
 	const runTool = hooks.tool?.flowdesk_run;
 	assert.ok(runTool);
 
@@ -3587,6 +3619,7 @@ test("/flowdesk-run managed-dispatch routes through default authorization and ma
 	assert.equal("response" in result, false);
 	assert.equal(promptAsyncCalls.length, 1);
 	assert.equal(reservation.reserveCalls.length, 1);
+	});
 });
 
 test("default managed-dispatch authorization gate blocks registration when forged or disabled", async () => {
