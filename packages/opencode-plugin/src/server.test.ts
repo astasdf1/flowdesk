@@ -8060,6 +8060,86 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 	}
 });
 
+test("flowdesk_agent_task_run binds blank parentSessionId to current ctx session", async () => {
+	const assistantText = "Bound to current session";
+	const createOptions: unknown[] = [];
+	const dummyClient = {
+		session: {
+			create(options: unknown) {
+				createOptions.push(options);
+				return Promise.resolve({ id: "child-agent-task-current-session-1" });
+			},
+			prompt() {
+				return Promise.resolve([
+					{
+						role: "assistant",
+						parts: [{ type: "text", text: assistantText }],
+					},
+				]);
+			},
+			messages(options: unknown) {
+				void options;
+				return Promise.resolve([
+					{
+						role: "assistant",
+						parts: [{ type: "text", text: assistantText }],
+					},
+				]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-current-session-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-current-session-1",
+						taskDescription: "Analyze current session binding.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+						_nudgeQuietPeriodMs: 100,
+						_messagesTimeoutMs: 0,
+					},
+					{ sessionID: "current-opencode-session-1" } as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_completed");
+		assert.equal((createOptions[0] as Record<string, unknown>).parentID, "current-opencode-session-1");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-task-current-session-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.parent_session_ref === "ses-current-opencode-session-1",
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("flowdesk_agent_task_run fails fast for FlowDesk session refs used as parentSessionId", async () => {
 	let createCalls = 0;
 	let promptCalls = 0;

@@ -3335,7 +3335,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				taskDescription: tool.schema.string().max(20_000).describe("The task prompt to send to the agent"),
 				agentName: tool.schema.string().describe("Agent name (e.g. reviewer-claude-opus, reviewer-gpt-frontier)"),
 				providerQualifiedModelId: tool.schema.string().describe("Concrete model id (e.g. anthropic/claude-opus-4-7)"),
-				parentSessionId: tool.schema.string().optional().describe("Parent session id"),
+				parentSessionId: tool.schema.string().optional().describe("Parent session id. When omitted or blank, FlowDesk binds to the current OpenCode ctx.sessionID when available."),
 				developerModeAcknowledged: tool.schema.boolean(),
 				allowProviderCall: tool.schema.boolean(),
 				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Milliseconds of silence before sending a nudge prompt. Default 10000ms (10s). Recommended: always pass 10000. At 10s silence → nudge 1, 20s → nudge 2, 30s+ → lane fails and watchdog retries."),
@@ -3370,12 +3370,15 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				if (!workflowId || !taskDescription || !agentName || !providerQualifiedModelId)
 					return JSON.stringify({ status: "blocked", reason: "workflowId, taskDescription, agentName, and providerQualifiedModelId are required" });
 				const ctxRecord: Record<string, unknown> = isRecord(ctx) ? ctx : {};
-				const parentSessionId =
-					typeof record.parentSessionId === "string" && record.parentSessionId.length > 0
-						? record.parentSessionId
-						: typeof ctxRecord.sessionID === "string" && ctxRecord.sessionID.length > 0
-							? ctxRecord.sessionID
-							: "";
+				const requestedParentSessionId = typeof record.parentSessionId === "string"
+					? record.parentSessionId.trim()
+					: "";
+				const currentSessionId = typeof ctxRecord.sessionID === "string"
+					? ctxRecord.sessionID.trim()
+					: "";
+				const parentSessionId = requestedParentSessionId.length > 0
+					? requestedParentSessionId
+					: currentSessionId;
 				const nudgeQuietPeriodMs = typeof record.nudgeQuietPeriodMs === "number" && record.nudgeQuietPeriodMs > 0
 					? Math.floor(record.nudgeQuietPeriodMs) : undefined;
 				const asyncMode = record.asyncMode === true;
