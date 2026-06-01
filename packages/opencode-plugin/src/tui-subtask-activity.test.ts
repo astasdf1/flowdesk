@@ -228,7 +228,7 @@ test("TUI subtask activity compact lines distinguish duplicate summaries with st
 	]);
 });
 
-test("TUI subtask activity compact lines keep four-word titles up to forty chars", () => {
+test("TUI subtask activity compact lines keep titles compact enough for one line", () => {
 	const lines = formatFlowDeskTuiSubtaskActivityCompactLines({
 		status: "loaded",
 		observedAt: "2026-05-29T00:00:00.000Z",
@@ -240,7 +240,7 @@ test("TUI subtask activity compact lines keep four-word titles up to forty chars
 	}, 5);
 	assert.deepEqual(lines, [
 		"Subtasks:",
-		"… 09:13 Investigate password reset delivery pipe",
+		"… 09:13 Investigate password",
 	]);
 });
 

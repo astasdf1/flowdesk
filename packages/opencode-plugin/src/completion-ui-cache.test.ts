@@ -32,11 +32,11 @@ test("completion UI cache derives useful task summaries from generic prompts", (
 
 		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
 		const rows = sidebar.rows as Array<Record<string, unknown>>;
-		assert.equal(rows[0].taskSummary, "TUI Next ready labels");
+		assert.equal(rows[0].taskSummary, "TUI Next ready label");
 		assert.equal(rows[0].parentSessionRef, "ses-parent-labels-1");
 		const ready = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
 		const workflows = ready.workflows as Array<Record<string, unknown>>;
-		assert.deepEqual(workflows[0].taskSummaries, ["TUI Next ready labels"]);
+		assert.deepEqual(workflows[0].taskSummaries, ["TUI Next ready label"]);
 		assert.equal(workflows[0].parentSessionRef, "ses-parent-labels-1");
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });

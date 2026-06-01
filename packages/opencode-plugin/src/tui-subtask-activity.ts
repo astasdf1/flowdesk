@@ -135,7 +135,7 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		...(stringField(record, "progressPhase") === undefined ? {} : { progressPhase: stringField(record, "progressPhase") }),
 		...(stringField(record, "startedAt") === undefined ? {} : { startedAt: stringField(record, "startedAt") }),
 		...(stringField(record, "lastObservedAt") === undefined ? {} : { lastObservedAt: stringField(record, "lastObservedAt") }),
-		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 40) }),
+		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 20) }),
 		recoveryActionRefs,
 	};
 }
@@ -274,7 +274,7 @@ export function loadFlowDeskTuiLatestSynthesisViewV1(input: {
 
 function shortTaskLabel(row: FlowDeskTuiSubtaskActivityRowV1): string {
 	if (row.taskSummary !== undefined && row.taskSummary.trim().length > 0) {
-		return row.taskSummary.trim().slice(0, 40);
+		return row.taskSummary.trim().slice(0, 20);
 	}
 	const source = row.taskId ?? row.laneId;
 	const compact = source.replace(/^task-/, "").replace(/^lane-task-/, "");

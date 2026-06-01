@@ -163,7 +163,7 @@ function compactTaskSummary(value: string | undefined): string | undefined {
 	const labelWords = usefulWords.length > 0 ? usefulWords : words;
 	const joined = labelWords.slice(0, 4).join(" ");
 	const compact = (joined.length > 0 ? joined : source).replace(/[^\p{L}\p{N}_ -]/gu, "").trim();
-	return compact.length > 0 ? compact.slice(0, 40) : undefined;
+	return compact.length > 0 ? compact.slice(0, 20) : undefined;
 }
 
 function safeSummaryPreview(value: string | undefined): string | undefined {
