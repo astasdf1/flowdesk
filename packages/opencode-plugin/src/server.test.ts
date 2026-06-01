@@ -7761,7 +7761,7 @@ test("watchdog trigger tool registers when mcpTriggerEnabled is true", async () 
 	}
 });
 
-test("flowdesk_agent_task_run tool is absent by default and registers only with explicit opt-in", async () => {
+test("flowdesk_agent_task_run tool is absent by default and remains schema-visible with explicit opt-in", async () => {
 	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
 		undefined as never,
 		{
@@ -7787,20 +7787,49 @@ test("flowdesk_agent_task_run tool is absent by default and registers only with 
 			},
 		},
 	};
-	// Without client, tool should not register even with opt-in enabled
-	const enabledWithoutClientHooks = await flowdeskOpenCodeServerPlugin.server(
-		undefined as never,
-		{
-			[flowdeskAgentTaskRunOption]: { enabled: true },
-			localNonDispatchAdapter: false,
-			naturalLanguageRouting: false,
-		},
-	);
-	assert.equal(
-		enabledWithoutClientHooks.tool?.[flowdeskAgentTaskRunToolName],
-		undefined,
-		"tool should be absent without client even with opt-in",
-	);
+	// Without client, the tool should still register when explicitly enabled so
+	// OpenCode's assistant tool schema exposes the lane boundary; execution must
+	// fail closed until the injected SDK client is available.
+	const noClientRoot = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-schema-root-"));
+	try {
+		const enabledWithoutClientHooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: noClientRoot,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const schemaVisibleTool =
+			enabledWithoutClientHooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(
+			schemaVisibleTool,
+			"tool should remain schema-visible without client when opted in",
+		);
+		const noClientResult = JSON.parse(
+			toolOutput(
+				await schemaVisibleTool.execute(
+					{
+						workflowId: "workflow-task-schema-visible-1",
+						taskDescription: "Analyze schema visibility only.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(noClientResult.status, "blocked");
+		assert.equal(
+			noClientResult.reason,
+			"opencode_sdk_client_unavailable_for_agent_task_run",
+		);
+	} finally {
+		rmSync(noClientRoot, { recursive: true, force: true });
+	}
 
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-absent-"));
 	try {
@@ -7818,6 +7847,28 @@ test("flowdesk_agent_task_run tool is absent by default and registers only with 
 		assert.match(String(agentTool.description ?? ""), /delegate/i);
 		assert.match(String(agentTool.description ?? ""), /WHEN TO USE/);
 		assert.match(String(agentTool.description ?? ""), /WHEN NOT TO USE/);
+
+		const manyToolHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskControlledWriteApplyOption]: {
+					enabled: true,
+					devBetaControlledWriteApply: true,
+				},
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: true,
+				naturalLanguageRouting: true,
+			},
+		);
+		const manyToolNames = Object.keys(manyToolHooks.tool ?? {});
+		assert.ok(manyToolNames.includes(flowdeskAgentTaskRunToolName));
+		assert.ok(manyToolNames.includes(flowdeskControlledWriteApplyToolName));
+		assert.ok(
+			manyToolNames.indexOf(flowdeskAgentTaskRunToolName) <
+				manyToolNames.indexOf(flowdeskControlledWriteApplyToolName),
+			"agent task tool should register before lower-priority developer write tools so provider-facing schema caps keep the FlowDesk-owned lane boundary visible",
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

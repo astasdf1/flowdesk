@@ -19,12 +19,12 @@
 //     plugin may OBSERVE these (see observed-runtime-echo.ts) but its observation
 //     is "observed_unattested", never a platform-trusted attestation.
 //
-// The point: production managed-dispatch promotion stays blocked NOT because of
-// a FlowDesk defect, but because some required evidence is, by construction,
-// outside the plugin's verification boundary until OpenCode exposes the
-// corresponding trusted capability. This module makes that boundary explicit so
-// doctor/status can show "blocked: outside plugin boundary" instead of implying
-// FlowDesk merely failed to implement something.
+// The point: FlowDesk can honestly open the plugin-satisfiable preparation/
+// registration path without pretending it proved platform-internal facts. These
+// platform-dependent labels are explicitly SKIPPED for the plugin-satisfiable
+// gate (not fatal blockers), while remaining visible so doctor/status do not
+// imply that runtime echo, telemetry correlation, lane conformance, or trusted
+// usage authority were proven by the plugin.
 
 export const FLOWDESK_PLUGIN_VERIFICATION_CLASSIFICATIONS = [
 	"plugin_satisfiable",
@@ -50,6 +50,15 @@ export const FLOWDESK_OPENCODE_PLATFORM_DEPENDENT_CONCERNS = [
 	// Sufficient telemetry correlation as a trusted authority: event telemetry is
 	// situational awareness for the plugin, not a platform-attested correlation.
 	"telemetry_correlation",
+	// Pinned/trusted managed-dispatch usage authority evidence
+	// (flowdesk.managed_dispatch_beta.usage_authority_evidence.v1). This is part
+	// of the same Guard-pinned trusted bundle as runtime echo/telemetry and is
+	// checked via REQUIRED_SESSION_EVIDENCE_CLASSES, not as a caller-supplied
+	// result. The plugin can collect raw provider usage (provider_usage_snapshot,
+	// provider_health_snapshot) within its boundary, but it cannot self-attest
+	// the TRUSTED usage-authority evidence the production Guard pins. So
+	// usage_authority belongs here, not in plugin_satisfiable.
+	"usage_authority",
 ] as const;
 export type FlowDeskOpenCodePlatformDependentConcernV1 =
 	(typeof FLOWDESK_OPENCODE_PLATFORM_DEPENDENT_CONCERNS)[number];
@@ -62,11 +71,13 @@ const PLATFORM_DEPENDENT_BLOCKER_LABELS = new Set<string>([
 	"runtime_echo_missing",
 	"telemetry_correlation_missing",
 	"lane_conformance_missing",
+	"usage_authority_missing",
 ]);
 
 export interface FlowDeskPluginBoundaryClassificationEntryV1 {
 	label: string;
 	classification: FlowDeskPluginVerificationClassificationV1;
+	disposition: "required_plugin_evidence" | "skipped_platform_dependent";
 	platform_concern?: FlowDeskOpenCodePlatformDependentConcernV1;
 	rationale_label: string;
 }
@@ -76,9 +87,10 @@ export interface FlowDeskPluginBoundaryAssessmentV1 {
 	total: number;
 	plugin_satisfiable_count: number;
 	opencode_platform_dependent_count: number;
+	skipped_platform_dependent_count: number;
 	entries: FlowDeskPluginBoundaryClassificationEntryV1[];
-	// True when every remaining blocker is outside the plugin boundary, i.e.
-	// FlowDesk has done all it can and only OpenCode platform capabilities remain.
+	// True when every remaining blocker is outside the plugin boundary. These are
+	// skipped for the plugin-satisfiable gate, not treated as plugin fatal blockers.
 	only_platform_dependent_blockers_remain: boolean;
 	dispatch_authority_enabled: false;
 	realOpenCodeDispatch: false;
@@ -101,18 +113,22 @@ export function classifyFlowDeskProductionBlockerByPluginBoundaryV1(
 				? "runtime_echo"
 				: label === "telemetry_correlation_missing"
 					? "telemetry_correlation"
-					: "lane_conformance";
+					: label === "usage_authority_missing"
+						? "usage_authority"
+						: "lane_conformance";
 		return {
 			label,
 			classification: "opencode_platform_dependent",
+			disposition: "skipped_platform_dependent",
 			platform_concern: concern,
 			rationale_label:
-				"requires a trusted OpenCode platform capability the plugin cannot self-attest",
+				"skipped for plugin-satisfiable gate because it requires a trusted OpenCode platform capability the plugin cannot self-attest",
 		};
 	}
 	return {
 		label,
 		classification: "plugin_satisfiable",
+		disposition: "required_plugin_evidence",
 		rationale_label: "satisfiable within the FlowDesk plugin boundary",
 	};
 }
@@ -138,6 +154,7 @@ export function assessFlowDeskPluginVerificationBoundaryV1(
 		total: entries.length,
 		plugin_satisfiable_count: pluginSatisfiable.length,
 		opencode_platform_dependent_count: platformDependent.length,
+		skipped_platform_dependent_count: platformDependent.length,
 		entries,
 		only_platform_dependent_blockers_remain:
 			entries.length > 0 && pluginSatisfiable.length === 0,

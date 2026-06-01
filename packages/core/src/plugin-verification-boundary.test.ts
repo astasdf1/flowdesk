@@ -10,9 +10,11 @@ test("platform-dependent blockers are classified as opencode_platform_dependent"
 		"runtime_echo_missing",
 		"telemetry_correlation_missing",
 		"lane_conformance_missing",
+		"usage_authority_missing",
 	]) {
 		const entry = classifyFlowDeskProductionBlockerByPluginBoundaryV1(label);
-		assert.equal(entry.classification, "opencode_platform_dependent");
+		assert.equal(entry.classification, "opencode_platform_dependent", label);
+		assert.equal(entry.disposition, "skipped_platform_dependent", label);
 		assert.ok(entry.platform_concern);
 	}
 });
@@ -28,6 +30,7 @@ test("plugin-satisfiable blockers are classified as plugin_satisfiable", () => {
 	]) {
 		const entry = classifyFlowDeskProductionBlockerByPluginBoundaryV1(label);
 		assert.equal(entry.classification, "plugin_satisfiable", label);
+		assert.equal(entry.disposition, "required_plugin_evidence", label);
 		assert.equal(entry.platform_concern, undefined);
 	}
 });
@@ -40,6 +43,7 @@ test("assessment counts and only_platform_dependent flag are correct", () => {
 	]);
 	assert.equal(mixed.total, 3);
 	assert.equal(mixed.opencode_platform_dependent_count, 2);
+	assert.equal(mixed.skipped_platform_dependent_count, 2);
 	assert.equal(mixed.plugin_satisfiable_count, 1);
 	assert.equal(mixed.only_platform_dependent_blockers_remain, false);
 

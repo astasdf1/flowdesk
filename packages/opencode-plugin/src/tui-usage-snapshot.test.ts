@@ -132,6 +132,59 @@ test("TUI usage snapshot view prefers sidebar cache with remaining percent", () 
 	}
 });
 
+test("TUI usage snapshot view keeps expired sidebar cache visible as stale", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-sidebar-cache-stale-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-27T00:00:00.000Z",
+					expires_at: "2026-05-27T00:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "openai",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							resetBucket: "openai-gpt-5h",
+							resetTime: "2026-05-27T03:00:00.000Z",
+							remainingPercent: 42,
+							alertLevel: "ok",
+							buckets: [
+								{
+									resetBucket: "openai-gpt-5h",
+									resetTime: "2026-05-27T03:00:00.000Z",
+									remainingPercent: 42,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+							],
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		const view = loadFlowDeskTuiUsageSnapshotViewV1({ rootDir: root, now: () => new Date("2026-05-27T00:06:00.000Z") });
+		assert.equal(view.status, "loaded");
+		assert.equal(view.redactedReason, "provider usage sidebar cache is stale");
+		const openai = view.providers.find((provider) => provider.providerFamily === "openai");
+		assert.equal(openai?.connected, false);
+		assert.equal(openai?.freshness, "stale");
+		assert.equal(openai?.alertLevel, "stale");
+		assert.match(formatFlowDeskTuiUsageSnapshotCompactLines(view).join("\n"), /OA 5\.5\s+42%/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("TUI usage snapshot compact lines show latest 5h and 1w durable buckets", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-usage-compact-"));
 	try {

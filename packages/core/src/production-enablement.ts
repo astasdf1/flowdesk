@@ -2,6 +2,7 @@ import type { FlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth
 import { validateFlowDeskExternalAuthProviderPolicyResultV1 } from "./external-auth-policy.js";
 import {
 	assessFlowDeskPluginVerificationBoundaryV1,
+	classifyFlowDeskProductionBlockerByPluginBoundaryV1,
 	type FlowDeskPluginBoundaryAssessmentV1,
 } from "./plugin-verification-boundary.js";
 import type { FlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
@@ -125,6 +126,10 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	evidence_refs: string[];
 	doctor_state_ref: string;
 	managed_dispatch_ready: boolean;
+	managed_dispatch_ready_basis:
+		| "not_ready"
+		| "all_evidence_present"
+		| "plugin_satisfiable_with_platform_dependent_skipped";
 	dispatch_authority_enabled: false;
 	default_release1_non_dispatch_preserved: true;
 	safe_next_actions: string[];
@@ -138,10 +143,11 @@ export interface FlowDeskProductionEnablementEvaluationV1
 	approval_decision?: FlowDeskProductionApprovalDecisionV1["decision"];
 	approval_ref?: string;
 	// Classifies the remaining blockers by the FlowDesk plugin verification
-	// boundary, so doctor/status can show that any residual blockers are outside
-	// the plugin's reach (OpenCode platform capability) rather than a FlowDesk
-	// defect. Present whenever there are blocker labels.
+	// boundary, so doctor/status can show that platform-dependent proof labels were
+	// skipped for the plugin-satisfiable gate rather than falsely proven.
 	plugin_boundary_assessment?: FlowDeskPluginBoundaryAssessmentV1;
+	skipped_platform_dependent_labels?: FlowDeskProductionEnablementBlockerLabelV1[];
+	plugin_satisfiable_gate_passed?: boolean;
 }
 
 export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_STATES = [
@@ -507,6 +513,15 @@ function optionalOpaqueRef(
 
 function validDate(value: string): boolean {
 	return Number.isFinite(Date.parse(value));
+}
+
+function isPlatformDependentProductionBlocker(
+	label: FlowDeskProductionEnablementBlockerLabelV1,
+): boolean {
+	return (
+		classifyFlowDeskProductionBlockerByPluginBoundaryV1(label).classification ===
+		"opencode_platform_dependent"
+	);
 }
 
 export function evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
@@ -1081,12 +1096,20 @@ export function evaluateFlowDeskProductionEnablementV1(
 
 	const uniqueBlockers = unique(blockerLabels);
 	const uniqueUncertainties = unique(uncertaintyLabels);
+	const pluginFatalBlockers = uniqueBlockers.filter(
+		(label) => !isPlatformDependentProductionBlocker(label),
+	);
+	const skippedPlatformDependentLabels = uniqueBlockers.filter(
+		isPlatformDependentProductionBlocker,
+	);
+	const pluginSatisfiableGatePassed =
+		errors.length === 0 && pluginFatalBlockers.length === 0;
 	const hasOnlyApprovalBlocker =
 		uniqueBlockers.length === 1 && uniqueBlockers[0] === "approval_missing";
 	const state: FlowDeskProductionEnablementStateV1 =
 		errors.length > 0
 			? "blocked"
-			: uniqueBlockers.length === 0
+			: pluginSatisfiableGatePassed
 			? "dispatch_capable"
 			: hasOnlyApprovalBlocker
 				? "configured"
@@ -1107,7 +1130,12 @@ export function evaluateFlowDeskProductionEnablementV1(
 		uncertainty_labels: uniqueUncertainties,
 		evidence_refs: evidenceRefs,
 		doctor_state_ref: `production-enable-${state}`,
-		managed_dispatch_ready: errors.length === 0 && state === "dispatch_capable",
+		managed_dispatch_ready: pluginSatisfiableGatePassed,
+		managed_dispatch_ready_basis: pluginSatisfiableGatePassed
+			? skippedPlatformDependentLabels.length > 0
+				? "plugin_satisfiable_with_platform_dependent_skipped"
+				: "all_evidence_present"
+			: "not_ready",
 		dispatch_authority_enabled: false,
 		default_release1_non_dispatch_preserved: true,
 		...(validConfiguredVerificationResult === undefined
@@ -1146,6 +1174,10 @@ export function evaluateFlowDeskProductionEnablementV1(
 						assessFlowDeskPluginVerificationBoundaryV1(uniqueBlockers),
 				}
 			: {}),
+		...(skippedPlatformDependentLabels.length > 0
+			? { skipped_platform_dependent_labels: skippedPlatformDependentLabels }
+			: {}),
+		plugin_satisfiable_gate_passed: pluginSatisfiableGatePassed,
 		safe_next_actions:
 			state === "dispatch_capable"
 				? ["/flowdesk-status"]

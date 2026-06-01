@@ -8,7 +8,7 @@ import {
 // The production managed-dispatch gate's remaining blockers split into
 // plugin_satisfiable vs opencode_platform_dependent (see
 // plugin-verification-boundary.ts). The platform-dependent ones are out of the
-// plugin's reach by construction. THIS module is about the plugin_satisfiable
+// plugin's reach by construction and are skipped for this gate. THIS module is about the plugin_satisfiable
 // ones: each has a real producer/issuer in @flowdesk/core
 // (createFlowDeskConfiguredVerificationResultV1, createFlowDeskSanitizedAuth-
 // CaptureResultV1, createFlowDeskExternalAuthProviderPolicyResultV1,
@@ -27,7 +27,6 @@ import {
 // and it carries no dispatch authority.
 
 export const FLOWDESK_PLUGIN_SATISFIABLE_EVIDENCE_KINDS = [
-	"usage_authority",
 	"provider_health_snapshot",
 	"pre_dispatch_audit",
 	"dispatch_idempotency",
@@ -49,11 +48,6 @@ export const FLOWDESK_PLUGIN_SATISFIABLE_PRODUCERS: Record<
 	FlowDeskPluginSatisfiableEvidenceKindV1,
 	{ clears_blocker: string; producer_label: string; requires_human: boolean }
 > = {
-	usage_authority: {
-		clears_blocker: "usage_authority_missing",
-		producer_label: "collectManagedDispatchBetaUsageEvidenceV1 (fresh provider-native usage)",
-		requires_human: false,
-	},
 	provider_health_snapshot: {
 		clears_blocker: "provider_health_snapshot_missing",
 		producer_label: "collectManagedDispatchBetaUsageEvidenceV1 (fresh provider health)",
@@ -117,9 +111,9 @@ export interface FlowDeskPluginSatisfiablePreparationReadinessV1 {
 	pending_non_human: FlowDeskPluginSatisfiableEvidenceKindV1[];
 	pending_human: FlowDeskPluginSatisfiableEvidenceKindV1[];
 	plugin_boundary_assessment: FlowDeskPluginBoundaryAssessmentV1;
-	// True when every plugin_satisfiable evidence kind has been supplied, so the
-	// only remaining blockers are opencode_platform_dependent (outside the plugin
-	// boundary) and/or a human Guard approval that must not be auto-filled.
+	// True when every plugin_satisfiable evidence kind has been supplied. Platform-
+	// dependent proof labels are represented as skipped, not fatal blockers for
+	// this preparation gate.
 	all_non_human_plugin_evidence_supplied: boolean;
 	all_plugin_satisfiable_supplied: boolean;
 	dispatch_authority_enabled: false;

@@ -212,6 +212,7 @@ function rowFromRecord(
 function bucketFromSidebarCacheRecord(
 	record: Record<string, unknown>,
 	nowMs: number,
+	forceStale = false,
 ): FlowDeskTuiUsageProviderBucketV1 | undefined {
 	const dispatchability =
 		record.dispatchability === "dispatchable" ||
@@ -219,8 +220,9 @@ function bucketFromSidebarCacheRecord(
 		record.dispatchability === "non_dispatchable"
 			? record.dispatchability
 			: "non_dispatchable";
-	const freshness =
-		record.freshness === "fresh" || record.freshness === "stale" || record.freshness === "unknown"
+	const freshness = forceStale
+		? "stale"
+		: record.freshness === "fresh" || record.freshness === "stale" || record.freshness === "unknown"
 			? record.freshness
 			: "unknown";
 	const remainingPercent =
@@ -236,7 +238,7 @@ function bucketFromSidebarCacheRecord(
 		remainingPercent,
 		freshness,
 		dispatchability,
-		connected: record.connected === true,
+		connected: forceStale ? false : record.connected === true,
 		...(typeof record.usageSnapshotRef === "string" ? { usageSnapshotRef: record.usageSnapshotRef } : {}),
 		...(Number.isFinite(resetMs)
 			? { secondsUntilReset: Math.max(0, Math.floor((resetMs - nowMs) / 1000)) }
@@ -248,6 +250,7 @@ function rowFromSidebarCacheRecord(
 	family: FlowDeskTuiProviderFamilyV1,
 	record: Record<string, unknown> | undefined,
 	nowMs: number,
+	forceStale = false,
 ): FlowDeskTuiUsageProviderRowV1 {
 	if (record === undefined) return rowFromRecord(family, undefined, nowMs);
 	const dispatchability =
@@ -256,17 +259,19 @@ function rowFromSidebarCacheRecord(
 		record.dispatchability === "non_dispatchable"
 			? record.dispatchability
 			: "non_dispatchable";
-	const freshness =
-		record.freshness === "fresh" || record.freshness === "stale" || record.freshness === "unknown"
+	const freshness = forceStale
+		? "stale"
+		: record.freshness === "fresh" || record.freshness === "stale" || record.freshness === "unknown"
 			? record.freshness
 			: "unknown";
-	const alertLevel =
-		record.alertLevel === "ok" ||
-		record.alertLevel === "warning" ||
-		record.alertLevel === "critical" ||
-		record.alertLevel === "exhausted" ||
-		record.alertLevel === "stale" ||
-		record.alertLevel === "unknown"
+	const alertLevel = forceStale
+		? "stale"
+		: record.alertLevel === "ok" ||
+			record.alertLevel === "warning" ||
+			record.alertLevel === "critical" ||
+			record.alertLevel === "exhausted" ||
+			record.alertLevel === "stale" ||
+			record.alertLevel === "unknown"
 			? record.alertLevel
 			: "unknown";
 	const remainingPercent =
@@ -277,7 +282,7 @@ function rowFromSidebarCacheRecord(
 	const resetMs = resetTime === undefined ? Number.NaN : Date.parse(resetTime);
 	const row: FlowDeskTuiUsageProviderRowV1 = {
 		providerFamily: family,
-		connected: record.connected === true,
+		connected: forceStale ? false : record.connected === true,
 		dispatchability,
 		freshness,
 		...(typeof record.resetBucket === "string" ? { resetBucket: record.resetBucket } : {}),
@@ -292,7 +297,7 @@ function rowFromSidebarCacheRecord(
 	const explicitBuckets = Array.isArray(record.buckets)
 		? record.buckets
 				.filter(isRecord)
-				.map((bucket) => bucketFromSidebarCacheRecord(bucket, nowMs))
+				.map((bucket) => bucketFromSidebarCacheRecord(bucket, nowMs, forceStale))
 				.filter((bucket): bucket is FlowDeskTuiUsageProviderBucketV1 => bucket !== undefined)
 		: [];
 	const fallbackBucket = bucketFromRow(row);
@@ -303,16 +308,16 @@ function rowFromSidebarCacheRecord(
 function loadSidebarCacheRows(
 	rootDir: string,
 	nowMs: number,
-): readonly FlowDeskTuiUsageProviderRowV1[] | undefined {
+): { rows: readonly FlowDeskTuiUsageProviderRowV1[]; stale: boolean } | undefined {
 	try {
 		const cache = JSON.parse(
 			readFileSync(join(rootDir, ".flowdesk", "ui", "provider-usage-sidebar.json"), "utf8"),
 		) as unknown;
 		if (!isRecord(cache) || cache.schema_version !== "flowdesk.provider_usage_sidebar_cache.v1") return undefined;
-		// Respect expires_at: if the cache is expired, fall through to evidence snapshots
+		let stale = false;
 		if (typeof cache.expires_at === "string") {
 			const expiresAtMs = Date.parse(cache.expires_at);
-			if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) return undefined;
+			if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) stale = true;
 		}
 		if (!Array.isArray(cache.providers)) return undefined;
 		const byFamily = new Map<FlowDeskTuiProviderFamilyV1, Record<string, unknown>>();
@@ -321,9 +326,12 @@ function loadSidebarCacheRows(
 			byFamily.set(row.providerFamily, row);
 		}
 		if (byFamily.size === 0) return undefined;
-		return providerFamilies.map((family) =>
-			rowFromSidebarCacheRecord(family, byFamily.get(family), nowMs),
-		);
+		return {
+			rows: providerFamilies.map((family) =>
+				rowFromSidebarCacheRecord(family, byFamily.get(family), nowMs, stale),
+			),
+			stale,
+		};
 	} catch {
 		return undefined;
 	}
@@ -338,14 +346,15 @@ export function loadFlowDeskTuiUsageSnapshotViewV1(input: {
 	const nowMs = Date.parse(observedAt);
 	const rootDir = safeRootDir(input.rootDir);
 	const workflowId = safeWorkflowId(input.workflowId);
-	const sidebarRows = loadSidebarCacheRows(rootDir, nowMs);
-	if (sidebarRows !== undefined) {
+	const sidebarCache = loadSidebarCacheRows(rootDir, nowMs);
+	if (sidebarCache !== undefined) {
 		return {
 			status: "loaded",
 			observedAt,
 			rootDir,
 			workflowId,
-			providers: sidebarRows,
+			providers: sidebarCache.rows,
+			...(sidebarCache.stale ? { redactedReason: "provider usage sidebar cache is stale" } : {}),
 			safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
 		};
 	}

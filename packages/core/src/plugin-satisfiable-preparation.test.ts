@@ -20,8 +20,10 @@ test("nothing supplied: all non-human plugin evidence pending, approval is human
 	assert.equal(r.pending_human.length, 1);
 	assert.equal(r.all_non_human_plugin_evidence_supplied, false);
 	assert.equal(r.all_plugin_satisfiable_supplied, false);
-	// Boundary still classifies the platform-dependent labels.
-	assert.equal(r.plugin_boundary_assessment.opencode_platform_dependent_count, 2);
+	// All three remaining blockers (usage_authority, runtime_echo, lane_conformance)
+	// are now classified platform-dependent.
+	assert.equal(r.plugin_boundary_assessment.opencode_platform_dependent_count, 3);
+	assert.equal(r.plugin_boundary_assessment.skipped_platform_dependent_count, 3);
 });
 
 test("all non-human supplied but approval pending: human step is the only plugin remainder", () => {
@@ -54,11 +56,11 @@ test("everything supplied: all plugin-satisfiable evidence supplied (only platfo
 test("preparation readiness never fabricates evidence and is authority-free", () => {
 	const r = assessFlowDeskPluginSatisfiablePreparationV1({
 		workflowId: "workflow-prep-4",
-		suppliedEvidenceKinds: ["usage_authority"],
+		suppliedEvidenceKinds: ["provider_health_snapshot"],
 		remainingBlockerLabels: [],
 	});
 	// Supplied reflects only what was passed; nothing auto-added.
-	assert.deepEqual(r.supplied, ["usage_authority"]);
+	assert.deepEqual(r.supplied, ["provider_health_snapshot"]);
 	assert.equal(r.dispatch_authority_enabled, false);
 	assert.equal(r.realOpenCodeDispatch, false);
 	assert.equal(r.actualLaneLaunch, false);

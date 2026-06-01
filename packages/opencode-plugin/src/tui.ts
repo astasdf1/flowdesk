@@ -132,7 +132,13 @@ function formatObservedAt(iso: string): string {
 function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState): JSX.Element {
 	const usageLines = createMemo(() => formatFlowDeskTuiUsageSnapshotCompactLines(usageState.view()));
 	const observedLine = createMemo(() => formatObservedAt(usageState.view().observedAt));
-	const statusLine = createMemo(() => usageState.view().status === "loaded" ? "cache readable" : "run /flowdesk-usage");
+	const statusLine = createMemo(() => {
+		const view = usageState.view();
+		if (view.status !== "loaded") return "run /flowdesk-usage";
+		return view.redactedReason === "provider usage sidebar cache is stale"
+			? "cache stale; run /flowdesk-usage"
+			: "cache readable";
+	});
 	const autoNextLines = createMemo(() => formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()));
 	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view()));
 	// Build all lines dynamically so empty sections don't leave blank gaps

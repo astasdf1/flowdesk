@@ -267,9 +267,67 @@ test("production enablement becomes dispatch-capable only after explicit approva
   assert.equal(result.state, "dispatch_capable");
   assert.deepEqual(result.blocker_labels, []);
   assert.equal(result.managed_dispatch_ready, true);
+  assert.equal(result.managed_dispatch_ready_basis, "all_evidence_present");
   assert.equal(result.dispatch_authority_enabled, false, "diagnostic readiness is not dispatch authorization");
   assert.equal(result.approval_decision, "approve");
   assert.equal(result.approval_ref, "approval-1");
+});
+
+test("production enablement skips platform-dependent proof gaps after plugin-satisfiable evidence passes", () => {
+  const approval = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: [
+      "audit-1",
+      "verification-1",
+      "sanitized-auth-capture-1",
+      "external-auth-policy-1",
+      "provider-policy-1"
+    ]
+  });
+  const fullReload = reloadResult();
+  const result = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({
+      entries: fullReload.entries.filter(
+        (entry) =>
+          entry.evidenceClass !== "usage_authority" &&
+          entry.evidenceClass !== "runtime_echo" &&
+          entry.evidenceClass !== "telemetry_correlation"
+      )
+    }),
+    ...baseRefs(),
+    attemptId: "attempt-prod-1",
+    idempotencyKey: "idempotency-key-1",
+    approvalDecision: approval
+  });
+
+  assert.equal(result.ok, true, result.errors.join("; "));
+  assert.equal(result.state, "dispatch_capable");
+  assert.equal(result.managed_dispatch_ready, true);
+  assert.equal(
+    result.managed_dispatch_ready_basis,
+    "plugin_satisfiable_with_platform_dependent_skipped"
+  );
+  assert.equal(result.plugin_satisfiable_gate_passed, true);
+  assert.deepEqual(result.blocker_labels, [
+    "usage_authority_missing",
+    "runtime_echo_missing",
+    "telemetry_correlation_missing",
+    "lane_conformance_missing"
+  ]);
+  assert.deepEqual(result.skipped_platform_dependent_labels, result.blocker_labels);
+  assert.equal(
+    result.plugin_boundary_assessment?.only_platform_dependent_blockers_remain,
+    true
+  );
+  assert.equal(
+    result.plugin_boundary_assessment?.skipped_platform_dependent_count,
+    4
+  );
+  assert.equal(result.dispatch_authority_enabled, false);
 });
 
 test("production enablement fails closed when provider health is missing, stale, or non-dispatchable", () => {

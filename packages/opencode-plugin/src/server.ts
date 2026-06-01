@@ -3282,8 +3282,7 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 export function createFlowDeskAgentTaskRunOptInTools(input: {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined;
 	durableStateRoot: string | undefined;
-}): Record<string, FlowDeskOpenCodeTool> | undefined {
-	if (!input.client || !input.durableStateRoot) return undefined;
+}): Record<string, FlowDeskOpenCodeTool> {
 	const client = input.client;
 	const rootDir = input.durableStateRoot;
 	const promptPreview = (text: string, max = 120) => {
@@ -3343,6 +3342,22 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 			asyncMode: tool.schema.boolean().optional().describe("When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 10s/20s, and aborts at 30s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
 			},
 			async execute(args, ctx) {
+				if (!client)
+					return JSON.stringify({
+						status: "blocked",
+						reason: "opencode_sdk_client_unavailable_for_agent_task_run",
+						redactedBlockReason:
+							"OpenCode did not provide an SDK client to the FlowDesk agent task tool. The tool remains schema-visible because agentTaskRun is enabled, but lane launch is fail-closed until the runtime client is available.",
+						safeNextActions: ["/flowdesk-doctor", "/flowdesk-status"],
+					});
+				if (!rootDir)
+					return JSON.stringify({
+						status: "blocked",
+						reason: "durable_state_root_missing_for_agent_task_run",
+						redactedBlockReason:
+							"FlowDesk durableStateRoot is required before launching agent task lanes.",
+						safeNextActions: ["/flowdesk-doctor"],
+					});
 				const record: Record<string, unknown> = isRecord(args) ? args : {};
 				if (record.developerModeAcknowledged !== true)
 					return JSON.stringify({ status: "blocked", reason: "developerModeAcknowledged must be true" });
@@ -4596,7 +4611,20 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				const quickReviewerRunRegistered =
 					isQuickReviewerRunEnabled(options) &&
 					quickReviewerRunClientFrom(input, options) !== undefined;
+				const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
+				const agentTaskRunHasClient =
+					isRecord(input) && isManagedDispatchBetaClient(input.client);
+				const agentTaskRunRoot = durableStateRootFromOptions(options);
 				const naturalLanguageTools = {
+					agentTaskRun: {
+						enabled: agentTaskRunEnabled,
+						registered: agentTaskRunEnabled,
+						schemaVisibleWhenEnabled: true,
+						hasInjectedSdkClient: agentTaskRunHasClient,
+						durableStateRoot: agentTaskRunRoot,
+						executionFailClosedUntilClientAvailable:
+							agentTaskRunEnabled && !agentTaskRunHasClient,
+					},
 					quickReviewerRun: {
 						enabled: isQuickReviewerRunEnabled(options),
 						registered: quickReviewerRunRegistered,
@@ -4794,6 +4822,15 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskNaturalLanguageRoutingTools(new Date(), localSession),
 		);
+	const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
+	if (agentTaskRunEnabled) {
+		const agentTaskRunClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+		const agentTaskRunRoot = durableStateRootFromOptions(options);
+		Object.assign(tools, createFlowDeskAgentTaskRunOptInTools({
+			client: agentTaskRunClient,
+			durableStateRoot: agentTaskRunRoot,
+		}));
+	}
 	if (managedDispatchBetaClient !== undefined)
 		Object.assign(
 			tools,
@@ -4905,16 +4942,6 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			tools,
 			createFlowDeskControlledWriteApplyOptInTools(controlledWriteApplyConfig),
 		);
-	const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
-	if (agentTaskRunEnabled) {
-		const agentTaskRunClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
-		const agentTaskRunRoot = durableStateRootFromOptions(options);
-		const agentTaskRunTools = createFlowDeskAgentTaskRunOptInTools({
-			client: agentTaskRunClient,
-			durableStateRoot: agentTaskRunRoot,
-		});
-		if (agentTaskRunTools !== undefined) Object.assign(tools, agentTaskRunTools);
-	}
 	const orchestrateConfig = orchestrateToolConfigFromOptions(input, options);
 	if (orchestrateConfig !== undefined)
 		Object.assign(tools, createFlowDeskOrchestrateOptInTools(orchestrateConfig));

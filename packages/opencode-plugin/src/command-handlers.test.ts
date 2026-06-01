@@ -428,6 +428,8 @@ function productionEnablement(
 		provider_policy_ref: "provider-policy-123",
 		safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
 		...overrides,
+		managed_dispatch_ready_basis:
+			overrides.managed_dispatch_ready_basis ?? "not_ready",
 	};
 }
 
