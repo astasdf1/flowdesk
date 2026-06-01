@@ -17,6 +17,7 @@ export interface FlowDeskTuiSubtaskActivityRowV1 {
 	state?: string;
 	classification: FlowDeskTuiSubtaskActivityClassificationV1;
 	progressPhase?: string;
+	startedAt?: string;
 	lastObservedAt?: string;
 	taskSummary?: string;
 	recoveryActionRefs: readonly string[];
@@ -95,6 +96,27 @@ function stringField(record: Record<string, unknown>, key: string): string | und
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function sessionRefMatches(rowParentSessionRef: string | undefined, currentParentSessionRef: string | undefined): boolean {
+	if (currentParentSessionRef === undefined || currentParentSessionRef.length === 0) return true;
+	if (rowParentSessionRef === undefined || rowParentSessionRef.length === 0) return false;
+	if (rowParentSessionRef === currentParentSessionRef) return true;
+	if (!currentParentSessionRef.startsWith("ses-") && rowParentSessionRef === `ses-${currentParentSessionRef}`) return true;
+	if (!rowParentSessionRef.startsWith("ses-") && `ses-${rowParentSessionRef}` === currentParentSessionRef) return true;
+	return false;
+}
+
+function rowsForCurrentSession<T extends { parentSessionRef?: string }>(
+	rows: readonly T[],
+	currentParentSessionRef: string | undefined,
+): readonly T[] {
+	if (currentParentSessionRef === undefined || currentParentSessionRef.length === 0) return rows;
+	const scoped = rows.filter((row) => sessionRefMatches(row.parentSessionRef, currentParentSessionRef));
+	// When OpenCode tells us which session owns this sidebar slot, fail closed to
+	// that session. Falling back to global cached rows leaks subtasks from other
+	// chats into the current sidebar and also hides parent-binding regressions.
+	return scoped;
+}
+
 function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActivityRowV1 | undefined {
 	const workflowId = stringField(record, "workflowId");
 	const laneId = stringField(record, "laneId");
@@ -111,8 +133,9 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		...(stringField(record, "state") === undefined ? {} : { state: stringField(record, "state") }),
 		classification,
 		...(stringField(record, "progressPhase") === undefined ? {} : { progressPhase: stringField(record, "progressPhase") }),
+		...(stringField(record, "startedAt") === undefined ? {} : { startedAt: stringField(record, "startedAt") }),
 		...(stringField(record, "lastObservedAt") === undefined ? {} : { lastObservedAt: stringField(record, "lastObservedAt") }),
-		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 10) }),
+		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 40) }),
 		recoveryActionRefs,
 	};
 }
@@ -141,9 +164,7 @@ export function loadFlowDeskTuiSubtaskActivityViewV1(input: {
 		const loadedRows = Array.isArray(cache.rows)
 			? cache.rows.filter(isRecord).map(rowFromRecord).filter((row): row is FlowDeskTuiSubtaskActivityRowV1 => row !== undefined)
 			: [];
-		const rows = input.currentParentSessionRef === undefined
-			? loadedRows
-			: loadedRows.filter((row) => row.parentSessionRef === input.currentParentSessionRef);
+		const rows = rowsForCurrentSession(loadedRows, input.currentParentSessionRef);
 		return {
 			status: Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs ? "stale" : "loaded",
 			observedAt: typeof cache.observed_at === "string" ? cache.observed_at : observedAt,
@@ -194,9 +215,7 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 				return { workflowId, ...(parentSessionRef === undefined ? {} : { parentSessionRef }), expected, completed, taskResultRefs, taskSummaries, nextActionAvailable, ...(nextActionKind === undefined ? {} : { nextActionKind }) };
 			}).filter((workflow): workflow is FlowDeskTuiAutoNextReadyWorkflowV1 => workflow !== undefined)
 			: [];
-		const workflows = input.currentParentSessionRef === undefined
-			? loadedWorkflows
-			: loadedWorkflows.filter((workflow) => workflow.parentSessionRef === input.currentParentSessionRef);
+		const workflows = rowsForCurrentSession(loadedWorkflows, input.currentParentSessionRef);
 		return {
 			status: Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs ? "stale" : "loaded",
 			observedAt: typeof cache.observed_at === "string" ? cache.observed_at : observedAt,
@@ -254,32 +273,33 @@ export function loadFlowDeskTuiLatestSynthesisViewV1(input: {
 }
 
 function shortTaskLabel(row: FlowDeskTuiSubtaskActivityRowV1): string {
-	const suffix = shortTaskIdSuffix(row);
 	if (row.taskSummary !== undefined && row.taskSummary.trim().length > 0) {
-		return `${row.taskSummary.slice(0, 40)} ${suffix}`.trim();
+		return row.taskSummary.trim().slice(0, 40);
 	}
 	const source = row.taskId ?? row.laneId;
 	const compact = source.replace(/^task-/, "").replace(/^lane-task-/, "");
 	return `task ${compact.length <= 12 ? compact : compact.slice(-12)}`;
 }
 
-function shortTaskIdSuffix(row: FlowDeskTuiSubtaskActivityRowV1): string {
-	const source = row.taskId ?? row.laneId;
-	const compact = source.replace(/^lane-task-/, "").replace(/^task-/, "").trim();
-	if (compact.length === 0) return "";
-	return `#${compact.length <= 6 ? compact : compact.slice(-6)}`;
+function shortStartTime(row: FlowDeskTuiSubtaskActivityRowV1): string {
+	const source = row.startedAt ?? row.lastObservedAt;
+	if (source === undefined) return "--:--";
+	const parsed = Date.parse(source);
+	if (!Number.isFinite(parsed)) return "--:--";
+	const date = new Date(parsed);
+	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function displayState(row: FlowDeskTuiSubtaskActivityRowV1): string {
-	if (row.progressPhase === "awaiting_permission") return "! Needs permission";
-	if (row.classification === "stalled") return "!! Stalled";
-	if (row.classification === "progressing_late") return "! Slow";
-	if (row.classification === "inconsistent_finalizing_without_terminal") return "! Needs check";
-	if (row.state === "invocation_failed" || row.state === "task_failed") return "✕ Failed";
+	if (row.progressPhase === "awaiting_permission") return "!";
+	if (row.classification === "stalled") return "!!";
+	if (row.classification === "progressing_late") return "!";
+	if (row.classification === "inconsistent_finalizing_without_terminal") return "!";
+	if (row.state === "invocation_failed" || row.state === "task_failed") return "✕";
 	if (row.state === "task_result" && row.classification === "terminal") return "✓";
-	if (row.progressPhase === "finalizing") return "… Finalizing";
+	if (row.progressPhase === "finalizing") return "…";
 	if (row.state === "running" || row.classification === "progressing_normal") return "…";
-	return "? Unknown";
+	return "?";
 }
 
 function rowSortRank(row: FlowDeskTuiSubtaskActivityRowV1): number {
@@ -321,7 +341,7 @@ export function formatFlowDeskTuiSubtaskActivityCompactLines(
 	const lines = [view.status === "stale" ? "Subtasks (stale):" : "Subtasks:"];
 	const orderedRows = sortedRows(view.rows);
 	for (const row of orderedRows.slice(0, Math.max(1, limit))) {
-		lines.push(`${displayState(row)} ${shortTaskLabel(row)}`);
+		lines.push(`${displayState(row)} ${shortStartTime(row)} ${shortTaskLabel(row)}`);
 	}
 	return lines;
 }

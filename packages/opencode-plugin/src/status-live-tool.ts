@@ -876,6 +876,14 @@ function buildLaneProgressCards(
 		const childSession = childSessionByLane.get(entry.laneId);
 		const progress = agentTaskProgressByLane.get(entry.laneId);
 		const taskResult = taskResultByLane.get(entry.laneId);
+		const terminalSignalMs = entry.classification === "terminal" ? (entry.lastSignalAt === undefined ? undefined : Date.parse(entry.lastSignalAt)) : undefined;
+		const visibleProgress =
+			terminalSignalMs !== undefined &&
+			Number.isFinite(terminalSignalMs) &&
+			progress !== undefined &&
+			progress.observedAtMs > terminalSignalMs
+				? undefined
+				: progress;
 		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
@@ -904,9 +912,9 @@ function buildLaneProgressCards(
 			...(context?.promptPreview === undefined ? {} : { promptPreview: context.promptPreview }),
 			...(context?.promptTextTruncated === undefined ? {} : { promptTextTruncated: context.promptTextTruncated }),
 			...(childSession?.nudgeCount === undefined ? {} : { nudgeCount: childSession.nudgeCount }),
-			...(progress?.phase === undefined ? {} : { progressPhase: progress.phase }),
-			...(progress?.label === undefined ? {} : { progressLabel: progress.label }),
-			...(progress?.observedAt === undefined ? {} : { progressObservedAt: progress.observedAt }),
+			...(visibleProgress?.phase === undefined ? {} : { progressPhase: visibleProgress.phase }),
+			...(visibleProgress?.label === undefined ? {} : { progressLabel: visibleProgress.label }),
+			...(visibleProgress?.observedAt === undefined ? {} : { progressObservedAt: visibleProgress.observedAt }),
 			...(verdictLabel === undefined ? {} : { verdictLabel }),
 			...(taskResult?.completionStatus === undefined
 				? {}

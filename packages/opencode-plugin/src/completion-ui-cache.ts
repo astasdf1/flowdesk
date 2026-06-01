@@ -13,6 +13,7 @@ type UiRow = {
 	state?: string;
 	classification: "progressing_normal" | "progressing_late" | "stalled" | "terminal" | "unknown";
 	progressPhase?: string;
+	startedAt?: string;
 	lastObservedAt?: string;
 	completionStatus?: string;
 	outputKind?: string;
@@ -162,7 +163,7 @@ function compactTaskSummary(value: string | undefined): string | undefined {
 	const labelWords = usefulWords.length > 0 ? usefulWords : words;
 	const joined = labelWords.slice(0, 4).join(" ");
 	const compact = (joined.length > 0 ? joined : source).replace(/[^\p{L}\p{N}_ -]/gu, "").trim();
-	return compact.length > 0 ? compact.slice(0, 30) : undefined;
+	return compact.length > 0 ? compact.slice(0, 40) : undefined;
 }
 
 function safeSummaryPreview(value: string | undefined): string | undefined {
@@ -352,6 +353,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				state,
 				classification: isTerminal ? "terminal" : "progressing_normal",
 				progressPhase: result !== undefined ? "finalizing" : isFailedLike ? "failed" : "waiting",
+				...(getString(context ?? {}, "created_at") === undefined ? {} : { startedAt: getString(context ?? {}, "created_at") }),
 				lastObservedAt: getString(result ?? failed ?? lifecycle ?? context ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? context ?? {}, "created_at") ?? observedAt,
 				...(getString(result ?? {}, "completion_status") === undefined ? {} : { completionStatus: getString(result ?? {}, "completion_status") }),
 				...(getString(result ?? {}, "output_kind") === undefined ? {} : { outputKind: getString(result ?? {}, "output_kind") }),

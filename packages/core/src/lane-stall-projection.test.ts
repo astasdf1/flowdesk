@@ -119,6 +119,42 @@ test("lane stall projection classifies a 3-minute idle running lane as progressi
 	);
 });
 
+test("lane stall projection treats recent agent task progress as active signal", () => {
+	const result = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload: reload([
+			entry(
+				lifecycle({
+					updated_at: new Date(observedAtMs - 3 * 60_000).toISOString(),
+				}),
+				"lifecycle-late-with-progress",
+			),
+			genericEntry("agent_task_progress", "agent-task-progress-recent", {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-stall-1",
+				task_id: "task-stall-1",
+				agent_ref: "agent-reviewer",
+				provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+				progress_seq: 7,
+				observed_at: new Date(observedAtMs - 5_000).toISOString(),
+				phase: "waiting",
+				progress_label: "agent task message.updated event observed",
+				progress_ref: "progress-lane-stall-1-7",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			}),
+		]),
+	});
+	assert.equal(result.entries[0].classification, "progressing_normal");
+	assert.equal(result.entries[0].lastSignalSource, "agent_task_progress");
+	assert.equal(result.entries[0].lastSignalEvidenceId, "agent-task-progress-recent");
+	assert.equal(result.entries[0].secondsSinceLastSignal, 5);
+	assert.equal(result.totalLateLanes, 0);
+	assert.equal(result.totalActiveLanes, 1);
+});
+
 test("lane stall projection classifies a 7-minute idle running lane as stalled", () => {
 	const result = projectFlowDeskLaneStallV1({
 		workflowId,

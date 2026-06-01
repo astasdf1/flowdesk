@@ -6,6 +6,13 @@ import test from "node:test";
 import { sessionEvidenceRecordPath } from "@flowdesk/core";
 import { executeFlowDeskStatusLiveV1 } from "./status-live-tool.js";
 
+function writeEvidence(rootDir: string, workflowId: string, evidenceClass: string, evidenceId: string, record: Record<string, unknown>): void {
+	const relativePath = sessionEvidenceRecordPath(workflowId, evidenceClass as never, evidenceId);
+	const absolutePath = join(rootDir, relativePath);
+	mkdirSync(join(absolutePath, ".."), { recursive: true });
+	writeFileSync(absolutePath, JSON.stringify(record), "utf8");
+}
+
 test("status live reports durable workflow dispatch planning evidence", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-plan-"));
 	try {
@@ -74,6 +81,76 @@ test("status live reports durable workflow dispatch planning evidence", async ()
 		);
 		assert.equal(result.workflows[0].latestWorkflowDispatchPlanTaskCount, 1);
 		assert.match(result.summaryForUser ?? "", /workflow_plan=plan-revision-status-1 tasks=1/);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live does not show progress observed after terminal lifecycle", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-terminal-progress-"));
+	try {
+		const workflowId = "workflow-status-terminal-progress";
+		const laneId = "lane-status-terminal-progress";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "agent-task-context-terminal-progress", {
+			schema_version: "flowdesk.agent_task_context.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-status-terminal-progress",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_session_ref: "ses-parent",
+			prompt_text: "Inspect status projection ordering",
+			prompt_text_truncated: false,
+			prompt_text_sha256: "sha256-test",
+			redaction_version: "v1",
+			created_at: "2026-05-27T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "lane_lifecycle", "lifecycle-terminal-progress", {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			attempt_id: "attempt-terminal-progress",
+			parent_session_ref: "ses-parent",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "invocation_failed",
+			timeout_ms: 0,
+			orphan_max_age_ms: 0,
+			retry_count: 0,
+			created_at: "2026-05-27T00:00:00.000Z",
+			updated_at: "2026-05-27T00:01:00.000Z",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		});
+		writeEvidence(rootDir, workflowId, "agent_task_progress", "agent-task-progress-late-after-terminal", {
+			schema_version: "flowdesk.agent_task_progress.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-status-terminal-progress",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			progress_seq: 99,
+			observed_at: "2026-05-27T00:02:00.000Z",
+			phase: "waiting",
+			progress_label: "agent task message.updated event observed",
+			progress_ref: `progress-${laneId}-99`,
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+
+		const card = result.workflows[0].laneProgressCards?.[0] as Record<string, unknown> | undefined;
+		assert.equal(card?.state, "invocation_failed");
+		assert.equal(card?.progressObservedAt, undefined);
+		assert.equal(card?.progressLabel, undefined);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

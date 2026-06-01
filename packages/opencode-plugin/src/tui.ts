@@ -33,8 +33,8 @@ type UsageSnapshotState = {
 };
 
 type SubtaskActivityState = {
-	view: () => FlowDeskTuiSubtaskActivityViewV1;
-	autoNextView: () => FlowDeskTuiAutoNextReadyViewV1;
+	view: (currentSessionRef?: string) => FlowDeskTuiSubtaskActivityViewV1;
+	autoNextView: (currentSessionRef?: string) => FlowDeskTuiAutoNextReadyViewV1;
 	dispose: () => void;
 };
 
@@ -61,28 +61,34 @@ function createUsageSnapshotState(options: FlowDeskTuiPluginOptionsV1): UsageSna
 }
 
 function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): SubtaskActivityState {
-	const read = (): FlowDeskTuiSubtaskActivityViewV1 =>
+	const effectiveSessionRef = (currentSessionRef: string | undefined): string | undefined =>
+		currentSessionRef ?? options.currentParentSessionRef ?? options.currentSessionRef;
+	const read = (currentSessionRef?: string): FlowDeskTuiSubtaskActivityViewV1 =>
 		loadFlowDeskTuiSubtaskActivityViewV1({
 			rootDir: options.durableStateRootDir,
-			currentParentSessionRef: options.currentParentSessionRef ?? options.currentSessionRef,
+			currentParentSessionRef: effectiveSessionRef(currentSessionRef),
 		});
-	const readAutoNext = (): FlowDeskTuiAutoNextReadyViewV1 =>
+	const readAutoNext = (currentSessionRef?: string): FlowDeskTuiAutoNextReadyViewV1 =>
 		loadFlowDeskTuiAutoNextReadyViewV1({
 			rootDir: options.durableStateRootDir,
-			currentParentSessionRef: options.currentParentSessionRef ?? options.currentSessionRef,
+			currentParentSessionRef: effectiveSessionRef(currentSessionRef),
 		});
-	const [view, setView] = createSignal(read());
-	const [autoNextView, setAutoNextView] = createSignal(readAutoNext());
+	const [refreshTick, setRefreshTick] = createSignal(0);
 	const refresh = () => {
-		setView(read());
-		setAutoNextView(readAutoNext());
+		setRefreshTick((tick) => tick + 1);
 	};
 
 	const intervalId = setInterval(refresh, SUBTASK_ACTIVITY_REFRESH_INTERVAL_MS);
 
 	return {
-		view: () => view(),
-		autoNextView: () => autoNextView(),
+		view: (currentSessionRef?: string) => {
+			refreshTick();
+			return read(currentSessionRef);
+		},
+		autoNextView: (currentSessionRef?: string) => {
+			refreshTick();
+			return readAutoNext(currentSessionRef);
+		},
 		dispose: () => {
 			clearInterval(intervalId);
 		},
@@ -129,7 +135,15 @@ function formatObservedAt(iso: string): string {
 	return `updated ${hh}:${mm}:${ss}`;
 }
 
-function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState): JSX.Element {
+function currentRouteSessionRef(api: Parameters<TuiPlugin>[0]): string | undefined {
+	const route = api.route.current;
+	const sessionID = route.name === "session" ? route.params?.sessionID : undefined;
+	return typeof sessionID === "string" && sessionID.length > 0
+		? sessionID
+		: undefined;
+}
+
+function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState, currentSessionRef: () => string | undefined): JSX.Element {
 	const usageLines = createMemo(() => formatFlowDeskTuiUsageSnapshotCompactLines(usageState.view()));
 	const observedLine = createMemo(() => formatObservedAt(usageState.view().observedAt));
 	const statusLine = createMemo(() => {
@@ -139,8 +153,8 @@ function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActiv
 			? "cache stale; run /flowdesk-usage"
 			: "cache readable";
 	});
-	const autoNextLines = createMemo(() => formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView()));
-	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view()));
+	const autoNextLines = createMemo(() => formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView(currentSessionRef())));
+	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view(currentSessionRef())));
 	// Build all lines dynamically so empty sections don't leave blank gaps
 	const allLines = createMemo(() => {
 		const lines: (string | (() => string))[] = [];
@@ -186,10 +200,10 @@ const tui: TuiPlugin = async (api, rawOptions) => {
 	api.lifecycle.onDispose(subtaskActivityState.dispose);
 
 	api.slots.register({
-		slots: {
-			sidebar_content() {
-				return usageSidebar(usageSnapshotState, subtaskActivityState);
-			},
+			slots: {
+				sidebar_content() {
+					return usageSidebar(usageSnapshotState, subtaskActivityState, () => currentRouteSessionRef(api));
+				},
 			...(options.showAppBottom === true
 				? {
 						app_bottom() {

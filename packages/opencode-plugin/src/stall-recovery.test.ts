@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -77,6 +77,8 @@ function writeAgentTaskChildSession(
 		taskId?: string;
 		childSessionId?: string;
 		createdAt?: string;
+		nudgeCount?: number;
+		lastNudgeAt?: string | null;
 	} = {},
 	evidenceId = "agent-task-child-session-123",
 ): void {
@@ -89,13 +91,50 @@ function writeAgentTaskChildSession(
 		parent_session_ref: "ses-parent-123",
 		provider_qualified_model_id: "openai/gpt-5.5",
 		agent_ref: "agent-reviewer-123",
-		nudge_count: 0,
-		last_nudge_at: null,
+		nudge_count: input.nudgeCount ?? 0,
+		last_nudge_at: input.lastNudgeAt ?? null,
 		created_at: input.createdAt ?? "2026-05-26T10:00:00.000Z",
 		dispatch_authority_enabled: false,
 	};
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 		workflowId: record.workflow_id,
+		evidenceId,
+		record,
+	});
+	assert.equal(prepared.ok, true, prepared.errors.join("\n"));
+	assert.ok(prepared.writeIntent);
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+	assert.equal(applied.ok, true, applied.errors.join("\n"));
+}
+
+function writeAgentTaskProgressRecord(
+	rootDir: string,
+	input: {
+		workflowId: string;
+		laneId: string;
+		taskId: string;
+		observedAt: string;
+		phase?: string;
+	},
+	evidenceId = `agent-task-progress-${input.laneId}-test`,
+): void {
+	const record = {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: "agent-reviewer-123",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		progress_seq: 42,
+		observed_at: input.observedAt,
+		phase: input.phase ?? "waiting",
+		progress_label: "agent task message.updated event observed",
+		progress_ref: `progress-${input.laneId}-42`,
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	};
+	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
 		evidenceId,
 		record,
 	});
@@ -379,6 +418,66 @@ test("watchdog treats terminal lifecycle-only child lanes as completed and refre
 		const row = (sidebar.rows as Array<Record<string, unknown>>).find((entry) => entry.laneId === laneId);
 		assert.equal(row?.state, state);
 		assert.equal(row?.classification, "terminal");
+	}
+});
+
+test("watchdog does not nudge or abort lanes with recent child progress", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-recent-progress-"));
+	try {
+		const workflowId = "workflow-watchdog-recent-progress";
+		const laneId = "lane-watchdog-recent-progress";
+		const taskId = "task-watchdog-recent-progress";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-recent-progress",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 2,
+			lastNudgeAt: "2026-05-26T10:00:20.000Z",
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-recent-progress-running",
+		);
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			observedAt: "2026-05-26T10:00:58.000Z",
+		});
+
+		let promptCalls = 0;
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:01:00.000Z"),
+			nudgeQuietPeriodMs: 10_000,
+			abortThresholdMs: 30_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => { promptCalls += 1; return {}; },
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesPolled, 1);
+		assert.equal(result.lanesNudged, 0);
+		assert.equal(result.lanesAborted, 0);
+		assert.equal(promptCalls, 0);
+		assert.equal(abortCalls, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
 	}
 });
 

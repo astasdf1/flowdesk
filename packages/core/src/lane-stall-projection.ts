@@ -43,7 +43,7 @@ export interface FlowDeskLaneStallProjectionEntryV1 {
 	lifecycleState?: string;
 	lastSignalAt?: string;
 	lastSignalEvidenceId?: string;
-	lastSignalSource?: "lane_lifecycle" | "lane_heartbeat";
+	lastSignalSource?: "lane_lifecycle" | "lane_heartbeat" | "agent_task_progress";
 	lastHeartbeatSeq?: number;
 	expectedNextHeartbeatAt?: string;
 	expectedNextHeartbeatOverdue?: boolean;
@@ -83,7 +83,7 @@ interface LifecycleSnapshot {
 	updatedAt: string;
 	updatedAtMs: number;
 	evidenceId: string;
-	signalSource: "lane_lifecycle" | "lane_heartbeat";
+	signalSource: "lane_lifecycle" | "lane_heartbeat" | "agent_task_progress";
 	heartbeatSeq?: number;
 	expectedNextHeartbeatAt?: string;
 }
@@ -280,6 +280,29 @@ function pickFinalizingWithoutTerminalInconsistencies(
 	return selected;
 }
 
+function pickLatestAgentTaskProgressByLane(
+	reload: FlowDeskSessionEvidenceReloadResultV1,
+): Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number }> {
+	const selected = new Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number }>();
+	for (const entry of reload.entries) {
+		if (entry.evidenceClass !== "agent_task_progress") continue;
+		const laneId = getStringField(entry.record, "lane_id");
+		if (laneId === undefined) continue;
+		const observedAt = getStringField(entry.record, "observed_at");
+		const observedAtMs = observedAt === undefined ? 0 : Date.parse(observedAt);
+		if (!Number.isFinite(observedAtMs)) continue;
+		const previous = selected.get(laneId);
+		if (
+			previous === undefined ||
+			observedAtMs > previous.observedAtMs ||
+			(observedAtMs === previous.observedAtMs && entry.evidenceId > previous.evidenceId)
+		) {
+			selected.set(laneId, { evidenceId: entry.evidenceId, observedAt, observedAtMs });
+		}
+	}
+	return selected;
+}
+
 function classify(
 	snapshot: LifecycleSnapshot,
 	observedAtMs: number,
@@ -405,6 +428,7 @@ export function projectFlowDeskLaneStallV1(input: {
 		};
 	const latestByLane = pickLatestLifecyclePerLane(input.reload, input.workflowId);
 	const inconsistenciesByLane = pickFinalizingWithoutTerminalInconsistencies(input.reload);
+	const latestProgressByLane = pickLatestAgentTaskProgressByLane(input.reload);
 	const entries: FlowDeskLaneStallProjectionEntryV1[] = [];
 	let totalActive = 0;
 	let totalLate = 0;
@@ -412,8 +436,22 @@ export function projectFlowDeskLaneStallV1(input: {
 	let totalInconsistent = 0;
 	let totalTerminal = 0;
 	for (const snapshot of latestByLane.values()) {
+		const progress = latestProgressByLane.get(snapshot.laneId);
+		const progressIsActivitySignal =
+			progress !== undefined &&
+			ACTIVE_LIFECYCLE_STATES.has(snapshot.state) &&
+			progress.observedAtMs > snapshot.updatedAtMs;
+		const signalSnapshot: LifecycleSnapshot = progressIsActivitySignal
+			? {
+					...snapshot,
+					updatedAt: progress.observedAt ?? snapshot.updatedAt,
+					updatedAtMs: progress.observedAtMs,
+					evidenceId: progress.evidenceId,
+					signalSource: "agent_task_progress",
+				}
+			: snapshot;
 		const base = classify(
-			snapshot,
+			signalSnapshot,
 			observedAtMs,
 			lateThresholdMs,
 			stallThresholdMs,
@@ -439,7 +477,7 @@ export function projectFlowDeskLaneStallV1(input: {
 		const failureHint = failureHintFor(snapshot.state);
 		let expectedNextHeartbeatOverdue: boolean | undefined;
 		let secondsPastExpectedNextHeartbeat: number | undefined;
-		if (snapshot.expectedNextHeartbeatAt !== undefined) {
+		if (snapshot.expectedNextHeartbeatAt !== undefined && !progressIsActivitySignal) {
 			const expectedMs = Date.parse(snapshot.expectedNextHeartbeatAt);
 			if (Number.isFinite(expectedMs)) {
 				const deltaMs = observedAtMs - expectedMs;
@@ -456,9 +494,9 @@ export function projectFlowDeskLaneStallV1(input: {
 				: { attemptId: snapshot.attemptId }),
 			classification,
 			lifecycleState: snapshot.state,
-			lastSignalAt: snapshot.updatedAt,
-			lastSignalEvidenceId: inconsistency?.evidenceId ?? snapshot.evidenceId,
-			lastSignalSource: snapshot.signalSource,
+			lastSignalAt: signalSnapshot.updatedAt,
+			lastSignalEvidenceId: inconsistency?.evidenceId ?? signalSnapshot.evidenceId,
+			lastSignalSource: signalSnapshot.signalSource,
 			...(snapshot.heartbeatSeq === undefined
 				? {}
 				: { lastHeartbeatSeq: snapshot.heartbeatSeq }),

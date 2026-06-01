@@ -2026,9 +2026,25 @@ export async function monitorChildSessionsV1(input: {
 
 		result.lanesPolled++;
 		const createdAtMs = typeof record.created_at === "string" ? Date.parse(record.created_at) : nowMs;
-		const nudgeCount = typeof record.nudge_count === "number" ? record.nudge_count : 0;
+		const recordedNudgeCount = typeof record.nudge_count === "number" ? record.nudge_count : 0;
 		const lastNudgeAtMs = typeof record.last_nudge_at === "string" ? Date.parse(record.last_nudge_at) : createdAtMs;
-		const silenceMs = nowMs - lastNudgeAtMs;
+		const latestProgress = latestProgressByLane.get(laneId);
+		const latestProgressAtMs = latestProgress?.observedAtMs;
+		const lastActivityMs = Math.max(
+			createdAtMs,
+			Number.isFinite(lastNudgeAtMs) ? lastNudgeAtMs : createdAtMs,
+			latestProgressAtMs !== undefined && Number.isFinite(latestProgressAtMs) ? latestProgressAtMs : createdAtMs,
+		);
+		// If the child session emitted progress after the last nudge, treat that as
+		// real activity and reset the effective nudge budget for this watchdog cycle.
+		// The persisted child-session nudge_count is only updated when we actually
+		// send another nudge; deriving the effective value here avoids aborting a lane
+		// that is actively streaming message.updated/message.part/session.diff events.
+		const nudgeCount =
+			latestProgressAtMs !== undefined && latestProgressAtMs > lastNudgeAtMs
+				? 0
+				: recordedNudgeCount;
+		const silenceMs = nowMs - lastActivityMs;
 		const totalAgeMs = nowMs - createdAtMs;
 
 		// 1. Try to collect terminal result text. Candidate text without terminal is kept for abort-time partial capture.
@@ -2154,7 +2170,7 @@ export async function monitorChildSessionsV1(input: {
 		}
 
 		// 2. Abort threshold exceeded
-		if (totalAgeMs >= abortThresholdMs && nudgeCount >= maxNudges) {
+		if (silenceMs >= abortThresholdMs && nudgeCount >= maxNudges) {
 			await abortChildSession(input.client, childSessionId);
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
