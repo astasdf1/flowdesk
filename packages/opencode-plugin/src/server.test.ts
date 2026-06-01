@@ -35,6 +35,8 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskAgentTaskRunOption,
 	flowdeskAgentTaskRunToolName,
+	flowdeskAutoContinueExecutionOption,
+	flowdeskAutoContinueExecutionToolName,
 	flowdeskControlledWriteApplyOption,
 	flowdeskControlledWriteApplyToolName,
 	flowdeskChatIntakeToolName,
@@ -2247,6 +2249,59 @@ test("workflow dispatch tool is absent by default and requires opt-in root and c
 			},
 		);
 		assert.equal(noDevBetaHooks.tool?.[flowdeskWorkflowDispatchToolName], undefined);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("auto-continue execution tool is absent by default and requires explicit opt-in root and client", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-auto-continue-execution-registration-"));
+	try {
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(defaultHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+
+		const noRootHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskAutoContinueExecutionOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(noRootHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+
+		const noClientHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			[flowdeskAutoContinueExecutionOption]: { enabled: true, devBetaActualLaneLaunch: true },
+			[flowdeskDurableStateRootOption]: root,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(noClientHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+
+		const noDevBetaHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskAutoContinueExecutionOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.equal(noDevBetaHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskAutoContinueExecutionOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		assert.ok(enabledHooks.tool?.[flowdeskAutoContinueExecutionToolName]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -97,6 +97,9 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /FlowDesk workflow first/);
 		assert.match(mainAgent, /broad repository reading/);
 		assert.match(mainAgent, /sub-agent returns an empty result/);
+		assert.match(mainAgent, /Work breakdown and lane sizing/);
+		assert.match(mainAgent, /exactly one primary objective and one clear deliverable/);
+		assert.match(mainAgent, /inconsistent_finalizing_without_terminal/);
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");

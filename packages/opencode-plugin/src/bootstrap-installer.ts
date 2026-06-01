@@ -517,13 +517,22 @@ Operational rules:
 10. Do not claim that FlowDesk auto-retries, auto-aborts, auto-fallbacks, force-kills, or hard-cancels chat on stall unless a first-class FlowDesk/OpenCode control surface proves it. Surface /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, and /flowdesk-export-debug as safe next actions.
 11. Never persist or print raw provider tokens, auth payloads, raw prompts, transcripts, or debug bodies.
 
+Work breakdown and lane sizing:
+
+12. Before dispatching implementation, refactor, verification, or multi-file investigation work, create a short lane plan and keep each lane narrowly scoped. The coordinator is responsible for preventing mega-lanes that combine unrelated edits, tests, reviews, and release notes.
+13. One lane should have exactly one primary objective and one clear deliverable. Prefer 1-3 closely related files or one subsystem per implementation lane, and one failure mode, one bug, one test file, or one verification command family per analysis/verifier lane.
+14. Split into sequential lanes when a task combines two or more of these dimensions: durable evidence/schema, watchdog/runtime/session logic, TUI/sidebar/status presentation, workflow/auto-continue/fallback authority logic, agent/profile/config prompts, tests across multiple packages, or docs/progress snapshot updates.
+15. Recommended fix sequence: root-cause read-only lane, one slice implementation lane with focused tests, focused verifier or command check, next slice only after the prior slice is terminal and judged usable, then broader build/test after all slices are in the working tree.
+16. Unless the user explicitly overrides, run at most one active implementation lane for the same code area and at most two concurrent lanes total. Do not bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior.
+17. If a lane reaches \`inconsistent_finalizing_without_terminal\`, \`MessageAbortedError\`, \`invocation_failed\`, or repeated nudge symptoms, stop expanding scope. Inspect FlowDesk status/evidence, salvage any patch, and relaunch only a smaller next slice.
+
 Natural-language auto-invocation policy:
 
-12. When the user's intent matches a registered FlowDesk natural-language tool's WHEN TO USE or ALSO PROACTIVELY USE block, call that tool directly instead of asking for confirmation. The plugin user already opted in at configuration time. Tools to auto-call on intent match: \`flowdesk_quick_reviewer_run\` (review/critique/audit), \`flowdesk_provider_usage_live\` (usage/quota/availability), \`flowdesk_status_live\` (status/progress/follow-up "방금/직전/결과는?"), \`flowdesk_quick_fallback_run\` (explicit provider switch), \`flowdesk_lane_heartbeat_record\` (heartbeat / progress signal request).
-13. Before launching a large multi-step task that depends on a specific provider (extensive refactor, long agentic loop, multi-perspective review), call \`flowdesk_provider_usage_live\` first; if worstAlertLevel is critical or exhausted, warn the user and ask whether to proceed, switch providers, or wait for reset.
-14. After invoking a real-work FlowDesk tool, when the user asks a vague follow-up about the just-completed work ("잘 됐어?", "결과는?", "how did it go?"), call \`flowdesk_status_live\` with the just-created workflowId rather than guessing from memory.
-15. When a FlowDesk tool result contains a \`summaryForUser\` string, surface that field verbatim or compress it; do not paraphrase critical fields (verdict labels, alert levels, blocker reasons) away.
-16. If user intent is ambiguous between a FlowDesk tool and general chat, ask one focused clarification question first; do not silently fall through to general chat for known intent phrases.
+18. When the user's intent matches a registered FlowDesk natural-language tool's WHEN TO USE or ALSO PROACTIVELY USE block, call that tool directly instead of asking for confirmation. The plugin user already opted in at configuration time. Tools to auto-call on intent match: \`flowdesk_quick_reviewer_run\` (review/critique/audit), \`flowdesk_provider_usage_live\` (usage/quota/availability), \`flowdesk_status_live\` (status/progress/follow-up "방금/직전/결과는?"), \`flowdesk_quick_fallback_run\` (explicit provider switch), \`flowdesk_lane_heartbeat_record\` (heartbeat / progress signal request).
+19. Before launching a large multi-step task that depends on a specific provider (extensive refactor, long agentic loop, multi-perspective review), call \`flowdesk_provider_usage_live\` first; if worstAlertLevel is critical or exhausted, warn the user and ask whether to proceed, switch providers, or wait for reset.
+20. After invoking a real-work FlowDesk tool, when the user asks a vague follow-up about the just-completed work ("잘 됐어?", "결과는?", "how did it go?"), call \`flowdesk_status_live\` with the just-created workflowId rather than guessing from memory.
+21. When a FlowDesk tool result contains a \`summaryForUser\` string, surface that field verbatim or compress it; do not paraphrase critical fields (verdict labels, alert levels, blocker reasons) away.
+22. If user intent is ambiguous between a FlowDesk tool and general chat, ask one focused clarification question first; do not silently fall through to general chat for known intent phrases.
 `;
 }
 

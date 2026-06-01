@@ -282,8 +282,8 @@ function pickFinalizingWithoutTerminalInconsistencies(
 
 function pickLatestAgentTaskProgressByLane(
 	reload: FlowDeskSessionEvidenceReloadResultV1,
-): Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number }> {
-	const selected = new Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number }>();
+): Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number; phase?: string }> {
+	const selected = new Map<string, { evidenceId: string; observedAt?: string; observedAtMs: number; phase?: string }>();
 	for (const entry of reload.entries) {
 		if (entry.evidenceClass !== "agent_task_progress") continue;
 		const laneId = getStringField(entry.record, "lane_id");
@@ -297,10 +297,19 @@ function pickLatestAgentTaskProgressByLane(
 			observedAtMs > previous.observedAtMs ||
 			(observedAtMs === previous.observedAtMs && entry.evidenceId > previous.evidenceId)
 		) {
-			selected.set(laneId, { evidenceId: entry.evidenceId, observedAt, observedAtMs });
+			selected.set(laneId, { evidenceId: entry.evidenceId, observedAt, observedAtMs, phase: getStringField(entry.record, "phase") });
 		}
 	}
 	return selected;
+}
+
+function laterProgressProvesActive(
+	inconsistency: { observedAtMs: number } | undefined,
+	progress: { observedAtMs: number; phase?: string } | undefined,
+): boolean {
+	if (inconsistency === undefined || progress === undefined) return false;
+	if (progress.observedAtMs <= inconsistency.observedAtMs) return false;
+	return progress.phase === "started" || progress.phase === "waiting" || progress.phase === "nudged" || progress.phase === "awaiting_permission" || progress.phase === "retrying";
 }
 
 function classify(
@@ -457,8 +466,9 @@ export function projectFlowDeskLaneStallV1(input: {
 			stallThresholdMs,
 		);
 		const inconsistency = inconsistenciesByLane.get(snapshot.laneId);
+		const staleInconsistencySuppressed = laterProgressProvesActive(inconsistency, progress);
 		const classification: FlowDeskLaneStallClassificationV1 =
-			inconsistency === undefined
+			inconsistency === undefined || staleInconsistencySuppressed
 				? base.classification
 				: "inconsistent_finalizing_without_terminal";
 		const secondsSinceLastSignal = base.secondsSinceLastSignal;
@@ -495,7 +505,7 @@ export function projectFlowDeskLaneStallV1(input: {
 			classification,
 			lifecycleState: snapshot.state,
 			lastSignalAt: signalSnapshot.updatedAt,
-			lastSignalEvidenceId: inconsistency?.evidenceId ?? signalSnapshot.evidenceId,
+			lastSignalEvidenceId: staleInconsistencySuppressed ? signalSnapshot.evidenceId : (inconsistency?.evidenceId ?? signalSnapshot.evidenceId),
 			lastSignalSource: signalSnapshot.signalSource,
 			...(snapshot.heartbeatSeq === undefined
 				? {}

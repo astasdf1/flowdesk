@@ -66,6 +66,36 @@ test("TUI subtask activity view renders cached read-only rows", () => {
 	}
 });
 
+test("TUI subtask activity renders effective nudge count from cache", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-nudge-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [
+					{ workflowId: "workflow-nudge", laneId: "lane-task-nudge", taskId: "task-nudge", state: "running", classification: "progressing_normal", startedAt: "2026-05-29T00:00:00.000Z", nudgeCount: 1, rawNudgeCount: 2, recoveryActionRefs: ["/flowdesk-status"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		const view = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(view.rows[0]?.nudgeCount, 1);
+		assert.equal(view.rows[0]?.rawNudgeCount, 2);
+		assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view), [
+			"Subtasks:",
+			"… 09:00 task nudge n1",
+		]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("TUI subtask activity view degrades to command fallback when cache is absent", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-missing-"));
 	try {

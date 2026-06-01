@@ -40,7 +40,7 @@ Every delegated subtask — analysis, implementation, search, review, verificati
 flowdesk_agent_task_run({
   workflowId: "workflow-xxx",
   taskDescription: "...",
-  agentName: "reviewer-claude-opus",
+  agentName: "flowdesk-security-policy",
   providerQualifiedModelId: "anthropic/claude-opus-4-7",
   parentSessionId: "",
   nudgeQuietPeriodMs: 10000,
@@ -54,12 +54,64 @@ flowdesk_agent_task_run({
 `flowdesk_quick_reviewer_run` is quarantined until explicitly revalidated by the user. Do **not** call it. Use one or more explicit `flowdesk_agent_task_run` lanes instead. Concurrent async `flowdesk_agent_task_run` launch is allowed after the 2026-05-28 post-restart revalidation evidence, but keep fan-out bounded (normally 2 lanes at a time) and check `flowdesk_status_live` after launch.
 
 ### Agent selection guide
-| Task type | Agent | Model |
-|-----------|-------|-------|
-| Security / policy analysis | reviewer-claude-opus | anthropic/claude-opus-4-7 |
-| Architecture / design | reviewer-gpt-frontier | openai/gpt-5.5 |
-| Implementation / verification | reviewer-gemini-pro | google/gemini-3.1-pro-preview |
-| General task | reviewer-gpt-frontier | openai/gpt-5.5 |
+
+Prefer the project-local `flowdesk-*` agents below. Do **not** send implementation, refactor, docs, or verification work to generic `reviewer-*` profiles; those are reviewer lanes and may refuse edits. `reviewer-*` bindings are legacy/provider aliases only when no matching `flowdesk-*` agent exists or the user explicitly asks for that reviewer.
+
+| Task type | Agent | Model | Authority expectation |
+|-----------|-------|-------|-----------------------|
+| Backend/plugin/core implementation | flowdesk-code-backend | openai/gpt-5.5 | bounded edit-capable |
+| Frontend/chat/status UI implementation | flowdesk-code-frontend | openai/gpt-5.5 | bounded edit-capable |
+| TypeScript/schema/config/runtime detail | flowdesk-code-language-specialist | openai/gpt-5.5 | bounded edit-capable |
+| Migration/refactor/module split | flowdesk-migration-refactor | openai/gpt-5.5 | bounded edit-capable |
+| Tests/reproduction/verification | flowdesk-verifier-testing | openai/gpt-5.5 | edit-denied, bash ask |
+| Documentation/user guide/runbook | flowdesk-docs-writer | openai/gpt-5.5 | bounded docs edit-capable |
+| Security / policy analysis | flowdesk-security-policy | anthropic/claude-opus-4-7 | edit-denied review |
+| Architecture / design | flowdesk-architecture | openai/gpt-5.5 | edit-denied review |
+| Critical/adversarial review | flowdesk-critical-reviewer | anthropic/claude-opus-4-7 | edit-denied review |
+| Git diff/commit planning | flowdesk-git-master | openai/gpt-5.5 | no git mutation |
+
+Routing rule: choose the narrowest `flowdesk-*` agent whose role matches the subtask. For implementation work, use an edit-capable code/docs/refactor agent first, then dispatch a separate verifier/reviewer lane if needed.
+
+### Work breakdown & lane sizing policy
+
+Before dispatching implementation, refactor, verification, or multi-file investigation work, create a short lane plan and keep each lane narrowly scoped. The coordinator is responsible for preventing "mega lanes" that combine unrelated edits, tests, and reviews.
+
+**Default lane budget**
+
+- One lane should have exactly one primary objective and one clear deliverable.
+- Prefer 1-3 closely related files or one subsystem per implementation lane.
+- Prefer one failure mode, one bug, one test file, or one verification command family per analysis/verifier lane.
+- A lane prompt should fit in a compact paragraph plus bullet checklist; if it needs a long multi-section spec, split it first.
+- Do not ask a single lane to both implement a broad patch, add all tests, run the full suite, perform security review, and summarize release impact.
+
+**Split triggers**
+
+Split into sequential lanes when a task includes two or more of these dimensions:
+
+1. durable evidence/schema changes
+2. watchdog/runtime/session logic
+3. TUI/sidebar/status presentation
+4. workflow/auto-continue/fallback authority logic
+5. agent/profile/config prompt changes
+6. tests across multiple packages or full-suite verification
+7. docs/progress snapshot updates
+
+**Recommended sequence for fixes**
+
+1. Root-cause/read-only lane: identify file:line findings and smallest safe slice.
+2. Slice implementation lane: edit only the first slice, with focused tests only.
+3. Focused verifier lane or main-session command check: run the narrow tests for that slice.
+4. Next slice lane only after the previous slice is terminal and judged usable.
+5. Final verifier lane: broader build/test only after all slices are merged in the working tree.
+
+**Hard limits unless the user explicitly overrides**
+
+- At most 1 active implementation lane for the same code area.
+- At most 2 concurrent lanes total, and only when they touch independent areas.
+- Do not bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior.
+- If a lane reaches `inconsistent_finalizing_without_terminal`, `MessageAbortedError`, `invocation_failed`, or repeated nudge symptoms, stop expanding scope. Inspect status/evidence, salvage any patch, and relaunch only a smaller next slice.
+
+When summarizing a plan to the user, state the slices explicitly, for example: "slice 1: status nudge display only; slice 2: quiet-period persistence; slice 3: finalizing stale suppression; slice 4: focused tests." Never silently collapse those slices into one implementation lane.
 
 ### Usage-aware reviewer routing
 
@@ -69,16 +121,16 @@ Default reviewer bindings when usage is healthy:
 
 | Perspective | Preferred agent | Preferred model |
 |-------------|-----------------|-----------------|
-| Security / policy | reviewer-claude-opus | anthropic/claude-opus-4-7 |
-| Architecture / design | reviewer-gpt-frontier | openai/gpt-5.5 |
-| Implementation / verification | reviewer-gemini-pro | google/gemini-3.1-pro-preview |
+| Security / policy | flowdesk-security-policy | anthropic/claude-opus-4-7 |
+| Architecture / design | flowdesk-architecture | openai/gpt-5.5 |
+| Implementation / verification | flowdesk-verifier-testing | google/gemini-3.1-pro-preview |
 
 If a preferred provider row is `critical`, `exhausted`, `stale`, `unknown`, or `non_dispatchable`, avoid that top binding unless the user explicitly insists. Substitute in this order while preserving the review perspective label in the task prompt:
 
-1. Gemini Pro low/quota-critical → use Gemini Flash Lite first: `reviewer-gemini-pro` with `google/gemini-3.1-flash-lite-preview`.
-2. Gemini Flash Lite unavailable or still unhealthy → move the implementation/verification perspective to `reviewer-gpt-frontier` with `openai/gpt-5.5`.
-3. Claude low/unavailable → move security/policy perspective to `reviewer-gpt-frontier` with `openai/gpt-5.5`; if OpenAI is also low, run only the available lanes and mark the skipped perspective incomplete.
-4. OpenAI low/unavailable → use `reviewer-claude-opus` for architecture/design if Claude is healthy; otherwise run only available lanes and mark the skipped perspective incomplete.
+1. Gemini Pro low/quota-critical → use Gemini Flash Lite first: `flowdesk-verifier-testing` with `google/gemini-3.1-flash-lite-preview`.
+2. Gemini Flash Lite unavailable or still unhealthy → move the implementation/verification perspective to `flowdesk-verifier-testing` or `flowdesk-code-backend` with `openai/gpt-5.5`, depending on whether the subtask is verification or implementation.
+3. Claude low/unavailable → move security/policy perspective to `flowdesk-security-policy` with `openai/gpt-5.5`; if OpenAI is also low, run only the available lanes and mark the skipped perspective incomplete.
+4. OpenAI low/unavailable → use `flowdesk-architecture` with `anthropic/claude-opus-4-7` for architecture/design if Claude is healthy; otherwise run only available lanes and mark the skipped perspective incomplete.
 5. If all candidate providers are critical/exhausted/unknown, stop before launching and ask the user whether to proceed with degraded/low-quota providers.
 
 Always state the actual agent/model used per perspective in the final synthesis. A provider/model substitution is usage-aware routing, not FlowDesk managed fallback/reselection authority; do not call `flowdesk_quick_fallback_run` for this pre-launch reviewer binding choice.
@@ -121,8 +173,8 @@ All `flowdesk_agent_task_run` calls use `nudgeQuietPeriodMs: 10000` (10 seconds)
 User: "이 코드 보안 분석하고 리팩토링 계획 세워줘"
 
 1. flowdesk_provider_usage_live() → 사용량 확인
-2. flowdesk_agent_task_run(보안 분석, claude-opus, nudgeQuietPeriodMs:10000) → lane-A
-3. flowdesk_agent_task_run(리팩토링 계획, gpt-frontier, nudgeQuietPeriodMs:10000) → lane-B
+2. flowdesk_agent_task_run(보안 분석, flowdesk-security-policy, nudgeQuietPeriodMs:10000) → lane-A
+3. flowdesk_agent_task_run(리팩토링 계획, flowdesk-migration-refactor, nudgeQuietPeriodMs:10000) → lane-B
 4. flowdesk_status_live() → 두 lane 완료 확인
 5. 결과 합산 → 사용자에게 요약 전달
 ```

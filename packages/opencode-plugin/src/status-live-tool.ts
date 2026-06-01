@@ -217,6 +217,10 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	promptPreview?: string;
 	promptTextTruncated?: boolean;
 	nudgeCount?: number;
+	rawNudgeCount?: number;
+	lastNudgeAt?: string;
+	lastActivityAt?: string;
+	nudgeQuietPeriodMs?: number;
 	progressPhase?: string;
 	progressLabel?: string;
 	progressObservedAt?: string;
@@ -240,6 +244,10 @@ export interface FlowDeskStatusLiveSubtaskActivityRowV1 {
 	progressLabel?: string;
 	lastObservedAt?: string;
 	nudgeCount?: number;
+	rawNudgeCount?: number;
+	lastNudgeAt?: string;
+	lastActivityAt?: string;
+	nudgeQuietPeriodMs?: number;
 	completionStatus?: string;
 	outputKind?: string;
 	usableForSynthesis?: boolean;
@@ -779,7 +787,15 @@ function buildLaneProgressCards(
 		string,
 		{ taskId?: string; promptPreview?: string; promptTextTruncated?: boolean }
 	>();
-	const childSessionByLane = new Map<string, { nudgeCount?: number }>();
+	const childSessionByLane = new Map<string, {
+		nudgeCount?: number;
+		lastNudgeAt?: string;
+		lastNudgeAtMs?: number;
+		createdAt?: string;
+		createdAtMs?: number;
+		lastActivityAt?: string;
+		nudgeQuietPeriodMs?: number;
+	}>();
 	const agentTaskProgressByLane = new Map<
 		string,
 		{ observedAtMs: number; phase?: string; label?: string; observedAt?: string }
@@ -816,10 +832,20 @@ function buildLaneProgressCards(
 		if (entry.evidenceClass === "agent_task_child_session") {
 			const laneId = getStringField(entry.record, "lane_id");
 			const nudgeCount = entry.record.nudge_count;
+			const lastNudgeAt = getStringField(entry.record, "last_nudge_at");
+			const createdAt = getStringField(entry.record, "created_at");
+			const lastActivityAt = getStringField(entry.record, "last_activity_at");
+			const nudgeQuietPeriodMs = entry.record.nudge_quiet_period_ms;
 			if (laneId !== undefined) {
 				childSessionByLane.set(laneId, {
 					...(typeof nudgeCount === "number" && Number.isFinite(nudgeCount)
 						? { nudgeCount }
+						: {}),
+					...(lastNudgeAt === undefined ? {} : { lastNudgeAt, lastNudgeAtMs: Date.parse(lastNudgeAt) }),
+					...(createdAt === undefined ? {} : { createdAt, createdAtMs: Date.parse(createdAt) }),
+					...(lastActivityAt === undefined ? {} : { lastActivityAt }),
+					...(typeof nudgeQuietPeriodMs === "number" && Number.isFinite(nudgeQuietPeriodMs)
+						? { nudgeQuietPeriodMs }
 						: {}),
 				});
 			}
@@ -888,6 +914,22 @@ function buildLaneProgressCards(
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
 		const taskId = context?.taskId ?? taskResult?.taskId;
+		const rawNudgeCount = childSession?.nudgeCount;
+		const lastNudgeAtMs = childSession?.lastNudgeAtMs;
+		const progressAtMs = progress?.observedAtMs;
+		const effectiveNudgeCount = rawNudgeCount === undefined
+			? undefined
+			: progressAtMs !== undefined && Number.isFinite(progressAtMs) && lastNudgeAtMs !== undefined && Number.isFinite(lastNudgeAtMs) && progressAtMs > lastNudgeAtMs
+				? 0
+				: rawNudgeCount;
+		const activityMsCandidates = [
+			childSession?.createdAtMs,
+			lastNudgeAtMs,
+			progressAtMs,
+		].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+		const derivedLastActivityAt = activityMsCandidates.length === 0
+			? childSession?.lastActivityAt
+			: new Date(Math.max(...activityMsCandidates)).toISOString();
 		const verdictLabel =
 			meta?.verdictRef === undefined
 				? undefined
@@ -911,7 +953,11 @@ function buildLaneProgressCards(
 				: { providerQualifiedModelId: meta.providerQualifiedModelId }),
 			...(context?.promptPreview === undefined ? {} : { promptPreview: context.promptPreview }),
 			...(context?.promptTextTruncated === undefined ? {} : { promptTextTruncated: context.promptTextTruncated }),
-			...(childSession?.nudgeCount === undefined ? {} : { nudgeCount: childSession.nudgeCount }),
+			...(effectiveNudgeCount === undefined ? {} : { nudgeCount: effectiveNudgeCount }),
+			...(rawNudgeCount === undefined || rawNudgeCount === effectiveNudgeCount ? {} : { rawNudgeCount }),
+			...(childSession?.lastNudgeAt === undefined ? {} : { lastNudgeAt: childSession.lastNudgeAt }),
+			...(derivedLastActivityAt === undefined ? {} : { lastActivityAt: derivedLastActivityAt }),
+			...(childSession?.nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs: childSession.nudgeQuietPeriodMs }),
 			...(visibleProgress?.phase === undefined ? {} : { progressPhase: visibleProgress.phase }),
 			...(visibleProgress?.label === undefined ? {} : { progressLabel: visibleProgress.label }),
 			...(visibleProgress?.observedAt === undefined ? {} : { progressObservedAt: visibleProgress.observedAt }),
@@ -986,6 +1032,10 @@ function buildSubtaskActivityRows(
 			...(card.progressLabel === undefined ? {} : { progressLabel: card.progressLabel }),
 			...(card.progressObservedAt === undefined ? {} : { lastObservedAt: card.progressObservedAt }),
 			...(card.nudgeCount === undefined ? {} : { nudgeCount: card.nudgeCount }),
+			...(card.rawNudgeCount === undefined ? {} : { rawNudgeCount: card.rawNudgeCount }),
+			...(card.lastNudgeAt === undefined ? {} : { lastNudgeAt: card.lastNudgeAt }),
+			...(card.lastActivityAt === undefined ? {} : { lastActivityAt: card.lastActivityAt }),
+			...(card.nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs: card.nudgeQuietPeriodMs }),
 			...(card.completionStatus === undefined ? {} : { completionStatus: card.completionStatus }),
 			...(card.outputKind === undefined ? {} : { outputKind: card.outputKind }),
 			...(card.usableForSynthesis === undefined ? {} : { usableForSynthesis: card.usableForSynthesis }),

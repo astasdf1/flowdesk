@@ -207,7 +207,7 @@ function terminalEvidencePresent(input: {
 		(entry) =>
 			entry.evidenceClass === "lane_lifecycle" &&
 			entry.record.lane_id === input.laneId &&
-			["incomplete", "no_output", "invocation_failed"].includes(String(entry.record.state)),
+			["complete", "incomplete", "no_output", "invocation_failed", "task_failed", "aborted", "timeout"].includes(String(entry.record.state)),
 	);
 	const terminalTaskEvidence = reload.entries.some(
 		(entry) =>

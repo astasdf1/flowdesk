@@ -354,6 +354,55 @@ test("lane stall projection surfaces finalizing-without-terminal inconsistency b
 	assert.ok(result.entries[0].safeNextActions.includes("/flowdesk-abort"));
 });
 
+test("lane stall projection suppresses stale finalizing inconsistency after later active progress", () => {
+	const result = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload: reload([
+			entry(
+				lifecycle({
+					lane_id: "lane-stale-inconsistent",
+					updated_at: new Date(observedAtMs - 7 * 60_000).toISOString(),
+				}),
+				"lifecycle-stale-inconsistent",
+			),
+			genericEntry("agent_task_inconsistency", "agent-task-inconsistency-stale", {
+				schema_version: "flowdesk.agent_task_inconsistency.v1",
+				workflow_id: workflowId,
+				attempt_id: "attempt-stall-1",
+				lane_id: "lane-stale-inconsistent",
+				task_id: "task-stale-inconsistent",
+				last_progress_seq: 3,
+				last_progress_observed_at: new Date(observedAtMs - 3 * 60_000).toISOString(),
+				inconsistency_kind: "finalizing_without_terminal",
+				grace_window_ms: 90_000,
+				observed_at: new Date(observedAtMs - 2 * 60_000).toISOString(),
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			}),
+			genericEntry("agent_task_progress", "agent-task-progress-active-after-stale", {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-stale-inconsistent",
+				task_id: "task-stale-inconsistent",
+				agent_ref: "agent-reviewer",
+				provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+				progress_seq: 4,
+				observed_at: new Date(observedAtMs - 30_000).toISOString(),
+				phase: "waiting",
+				progress_label: "agent task message updated after stale finalizing",
+				progress_ref: "progress-lane-stale-inconsistent-4",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			}),
+		]),
+	});
+	assert.equal(result.entries[0].classification, "progressing_normal");
+	assert.equal(result.entries[0].failureHint, undefined);
+	assert.equal(result.totalInconsistentLanes, 0);
+	assert.equal(result.worstClassification, "progressing_normal");
+});
+
 test("lane stall projection enforces a minimum late threshold and stall above it", () => {
 	const result = projectFlowDeskLaneStallV1({
 		workflowId,

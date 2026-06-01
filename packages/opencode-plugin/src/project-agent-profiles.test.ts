@@ -24,6 +24,14 @@ const expectedProfiles = [
   "flowdesk-migration-refactor"
 ] as const;
 
+const writeCapableProfiles = new Set<string>([
+  "flowdesk-code-backend",
+  "flowdesk-code-frontend",
+  "flowdesk-code-language-specialist",
+  "flowdesk-docs-writer",
+  "flowdesk-migration-refactor",
+]);
+
 function readProfile(name: string): string {
   const path = resolve(agentDir, `${name}.md`);
   assert.equal(existsSync(path), true, `${path} must exist`);
@@ -44,7 +52,13 @@ test("Release 1 project subagent profiles exist and use supported frontmatter", 
 
     assert.deepEqual(topLevelKeys, ["description", "mode", "model", "permission"], `${profile} frontmatter keys`);
     assert.match(frontmatter, /^mode: subagent$/m, `${profile} must be a subagent`);
-    assert.match(frontmatter, /^  edit: deny$/m, `${profile} must not be write-capable in Release 1`);
+    if (writeCapableProfiles.has(profile)) {
+      assert.match(frontmatter, /^  edit: allow$/m, `${profile} should be bounded write-capable for its implementation role`);
+      assert.match(frontmatter, /^  bash: ask$/m, `${profile} should ask before verification commands`);
+      assert.match(markdown, /bounded/i, `${profile} must describe bounded edit scope`);
+    } else {
+      assert.match(frontmatter, /^  edit: deny$/m, `${profile} must remain edit-denied`);
+    }
     assert.doesNotMatch(
       frontmatter,
       /^(input_contract|output_contract|registry_entry|agent_id|role_category|release_gate|dispatch_authority_enabled|fallback_allowed):/m

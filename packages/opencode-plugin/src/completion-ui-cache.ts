@@ -11,10 +11,15 @@ type UiRow = {
 	taskId?: string;
 	parentSessionRef?: string;
 	state?: string;
-	classification: "progressing_normal" | "progressing_late" | "stalled" | "terminal" | "unknown";
+	classification: "progressing_normal" | "progressing_late" | "stalled" | "terminal" | "inconsistent_finalizing_without_terminal" | "unknown";
 	progressPhase?: string;
 	startedAt?: string;
 	lastObservedAt?: string;
+	nudgeCount?: number;
+	rawNudgeCount?: number;
+	lastNudgeAt?: string;
+	lastActivityAt?: string;
+	nudgeQuietPeriodMs?: number;
 	completionStatus?: string;
 	outputKind?: string;
 	usableForSynthesis?: boolean;
@@ -299,6 +304,8 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const resultByLane = latestByLane(reload.entries, "task_result");
 		const failedByLane = latestByLane(reload.entries, "task_failed");
 		const contextByLane = latestByLane(reload.entries, "agent_task_context");
+		const progressByLane = latestByLane(reload.entries, "agent_task_progress");
+		const childSessionByLane = latestByLane(reload.entries, "agent_task_child_session");
 		// Some lanes reach a terminal state via lane_lifecycle alone (e.g. reviewer
 		// execution bridge writes only lane_lifecycle=invocation_failed without a
 		// task_failed companion). Pick the latest terminal lifecycle per lane so the
@@ -320,11 +327,13 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const synthesisEntries = reload.entries.filter((entry) => entry.evidenceClass === "workflow_synthesis_result");
 		const latestSynthesisEntry = synthesisEntries[synthesisEntries.length - 1];
 		const synthesisAlreadyRecorded = latestSynthesisEntry !== undefined;
-		const laneIds = new Set<string>([...contextByLane.keys(), ...resultByLane.keys(), ...failedByLane.keys(), ...terminalLifecycleByLane.keys()]);
+		const laneIds = new Set<string>([...contextByLane.keys(), ...resultByLane.keys(), ...failedByLane.keys(), ...terminalLifecycleByLane.keys(), ...progressByLane.keys(), ...childSessionByLane.keys()]);
 		const rows: UiRow[] = [...laneIds].map((laneId) => {
 			const result = resultByLane.get(laneId)?.record;
 			const failed = failedByLane.get(laneId)?.record;
 			const context = contextByLane.get(laneId)?.record;
+			const progress = progressByLane.get(laneId)?.record;
+			const childSession = childSessionByLane.get(laneId)?.record;
 			const lifecycle = terminalLifecycleByLane.get(laneId)?.record;
 			const lifecycleState = typeof lifecycle?.state === "string" ? lifecycle.state : undefined;
 			// A lane is terminal-without-success when lifecycle reports a non-complete
@@ -342,9 +351,28 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 						: "running";
 			const isTerminal = result !== undefined || failed !== undefined || lifecycleTerminalFailureOnly;
 			const isFailedLike = failed !== undefined || lifecycleTerminalFailureOnly;
+			const rawNudgeCount = typeof childSession?.nudge_count === "number" && Number.isFinite(childSession.nudge_count) ? childSession.nudge_count : undefined;
+			const lastNudgeAt = getString(childSession ?? {}, "last_nudge_at");
+			const lastNudgeAtMs = observedTime(lastNudgeAt);
+			const progressObservedAt = getString(progress ?? {}, "observed_at");
+			const progressAtMs = observedTime(progressObservedAt);
+			const effectiveNudgeCount = rawNudgeCount === undefined
+				? undefined
+				: progressAtMs > 0 && lastNudgeAtMs > 0 && progressAtMs > lastNudgeAtMs
+					? 0
+					: rawNudgeCount;
+			const childCreatedAt = getString(childSession ?? {}, "created_at");
+			const activityMs = Math.max(observedTime(childCreatedAt), lastNudgeAtMs, progressAtMs);
+			const lastActivityAt = activityMs > 0 ? new Date(activityMs).toISOString() : getString(childSession ?? {}, "last_activity_at");
+			const nudgeQuietPeriodMs = typeof childSession?.nudge_quiet_period_ms === "number" && Number.isFinite(childSession.nudge_quiet_period_ms) ? childSession.nudge_quiet_period_ms : undefined;
 			const actions = isFailedLike
 				? ["/flowdesk-status", "/flowdesk-retry", "/flowdesk-resume", "/flowdesk-abort", "/flowdesk-export-debug"]
 				: ["/flowdesk-status", "/flowdesk-export-debug"];
+			const progressPhase = result !== undefined
+				? "finalizing"
+				: isFailedLike
+					? "failed"
+					: getString(progress ?? {}, "phase") ?? "waiting";
 			return {
 				workflowId: input.workflowId,
 				laneId,
@@ -352,9 +380,14 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				...(parentSessionRef === undefined ? {} : { parentSessionRef }),
 				state,
 				classification: isTerminal ? "terminal" : "progressing_normal",
-				progressPhase: result !== undefined ? "finalizing" : isFailedLike ? "failed" : "waiting",
+				progressPhase,
 				...(getString(context ?? {}, "created_at") === undefined ? {} : { startedAt: getString(context ?? {}, "created_at") }),
-				lastObservedAt: getString(result ?? failed ?? lifecycle ?? context ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? context ?? {}, "created_at") ?? observedAt,
+				lastObservedAt: getString(result ?? failed ?? lifecycle ?? progress ?? context ?? childSession ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? progress ?? context ?? childSession ?? {}, "created_at") ?? getString(progress ?? {}, "observed_at") ?? observedAt,
+				...(effectiveNudgeCount === undefined ? {} : { nudgeCount: effectiveNudgeCount }),
+				...(rawNudgeCount === undefined || rawNudgeCount === effectiveNudgeCount ? {} : { rawNudgeCount }),
+				...(lastNudgeAt === undefined ? {} : { lastNudgeAt }),
+				...(lastActivityAt === undefined ? {} : { lastActivityAt }),
+				...(nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs }),
 				...(getString(result ?? {}, "completion_status") === undefined ? {} : { completionStatus: getString(result ?? {}, "completion_status") }),
 				...(getString(result ?? {}, "output_kind") === undefined ? {} : { outputKind: getString(result ?? {}, "output_kind") }),
 				...(typeof result?.usable_for_synthesis === "boolean" ? { usableForSynthesis: result.usable_for_synthesis } : {}),

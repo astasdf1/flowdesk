@@ -616,6 +616,65 @@ test("status live suppresses synthesis-ready next action after synthesis evidenc
 	}
 });
 
+test("status live reports effective nudge count and last activity from progress", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-nudge-effective-"));
+	try {
+		const workflowId = "workflow-status-nudge-1";
+		const laneId = "lane-status-nudge-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-status-nudge-1", runningLifecycle(workflowId, laneId, "attempt-status-nudge-1"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-status-nudge-1", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-status-nudge-1",
+			child_session_id: "child-status-nudge-1",
+			parent_session_ref: "ses-status-parent-1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 2,
+			last_nudge_at: "2026-05-27T00:00:40.000Z",
+			nudge_quiet_period_ms: 45_000,
+			last_activity_at: "2026-05-27T00:00:40.000Z",
+			created_at: "2026-05-27T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-status-nudge-waiting", {
+			schema_version: "flowdesk.agent_task_progress.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-status-nudge-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			progress_seq: 4,
+			observed_at: "2026-05-27T00:00:55.000Z",
+			phase: "waiting",
+			progress_label: "agent task message.updated event observed",
+			progress_ref: "progress-lane-status-nudge-1-4",
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:01:00.000Z"),
+		});
+
+		const card = result.workflows[0].laneProgressCards?.[0];
+		assert.equal(card?.nudgeCount, 0);
+		assert.equal(card?.rawNudgeCount, 2);
+		assert.equal(card?.lastNudgeAt, "2026-05-27T00:00:40.000Z");
+		assert.equal(card?.lastActivityAt, "2026-05-27T00:00:55.000Z");
+		assert.equal(card?.nudgeQuietPeriodMs, 45_000);
+		const row = result.workflows[0].subtaskActivityRows?.[0];
+		assert.equal(row?.nudgeCount, 0);
+		assert.equal(row?.rawNudgeCount, 2);
+		assert.equal(row?.lastActivityAt, "2026-05-27T00:00:55.000Z");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 function writeStatusRecord(
 	rootDir: string,
 	workflowId: string,

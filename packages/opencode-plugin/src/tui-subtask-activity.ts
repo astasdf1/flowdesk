@@ -19,8 +19,18 @@ export interface FlowDeskTuiSubtaskActivityRowV1 {
 	progressPhase?: string;
 	startedAt?: string;
 	lastObservedAt?: string;
+	nudgeCount?: number;
+	rawNudgeCount?: number;
+	lastNudgeAt?: string;
+	lastActivityAt?: string;
+	nudgeQuietPeriodMs?: number;
 	taskSummary?: string;
 	recoveryActionRefs: readonly string[];
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+	const value = record[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export interface FlowDeskTuiSubtaskActivityViewV1 {
@@ -135,6 +145,11 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		...(stringField(record, "progressPhase") === undefined ? {} : { progressPhase: stringField(record, "progressPhase") }),
 		...(stringField(record, "startedAt") === undefined ? {} : { startedAt: stringField(record, "startedAt") }),
 		...(stringField(record, "lastObservedAt") === undefined ? {} : { lastObservedAt: stringField(record, "lastObservedAt") }),
+		...(numberField(record, "nudgeCount") === undefined ? {} : { nudgeCount: numberField(record, "nudgeCount") }),
+		...(numberField(record, "rawNudgeCount") === undefined ? {} : { rawNudgeCount: numberField(record, "rawNudgeCount") }),
+		...(stringField(record, "lastNudgeAt") === undefined ? {} : { lastNudgeAt: stringField(record, "lastNudgeAt") }),
+		...(stringField(record, "lastActivityAt") === undefined ? {} : { lastActivityAt: stringField(record, "lastActivityAt") }),
+		...(numberField(record, "nudgeQuietPeriodMs") === undefined ? {} : { nudgeQuietPeriodMs: numberField(record, "nudgeQuietPeriodMs") }),
 		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 20) }),
 		recoveryActionRefs,
 	};
@@ -341,7 +356,8 @@ export function formatFlowDeskTuiSubtaskActivityCompactLines(
 	const lines = [view.status === "stale" ? "Subtasks (stale):" : "Subtasks:"];
 	const orderedRows = sortedRows(view.rows);
 	for (const row of orderedRows.slice(0, Math.max(1, limit))) {
-		lines.push(`${displayState(row)} ${shortStartTime(row)} ${shortTaskLabel(row)}`);
+		const nudgeSuffix = row.nudgeCount === undefined || row.nudgeCount <= 0 ? "" : ` n${row.nudgeCount}`;
+		lines.push(`${displayState(row)} ${shortStartTime(row)} ${shortTaskLabel(row)}${nudgeSuffix}`);
 	}
 	return lines;
 }

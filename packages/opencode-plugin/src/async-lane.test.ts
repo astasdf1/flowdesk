@@ -59,6 +59,8 @@ test("asyncMode returns task_launched immediately after lane launch", async () =
 		assert.equal((childEvidence?.record as Record<string, unknown>).schema_version, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION);
 		assert.equal((childEvidence?.record as Record<string, unknown>).lane_id, "lane-async-1");
 		assert.equal((childEvidence?.record as Record<string, unknown>).nudge_count, 0);
+		assert.equal((childEvidence?.record as Record<string, unknown>).nudge_quiet_period_ms, 10_000);
+		assert.equal((childEvidence?.record as Record<string, unknown>).last_activity_at, (childEvidence?.record as Record<string, unknown>).created_at);
 		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(subtaskCache.schema_version, "flowdesk.subtask_activity_sidebar_cache.v1");
 		const rows = subtaskCache.rows as Array<Record<string, unknown>>;
@@ -66,6 +68,51 @@ test("asyncMode returns task_launched immediately after lane launch", async () =
 		assert.equal(rows[0]?.laneId, "lane-async-1");
 		assert.equal(rows[0]?.state, "running");
 		assert.equal(rows[0]?.classification, "progressing_normal");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("async watchdog uses persisted custom nudge quiet period", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-async-nudge-period-"));
+	try {
+		let promptCalls = 0;
+		const client = makeClient({
+			promptAsync: async () => { promptCalls++; return {}; },
+			prompt: async () => { promptCalls++; return {}; },
+			messages: async () => [],
+		});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-async-nudge-period-1",
+			taskId: "task-async-nudge-period-1",
+			laneId: "lane-async-nudge-period-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "hello",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: true,
+			_nudgeQuietPeriodMs: 60_000,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const first = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-async-nudge-period-1" });
+		const child = first.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.equal(child?.nudge_quiet_period_ms, 60_000);
+		const createdAt = String(child?.created_at);
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-async-nudge-period-1",
+			client,
+			now: new Date(Date.parse(createdAt) + 20_000),
+			maxNudges: 2,
+			abortThresholdMs: 100_000,
+		});
+
+		assert.equal(monResult.lanesNudged, 0);
+		assert.equal(promptCalls, 1, "watchdog should not nudge before persisted custom quiet period");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

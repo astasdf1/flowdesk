@@ -106,6 +106,10 @@ import {
 	type FlowDeskAutoContinuePreviewToolConfigV1,
 } from "./auto-continue-preview-tool.js";
 import {
+	executeFlowDeskAutoContinueExecutionToolV1,
+	type FlowDeskAutoContinueExecutionToolConfigV1,
+} from "./auto-continue-execution-tool.js";
+import {
 	executeFlowDeskControlledWriteApplyToolV1,
 	type FlowDeskControlledWriteApplyToolConfigV1,
 } from "./controlled-write-tool.js";
@@ -210,6 +214,8 @@ export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
 export const flowdeskWorkflowSynthesisPreviewToolName = "flowdesk_workflow_synthesis_preview" as const;
 export const flowdeskAutoContinuePreviewToolName = "flowdesk_auto_continue_preview" as const;
+export const flowdeskAutoContinueExecutionOption = "autoContinueExecution" as const;
+export const flowdeskAutoContinueExecutionToolName = "flowdesk_auto_continue_execute" as const;
 export const flowdeskUiProbeToolName = "flowdesk_ui_probe" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
@@ -3819,6 +3825,16 @@ function workflowDispatchToolConfigFromOptions(input: unknown, options?: PluginO
 	return client === undefined ? undefined : { rootDir, client };
 }
 
+function autoContinueExecutionToolConfigFromOptions(input: unknown, options?: PluginOptions): FlowDeskAutoContinueExecutionToolConfigV1 | undefined {
+	const value = options?.[flowdeskAutoContinueExecutionOption];
+	if (!isRecord(value) || value.enabled !== true || value.devBetaActualLaneLaunch !== true) return undefined;
+	const explicitRoot = typeof value.rootDir === "string" && value.rootDir.trim().length > 0 ? value.rootDir : undefined;
+	const rootDir = explicitRoot ?? durableStateRootFromOptions(options);
+	if (rootDir === undefined) return undefined;
+	const client = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+	return client === undefined ? undefined : { rootDir, client };
+}
+
 function controlledWriteApplyConfigFromOptions(
 	input: unknown,
 	options?: PluginOptions,
@@ -3989,6 +4005,41 @@ export function createFlowDeskAutoContinuePreviewOptInTools(
 						maxSteps: typeof input.maxSteps === "number" ? input.maxSteps : undefined,
 					},
 				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
+export function createFlowDeskAutoContinueExecutionOptInTools(
+	config: FlowDeskAutoContinueExecutionToolConfigV1,
+): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskAutoContinueExecutionToolName]: tool({
+			description: [
+				"Execute exactly one explicit opt-in auto-continue step by reloading durable FlowDesk workflow_dispatch_plan evidence, selecting the first pending durable plan task, and requiring the executable payload taskId to match it.",
+				"WHEN TO USE: only when the user explicitly asks to continue one pending durable FlowDesk plan task and acknowledges this makes a provider/runtime call and actual lane launch in dev mode.",
+				"WHEN NOT TO USE: preview-only requests, default Release 1 workflows, fallback/reselection/provider switching, controlled write/apply, ordinary chat, status, usage, or multi-step automatic execution.",
+				"INVOKE WITH: workflowId, parentSessionId, one task payload with taskId, promptText, agentName, providerQualifiedModelId, optional outputContractRef=contract-task-result-v1, and developerModeAcknowledged=true, allowProviderCall=true, allowActualLaneLaunch=true, allowAutoContinueExecution=true.",
+				"AFTER CALLING: surface summaryForUser, ids, pending/completed counts, safeNextActions, and authority. Never claim default dispatch authority, fallback authority, write authority, hard chat cancellation, or multi-step continuation.",
+			].join(" "),
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id with durable workflow_dispatch_plan evidence."),
+				parentSessionId: tool.schema.string().describe("Existing OpenCode parent session id. Required; no unrelated silent parent session is created."),
+				task: tool.schema.object({
+					taskId: tool.schema.string().describe("Must match the first pending task id from durable workflow_dispatch_plan evidence."),
+					promptText: tool.schema.string().describe("Explicit bounded prompt text for this one launched lane."),
+					agentName: tool.schema.string().describe("OpenCode agent name or agent-* ref for the lane."),
+					providerQualifiedModelId: tool.schema.string().describe("Concrete provider/model id such as openai/gpt-5.5."),
+					outputContractRef: tool.schema.string().optional().describe("Optional; only contract-task-result-v1 is supported in this pass."),
+				}),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev-mode beta lane launch."),
+				allowProviderCall: tool.schema.boolean().describe("Must be true to allow the provider call for this one lane."),
+				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual one-lane runtime launch."),
+				allowAutoContinueExecution: tool.schema.boolean().describe("Must be true to opt into this single auto-continue execution step."),
+			},
+			async execute(input) {
+				const result = await executeFlowDeskAutoContinueExecutionToolV1({ config, rawInput: input });
 				return JSON.stringify(result);
 			},
 		}),
@@ -4938,6 +4989,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		Object.assign(
 			tools,
 			createFlowDeskWorkflowDispatchOptInTools(workflowDispatchConfig),
+		);
+	const autoContinueExecutionConfig = autoContinueExecutionToolConfigFromOptions(input, options);
+	if (autoContinueExecutionConfig !== undefined)
+		Object.assign(
+			tools,
+			createFlowDeskAutoContinueExecutionOptInTools(autoContinueExecutionConfig),
 		);
 	const controlledWriteApplyConfig = controlledWriteApplyConfigFromOptions(input, options);
 	if (controlledWriteApplyConfig !== undefined)

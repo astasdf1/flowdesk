@@ -1466,6 +1466,9 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 	try {
 		const workflowIds = listWatchdogWorkflowIds(input.rootDir);
 		const now = input.now ?? new Date();
+		const nudgeQuietPeriodMs = typeof input._nudgeQuietPeriodMs === "number" && input._nudgeQuietPeriodMs > 0
+			? Math.floor(input._nudgeQuietPeriodMs)
+			: undefined;
 
 		for (const workflowId of workflowIds) {
 			// Monitor async-mode child sessions (nudge + abort + result collection)
@@ -1476,6 +1479,7 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 						workflowId,
 						client: input.client,
 						now,
+						...(nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs }),
 					});
 				} catch { /* best-effort, must not crash watchdog */ }
 			}
@@ -1951,7 +1955,9 @@ export async function monitorChildSessionsV1(input: {
 	_forceTaskResultWriteFailureForTest?: boolean;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
-	const nudgeQuietPeriodMs = input.nudgeQuietPeriodMs ?? 10_000;
+	const nudgeQuietPeriodMs = typeof input.nudgeQuietPeriodMs === "number" && input.nudgeQuietPeriodMs > 0
+		? Math.floor(input.nudgeQuietPeriodMs)
+		: 10_000;
 	const maxNudges = input.maxNudges ?? 2;
 	const abortThresholdMs = input.abortThresholdMs ?? 30_000;
 	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
@@ -2026,6 +2032,12 @@ export async function monitorChildSessionsV1(input: {
 
 		result.lanesPolled++;
 		const createdAtMs = typeof record.created_at === "string" ? Date.parse(record.created_at) : nowMs;
+		const recordQuietPeriodMs = typeof record.nudge_quiet_period_ms === "number" && record.nudge_quiet_period_ms > 0
+			? Math.floor(record.nudge_quiet_period_ms)
+			: undefined;
+		const laneNudgeQuietPeriodMs = typeof input.nudgeQuietPeriodMs === "number" && input.nudgeQuietPeriodMs > 0
+			? nudgeQuietPeriodMs
+			: (recordQuietPeriodMs ?? nudgeQuietPeriodMs);
 		const recordedNudgeCount = typeof record.nudge_count === "number" ? record.nudge_count : 0;
 		const lastNudgeAtMs = typeof record.last_nudge_at === "string" ? Date.parse(record.last_nudge_at) : createdAtMs;
 		const latestProgress = latestProgressByLane.get(laneId);
@@ -2265,7 +2277,7 @@ export async function monitorChildSessionsV1(input: {
 			}
 
 		// 3. Nudge if silence threshold exceeded
-		if (silenceMs >= nudgeQuietPeriodMs && nudgeCount < maxNudges) {
+		if (silenceMs >= laneNudgeQuietPeriodMs && nudgeCount < maxNudges) {
 			await sendWatchdogNudge(input.client, childSessionId);
 			result.lanesNudged++;
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
@@ -2292,6 +2304,8 @@ export async function monitorChildSessionsV1(input: {
 				...record,
 				nudge_count: nudgeCount + 1,
 				last_nudge_at: new Date(nowMs).toISOString(),
+				last_activity_at: new Date(lastActivityMs).toISOString(),
+				nudge_quiet_period_ms: laneNudgeQuietPeriodMs,
 			});
 		}
 	}

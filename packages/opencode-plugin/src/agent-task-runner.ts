@@ -879,6 +879,9 @@ export async function executeFlowDeskAgentTaskV1(
 	// ── Async mode: return immediately, watchdog handles polling/nudging/abort ──
 	if (input.asyncMode === true) {
 		const resolvedChildId = childSessionId ?? "";
+		const nudgeQuietPeriodMs = typeof input._nudgeQuietPeriodMs === "number" && input._nudgeQuietPeriodMs > 0
+			? Math.floor(input._nudgeQuietPeriodMs)
+			: 10_000;
 		// Write child session evidence so watchdog can find it
 		writeSessionEvidence({
 			rootDir: input.rootDir,
@@ -895,6 +898,8 @@ export async function executeFlowDeskAgentTaskV1(
 				agent_ref: input.agentRef,
 				nudge_count: 0,
 				last_nudge_at: null,
+				nudge_quiet_period_ms: nudgeQuietPeriodMs,
+				last_activity_at: observedAt,
 				created_at: observedAt,
 				dispatch_authority_enabled: false,
 			} as unknown as Record<string, unknown>,
