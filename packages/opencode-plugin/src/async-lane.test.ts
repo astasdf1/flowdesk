@@ -684,8 +684,8 @@ test("monitorChildSessions does not write finalizing progress when task_result p
 	}
 });
 
-test("monitorChildSessions sends noReply nudge after quiet period", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-nudge-"));
+test("V11.4: monitorChildSessions does NOT send a silence-based nudge (nudge branch removed)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-no-nudge-"));
 	try {
 		const nudged: unknown[] = [];
 		const client = makeClient({
@@ -707,9 +707,10 @@ test("monitorChildSessions sends noReply nudge after quiet period", async () => 
 			_messagesTimeoutMs: 100,
 		});
 
-		// Simulate 25 seconds of silence. Isolate the legacy raw noReply nudge
-		// path: enable the raw-nudge capability gate and disable idle
-		// continuation injection (which is the new default recovery).
+		// 25s of silence — past the old 20s nudge quiet period but below the 30s
+		// abort threshold. V11.4 removed the silence-based nudge branch, so even
+		// with allowRawPromptNoReplyNudge=true no nudge is sent and the lane is
+		// not yet aborted. (Even if it were sent, it was a no-op by default.)
 		const futureNow = new Date(Date.now() + 25_000);
 		const monResult = await monitorChildSessionsV1({
 			rootDir: root,
@@ -717,15 +718,15 @@ test("monitorChildSessions sends noReply nudge after quiet period", async () => 
 			client,
 			now: futureNow,
 			nudgeQuietPeriodMs: 20_000,
+			abortThresholdMs: 30_000,
 			allowRawPromptNoReplyNudge: true,
 			maxIdleContinuations: 0,
 		});
 
-		assert.equal(monResult.lanesNudged, 1);
-		// noReply must appear in at least one prompt call (watchdog nudge)
-		assert.ok(nudged.length > 0);
+		assert.equal(monResult.lanesNudged, 0, "V11.4: no silence-based nudge");
+		assert.equal(monResult.lanesAborted, 0, "below abort threshold");
 		const hasNoReplyNudge = nudged.some(n => (n as Record<string, unknown>).noReply === true);
-		assert.ok(hasNoReplyNudge, "at least one prompt call must use noReply: true");
+		assert.equal(hasNoReplyNudge, false, "no noReply nudge prompt may be sent");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -796,7 +797,7 @@ test("monitorChildSessions suspends nudge and abort while awaiting permission", 
 	}
 });
 
-test("monitorChildSessions aborts lane after exhausting nudges and abort threshold", async () => {
+test("monitorChildSessions aborts a stuck lane once silence exceeds the abort threshold (V11.4: no nudge budget required)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-abort-"));
 	try {
 		const aborted: unknown[] = [];

@@ -1581,9 +1581,6 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 // Child session monitor (async-mode lanes)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AGENT_TASK_NUDGE_TEXT_WATCHDOG =
-	"Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
-
 /**
  * Idle-confirmed continuation prompt. Injected into the SAME child session once
  * when the lane has gone idle WITHOUT any captured assistant text. Unlike the
@@ -1742,33 +1739,6 @@ async function pollChildSessionIdleConfirmedOutput(
 		};
 	} catch {
 		return null;
-	}
-}
-
-/** Send a noReply nudge to a child session — best effort with hard timeout. */
-async function sendWatchdogNudge(
-	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
-	childSessionId: string,
-	allowRawPromptNoReplyNudge: boolean,
-	timeoutMs = 5_000,
-): Promise<"sent" | "timeout" | "skipped"> {
-	if (!allowRawPromptNoReplyNudge) return "skipped";
-	const promptFn = client.session.promptAsync ?? client.session.prompt;
-	if (promptFn === undefined) return "skipped";
-	try {
-		await Promise.race([
-			(promptFn as (o: unknown) => unknown).call(client.session, {
-				sessionID: childSessionId,
-				noReply: true,
-				parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT_WATCHDOG }],
-			}),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error("nudge timeout")), timeoutMs),
-			),
-		]);
-		return "sent";
-	} catch {
-		return "timeout";
 	}
 }
 
@@ -2228,7 +2198,6 @@ export async function monitorChildSessionsV1(input: {
 	const nudgeQuietPeriodMs = typeof input.nudgeQuietPeriodMs === "number" && input.nudgeQuietPeriodMs > 0
 		? Math.floor(input.nudgeQuietPeriodMs)
 		: 10_000;
-	const maxNudges = input.maxNudges ?? 2;
 	const abortThresholdMs = input.abortThresholdMs ?? 30_000;
 	const idleSettleMs = typeof input.idleSettleMs === "number" && input.idleSettleMs > 0
 		? Math.floor(input.idleSettleMs)
@@ -2477,6 +2446,15 @@ export async function monitorChildSessionsV1(input: {
 			}
 			const idleObservation = await pollChildSessionIdleConfirmedOutput(input.client, childSessionId);
 			if (idleObservation !== null && idleObservation.hasRunningTool === false && idleObservation.text !== undefined && idleObservation.text.trim().length > 0) {
+				// V11.4 race fix: re-check terminal evidence AFTER the poll await.
+				// The event-awakened poke (V11.3) and the setInterval cycle can both
+				// pass the pre-poll check, then interleave across the `await` above and
+				// each write a duplicate task_result. Re-checking right before the
+				// write ensures the SECOND writer observes the first capture and skips,
+				// so the result is written exactly once (not "written twice, one wins").
+				if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+					continue;
+				}
 				const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 				const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
@@ -2846,12 +2824,16 @@ export async function monitorChildSessionsV1(input: {
 			}
 		}
 
-		// 2. Abort threshold exceeded. Recovery attempts (legacy nudges and idle
-		// continuation injections) must not permanently block abort: a lane is
-		// abort-eligible once it has been silent past the abort threshold AND
-		// either the nudge budget OR the idle-continuation budget is exhausted.
+		// 2. Abort threshold exceeded.
+		// V11.4: the silence-based nudge branch was removed (it was a default-noop,
+		// silence-heuristic predecessor of the event-based idle continuation). Abort
+		// no longer depends on a "nudge budget" — a stuck lane is abort-eligible once
+		// it has been silent past the abort threshold with no running/unknown tool.
+		// When idle continuation is OPTED IN, give it a chance first: only abort once
+		// the continuation budget is exhausted. When continuation is OFF (default),
+		// there is no recovery precondition and silence+tool-gate alone governs abort.
 		const idleContinuationCountForAbort = typeof record.idle_continuation_count === "number" ? record.idle_continuation_count : 0;
-		const recoveryBudgetExhausted = nudgeCount >= maxNudges || (maxIdleContinuations > 0 && idleContinuationCountForAbort >= maxIdleContinuations);
+		const continuationBudgetPending = maxIdleContinuations > 0 && idleContinuationCountForAbort < maxIdleContinuations;
 		// V11.2 Slice 1 — event-based termination gating.
 		//  - NEVER abort while a tool is genuinely running (toolRunningNow): protects
 		//    long single tool calls / long reasoning that emit no mid events.
@@ -2866,7 +2848,7 @@ export async function monitorChildSessionsV1(input: {
 		// staleToolMs, so the total open age must exceed staleToolMs + unknownStateMaxMs.
 		const unknownForceTerminate = toolStateUnknown && unknownDwellMs >= staleToolMs + unknownStateMaxMs;
 		const laneAgeForceTerminate = totalAgeMs >= absoluteLaneAgeMs && !toolRunningNow;
-		const normalAbortEligible = silenceMs >= abortThresholdMs && recoveryBudgetExhausted && !toolRunningNow && !toolStateUnknown;
+		const normalAbortEligible = silenceMs >= abortThresholdMs && !continuationBudgetPending && !toolRunningNow && !toolStateUnknown;
 		if (normalAbortEligible || unknownForceTerminate || laneAgeForceTerminate) {
 			await abortChildSession(input.client, childSessionId);
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
@@ -2982,42 +2964,10 @@ export async function monitorChildSessionsV1(input: {
 				continue;
 			}
 
-		// 3. Nudge if silence threshold exceeded
-		if (silenceMs >= laneNudgeQuietPeriodMs && nudgeCount < maxNudges) {
-			const nudgeDeliveryStatus = await sendWatchdogNudge(
-				input.client,
-				childSessionId,
-				input.allowRawPromptNoReplyNudge === true,
-			);
-			result.lanesNudged++;
-			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
-			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
-			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
-			const nudgedAt = new Date(nowMs).toISOString();
-			writeAgentTaskProgressEvidence({
-				rootDir: input.rootDir,
-				workflowId: input.workflowId,
-				laneId,
-				taskId,
-				agentRef,
-				providerQualifiedModelId: modelId,
-				phase: "nudged",
-				progressSeq: 2 + nudgeCount,
-				progressLabel: nudgeDeliveryStatus === "sent"
-					? "async agent task watchdog nudge sent after quiet period"
-					: "async agent task nudge attempt recorded after quiet period; provider-side nudge skipped",
-				observedAt: nudgedAt,
-			});
-			// Update nudge_count in evidence (overwrite record)
-			writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, {
-				...recordForWrites,
-				nudge_count: nudgeCount + 1,
-				last_nudge_at: new Date(nowMs).toISOString(),
-				last_activity_at: new Date(lastActivityMs).toISOString(),
-				nudge_quiet_period_ms: laneNudgeQuietPeriodMs,
-				last_nudge_delivery_status: nudgeDeliveryStatus,
-			});
-		}
+		// V11.4: the silence-based nudge branch was removed. A stuck lane now
+		// terminates via the silence+tool-gate abort above (branch 2) or the
+		// G1/G2 force-terminators; "waking" an idle child is the job of the
+		// event-gated, opt-in idle continuation (branch 1c), not a silence nudge.
 	}
 
 	// Invariant: terminal/failure lanes observed during this cycle MUST cause a

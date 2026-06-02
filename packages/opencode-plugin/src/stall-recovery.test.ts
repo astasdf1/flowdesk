@@ -1411,17 +1411,17 @@ test("single session.idle event does not inject continuation while a tool is run
 	}
 });
 
-test("watchdog records quiet-lane nudge evidence without raw prompt/noReply by default", async () => {
-	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-evidence-only-nudge-"));
+test("V11.4: silence-based nudge branch removed — a quiet lane is NOT nudged before abort threshold", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-no-nudge-"));
 	try {
-		const workflowId = "workflow-watchdog-evidence-only-nudge";
-		const laneId = "lane-watchdog-evidence-only-nudge";
-		const taskId = "task-watchdog-evidence-only-nudge";
+		const workflowId = "workflow-watchdog-no-nudge";
+		const laneId = "lane-watchdog-no-nudge";
+		const taskId = "task-watchdog-no-nudge";
 		writeAgentTaskChildSession(rootDir, {
 			workflowId,
 			laneId,
 			taskId,
-			childSessionId: "ses-child-evidence-only-nudge",
+			childSessionId: "ses-child-no-nudge",
 			createdAt: "2026-05-26T10:00:00.000Z",
 			nudgeCount: 0,
 			lastNudgeAt: null,
@@ -1435,20 +1435,22 @@ test("watchdog records quiet-lane nudge evidence without raw prompt/noReply by d
 				created_at: "2026-05-26T10:00:00.000Z",
 				updated_at: "2026-05-26T10:00:00.000Z",
 			}),
-			"lifecycle-evidence-only-nudge-running",
+			"lifecycle-no-nudge-running",
 		);
 
 		let promptCalls = 0;
 		let promptAsyncCalls = 0;
 		let abortCalls = 0;
+		// 15s silence: past the old 10s nudge quiet period but below the 30s abort
+		// threshold. V11.4 removed the nudge branch, so the lane is neither nudged
+		// nor aborted yet — it simply stays running until the silence+tool-gate
+		// abort (30s) or a real event.
 		const result = await monitorChildSessionsV1({
 			rootDir,
 			workflowId,
 			now: new Date("2026-05-26T10:00:15.000Z"),
 			nudgeQuietPeriodMs: 10_000,
 			abortThresholdMs: 30_000,
-			// Disable idle continuation so this test isolates the legacy
-			// evidence-only noReply nudge path.
 			maxIdleContinuations: 0,
 			client: {
 				session: {
@@ -1461,28 +1463,118 @@ test("watchdog records quiet-lane nudge evidence without raw prompt/noReply by d
 		});
 
 		assert.equal(result.lanesPolled, 1);
-		assert.equal(result.lanesNudged, 1);
-		assert.equal(result.lanesAborted, 0);
+		assert.equal(result.lanesNudged, 0, "V11.4: no silence-based nudge");
+		assert.equal(result.lanesAborted, 0, "below abort threshold");
 		assert.equal(promptCalls, 0);
 		assert.equal(promptAsyncCalls, 0);
 		assert.equal(abortCalls, 0);
 
 		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
 		assert.equal(reload.ok, true);
-		const child = reload.entries.find((entry) => entry.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
-		assert.equal(child?.nudge_count, 1);
-		assert.equal(child?.last_nudge_at, "2026-05-26T10:00:15.000Z");
-		assert.equal(child?.last_nudge_delivery_status, "skipped");
+		// No nudged-phase progress evidence is written anymore.
 		assert.equal(
 			reload.entries.some((entry) => {
 				const record = entry.record as Record<string, unknown>;
 				return entry.evidenceClass === "agent_task_progress" &&
 					record.lane_id === laneId &&
-					record.phase === "nudged" &&
-					record.progress_label === "async agent task nudge attempt recorded after quiet period; provider-side nudge skipped";
+					record.phase === "nudged";
 			}),
-			true,
+			false,
+			"no nudged-phase evidence after V11.4 nudge removal",
 		);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.4: stuck lane aborts at silence>=abortThreshold via silence+tool-gate (NOT only at G2 lane-age)", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v114-silence-abort-"));
+	try {
+		const workflowId = "workflow-v114-silence-abort";
+		const laneId = "lane-v114-silence-abort";
+		const taskId = "task-v114-silence-abort";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v114-silence-abort",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0, lastNudgeAt: null,
+		}, "agent-task-child-session-v114-silence-abort");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId, lane_id: laneId, state: "running",
+			created_at: "2026-05-26T10:00:00.000Z", updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-v114-silence-abort-running");
+		// No tool events (not running, not unknown), no body. continuation OFF.
+
+		let abortCalls = 0;
+		const client = {
+			session: {
+				messages: async () => ({ messages: [] }),
+				prompt: async () => ({}),
+				promptAsync: async () => ({}),
+				abort: async () => { abortCalls += 1; return {}; },
+			},
+		} as never;
+
+		// At 29s silence: below abort threshold → still running, no abort.
+		const before = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:29.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			client,
+		});
+		assert.equal(before.lanesAborted, 0, "below 30s abort threshold");
+		assert.equal(abortCalls, 0);
+
+		// At 31s silence: abort fires immediately (NOT waiting for 600s G2), with
+		// no nudge budget involved (V11.4 removed nudge).
+		const after = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:31.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			client,
+		});
+		assert.equal(after.lanesAborted, 1, "stuck lane aborts at silence>=30s without nudge budget");
+		assert.equal(after.lanesNudged, 0, "no nudge");
+		assert.equal(abortCalls, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.4 migration: stale nudge_count from old code does not change silence-based abort timing", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v114-migration-"));
+	try {
+		const workflowId = "workflow-v114-migration";
+		const laneId = "lane-v114-migration";
+		const taskId = "task-v114-migration";
+		// Old-code record with nudge_count already at 2, but only 5s of silence.
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v114-migration",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 2, lastNudgeAt: "2026-05-26T10:00:20.000Z",
+		}, "agent-task-child-session-v114-migration");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId, lane_id: laneId, state: "running",
+			created_at: "2026-05-26T10:00:00.000Z", updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-v114-migration-running");
+		// Fresh meaningful progress at 10:00:25 → only ~5s of silence at observe time.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:25.000Z",
+			progressLabel: "agent task message part event observed",
+		}, "agent-task-progress-v114-migration-activity");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:30.000Z"), // 5s since last activity
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			client: { session: { messages: async () => ({ messages: [] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => { abortCalls += 1; return {}; } } } as never,
+		});
+		// Stale nudge_count=2 must NOT trigger abort; only silence>=30s would.
+		assert.equal(result.lanesAborted, 0, "stale nudge_count must not abort a recently-active lane");
+		assert.equal(abortCalls, 0);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
