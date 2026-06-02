@@ -182,6 +182,18 @@ export type ArtifactDispositionV1 = (typeof ARTIFACT_DISPOSITIONS)[number];
 export const RESUME_MODES = ["resume", "retry", "abort_only", "status_only"] as const;
 export type ResumeModeV1 = (typeof RESUME_MODES)[number];
 
+export const DOCTOR_CHECK_SCOPES = ["install", "runtime", "policy", "usage", "provider_health", "conformance", "all"] as const;
+export type DoctorCheckScopeV1 = (typeof DOCTOR_CHECK_SCOPES)[number];
+
+export const DOCTOR_PROFILES = ["production", "development", "test"] as const;
+export type DoctorProfileV1 = (typeof DOCTOR_PROFILES)[number];
+
+export const STATUS_DETAIL_LEVELS = ["summary", "diagnostic", "debug_refs", "lane_refs"] as const;
+export type StatusDetailLevelV1 = (typeof STATUS_DETAIL_LEVELS)[number];
+
+export const RETENTION_HINTS = ["delete_after_export", "keep_until_default_expiry", "keep_until_policy_expiry"] as const;
+export type RetentionHintV1 = (typeof RETENTION_HINTS)[number];
+
 export const LOCK_RECOVERY_STATES = ["active", "stale_recoverable", "conflicted", "corrupt"] as const;
 export type LockRecoveryV1 = (typeof LOCK_RECOVERY_STATES)[number];
 

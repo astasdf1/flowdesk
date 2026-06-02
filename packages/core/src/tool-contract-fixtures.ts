@@ -126,6 +126,10 @@ function sampleValue(fieldName: string, property: Release1JsonSchemaPropertyArti
   if (fieldName === "user_message") return "FDS-1 fixture only; production conversion remains blocked.";
   if (fieldName === "run_mode") return "fake-runtime";
   if (fieldName === "resume_mode") return "status_only";
+  if (fieldName === "check_scope") return "all";
+  if (fieldName === "profile") return "test";
+  if (fieldName === "detail_level") return "summary";
+  if (fieldName === "retention_hint") return "keep_until_default_expiry";
   if (fieldName === "provider_family") return "unknown";
   if (fieldName === "refresh") return false;
   if (fieldName === "artifact_disposition") return "blocked";

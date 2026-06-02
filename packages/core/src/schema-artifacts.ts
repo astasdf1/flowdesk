@@ -1,4 +1,4 @@
-import { DOCTOR_FAILURE_CATEGORIES, FLOWDESK_RUN_REQUEST_MODES, HOOK_HARNESS_ATTEMPT_KINDS, HOOK_HARNESS_CAPABILITIES, HOOK_HARNESS_DECISIONS, HOOK_HARNESS_MODES, INPUT_MODES, LANE_FAILURE_CLASSES, LANE_INVOCATION_REF_KINDS, LANE_VERDICT_STATUSES, SAFE_NEXT_ACTIONS, TOOL_STATUSES } from "./release1-contracts.js";
+import { DOCTOR_CHECK_SCOPES, DOCTOR_FAILURE_CATEGORIES, DOCTOR_PROFILES, FLOWDESK_RUN_REQUEST_MODES, HOOK_HARNESS_ATTEMPT_KINDS, HOOK_HARNESS_CAPABILITIES, HOOK_HARNESS_DECISIONS, HOOK_HARNESS_MODES, INPUT_MODES, LANE_FAILURE_CLASSES, LANE_INVOCATION_REF_KINDS, LANE_VERDICT_STATUSES, RETENTION_HINTS, RESUME_MODES, SAFE_NEXT_ACTIONS, STATUS_DETAIL_LEVELS, TOOL_STATUSES } from "./release1-contracts.js";
 import { RELEASE_1_SCHEMA_REGISTRY } from "./schema-registry.js";
 
 export type Release1JsonSchemaPropertyType = "string" | "number" | "boolean" | "array" | "object";
@@ -201,20 +201,53 @@ function propertyArtifact(fieldName: string): Release1JsonSchemaPropertyArtifact
     ...(fieldName === "decision" ? { enum: HOOK_HARNESS_DECISIONS } : {}),
     ...(fieldName === "invocation_ref_kind" ? { enum: LANE_INVOCATION_REF_KINDS } : {}),
     ...(fieldName === "verdict_status" ? { enum: LANE_VERDICT_STATUSES } : {}),
+    ...(fieldName === "check_scope" ? { enum: DOCTOR_CHECK_SCOPES } : {}),
+    ...(fieldName === "profile" ? { enum: DOCTOR_PROFILES } : {}),
+    ...(fieldName === "detail_level" ? { enum: STATUS_DETAIL_LEVELS } : {}),
+    ...(fieldName === "resume_mode" ? { enum: RESUME_MODES } : {}),
+    ...(fieldName === "retention_hint" ? { enum: RETENTION_HINTS } : {}),
     ...(type === "string" && (fieldName.endsWith("_id") || fieldName.endsWith("_ref") || fieldName.endsWith("_hash")) ? { maxLength: 128 } : {}),
     ...(type === "string" && (fieldName.includes("summary") || fieldName === "user_message" || fieldName === "safe_remediation" || fieldName === "reason") ? { maxLength: 500 } : {}),
     ...(fieldName === "safe_next_actions" ? { maxItems: 8, enum: SAFE_NEXT_ACTIONS } : {}),
     ...(fieldName === "diagnostic_observations" ? { maxItems: 8 } : {}),
     ...(fieldName === "lane_refs" ? { maxItems: 20 } : {}),
     ...(fieldName === "include_sections" ? { maxItems: 7 } : {}),
-    description: `FlowDesk Release 1 field ${fieldName}`
+    description: propertyDescription(fieldName)
   };
+}
+
+function propertyDescription(fieldName: string): string {
+  switch (fieldName) {
+    case "schema_version": return "FlowDesk Release 1 field schema_version";
+    case "request_id": return "FlowDesk Release 1 field request_id";
+    case "input_mode": return "FlowDesk Release 1 field input_mode";
+    case "check_scope": return "Doctor check scope: install, runtime, policy, usage, provider_health, conformance, or all";
+    case "profile": return "Doctor profile: production, development, or test";
+    case "persist_report": return "FlowDesk Release 1 field persist_report";
+    case "detail_level": return "Status detail level: summary, diagnostic, debug_refs, or lane_refs";
+    case "resume_mode": return "Resume mode: resume, retry, abort_only, or status_only";
+    case "retention_hint": return "Debug export retention: delete_after_export, keep_until_default_expiry, or keep_until_policy_expiry";
+    case "run_mode": return "Run mode: guarded-dry-run, fake-runtime, or managed-dispatch";
+    case "include_sections": return "Debug export sections to include (e.g. redaction_summary, doctor, status, usage)";
+    case "provider_family": return "Provider family identifier (e.g. claude, openai, gemini, unknown)";
+    case "refresh": return "Whether to force-refresh provider usage data";
+    case "goal_summary": return "FlowDesk Release 1 field goal_summary";
+    case "scope_summary": return "FlowDesk Release 1 field scope_summary";
+    case "risk_hint": return "FlowDesk Release 1 field risk_hint";
+    case "plan_revision_id": return "FlowDesk Release 1 field plan_revision_id";
+    case "checkpoint_id": return "FlowDesk Release 1 field checkpoint_id";
+    case "attempt_id": return "FlowDesk Release 1 field attempt_id";
+    case "retry_reason": return "FlowDesk Release 1 field retry_reason";
+    case "reason": return "FlowDesk Release 1 field reason";
+    default: return `FlowDesk Release 1 field ${fieldName}`;
+  }
 }
 
 function schemaArtifact(schemaId: string): Release1JsonSchemaArtifact {
   const required = requiredFields[schemaId] ?? ["schema_version"];
   const fieldNames = [...new Set([...required, ...(optionalFields[schemaId] ?? [])])];
   const properties = Object.fromEntries(fieldNames.map((fieldName) => [fieldName, propertyArtifact(fieldName)]));
+  if (properties.schema_version !== undefined) properties.schema_version = { ...properties.schema_version, description: `Must be exactly "${schemaId}"` };
   if (schemaId.endsWith(".response.v1") && properties.status !== undefined) properties.status = { ...properties.status, type: "string", enum: TOOL_STATUSES };
   if (schemaId === "flowdesk.doctor_section_result.v1" && properties.category !== undefined) properties.category = { ...properties.category, type: "string", enum: DOCTOR_FAILURE_CATEGORIES };
   if ((schemaId === "flowdesk.lane_record.v1" || schemaId === "flowdesk.lane_summary.v1") && properties.failure_class !== undefined) properties.failure_class = { ...properties.failure_class, type: "string", enum: LANE_FAILURE_CLASSES };
