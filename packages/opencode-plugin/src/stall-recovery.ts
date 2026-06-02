@@ -1584,6 +1584,44 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 const AGENT_TASK_NUDGE_TEXT_WATCHDOG =
 	"Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
 
+/**
+ * Idle-confirmed continuation prompt. Injected into the SAME child session once
+ * when the lane has gone idle WITHOUT any captured assistant text. Unlike the
+ * legacy noReply nudge this is a real, visible recovery prompt that keeps the
+ * session alive and asks the model to either finish or state its blocker. It is
+ * recorded with durable evidence and capped per lane.
+ */
+const AGENT_TASK_IDLE_CONTINUATION_TEXT =
+	"You appear to have become idle without producing a final answer. If your work is complete, output your complete final answer now. If you are blocked, state the blocker concisely in one short paragraph." as const;
+
+/**
+ * Classify an agent_task_progress record as MEANINGFUL model/runtime activity
+ * vs ambient/self-authored noise. Meaningful activity resets the watchdog nudge
+ * budget and defers abort; noise does not.
+ *
+ * Excluded as non-meaningful:
+ *   - phase "nudged"     → watchdog legacy nudge / idle continuation injection
+ *   - phase "failed"     → terminal failure record
+ *   - phase "finalizing" → watchdog-authored capture / session-idle marker
+ *   - ambient session-status churn ("session busy", "session.diff",
+ *     "session.updated") which can stream without any real progress
+ *
+ * Treated as meaningful:
+ *   - streaming assistant message/part deltas ("message part event observed",
+ *     "message.updated event observed")
+ *   - tool error events, terminal step events
+ *   - permission responses
+ */
+export function flowDeskProgressIsMeaningfulActivityV1(phase: string, progressLabel: string | undefined): boolean {
+	if (phase === "nudged" || phase === "failed" || phase === "finalizing") return false;
+	const label = (progressLabel ?? "").toLowerCase();
+	// Ambient session-status / diff churn is not, by itself, model progress.
+	if (label.includes("session busy") || label.includes("session.diff") || label.includes("session.updated")) return false;
+	if (label.includes("waiting for async child result")) return false;
+	// Everything else at waiting/started/retrying with a real event label counts.
+	return true;
+}
+
 /** Poll result from one session.messages call */
 function monitorRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1660,12 +1698,61 @@ async function pollChildSessionCandidate(
 	}
 }
 
-/** Send a noReply nudge to a child session — best effort with hard timeout */
+/**
+ * Idle-confirmed capture. When the child session has produced non-empty
+ * assistant text but no explicit terminal marker (step-finish / finish_reason
+ * = stop) is visible, OpenCode may still have gone idle with the final answer
+ * already present. Relying only on `terminalObserved` lets such lanes drift
+ * into `finalizing_without_terminal` and eventually a `MessageAbortedError`,
+ * losing a result that is sitting right there in the transcript.
+ *
+ * This poll returns that text as an idle-confirmed final ONLY when:
+ *   - there is non-empty latest assistant text,
+ *   - no tool is currently running (the model is not mid-step), and
+ *   - the caller has already confirmed the lane was silent past an
+ *     idle-settle window (passed via `idleConfirmed`).
+ *
+ * It never sends a prompt and never aborts; it only reads `session.messages`.
+ */
+async function pollChildSessionIdleConfirmedOutput(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	messagesTimeoutMs = 3_000,
+): Promise<{ text: string | undefined; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; hasRunningTool: boolean } | null> {
+	const messages = client.session.messages;
+	if (typeof messages !== "function") return null;
+	try {
+		const readMessages = async (): Promise<unknown> => {
+			const current = await (messages as (o: unknown) => Promise<unknown>).call(client.session, { sessionID: childSessionId });
+			if (!monitorSdkErrorResponse(current)) return current;
+			return (messages as (o: unknown) => Promise<unknown>).call(client.session, { path: { id: childSessionId } });
+		};
+		const raw = await Promise.race([
+			readMessages(),
+			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
+		]);
+		if (raw === null) return null;
+		const observed = observeFlowDeskAgentTaskOutputV1(raw);
+		return {
+			text: observed.latestText,
+			outputKind: observed.outputKind,
+			usableForSynthesis: observed.usableForSynthesis,
+			looksLikeRefusalOrError: observed.looksLikeRefusalOrError,
+			hasRunningTool: observed.hasRunningTool,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/** Send a noReply nudge to a child session — best effort with hard timeout. */
 async function sendWatchdogNudge(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
+	allowRawPromptNoReplyNudge: boolean,
 	timeoutMs = 5_000,
 ): Promise<"sent" | "timeout" | "skipped"> {
+	if (!allowRawPromptNoReplyNudge) return "skipped";
 	const promptFn = client.session.promptAsync ?? client.session.prompt;
 	if (promptFn === undefined) return "skipped";
 	try {
@@ -1677,6 +1764,35 @@ async function sendWatchdogNudge(
 			}),
 			new Promise<never>((_, reject) =>
 				setTimeout(() => reject(new Error("nudge timeout")), timeoutMs),
+			),
+		]);
+		return "sent";
+	} catch {
+		return "timeout";
+	}
+}
+
+/**
+ * Inject a real continuation prompt into the same child session (no noReply).
+ * Best-effort with a hard timeout. Prefers promptAsync, falls back to prompt.
+ * Returns "sent" when dispatch resolved, "timeout" otherwise, "skipped" when no
+ * prompt API is available on the injected client.
+ */
+async function sendIdleContinuationPrompt(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	timeoutMs = 5_000,
+): Promise<"sent" | "timeout" | "skipped"> {
+	const promptFn = client.session.promptAsync ?? client.session.prompt;
+	if (promptFn === undefined) return "skipped";
+	try {
+		await Promise.race([
+			(promptFn as (o: unknown) => unknown).call(client.session, {
+				sessionID: childSessionId,
+				parts: [{ type: "text", text: AGENT_TASK_IDLE_CONTINUATION_TEXT }],
+			}),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("continuation timeout")), timeoutMs),
 			),
 		]);
 		return "sent";
@@ -1898,6 +2014,112 @@ function childProgressLabel(value: string): string {
 	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
 }
 
+function isChildSessionIdleSignalProgress(value: unknown): boolean {
+	if (typeof value !== "string") return false;
+	const label = value.toLowerCase();
+	return label === "agent task session idle event observed" || label === "agent task session idle status observed";
+}
+
+// V11.2 Slice 1: parse an event-hook tool-state progress label into a per-callID
+// transition. The event hook emits `agent task tool running callid=<id>` /
+// `... tool settled callid=<id>` / `... tool error callid=<id>`. Returns the
+// transition kind and callID so the monitor can maintain an event-based
+// open-tool set instead of a polling snapshot.
+function parseChildToolStateProgressV1(value: unknown): { kind: "open" | "settled"; callId: string } | undefined {
+	if (typeof value !== "string") return undefined;
+	const m = /^agent task tool (running|settled|error) callid=(.+)$/.exec(value.trim());
+	if (m === null) return undefined;
+	const kind = m[1] === "running" ? "open" : "settled"; // settled/error both close the call
+	return { kind, callId: m[2] };
+}
+
+// V11.2 Slice 2: parse an event-hook TURN_COMPLETED progress label
+// (`agent task turn completed msgid=<id> created=<ms> completed=<ms>`) emitted
+// when an assistant message.updated carries info.time.completed.
+function parseChildTurnCompletedProgressV1(value: unknown): { messageId: string; createdMs: number; completedMs: number } | undefined {
+	if (typeof value !== "string") return undefined;
+	const m = /^agent task turn completed msgid=(.+?) created=(\d+) completed=(\d+)$/.exec(value.trim());
+	if (m === null) return undefined;
+	return { messageId: m[1], createdMs: Number(m[2]), completedMs: Number(m[3]) };
+}
+
+/**
+ * V11.2 Slice 2 (G3) — resolve the EXPECTED completed turn for this lane attempt.
+ *
+ * The watchdog cannot know the assistant message id before the model creates it,
+ * so it binds to the FIRST assistant turn whose message was created at/after the
+ * lane epoch (created_at). This avoids capturing a stale/late `time.completed`
+ * from an unrelated or earlier turn ("latest" fallback is explicitly forbidden).
+ *
+ * Returns the bound turn-completed signal, or undefined when no completed turn for
+ * this attempt has been observed yet (caller must HOLD capture, never fall back).
+ */
+export function resolveFlowDeskExpectedTurnCompletedV1(input: {
+	transitions: ReadonlyArray<{ observedAtMs: number; label: string }>;
+	laneEpochMs: number;
+}): { messageId: string; completedMs: number; observedAtMs: number } | undefined {
+	let best: { messageId: string; completedMs: number; observedAtMs: number; createdMs: number } | undefined;
+	for (const t of input.transitions) {
+		const parsed = parseChildTurnCompletedProgressV1(t.label);
+		if (parsed === undefined) continue;
+		// Only consider turns created at/after the lane epoch (this attempt's turn).
+		if (Number.isFinite(parsed.createdMs) && parsed.createdMs > 0 && parsed.createdMs < input.laneEpochMs) continue;
+		// Bind to the EARLIEST qualifying turn (the first turn of this attempt), not
+		// the latest, so a later unexpected turn cannot re-trigger capture.
+		if (best === undefined || parsed.createdMs < best.createdMs) {
+			best = { messageId: parsed.messageId, completedMs: parsed.completedMs, observedAtMs: t.observedAtMs, createdMs: parsed.createdMs };
+		}
+	}
+	if (best === undefined) return undefined;
+	return { messageId: best.messageId, completedMs: best.completedMs, observedAtMs: best.observedAtMs };
+}
+
+/**
+ * V11.2 Slice 1 — derive the event-based tool execution state for a lane.
+ *
+ * Replaces the polling `hasRunningTool` snapshot. We replay the lane's ordered
+ * tool-state progress transitions into a per-callID open set: a `running`/`pending`
+ * transition opens a callID, a `completed`/`error` transition closes it. The set
+ * being non-empty means a tool is genuinely still running (`toolRunningNow`).
+ *
+ * Exception handling (V11.2 G1): if the set has been continuously non-empty for
+ * longer than `staleToolMs` (a settle event was likely dropped), we do NOT treat
+ * the lane as idle. Instead we report `toolStateUnknown` with the time the oldest
+ * still-open call started, so the caller can BLOCK abort/continuation while only
+ * polling body, and force-terminate after `unknownStateMaxMs`.
+ */
+export function deriveFlowDeskLaneToolStateV1(input: {
+	// ordered { observedAtMs, label } tool-state transitions for the lane, oldest first
+	transitions: ReadonlyArray<{ observedAtMs: number; label: string }>;
+	nowMs: number;
+	staleToolMs: number;
+}): { toolRunningNow: boolean; toolStateUnknown: boolean; oldestOpenAtMs: number | undefined } {
+	// callId -> last open timestamp (deleted on settle)
+	const openAt = new Map<string, number>();
+	for (const t of input.transitions) {
+		const parsed = parseChildToolStateProgressV1(t.label);
+		if (parsed === undefined) continue;
+		if (parsed.kind === "open") {
+			// Only record the first open time for a callId so age reflects how long
+			// it has genuinely been running; re-open of the same id keeps the original.
+			if (!openAt.has(parsed.callId)) openAt.set(parsed.callId, t.observedAtMs);
+		} else {
+			openAt.delete(parsed.callId);
+		}
+	}
+	if (openAt.size === 0) {
+		return { toolRunningNow: false, toolStateUnknown: false, oldestOpenAtMs: undefined };
+	}
+	let oldestOpenAtMs = Number.POSITIVE_INFINITY;
+	for (const at of openAt.values()) oldestOpenAtMs = Math.min(oldestOpenAtMs, at);
+	const ageMs = input.nowMs - oldestOpenAtMs;
+	if (ageMs >= input.staleToolMs) {
+		// Likely-dropped settle event: demote to UNKNOWN (not idle, not running).
+		return { toolRunningNow: false, toolStateUnknown: true, oldestOpenAtMs };
+	}
+	return { toolRunningNow: true, toolStateUnknown: false, oldestOpenAtMs };
+}
+
 function writeAgentTaskProgressEvidence(input: {
 	rootDir: string;
 	workflowId: string;
@@ -1952,6 +2174,54 @@ export async function monitorChildSessionsV1(input: {
 	nudgeQuietPeriodMs?: number;  // default 10_000
 	maxNudges?: number;            // default 2
 	abortThresholdMs?: number;     // default 30_000
+	/**
+	 * Idle-settle window for idle-confirmed capture. When a lane has produced
+	 * assistant text but no explicit terminal marker, and it has been silent at
+	 * least this long with no running tool, the watchdog captures that text as an
+	 * idle-confirmed final result instead of waiting for a terminal marker that
+	 * may never arrive. Defaults to the effective nudge quiet period.
+	 */
+	idleSettleMs?: number;
+	/**
+	 * Max idle-confirmed continuation prompt injections per lane. When a lane is
+	 * idle past the settle window WITHOUT any captured text, the watchdog injects
+	 * a real continuation prompt into the same child session to recover a final
+	 * answer, up to this cap. Defaults to 1. Set to 0 to disable injection and
+	 * fall back to evidence-only recording.
+	 */
+	maxIdleContinuations?: number;
+	/**
+	 * Capability/config gate for raw SDK prompt/noReply watchdog nudges.
+	 * Default is false because FlowDesk has no proven hard noReply/prompt-nudge
+	 * authority by default; evidence-only nudge attempts are still recorded.
+	 */
+	allowRawPromptNoReplyNudge?: boolean;
+	/**
+	 * V11.2 G/Slice 1 — injectable timeout clocks for the event-based tool-state
+	 * terminator. All default to conservative values and are overridable for
+	 * deterministic tests.
+	 *
+	 * - staleToolMs: how long a callID may stay open (no settle event) before the
+	 *   open-tool set is treated as `toolStateUnknown` (likely-dropped settle).
+	 * - unknownStateMaxMs: how long a lane may remain in `toolStateUnknown` with no
+	 *   body before it is force-terminated as `tool_state_unrecoverable` (G1).
+	 * - absoluteLaneAgeMs: hard upper bound on total lane age, independent of the
+	 *   meaningful-activity gate, guaranteeing a true zero-event lane still
+	 *   terminates (G2).
+	 */
+	staleToolMs?: number;          // default 60_000
+	unknownStateMaxMs?: number;    // default 60_000
+	absoluteLaneAgeMs?: number;    // default 600_000
+	/**
+	 * V11.2 G5/Slice 3 — bounded awaiting_body_capture. When an authoritative
+	 * turn-completed event fired but the body poll returned empty (SDK buffer not
+	 * yet synced), the lane is NOT immediately failed as no_response: it is marked
+	 * awaiting_body_capture and retried on later cycles up to bodyRetryMax. After
+	 * the retries are exhausted the lane is terminalized (turn_completed_empty when
+	 * a turn completed, else no_response). bodyRetryIntervalMs is advisory for tests.
+	 */
+	bodyRetryMax?: number;         // default 3
+	bodyRetryIntervalMs?: number;  // default 2_000 (advisory)
 	_forceTaskResultWriteFailureForTest?: boolean;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
@@ -1960,6 +2230,30 @@ export async function monitorChildSessionsV1(input: {
 		: 10_000;
 	const maxNudges = input.maxNudges ?? 2;
 	const abortThresholdMs = input.abortThresholdMs ?? 30_000;
+	const idleSettleMs = typeof input.idleSettleMs === "number" && input.idleSettleMs > 0
+		? Math.floor(input.idleSettleMs)
+		: nudgeQuietPeriodMs;
+	// V11.2 Slice 4: continuation auto-injection is OFF by default. Injecting a
+	// continuation prompt into a child session that was actually still working was
+	// the exact mechanism that caused the slice1c MessageAbortedError. It is now
+	// opt-in only (caller must pass maxIdleContinuations > 0) and, even when opted
+	// in, is gated on corroborated fresh idle + no running/unknown tool.
+	const maxIdleContinuations = typeof input.maxIdleContinuations === "number" && input.maxIdleContinuations >= 0
+		? Math.floor(input.maxIdleContinuations)
+		: 0;
+	// V11.2 Slice 1 injectable timeout clocks.
+	const staleToolMs = typeof input.staleToolMs === "number" && input.staleToolMs > 0
+		? Math.floor(input.staleToolMs)
+		: 60_000;
+	const unknownStateMaxMs = typeof input.unknownStateMaxMs === "number" && input.unknownStateMaxMs > 0
+		? Math.floor(input.unknownStateMaxMs)
+		: 60_000;
+	const absoluteLaneAgeMs = typeof input.absoluteLaneAgeMs === "number" && input.absoluteLaneAgeMs > 0
+		? Math.floor(input.absoluteLaneAgeMs)
+		: 600_000;
+	const bodyRetryMax = typeof input.bodyRetryMax === "number" && input.bodyRetryMax >= 0
+		? Math.floor(input.bodyRetryMax)
+		: 3;
 	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
 
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
@@ -1979,16 +2273,74 @@ export async function monitorChildSessionsV1(input: {
 	const terminalLaneIds = new Set<string>(terminalEndStates.keys());
 	const awaitingPermissionLaneIds = new Set<string>();
 	const latestProgressByLane = new Map<string, { observedAtMs: number; phase: string }>();
+	const latestSessionIdleSignalByLane = new Map<string, number>();
+	const latestHandledSessionIdleSignalByLane = new Map<string, number>();
+	// Meaningful progress = real model/runtime activity (streaming message/part
+	// deltas, tool events, terminal step, permission responses). It deliberately
+	// EXCLUDES watchdog-authored records (phase "nudged"/"failed"/"finalizing")
+	// and ambient session-status noise so those self-authored events cannot keep
+	// resetting the nudge budget or deferring abort. This is what fixes the
+	// "lane looks alive forever" / stuck stall-detection problem.
+	const latestMeaningfulProgressByLane = new Map<string, number>();
+	// V11.2 Slice 1: ordered per-lane tool-state transitions (running/settled),
+	// derived from event-hook progress labels, feeding the event-based open-tool
+	// set. Sorted by observedAtMs before use.
+	const toolTransitionsByLane = new Map<string, Array<{ observedAtMs: number; label: string }>>();
+	// V11.2 Slice 2: ordered per-lane TURN_COMPLETED transitions (assistant
+	// message.updated with time.completed), feeding expected-turn binding (G3).
+	const turnCompletedByLane = new Map<string, Array<{ observedAtMs: number; label: string }>>();
 	for (const entry of reloaded.entries) {
 		const rec = entry.record as Record<string, unknown>;
 		const laneIdVal = typeof rec.lane_id === "string" ? rec.lane_id : undefined;
 		if (!laneIdVal) continue;
+		if (entry.evidenceClass === "agent_task_child_session") {
+			const idleSignalAtMs = typeof rec.last_session_idle_signal_at === "string" ? Date.parse(rec.last_session_idle_signal_at) : NaN;
+			if (Number.isFinite(idleSignalAtMs)) {
+				const currentIdleSignal = latestSessionIdleSignalByLane.get(laneIdVal);
+				if (currentIdleSignal === undefined || currentIdleSignal <= idleSignalAtMs) {
+					latestSessionIdleSignalByLane.set(laneIdVal, idleSignalAtMs);
+				}
+			}
+			const handledIdleSignalAtMs = typeof rec.last_idle_continuation_signal_at === "string" ? Date.parse(rec.last_idle_continuation_signal_at) : NaN;
+			if (Number.isFinite(handledIdleSignalAtMs)) {
+				const currentHandledSignal = latestHandledSessionIdleSignalByLane.get(laneIdVal);
+				if (currentHandledSignal === undefined || currentHandledSignal <= handledIdleSignalAtMs) {
+					latestHandledSessionIdleSignalByLane.set(laneIdVal, handledIdleSignalAtMs);
+				}
+			}
+		}
 		if (entry.evidenceClass === "agent_task_progress") {
 			const observedAtMs = typeof rec.observed_at === "string" ? Date.parse(rec.observed_at) : NaN;
 			const phase = typeof rec.phase === "string" ? rec.phase : undefined;
+			const progressLabel = typeof rec.progress_label === "string" ? rec.progress_label : undefined;
 			const current = latestProgressByLane.get(laneIdVal);
 			if (phase !== undefined && Number.isFinite(observedAtMs) && (current === undefined || current.observedAtMs <= observedAtMs)) {
 				latestProgressByLane.set(laneIdVal, { observedAtMs, phase });
+			}
+			if (Number.isFinite(observedAtMs) && phase === "finalizing" && isChildSessionIdleSignalProgress(progressLabel)) {
+				const currentIdleSignal = latestSessionIdleSignalByLane.get(laneIdVal);
+				if (currentIdleSignal === undefined || currentIdleSignal <= observedAtMs) {
+					latestSessionIdleSignalByLane.set(laneIdVal, observedAtMs);
+				}
+			}
+			if (phase !== undefined && Number.isFinite(observedAtMs) && flowDeskProgressIsMeaningfulActivityV1(phase, progressLabel)) {
+				const currentMeaningful = latestMeaningfulProgressByLane.get(laneIdVal);
+				if (currentMeaningful === undefined || currentMeaningful <= observedAtMs) {
+					latestMeaningfulProgressByLane.set(laneIdVal, observedAtMs);
+				}
+			}
+			// V11.2 Slice 1: collect per-callID tool-state transitions for the
+			// event-based open-tool set (replaces polling hasRunningTool snapshot).
+			if (Number.isFinite(observedAtMs) && parseChildToolStateProgressV1(progressLabel) !== undefined) {
+				const list = toolTransitionsByLane.get(laneIdVal) ?? [];
+				list.push({ observedAtMs, label: progressLabel as string });
+				toolTransitionsByLane.set(laneIdVal, list);
+			}
+			// V11.2 Slice 2: collect TURN_COMPLETED transitions for expected-turn binding.
+			if (Number.isFinite(observedAtMs) && parseChildTurnCompletedProgressV1(progressLabel) !== undefined) {
+				const list = turnCompletedByLane.get(laneIdVal) ?? [];
+				list.push({ observedAtMs, label: progressLabel as string });
+				turnCompletedByLane.set(laneIdVal, list);
 			}
 		}
 	}
@@ -2038,26 +2390,221 @@ export async function monitorChildSessionsV1(input: {
 		const laneNudgeQuietPeriodMs = typeof input.nudgeQuietPeriodMs === "number" && input.nudgeQuietPeriodMs > 0
 			? nudgeQuietPeriodMs
 			: (recordQuietPeriodMs ?? nudgeQuietPeriodMs);
+		// Idle-settle window for this lane: an explicit idleSettleMs wins,
+		// otherwise mirror the lane's effective quiet period so a persisted
+		// custom quiet period also defers idle-confirmed capture/continuation.
+		const laneIdleSettleMs = typeof input.idleSettleMs === "number" && input.idleSettleMs > 0
+			? idleSettleMs
+			: laneNudgeQuietPeriodMs;
 		const recordedNudgeCount = typeof record.nudge_count === "number" ? record.nudge_count : 0;
 		const lastNudgeAtMs = typeof record.last_nudge_at === "string" ? Date.parse(record.last_nudge_at) : createdAtMs;
-		const latestProgress = latestProgressByLane.get(laneId);
-		const latestProgressAtMs = latestProgress?.observedAtMs;
+		// Use MEANINGFUL progress (real model/runtime activity) for activity and
+		// nudge-budget decisions. Watchdog-authored progress (nudge/continuation/
+		// finalizing) and ambient session-status churn are intentionally ignored
+		// here so they cannot keep a silent lane looking "alive" forever.
+		const latestProgressAtMs = latestMeaningfulProgressByLane.get(laneId);
+		const latestSessionIdleSignalAtMs = latestSessionIdleSignalByLane.get(laneId);
+		const latestHandledSessionIdleSignalAtMs = latestHandledSessionIdleSignalByLane.get(laneId);
 		const lastActivityMs = Math.max(
 			createdAtMs,
 			Number.isFinite(lastNudgeAtMs) ? lastNudgeAtMs : createdAtMs,
 			latestProgressAtMs !== undefined && Number.isFinite(latestProgressAtMs) ? latestProgressAtMs : createdAtMs,
 		);
-		// If the child session emitted progress after the last nudge, treat that as
-		// real activity and reset the effective nudge budget for this watchdog cycle.
-		// The persisted child-session nudge_count is only updated when we actually
-		// send another nudge; deriving the effective value here avoids aborting a lane
-		// that is actively streaming message.updated/message.part/session.diff events.
+		const hasFreshSessionIdleSignal = latestSessionIdleSignalAtMs !== undefined &&
+			Number.isFinite(latestSessionIdleSignalAtMs) &&
+			latestSessionIdleSignalAtMs >= lastActivityMs &&
+			(latestProgressAtMs === undefined || latestProgressAtMs <= latestSessionIdleSignalAtMs);
+		const hasUnhandledFreshSessionIdleSignal = hasFreshSessionIdleSignal &&
+			(latestHandledSessionIdleSignalAtMs === undefined || latestHandledSessionIdleSignalAtMs < latestSessionIdleSignalAtMs);
+		const childSessionEvidenceId = reloaded.entries
+			.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
+			?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
+		let recordForWrites = record;
+		if (hasFreshSessionIdleSignal) {
+			const previousSignalMs = typeof record.last_session_idle_signal_at === "string" ? Date.parse(record.last_session_idle_signal_at) : NaN;
+			if (!Number.isFinite(previousSignalMs) || previousSignalMs < latestSessionIdleSignalAtMs) {
+				recordForWrites = {
+					...recordForWrites,
+					last_session_idle_signal_at: new Date(latestSessionIdleSignalAtMs).toISOString(),
+					last_session_idle_signal_state: "observed",
+				};
+				writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+			}
+		}
+		// If the child session emitted MEANINGFUL progress after the last nudge,
+		// treat that as real activity and reset the effective nudge budget for this
+		// watchdog cycle. The persisted child-session nudge_count is only updated
+		// when we actually send another nudge; deriving the effective value here
+		// avoids aborting a lane that is actively streaming real message/part deltas.
 		const nudgeCount =
 			latestProgressAtMs !== undefined && latestProgressAtMs > lastNudgeAtMs
 				? 0
 				: recordedNudgeCount;
 		const silenceMs = nowMs - lastActivityMs;
 		const totalAgeMs = nowMs - createdAtMs;
+
+		// V11.2 Slice 1: event-based tool execution state (replaces polling snapshot).
+		// toolRunningNow gates every abort/continuation branch so a genuinely-working
+		// lane (e.g. a long single tool call) is never terminated mid-work. A likely-
+		// dropped settle event demotes the lane to toolStateUnknown (not idle), which
+		// also blocks abort/continuation but allows body polling, and is force-
+		// terminated only after unknownStateMaxMs (G1).
+		const toolTransitions = (toolTransitionsByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
+		const laneToolState = deriveFlowDeskLaneToolStateV1({ transitions: toolTransitions, nowMs, staleToolMs });
+		const toolRunningNow = laneToolState.toolRunningNow;
+		const toolStateUnknown = laneToolState.toolStateUnknown;
+		// How long the lane has been stuck in UNKNOWN (oldest still-open call age).
+		const unknownDwellMs = toolStateUnknown && laneToolState.oldestOpenAtMs !== undefined
+			? nowMs - laneToolState.oldestOpenAtMs
+			: 0;
+
+		// V11.2 Slice 2: resolve the EXPECTED completed turn for this attempt (G3).
+		// Bound to the first assistant turn created at/after the lane epoch; never
+		// falls back to "latest", so a stale/late completion of an unrelated turn
+		// cannot trigger capture against the wrong turn.
+		const turnCompletedTransitions = (turnCompletedByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
+		const expectedTurnCompleted = resolveFlowDeskExpectedTurnCompletedV1({ transitions: turnCompletedTransitions, laneEpochMs: createdAtMs });
+
+		// 0. V11.2 Slice 2 — event-primary TURN_COMPLETED capture. When an assistant
+		// turn for THIS attempt has reported time.completed (the authoritative turn-end
+		// signal), and no tool is genuinely running and the tool state is not unknown,
+		// fetch the body and capture it as a turn_completed final result. The body poll
+		// only fetches WHAT; the event decided WHEN. Empty body falls through to the
+		// existing polling/idle/timeout paths (Slice 3 will add awaiting_body_capture).
+		if (expectedTurnCompleted !== undefined && !toolRunningNow && !toolStateUnknown) {
+			if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+				continue;
+			}
+			const idleObservation = await pollChildSessionIdleConfirmedOutput(input.client, childSessionId);
+			if (idleObservation !== null && idleObservation.hasRunningTool === false && idleObservation.text !== undefined && idleObservation.text.trim().length > 0) {
+				const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+				const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+				const token = randomBytes(4).toString("hex");
+				const completedAt = new Date(nowMs).toISOString();
+				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				const taskResultEvidenceId = `task-result-${taskId}-watchdog-turncompleted-${token}`;
+				const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
+					schema_version: "flowdesk.task_result.v1",
+					workflow_id: input.workflowId,
+					lane_id: laneId,
+					task_id: taskId,
+					agent_ref: agentRef,
+					provider_qualified_model_id: modelId,
+					task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
+					result_text: sanitizedResult.text,
+					result_text_truncated: sanitizedResult.truncated,
+					result_text_sha256: createHash("sha256").update(idleObservation.text).digest("hex"),
+					completion_status: "final",
+					output_kind: idleObservation.outputKind,
+					usable_for_synthesis: idleObservation.usableForSynthesis,
+					missing_contract: false,
+					// turn-completed is an authoritative turn-end observation; reuse the
+					// existing valid finalization_reason enum value (no schema change in
+					// this slice). The progress label below records the turn_completed
+					// event provenance for diagnostics.
+					finalization_reason: "terminal_marker",
+					looks_like_refusal_or_error: idleObservation.looksLikeRefusalOrError,
+					created_at: completedAt,
+					dispatch_authority_enabled: false,
+				});
+				if (taskResultWritten) {
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "finalizing",
+						progressSeq: 10 + nudgeCount,
+						progressLabel: "async agent task result captured on turn completed event",
+						observedAt: completedAt,
+					});
+					refreshFlowDeskCompletionUiCachesV1({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						observedAt: completedAt,
+					});
+					result.lanesCompleted++;
+					continue;
+				}
+			}
+			// V11.2 Slice 3 (G5) — awaiting_body_capture. The turn completed but the
+			// body poll is still empty (SDK buffer not yet synced). Do NOT immediately
+			// fail as no_response and do NOT capture empty/intermediate text. Mark the
+			// lane awaiting and retry on later cycles up to bodyRetryMax; only then
+			// terminalize as turn_completed_empty.
+			if (idleObservation === null || idleObservation.text === undefined || idleObservation.text.trim().length === 0) {
+				const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+				const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+				const priorAttempts = typeof recordForWrites.awaiting_body_capture_attempts === "number" ? recordForWrites.awaiting_body_capture_attempts : 0;
+				const nextAttempts = priorAttempts + 1;
+				const nowIso = new Date(nowMs).toISOString();
+				if (nextAttempts <= bodyRetryMax) {
+					// Persist the retry counter and wait for a later cycle (bounded).
+					recordForWrites = {
+						...recordForWrites,
+						awaiting_body_capture_attempts: nextAttempts,
+						...(typeof recordForWrites.awaiting_body_capture_since === "string"
+							? {}
+							: { awaiting_body_capture_since: nowIso }),
+					};
+					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "finalizing",
+						progressSeq: 8 + nextAttempts,
+						progressLabel: `async agent task awaiting body capture after turn completed event (attempt ${nextAttempts}/${bodyRetryMax})`,
+						observedAt: nowIso,
+					});
+					continue;
+				}
+				// Retries exhausted: terminalize as turn_completed_empty (a turn DID
+				// complete, but no body materialized). Reuse the no_response failure
+				// category enum; the reason records that the turn completed empty.
+				if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+					const token = randomBytes(4).toString("hex");
+					writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-turncompleted-empty-${token}`, {
+						schema_version: "flowdesk.task_failed.v1",
+						workflow_id: input.workflowId,
+						lane_id: laneId,
+						task_id: taskId,
+						agent_ref: agentRef,
+						provider_qualified_model_id: modelId,
+						failure_category: "no_response",
+						redacted_reason: `turn completed but no body captured after ${bodyRetryMax} bounded retries (turn_completed_empty)`,
+						created_at: nowIso,
+						dispatch_authority_enabled: false,
+					});
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "failed",
+						progressSeq: 20 + nudgeCount,
+						progressLabel: "async agent task turn completed empty; no body after bounded retries",
+						observedAt: nowIso,
+					});
+					refreshFlowDeskCompletionUiCachesV1({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						observedAt: nowIso,
+					});
+					result.lanesAborted++;
+					continue;
+				}
+			}
+		}
 
 		// 1. Try to collect terminal result text. Candidate text without terminal is kept for abort-time partial capture.
 		const resultObservation = await pollChildSessionOutput(input.client, childSessionId);
@@ -2181,8 +2728,146 @@ export async function monitorChildSessionsV1(input: {
 			continue;
 		}
 
-		// 2. Abort threshold exceeded
-		if (silenceMs >= abortThresholdMs && nudgeCount >= maxNudges) {
+		// 1b. Idle-confirmed capture. No explicit terminal marker was observed,
+		// but if the lane has produced assistant text, is not mid-tool, and has
+		// been silent past the idle-settle window, OpenCode has effectively gone
+		// idle with the final answer already present. Capture it as a final
+		// result (finalization_reason = "stable_idle") instead of waiting for a
+		// terminal marker that may never arrive and letting the lane drift into
+		// finalizing_without_terminal / MessageAbortedError.
+		// V11.2 Slice 4 (post 2-model review) — idle-confirmed capture is gated on a
+		// REAL fresh session.idle event, NOT a silence heuristic. The silence-only
+		// trigger and the body-stability hash machinery were removed: the multi-model
+		// review (Claude keep_1b_idle_signal_only + GPT) converged that silence-based
+		// idle inference is the bug source and body-stability was a patch only needed
+		// because of it. A genuine session.idle is an authoritative "turn quiescent"
+		// runtime signal, so it does not need the 2-cycle hash corroboration to avoid
+		// finalizing intermediate "I'll start..." text. We still gate on the EVENT-based
+		// tool state so a running/unknown tool blocks idle capture/continuation, and
+		// the timeout terminator (G2) + absolute lane-age cap remain the safety net.
+		const idleCheckEligible = hasUnhandledFreshSessionIdleSignal && !toolRunningNow && !toolStateUnknown;
+		if (idleCheckEligible) {
+			const idleObservation = await pollChildSessionIdleConfirmedOutput(input.client, childSessionId);
+			if (idleObservation !== null && idleObservation.hasRunningTool === false && idleObservation.text !== undefined && idleObservation.text.trim().length > 0) {
+				const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+				const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+				if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+					continue;
+				}
+				const token = randomBytes(4).toString("hex");
+				const completedAt = new Date(nowMs).toISOString();
+				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				const taskResultEvidenceId = `task-result-${taskId}-watchdog-idle-${token}`;
+				const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
+					schema_version: "flowdesk.task_result.v1",
+					workflow_id: input.workflowId,
+					lane_id: laneId,
+					task_id: taskId,
+					agent_ref: agentRef,
+					provider_qualified_model_id: modelId,
+					task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
+					result_text: sanitizedResult.text,
+					result_text_truncated: sanitizedResult.truncated,
+					result_text_sha256: createHash("sha256").update(idleObservation.text).digest("hex"),
+					completion_status: "final",
+					output_kind: idleObservation.outputKind,
+					usable_for_synthesis: idleObservation.usableForSynthesis,
+					missing_contract: false,
+					finalization_reason: "stable_idle",
+					looks_like_refusal_or_error: idleObservation.looksLikeRefusalOrError,
+					created_at: completedAt,
+					dispatch_authority_enabled: false,
+				});
+				if (taskResultWritten) {
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "finalizing",
+						progressSeq: 10 + nudgeCount,
+						progressLabel: "async agent task result captured after idle without terminal marker",
+						observedAt: completedAt,
+					});
+					refreshFlowDeskCompletionUiCachesV1({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						observedAt: completedAt,
+					});
+					result.lanesCompleted++;
+					continue;
+				}
+			} else if (
+				maxIdleContinuations > 0 &&
+				(idleObservation === null || idleObservation.hasRunningTool === false)
+			) {
+				// 1c. Idle-confirmed continuation. The lane is idle past the settle
+				// window, or it emitted a fresh session.idle signal, but has NOT
+				// produced any usable assistant text. Inject a real continuation
+				// prompt into the same child session (capped) to recover a final
+				// answer, instead of waiting for the abort path.
+				const idleContinuationCount = typeof recordForWrites.idle_continuation_count === "number" ? recordForWrites.idle_continuation_count : 0;
+				if (idleContinuationCount < maxIdleContinuations) {
+					const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+					const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+					const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+					const continuationAt = new Date(nowMs).toISOString();
+					const deliveryStatus = await sendIdleContinuationPrompt(input.client, childSessionId);
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "nudged",
+						progressSeq: 5 + idleContinuationCount,
+						progressLabel: deliveryStatus === "sent"
+							? "async agent task idle continuation prompt injected after idle without final answer"
+							: "async agent task idle continuation attempt recorded; provider-side injection unavailable",
+						observedAt: continuationAt,
+					});
+					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, {
+						...recordForWrites,
+						idle_continuation_count: idleContinuationCount + 1,
+						...(hasUnhandledFreshSessionIdleSignal && latestSessionIdleSignalAtMs !== undefined
+							? { last_idle_continuation_signal_at: new Date(latestSessionIdleSignalAtMs).toISOString() }
+							: {}),
+						last_idle_continuation_at: continuationAt,
+						last_idle_continuation_delivery_status: deliveryStatus,
+						last_activity_at: continuationAt,
+					});
+					result.lanesNudged++;
+					continue;
+				}
+			}
+		}
+
+		// 2. Abort threshold exceeded. Recovery attempts (legacy nudges and idle
+		// continuation injections) must not permanently block abort: a lane is
+		// abort-eligible once it has been silent past the abort threshold AND
+		// either the nudge budget OR the idle-continuation budget is exhausted.
+		const idleContinuationCountForAbort = typeof record.idle_continuation_count === "number" ? record.idle_continuation_count : 0;
+		const recoveryBudgetExhausted = nudgeCount >= maxNudges || (maxIdleContinuations > 0 && idleContinuationCountForAbort >= maxIdleContinuations);
+		// V11.2 Slice 1 — event-based termination gating.
+		//  - NEVER abort while a tool is genuinely running (toolRunningNow): protects
+		//    long single tool calls / long reasoning that emit no mid events.
+		//  - While toolStateUnknown (likely-dropped settle), block the normal abort
+		//    path; only G1 (unknownStateMaxMs) may force-terminate it.
+		//  - G1: a lane stuck in UNKNOWN past unknownStateMaxMs with no body is
+		//    force-terminated as tool_state_unrecoverable.
+		//  - G2: an absolute lane-age cap guarantees a true zero-event lane still
+		//    terminates even though the meaningful-activity silence gate never trips.
+		// G1: force-terminate only after the lane has been in UNKNOWN for
+		// unknownStateMaxMs. UNKNOWN begins once the open tool has been stuck for
+		// staleToolMs, so the total open age must exceed staleToolMs + unknownStateMaxMs.
+		const unknownForceTerminate = toolStateUnknown && unknownDwellMs >= staleToolMs + unknownStateMaxMs;
+		const laneAgeForceTerminate = totalAgeMs >= absoluteLaneAgeMs && !toolRunningNow;
+		const normalAbortEligible = silenceMs >= abortThresholdMs && recoveryBudgetExhausted && !toolRunningNow && !toolStateUnknown;
+		if (normalAbortEligible || unknownForceTerminate || laneAgeForceTerminate) {
 			await abortChildSession(input.client, childSessionId);
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
@@ -2240,9 +2925,28 @@ export async function monitorChildSessionsV1(input: {
 				}
 			}
 
-			const failureCategory = totalAgeMs > abortThresholdMs * 2
-				? "network_interrupted"
-				: "sdk_prompt_timeout";
+			// If we already injected an idle continuation prompt and the lane STILL
+			// produced no final answer, terminalize as a no-response failure with a
+			// reason that makes the exhausted recovery explicit — instead of leaving
+			// the lane to drift into a later OpenCode MessageAbortedError.
+			const idleContinuationsUsed = typeof record.idle_continuation_count === "number" ? record.idle_continuation_count : 0;
+			// V11.2 Slice 1 — classify the termination reason by which guard fired.
+			// Reuse existing valid failure_category enum values (no schema change in
+			// this slice); the precise cause is recorded in redacted_reason below.
+			const failureCategory = unknownForceTerminate
+				? "sdk_prompt_timeout"
+				: laneAgeForceTerminate
+					? "no_response"
+					: totalAgeMs > abortThresholdMs * 2
+						? "network_interrupted"
+						: "sdk_prompt_timeout";
+			const abortReason = unknownForceTerminate
+				? `watchdog force-terminated child session: tool state unrecoverable (open tool had no settle event for ${Math.round(unknownDwellMs / 1000)}s)`
+				: laneAgeForceTerminate
+					? `watchdog force-terminated child session after ${Math.round(totalAgeMs / 1000)}s reaching the absolute lane-age cap with no response`
+					: idleContinuationsUsed > 0
+						? `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no final answer following ${idleContinuationsUsed} idle continuation attempt(s)`
+						: `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no response`;
 			writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-abort-${token}`, {
 				schema_version: "flowdesk.task_failed.v1",
 				workflow_id: input.workflowId,
@@ -2251,7 +2955,7 @@ export async function monitorChildSessionsV1(input: {
 				agent_ref: agentRef,
 				provider_qualified_model_id: modelId,
 				failure_category: failureCategory,
-				redacted_reason: `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no response`,
+				redacted_reason: abortReason,
 				created_at: abortedAt,
 				dispatch_authority_enabled: false,
 			});
@@ -2264,7 +2968,9 @@ export async function monitorChildSessionsV1(input: {
 				providerQualifiedModelId: modelId,
 				phase: "failed",
 				progressSeq: 20 + nudgeCount,
-					progressLabel: "async agent task aborted after no response",
+					progressLabel: idleContinuationsUsed > 0
+						? "async agent task aborted; no final answer after idle continuation budget exhausted"
+						: "async agent task aborted after no response",
 					observedAt: abortedAt,
 				});
 				refreshFlowDeskCompletionUiCachesV1({
@@ -2278,7 +2984,11 @@ export async function monitorChildSessionsV1(input: {
 
 		// 3. Nudge if silence threshold exceeded
 		if (silenceMs >= laneNudgeQuietPeriodMs && nudgeCount < maxNudges) {
-			await sendWatchdogNudge(input.client, childSessionId);
+			const nudgeDeliveryStatus = await sendWatchdogNudge(
+				input.client,
+				childSessionId,
+				input.allowRawPromptNoReplyNudge === true,
+			);
 			result.lanesNudged++;
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
@@ -2293,19 +3003,19 @@ export async function monitorChildSessionsV1(input: {
 				providerQualifiedModelId: modelId,
 				phase: "nudged",
 				progressSeq: 2 + nudgeCount,
-				progressLabel: "async agent task nudged after quiet period",
+				progressLabel: nudgeDeliveryStatus === "sent"
+					? "async agent task watchdog nudge sent after quiet period"
+					: "async agent task nudge attempt recorded after quiet period; provider-side nudge skipped",
 				observedAt: nudgedAt,
 			});
 			// Update nudge_count in evidence (overwrite record)
-			const evidenceId = reloaded.entries
-				.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
-				?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
-			writeChildSessionEvidence(input.rootDir, input.workflowId, evidenceId, {
-				...record,
+			writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, {
+				...recordForWrites,
 				nudge_count: nudgeCount + 1,
 				last_nudge_at: new Date(nowMs).toISOString(),
 				last_activity_at: new Date(lastActivityMs).toISOString(),
 				nudge_quiet_period_ms: laneNudgeQuietPeriodMs,
+				last_nudge_delivery_status: nudgeDeliveryStatus,
 			});
 		}
 	}

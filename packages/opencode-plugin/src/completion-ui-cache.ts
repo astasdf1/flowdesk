@@ -339,8 +339,16 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			// A lane is terminal-without-success when lifecycle reports a non-complete
 			// terminal state but no task_result and no task_failed evidence exists.
 			const lifecycleTerminalFailureOnly = result === undefined && failed === undefined && lifecycleState !== undefined && lifecycleState !== "complete";
-			const taskId = getString(result ?? failed ?? context ?? lifecycle ?? {}, "task_id");
-			const parentSessionRef = getString(context ?? lifecycle ?? {}, "parent_session_ref");
+			const taskId = getString(result ?? failed ?? context ?? lifecycle ?? childSession ?? {}, "task_id");
+			// parent_session_ref source priority must include the child-session record:
+			// in async mode a running lane has a child-session record (which carries
+			// parent_session_ref) but NOT yet an agent_task_context record, and only a
+			// RUNNING lifecycle (terminalLifecycleByLane only holds terminal states).
+			// Without childSession here, running rows were written with an undefined
+			// parentSessionRef and the session-scoped TUI sidebar filtered them out,
+			// so a launched subtask only became visible after it terminated. Including
+			// childSession keeps running rows correctly scoped to the current session.
+			const parentSessionRef = getString(context ?? lifecycle ?? childSession ?? {}, "parent_session_ref");
 			const taskSummary = compactTaskSummary(getString(context ?? {}, "prompt_text"));
 			const state = result !== undefined
 				? "task_result"

@@ -43,6 +43,66 @@ test("completion UI cache derives useful task summaries from generic prompts", (
 	}
 });
 
+test("completion UI cache running async lane (child-session only, no context) still carries parentSessionRef for session scoping", () => {
+	// Regression: in async mode a RUNNING lane has an agent_task_child_session
+	// record (carrying parent_session_ref) and only a RUNNING lane_lifecycle, but
+	// NO agent_task_context yet. Before the fix the row's parentSessionRef was
+	// derived only from context/terminal-lifecycle, so it was undefined and the
+	// session-scoped TUI sidebar filtered the running subtask out — it only became
+	// visible after the lane terminated. The row must carry parentSessionRef now.
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-running-parent-"));
+	try {
+		const workflowId = "workflow-running-parent-1";
+		const laneId = "lane-task-running-parent-1";
+		writeEvidence(rootDir, workflowId, "agent_task_child_session", "child-running-parent-1", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-running-parent-1",
+			child_session_id: "ses-child-running-parent-1",
+			parent_session_ref: "ses-ses_running_parent_1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-flowdesk-verifier-testing",
+			nudge_count: 0,
+			last_nudge_at: null,
+			created_at: "2026-05-29T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "lane_lifecycle", "lifecycle-running-parent-1", {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: laneId,
+			workflow_id: workflowId,
+			attempt_id: "attempt-running-parent-1",
+			parent_session_ref: "ses-ses_running_parent_1",
+			agent_ref: "agent-flowdesk-verifier-testing",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running",
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: "2026-05-29T00:00:00.000Z",
+			updated_at: "2026-05-29T00:00:00.000Z",
+			spawned_by: "flowdesk",
+			durability: "best_effort_no_dir_fsync",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		});
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-05-29T00:00:30.000Z" });
+
+		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		const row = rows.find((r) => r.laneId === laneId);
+		assert.ok(row, "running lane row must exist in sidebar cache");
+		assert.equal(row?.state, "running");
+		assert.equal(row?.parentSessionRef, "ses-ses_running_parent_1", "running row must carry parentSessionRef from child-session");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("completion UI cache omits task summaries with forbidden markers", () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-redacted-labels-"));
 	try {

@@ -164,6 +164,73 @@ test("TUI subtask activity view matches raw and FlowDesk-wrapped session refs", 
 	}
 });
 
+test("TUI subtask activity view matches double-wrapped ses-ses_ row against raw current session (sidebar running-visibility regression)", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-double-wrap-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [
+					// Real evidence stores parent_session_ref as the FlowDesk wrapper of
+					// the raw OpenCode id, i.e. `ses-` + `ses_...` => double-token
+					// `ses-ses_...`. The running lane must remain visible while the TUI
+					// passes the raw `ses_...` current session id.
+					{ workflowId: "workflow-running", laneId: "lane-task-running", taskId: "task-running", parentSessionRef: "ses-ses_17f8b9f7affe", state: "running", classification: "progressing_normal", recoveryActionRefs: ["/flowdesk-status"] },
+					{ workflowId: "workflow-other", laneId: "lane-task-other", taskId: "task-other", parentSessionRef: "ses-ses_other", state: "running", classification: "progressing_normal", recoveryActionRefs: ["/flowdesk-status"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		// raw current id matches the double-wrapped row, other session stays scoped out
+		const rawCurrent = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, currentParentSessionRef: "ses_17f8b9f7affe", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(rawCurrent.rows.length, 1);
+		assert.equal(rawCurrent.rows[0]?.workflowId, "workflow-running");
+
+		// single-wrapped current id also matches the double-wrapped row
+		const singleWrappedCurrent = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, currentParentSessionRef: "ses-ses_17f8b9f7affe", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(singleWrappedCurrent.rows.length, 1);
+		assert.equal(singleWrappedCurrent.rows[0]?.workflowId, "workflow-running");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI subtask activity view does not collapse distinct sessions to the same canonical core (no cross-session leak)", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-no-collision-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [
+					{ workflowId: "workflow-a", laneId: "lane-a", taskId: "task-a", parentSessionRef: "ses-ses_aaa", state: "running", classification: "progressing_normal", recoveryActionRefs: ["/flowdesk-status"] },
+					{ workflowId: "workflow-b", laneId: "lane-b", taskId: "task-b", parentSessionRef: "ses-ses_bbb", state: "running", classification: "progressing_normal", recoveryActionRefs: ["/flowdesk-status"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		// Current session aaa must see ONLY workflow-a, never workflow-b. Canonical
+		// strips only leading `ses-` wrapper layers, so the raw `ses_aaa`/`ses_bbb`
+		// cores stay distinct and the fail-closed scope does not leak.
+		const view = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, currentParentSessionRef: "ses_aaa", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(view.rows.length, 1);
+		assert.equal(view.rows[0]?.workflowId, "workflow-a");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("TUI subtask activity view does not leak cached rows when session filter has no match", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-session-fallback-"));
 	try {

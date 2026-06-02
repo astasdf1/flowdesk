@@ -25,6 +25,9 @@ import {
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
 	monitorChildSessionsV1,
+	flowDeskProgressIsMeaningfulActivityV1,
+	deriveFlowDeskLaneToolStateV1,
+	resolveFlowDeskExpectedTurnCompletedV1,
 	backfillTerminalAgentTaskFailedLanesV1,
 	reconcileStalePendingRetryPlansV1,
 	isAutoAbortEnabledV1,
@@ -115,6 +118,7 @@ function writeAgentTaskProgressRecord(
 		taskId: string;
 		observedAt: string;
 		phase?: string;
+		progressLabel?: string;
 	},
 	evidenceId = `agent-task-progress-${input.laneId}-test`,
 ): void {
@@ -128,7 +132,7 @@ function writeAgentTaskProgressRecord(
 		progress_seq: 42,
 		observed_at: input.observedAt,
 		phase: input.phase ?? "waiting",
-		progress_label: "agent task message.updated event observed",
+		progress_label: input.progressLabel ?? "agent task message.updated event observed",
 		progress_ref: `progress-${input.laneId}-42`,
 		redaction_version: "v1",
 		dispatch_authority_enabled: false,
@@ -476,6 +480,1009 @@ test("watchdog does not nudge or abort lanes with recent child progress", async 
 		assert.equal(result.lanesAborted, 0);
 		assert.equal(promptCalls, 0);
 		assert.equal(abortCalls, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("watchdog captures idle-confirmed final text when no terminal marker is present", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-idle-capture-"));
+	try {
+		const workflowId = "workflow-watchdog-idle-capture";
+		const laneId = "lane-watchdog-idle-capture";
+		const taskId = "task-watchdog-idle-capture";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-idle-capture",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0,
+			lastNudgeAt: null,
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-idle-capture-running",
+		);
+
+		// V11.2 (post 2-model review): idle-confirmed capture is triggered by a REAL
+		// fresh session.idle event, not a silence heuristic, and no longer needs the
+		// body-stability 2-cycle dance. Provide a fresh session.idle progress signal.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:14.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session idle event observed",
+		}, "agent-task-progress-idle-capture-idle-signal");
+
+		let promptCalls = 0;
+		let promptAsyncCalls = 0;
+		let abortCalls = 0;
+		const client = {
+			session: {
+				// Assistant text present, but NO step-finish / finish_reason terminal marker.
+				messages: async () => ({
+					messages: [
+						{ role: "assistant", parts: [{ type: "text", text: "Decision: ship it. Safety Gate: rollback once." }] },
+					],
+				}),
+				prompt: async () => { promptCalls += 1; return {}; },
+				promptAsync: async () => { promptAsyncCalls += 1; return {}; },
+				abort: async () => { abortCalls += 1; return {}; },
+			},
+		} as never;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"), // fresh session.idle observed, < 30s abort
+			nudgeQuietPeriodMs: 10_000, abortThresholdMs: 30_000, maxIdleContinuations: 0, client,
+		});
+
+		assert.equal(result.lanesCompleted, 1, "fresh session.idle with body captures (no 2-cycle stability needed)");
+		assert.equal(result.lanesAborted, 0);
+		assert.equal(promptCalls, 0);
+		assert.equal(promptAsyncCalls, 0);
+		assert.equal(abortCalls, 0);
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		const taskResult = reload.entries.find((entry) => entry.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.ok(taskResult, "expected a task_result to be captured");
+		assert.equal(taskResult?.completion_status, "final");
+		assert.equal(taskResult?.finalization_reason, "stable_idle");
+		assert.equal(typeof taskResult?.result_text === "string" && (taskResult.result_text as string).includes("Decision"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("watchdog does not idle-capture while a tool is still running", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-idle-tool-running-"));
+	try {
+		const workflowId = "workflow-watchdog-idle-tool-running";
+		const laneId = "lane-watchdog-idle-tool-running";
+		const taskId = "task-watchdog-idle-tool-running";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-idle-tool-running",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0,
+			lastNudgeAt: null,
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-idle-tool-running",
+		);
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"),
+			nudgeQuietPeriodMs: 10_000,
+			abortThresholdMs: 30_000,
+			client: {
+				session: {
+					messages: async () => ({
+						messages: [
+							{
+								role: "assistant",
+								parts: [
+									{ type: "text", text: "partial so far" },
+									{ type: "tool", state: { status: "running" } },
+								],
+							},
+						],
+					}),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => ({}),
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesCompleted, 0, "must not idle-capture while a tool is mid-run");
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("meaningful-progress classifier ignores watchdog-authored and ambient records", () => {
+	// Real model/runtime activity → meaningful.
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task message part event observed"), true);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task message.updated event observed"), true);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task tool error event observed"), true);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task OpenCode permission response observed"), true);
+	// Watchdog-authored / terminalish → not meaningful.
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("nudged", "async agent task idle continuation prompt injected after idle without final answer"), false);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("nudged", "async agent task nudge attempt recorded after quiet period; provider-side nudge skipped"), false);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("failed", "async agent task aborted after no response"), false);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("finalizing", "async agent task result captured by watchdog"), false);
+	// Ambient session-status churn → not meaningful.
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task session busy event observed"), false);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task session.diff event observed"), false);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task session.updated event observed"), false);
+});
+
+test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives toolRunningNow/unknown", () => {
+	const base = 1_000_000;
+	const staleToolMs = 60_000;
+	// No tool transitions → not running, not unknown.
+	assert.deepEqual(
+		deriveFlowDeskLaneToolStateV1({ transitions: [], nowMs: base, staleToolMs }),
+		{ toolRunningNow: false, toolStateUnknown: false, oldestOpenAtMs: undefined },
+	);
+	// Open then settle (same callid) → not running.
+	{
+		const s = deriveFlowDeskLaneToolStateV1({
+			transitions: [
+				{ observedAtMs: base, label: "agent task tool running callid=call-1" },
+				{ observedAtMs: base + 5_000, label: "agent task tool settled callid=call-1" },
+			],
+			nowMs: base + 6_000,
+			staleToolMs,
+		});
+		assert.equal(s.toolRunningNow, false);
+		assert.equal(s.toolStateUnknown, false);
+	}
+	// Open, not yet settled, within stale window → running (must NOT abort).
+	{
+		const s = deriveFlowDeskLaneToolStateV1({
+			transitions: [{ observedAtMs: base, label: "agent task tool running callid=call-1" }],
+			nowMs: base + 30_000,
+			staleToolMs,
+		});
+		assert.equal(s.toolRunningNow, true);
+		assert.equal(s.toolStateUnknown, false);
+	}
+	// Open, no settle, past stale window → UNKNOWN (not idle, not running).
+	{
+		const s = deriveFlowDeskLaneToolStateV1({
+			transitions: [{ observedAtMs: base, label: "agent task tool running callid=call-1" }],
+			nowMs: base + 61_000,
+			staleToolMs,
+		});
+		assert.equal(s.toolRunningNow, false);
+		assert.equal(s.toolStateUnknown, true);
+		assert.equal(s.oldestOpenAtMs, base);
+	}
+	// Concurrent tools A,B: A settles, B still open within window → still running.
+	{
+		const s = deriveFlowDeskLaneToolStateV1({
+			transitions: [
+				{ observedAtMs: base, label: "agent task tool running callid=A" },
+				{ observedAtMs: base + 1_000, label: "agent task tool running callid=B" },
+				{ observedAtMs: base + 2_000, label: "agent task tool settled callid=A" },
+			],
+			nowMs: base + 3_000,
+			staleToolMs,
+		});
+		assert.equal(s.toolRunningNow, true);
+		assert.equal(s.toolStateUnknown, false);
+	}
+	// Out-of-order: settle arrives for a callid that opens later in the list — both
+	// processed in given order; net result is the call is closed.
+	{
+		const s = deriveFlowDeskLaneToolStateV1({
+			transitions: [
+				{ observedAtMs: base, label: "agent task tool settled callid=A" },
+				{ observedAtMs: base + 1_000, label: "agent task tool running callid=A" },
+				{ observedAtMs: base + 2_000, label: "agent task tool settled callid=A" },
+			],
+			nowMs: base + 3_000,
+			staleToolMs,
+		});
+		assert.equal(s.toolRunningNow, false);
+	}
+	// tool error closes the call like settle.
+	{
+		const s = deriveFlowDeskLaneToolStateV1({
+			transitions: [
+				{ observedAtMs: base, label: "agent task tool running callid=A" },
+				{ observedAtMs: base + 1_000, label: "agent task tool error callid=A" },
+			],
+			nowMs: base + 2_000,
+			staleToolMs,
+		});
+		assert.equal(s.toolRunningNow, false);
+		assert.equal(s.toolStateUnknown, false);
+	}
+});
+
+test("V11.2 resolveFlowDeskExpectedTurnCompletedV1: binds expected turn by lane epoch, never latest", () => {
+	const epoch = 1_000_000;
+	const tc = (created: number, completed: number, msgid: string) =>
+		`agent task turn completed msgid=${msgid} created=${created} completed=${completed}`;
+	// No turn-completed transitions → undefined (caller must HOLD, not fall back).
+	assert.equal(
+		resolveFlowDeskExpectedTurnCompletedV1({ transitions: [], laneEpochMs: epoch }),
+		undefined,
+	);
+	// A turn created BEFORE the lane epoch (stale/unrelated) is ignored.
+	assert.equal(
+		resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: [{ observedAtMs: epoch + 10, label: tc(epoch - 5_000, epoch - 4_000, "old-msg") }],
+			laneEpochMs: epoch,
+		}),
+		undefined,
+	);
+	// A turn created at/after the epoch binds; its messageId/completed are returned.
+	{
+		const r = resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: [{ observedAtMs: epoch + 5_000, label: tc(epoch + 1_000, epoch + 4_000, "msg-attempt") }],
+			laneEpochMs: epoch,
+		});
+		assert.ok(r);
+		assert.equal(r?.messageId, "msg-attempt");
+		assert.equal(r?.completedMs, epoch + 4_000);
+	}
+	// With an old turn AND this attempt's turn, the EARLIEST qualifying (>=epoch)
+	// turn binds — and the pre-epoch one is excluded, so a later unexpected turn
+	// cannot hijack capture ("latest" is explicitly not used).
+	{
+		const r = resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: [
+				{ observedAtMs: epoch + 1, label: tc(epoch - 9_000, epoch - 8_000, "old") },
+				{ observedAtMs: epoch + 6_000, label: tc(epoch + 2_000, epoch + 5_000, "attempt-turn") },
+				{ observedAtMs: epoch + 20_000, label: tc(epoch + 18_000, epoch + 19_000, "later-turn") },
+			],
+			laneEpochMs: epoch,
+		});
+		assert.ok(r);
+		assert.equal(r?.messageId, "attempt-turn", "must bind earliest qualifying turn, not latest");
+	}
+});
+
+test("watchdog does not let watchdog-authored progress defer abort", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-noise-progress-"));
+	try {
+		const workflowId = "workflow-watchdog-noise-progress";
+		const laneId = "lane-watchdog-noise-progress";
+		const taskId = "task-watchdog-noise-progress";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-noise-progress",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			// Already nudged to the cap so the lane is abort-eligible on silence.
+			nudgeCount: 2,
+			lastNudgeAt: "2026-05-26T10:00:20.000Z",
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-noise-progress-running",
+		);
+		// Watchdog-authored nudge progress at 10:00:40 — this is NOISE and must
+		// NOT reset the abort budget or defer abort.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			observedAt: "2026-05-26T10:00:40.000Z",
+			phase: "nudged",
+		}, "agent-task-progress-noise-nudged");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			// 50s after the last real nudge (10:00:20) > 30s abort threshold.
+			now: new Date("2026-05-26T10:01:10.000Z"),
+			nudgeQuietPeriodMs: 10_000,
+			maxNudges: 2,
+			abortThresholdMs: 30_000,
+			maxIdleContinuations: 0,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesAborted, 1, "watchdog-authored nudge progress must not defer abort");
+		assert.equal(abortCalls, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 1: watchdog does NOT abort while a tool is genuinely running (no settle yet, within stale window)", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-tool-running-noabort-"));
+	try {
+		const workflowId = "workflow-v112-tool-running";
+		const laneId = "lane-v112-tool-running";
+		const taskId = "task-v112-tool-running";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-tool-running",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-tool-running");
+		// A tool started at 10:00:05 and has NOT settled yet. Even though there is
+		// no meaningful progress afterwards (silence > abortThreshold), the lane is
+		// genuinely working and must not be aborted.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:05.000Z",
+			progressLabel: "agent task tool running callid=call-long-build",
+		}, "agent-task-progress-v112-tool-open");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:50.000Z"), // 45s silence, within staleToolMs
+			nudgeQuietPeriodMs: 10_000,
+			maxNudges: 2,
+			abortThresholdMs: 30_000,
+			maxIdleContinuations: 0,
+			staleToolMs: 60_000,
+			unknownStateMaxMs: 60_000,
+			absoluteLaneAgeMs: 600_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesAborted, 0, "must not abort a lane with a genuinely running tool");
+		assert.equal(abortCalls, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 1: stale open tool (dropped settle) is force-terminated only after unknownStateMaxMs", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-unknown-timeout-"));
+	try {
+		const workflowId = "workflow-v112-unknown";
+		const laneId = "lane-v112-unknown";
+		const taskId = "task-v112-unknown";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-unknown",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-unknown");
+		// Tool opened at 10:00:05, settle event dropped. staleToolMs=30s so by
+		// 10:00:40 it is UNKNOWN; unknownStateMaxMs=30s so it is force-terminated
+		// only once the open tool has been stuck ~>=60s (10:01:10).
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:05.000Z",
+			progressLabel: "agent task tool running callid=call-stuck",
+		}, "agent-task-progress-v112-unknown-open");
+
+		// At 10:00:45 (open 40s): unknown but not past unknownStateMaxMs from unknown entry → no abort.
+		let abortCallsEarly = 0;
+		const early = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:45.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 30_000, unknownStateMaxMs: 30_000, absoluteLaneAgeMs: 600_000,
+			client: { session: { messages: async () => ({ messages: [] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => { abortCallsEarly += 1; return {}; } } } as never,
+		});
+		assert.equal(early.lanesAborted, 0, "unknown within unknownStateMaxMs must not abort");
+		assert.equal(abortCallsEarly, 0);
+
+		// At 10:01:20 (open ~75s >= staleToolMs 30 + unknownStateMaxMs 30): force-terminate.
+		let abortCallsLate = 0;
+		const late = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:01:20.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 30_000, unknownStateMaxMs: 30_000, absoluteLaneAgeMs: 600_000,
+			client: { session: { messages: async () => ({ messages: [] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => { abortCallsLate += 1; return {}; } } } as never,
+		});
+		assert.equal(late.lanesAborted, 1, "stale tool past unknownStateMaxMs must force-terminate");
+		assert.equal(abortCallsLate, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 1: true zero-event lane terminates via absoluteLaneAgeMs even without silence-from-activity", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-lane-age-cap-"));
+	try {
+		const workflowId = "workflow-v112-lane-age";
+		const laneId = "lane-v112-lane-age";
+		const taskId = "task-v112-lane-age";
+		// No progress events at all (true zero-event lane).
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-lane-age",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-lane-age");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:02:30.000Z"), // 150s age
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000,
+			absoluteLaneAgeMs: 120_000, // 2min cap, exceeded
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesAborted, 1, "zero-event lane must terminate at absoluteLaneAgeMs");
+		assert.equal(abortCalls, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 2: TURN_COMPLETED event for this attempt captures body as final (turn-completed authority)", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-turncompleted-capture-"));
+	try {
+		const workflowId = "workflow-v112-turncompleted";
+		const laneId = "lane-v112-turncompleted";
+		const taskId = "task-v112-turncompleted";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-turncompleted",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-turncompleted");
+		// Assistant turn (created after lane epoch) reported time.completed at 10:00:08.
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-attempt created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-v112-turncompleted-tc");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:12.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			client: {
+				session: {
+					// No terminal marker in messages, but assistant text is present.
+					messages: async () => ({ messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "the final answer body" }] }] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesCompleted, 1, "turn-completed event with body must capture");
+		assert.equal(abortCalls, 0);
+		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		const row = rows.find((r) => r.laneId === laneId);
+		assert.equal(row?.state, "task_result");
+		assert.equal(row?.completionStatus, "final");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 2: TURN_COMPLETED does NOT capture while a tool is still running", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-turncompleted-toolguard-"));
+	try {
+		const workflowId = "workflow-v112-tc-toolguard";
+		const laneId = "lane-v112-tc-toolguard";
+		const taskId = "task-v112-tc-toolguard";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-tc-toolguard",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-tc-toolguard");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		// A turn-completed signal exists, but a NEWER tool opened and has not settled
+		// (within stale window) → toolRunningNow=true → capture must be blocked.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-attempt created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-v112-tcg-tc");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:10.000Z",
+			progressLabel: "agent task tool running callid=call-after-complete",
+		}, "agent-task-progress-v112-tcg-toolopen");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:20.000Z"), // within staleToolMs of tool open
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "intermediate text" }] }] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesCompleted, 0, "must not capture turn-completed while a tool is running");
+		assert.equal(abortCalls, 0, "must not abort a lane with a running tool");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 3: turn completed but empty body retries (awaiting_body_capture) then terminalizes as turn_completed_empty", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-awaiting-body-"));
+	try {
+		const workflowId = "workflow-v112-awaiting-body";
+		const laneId = "lane-v112-awaiting-body";
+		const taskId = "task-v112-awaiting-body";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-awaiting-body",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-awaiting-body");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-attempt created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-v112-ab-tc");
+
+		// Body is EMPTY on every poll (SDK buffer never synced in this test).
+		const emptyBodyClient = {
+			session: {
+				messages: async () => ({ messages: [] }),
+				prompt: async () => ({}),
+				promptAsync: async () => ({}),
+				abort: async () => ({}),
+			},
+		} as never;
+
+		// bodyRetryMax=2: first two cycles RETRY (no completion, no failure), third
+		// cycle terminalizes as turn_completed_empty (counts as an aborted lane).
+		const c1 = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:12.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 2, client: emptyBodyClient,
+		});
+		assert.equal(c1.lanesCompleted, 0);
+		assert.equal(c1.lanesAborted, 0, "cycle 1 must retry, not fail");
+
+		const c2 = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:14.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 2, client: emptyBodyClient,
+		});
+		assert.equal(c2.lanesAborted, 0, "cycle 2 must retry, not fail");
+
+		const c3 = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:16.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 2, client: emptyBodyClient,
+		});
+		assert.equal(c3.lanesAborted, 1, "cycle 3 must terminalize as turn_completed_empty after retries");
+
+		// Evidence: a task_failed with the turn_completed_empty reason exists.
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		const failed = reload.entries.find((e) =>
+			e.evidenceClass === "task_failed"
+			&& typeof (e.record as Record<string, unknown>).redacted_reason === "string"
+			&& ((e.record as Record<string, unknown>).redacted_reason as string).includes("turn_completed_empty"),
+		);
+		assert.ok(failed, "must record a turn_completed_empty task_failed");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 (post-review): idle-confirmed capture does NOT fire on silence alone (requires a real session.idle event)", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-idle-needs-event-"));
+	try {
+		const workflowId = "workflow-v112-idle-needs-event";
+		const laneId = "lane-v112-idle-needs-event";
+		const taskId = "task-v112-idle-needs-event";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-idle-needs-event",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-idle-needs-event");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId, lane_id: laneId, state: "running",
+			created_at: "2026-05-26T10:00:00.000Z", updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-v112-idle-needs-event-running");
+		// Assistant body present, NO terminal marker, NO turn-completed event, and
+		// crucially NO session.idle event — only silence. The silence-only idle
+		// heuristic was removed, so this must NOT be captured as stable_idle. It
+		// stays open until the timeout terminator / lane-age cap handles it later.
+		const client = {
+			session: {
+				messages: async () => ({ messages: [{ role: "assistant", parts: [{ type: "text", text: "I'll start by reading the files" }] }] }),
+				prompt: async () => ({}),
+				promptAsync: async () => ({}),
+				abort: async () => ({}),
+			},
+		} as never;
+
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"), // 15s silence > idle-settle, < 30s abort
+			nudgeQuietPeriodMs: 10_000, abortThresholdMs: 30_000, maxIdleContinuations: 0, client,
+		});
+		assert.equal(result.lanesCompleted, 0, "silence alone (no session.idle) must NOT idle-capture");
+		assert.equal(result.lanesAborted, 0, "still within abort threshold");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 4: continuation auto-injection is OFF by default (no prompt without explicit opt-in)", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-continuation-off-"));
+	try {
+		const workflowId = "workflow-v112-cont-off";
+		const laneId = "lane-v112-cont-off";
+		const taskId = "task-v112-cont-off";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-cont-off",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-cont-off");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId, lane_id: laneId, state: "running",
+			created_at: "2026-05-26T10:00:00.000Z", updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-v112-cont-off-running");
+		// A fresh session.idle signal with NO assistant text would, under the opt-in
+		// path, trigger a continuation prompt. With the default (OFF) it must not.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:15.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session idle event observed",
+		}, "agent-task-progress-v112-cont-off-idle");
+
+		let promptAsyncCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:16.000Z"),
+			nudgeQuietPeriodMs: 60_000, abortThresholdMs: 30_000,
+			// no maxIdleContinuations passed → default 0 (OFF)
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => ({}),
+					promptAsync: async () => { promptAsyncCalls += 1; return {}; },
+					abort: async () => ({}),
+				},
+			} as never,
+		});
+		assert.equal(promptAsyncCalls, 0, "no continuation prompt may be injected by default");
+		assert.equal(result.lanesNudged, 0);
+		assert.equal(result.lanesAborted, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("single session.idle event injects one capped idle continuation prompt when idle without final text", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-idle-continuation-"));
+	try {
+		const workflowId = "workflow-watchdog-idle-continuation";
+		const laneId = "lane-watchdog-idle-continuation";
+		const taskId = "task-watchdog-idle-continuation";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-idle-continuation",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0,
+			lastNudgeAt: null,
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-idle-continuation-running",
+		);
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			observedAt: "2026-05-26T10:00:15.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session idle event observed",
+		}, "agent-task-progress-idle-signal-once");
+
+		let promptAsyncCalls = 0;
+		let promptAsyncText: string | undefined;
+		let abortCalls = 0;
+		const client = {
+			session: {
+				// Idle: no assistant text at all.
+				messages: async () => ({ messages: [] }),
+				promptAsync: async (o: { parts?: Array<{ text?: string }> }) => {
+					promptAsyncCalls += 1;
+					promptAsyncText = o?.parts?.[0]?.text;
+					return {};
+				},
+				abort: async () => { abortCalls += 1; return {}; },
+			},
+		} as never;
+
+		const first = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"),
+			// Quiet period is deliberately longer than elapsed silence; the single
+			// session.idle event is the trigger for the continuation-check path.
+			nudgeQuietPeriodMs: 60_000,
+			abortThresholdMs: 30_000,
+			// V11.2 Slice 4: continuation auto-injection is OFF by default; this test
+			// exercises the opt-in path, so it must explicitly enable it.
+			maxIdleContinuations: 1,
+			client,
+		});
+
+		assert.equal(first.lanesPolled, 1);
+		assert.equal(first.lanesNudged, 1);
+		assert.equal(first.lanesAborted, 0);
+		assert.equal(promptAsyncCalls, 1, "exactly one continuation prompt injected");
+		assert.equal(abortCalls, 0);
+		assert.equal(typeof promptAsyncText === "string" && promptAsyncText.toLowerCase().includes("final answer"), true);
+
+		const reloadAfterFirst = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		const childAfterFirst = reloadAfterFirst.entries.find((entry) => entry.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.equal(childAfterFirst?.idle_continuation_count, 1);
+		assert.equal(childAfterFirst?.last_idle_continuation_delivery_status, "sent");
+		assert.equal(childAfterFirst?.last_session_idle_signal_at, "2026-05-26T10:00:15.000Z");
+		assert.equal(childAfterFirst?.last_session_idle_signal_state, "observed");
+
+		// Second cycle: still idle with no text, but below the abort threshold.
+		// The per-lane cap (default 1) must prevent a second injection.
+		const second = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:25.000Z"),
+			nudgeQuietPeriodMs: 60_000,
+			abortThresholdMs: 30_000,
+			maxIdleContinuations: 1,
+			client,
+		});
+
+		assert.equal(promptAsyncCalls, 1, "continuation injection is capped at 1 per lane");
+		assert.equal(second.lanesAborted, 0);
+
+		// Third cycle: idle-continuation budget is exhausted and the abort
+		// threshold is now exceeded, so the lane must become abort-eligible
+		// (continuation must not permanently block abort).
+		const third = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:01:15.000Z"),
+			nudgeQuietPeriodMs: 60_000,
+			abortThresholdMs: 30_000,
+			maxIdleContinuations: 1,
+			client,
+		});
+		assert.equal(third.lanesAborted, 1, "abort fires once continuation budget is exhausted and abort threshold is reached");
+		assert.equal(abortCalls, 1);
+
+		// Terminalization reason must make the exhausted idle continuation explicit.
+		const reloadAfterAbort = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		const taskFailed = reloadAfterAbort.entries.find((entry) => entry.evidenceClass === "task_failed")?.record as Record<string, unknown> | undefined;
+		assert.ok(taskFailed, "expected task_failed terminalization after exhausted continuation");
+		assert.equal(typeof taskFailed?.redacted_reason === "string" && (taskFailed.redacted_reason as string).includes("idle continuation"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("single session.idle event does not inject continuation while a tool is running", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-idle-signal-tool-running-"));
+	try {
+		const workflowId = "workflow-watchdog-idle-signal-tool-running";
+		const laneId = "lane-watchdog-idle-signal-tool-running";
+		const taskId = "task-watchdog-idle-signal-tool-running";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-idle-signal-tool-running",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0,
+			lastNudgeAt: null,
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-idle-signal-tool-running",
+		);
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			observedAt: "2026-05-26T10:00:15.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session idle event observed",
+		}, "agent-task-progress-idle-signal-tool-running");
+
+		let promptAsyncCalls = 0;
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"),
+			nudgeQuietPeriodMs: 60_000,
+			abortThresholdMs: 30_000,
+			client: {
+				session: {
+					messages: async () => ({
+						messages: [
+							{ role: "assistant", parts: [{ type: "tool", state: { status: "running" } }] },
+						],
+					}),
+					promptAsync: async () => { promptAsyncCalls += 1; return {}; },
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesPolled, 1);
+		assert.equal(result.lanesNudged, 0, "tool-running idle signal must not enter continuation/nudge path");
+		assert.equal(result.lanesAborted, 0);
+		assert.equal(promptAsyncCalls, 0);
+		assert.equal(abortCalls, 0);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("watchdog records quiet-lane nudge evidence without raw prompt/noReply by default", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-evidence-only-nudge-"));
+	try {
+		const workflowId = "workflow-watchdog-evidence-only-nudge";
+		const laneId = "lane-watchdog-evidence-only-nudge";
+		const taskId = "task-watchdog-evidence-only-nudge";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-evidence-only-nudge",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0,
+			lastNudgeAt: null,
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-evidence-only-nudge-running",
+		);
+
+		let promptCalls = 0;
+		let promptAsyncCalls = 0;
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"),
+			nudgeQuietPeriodMs: 10_000,
+			abortThresholdMs: 30_000,
+			// Disable idle continuation so this test isolates the legacy
+			// evidence-only noReply nudge path.
+			maxIdleContinuations: 0,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => { promptCalls += 1; return {}; },
+					promptAsync: async () => { promptAsyncCalls += 1; return {}; },
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesPolled, 1);
+		assert.equal(result.lanesNudged, 1);
+		assert.equal(result.lanesAborted, 0);
+		assert.equal(promptCalls, 0);
+		assert.equal(promptAsyncCalls, 0);
+		assert.equal(abortCalls, 0);
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		const child = reload.entries.find((entry) => entry.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.equal(child?.nudge_count, 1);
+		assert.equal(child?.last_nudge_at, "2026-05-26T10:00:15.000Z");
+		assert.equal(child?.last_nudge_delivery_status, "skipped");
+		assert.equal(
+			reload.entries.some((entry) => {
+				const record = entry.record as Record<string, unknown>;
+				return entry.evidenceClass === "agent_task_progress" &&
+					record.lane_id === laneId &&
+					record.phase === "nudged" &&
+					record.progress_label === "async agent task nudge attempt recorded after quiet period; provider-side nudge skipped";
+			}),
+			true,
+		);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

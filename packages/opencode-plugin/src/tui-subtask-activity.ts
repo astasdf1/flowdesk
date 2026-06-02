@@ -106,13 +106,31 @@ function stringField(record: Record<string, unknown>, key: string): string | und
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+// Reduce any FlowDesk/OpenCode session ref to a canonical core id so refs that
+// differ only by how many `ses-` wrapper layers they carry still compare equal.
+// FlowDesk wraps the raw OpenCode session id (`ses_...`) as `ses-<rawId>`, which
+// yields a double-prefixed `ses-ses_...` ref in evidence. The TUI may receive the
+// raw id (`ses_...`), a single-wrapped (`ses-...`), or the double-wrapped form
+// depending on the call site. Stripping every leading `ses-` wrapper layer (the
+// final `ses_...` OpenCode token is preserved) makes the comparison robust to all
+// of these shapes instead of only the single-layer cases the old code handled.
+function canonicalSessionCoreId(ref: string): string {
+	let value = ref.trim();
+	// Peel repeated `ses-` wrapper layers (case-insensitive), but never strip the
+	// raw OpenCode `ses_` token itself.
+	while (/^ses-/i.test(value) && !/^ses-?$/i.test(value)) {
+		value = value.slice(4);
+	}
+	return value;
+}
+
 function sessionRefMatches(rowParentSessionRef: string | undefined, currentParentSessionRef: string | undefined): boolean {
 	if (currentParentSessionRef === undefined || currentParentSessionRef.length === 0) return true;
 	if (rowParentSessionRef === undefined || rowParentSessionRef.length === 0) return false;
 	if (rowParentSessionRef === currentParentSessionRef) return true;
-	if (!currentParentSessionRef.startsWith("ses-") && rowParentSessionRef === `ses-${currentParentSessionRef}`) return true;
-	if (!rowParentSessionRef.startsWith("ses-") && `ses-${rowParentSessionRef}` === currentParentSessionRef) return true;
-	return false;
+	const rowCore = canonicalSessionCoreId(rowParentSessionRef);
+	const currentCore = canonicalSessionCoreId(currentParentSessionRef);
+	return rowCore.length > 0 && rowCore === currentCore;
 }
 
 function rowsForCurrentSession<T extends { parentSessionRef?: string }>(

@@ -79,10 +79,15 @@ Before dispatching implementation, refactor, verification, or multi-file investi
 **Default lane budget**
 
 - One lane should have exactly one primary objective and one clear deliverable.
+- Long or complex work must be split into small lanes before dispatch, even when the user asks for one broad outcome.
+- If the requested work cannot be expressed as a compact lane with one objective, do not dispatch it yet; split it first and launch only the first safe slice.
 - Prefer 1-3 closely related files or one subsystem per implementation lane.
 - Prefer one failure mode, one bug, one test file, or one verification command family per analysis/verifier lane.
 - A lane prompt should fit in a compact paragraph plus bullet checklist; if it needs a long multi-section spec, split it first.
 - Do not ask a single lane to both implement a broad patch, add all tests, run the full suite, perform security review, and summarize release impact.
+- Never create a combined root-cause analysis + code search + implementation + verification mega-lane. Run RCA/search as a read-only lane first, implementation as a focused slice lane second, and verification as a separate focused lane or command check.
+- Do not combine repository-wide code search with patch writing in one lane unless the search is trivial and bounded to the same 1-3 files being edited.
+- Treat evidence/log inspection, source-code location, patch writing, validation, and release/progress documentation as separate objectives unless the edit is trivial and explicitly bounded.
 
 **Split triggers**
 
@@ -110,6 +115,9 @@ Split into sequential lanes when a task includes two or more of these dimensions
 - At most 2 concurrent lanes total, and only when they touch independent areas.
 - Do not bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior.
 - If a lane reaches `inconsistent_finalizing_without_terminal`, `MessageAbortedError`, `invocation_failed`, or repeated nudge symptoms, stop expanding scope. Inspect status/evidence, salvage any patch, and relaunch only a smaller next slice.
+- If any lane receives one nudge, do not add scope or ask it to continue with extra work; wait only for its contracted deliverable. If it receives two nudges, ends with `finalizing_without_terminal`, or has many progress events without a final answer, treat the original slice as too large and retry only with a materially smaller scope.
+- Do not treat continuous progress events as proof that a lane should keep running indefinitely. Long-running lanes must have periodic observable progress and a bounded deliverable; otherwise stop planning more work for that lane and split the remaining task.
+- Retrying the same prompt on a different model is not enough. On retry, reduce the objective count and file/evidence scope first, then choose a model.
 
 When summarizing a plan to the user, state the slices explicitly, for example: "slice 1: status nudge display only; slice 2: quiet-period persistence; slice 3: finalizing stale suppression; slice 4: focused tests." Never silently collapse those slices into one implementation lane.
 

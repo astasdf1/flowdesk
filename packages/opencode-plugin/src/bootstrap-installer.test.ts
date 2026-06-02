@@ -99,7 +99,16 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /sub-agent returns an empty result/);
 		assert.match(mainAgent, /Work breakdown and lane sizing/);
 		assert.match(mainAgent, /exactly one primary objective and one clear deliverable/);
+		assert.match(mainAgent, /Long or complex work must be split into small lanes/);
+		assert.match(mainAgent, /do not dispatch it yet; split it first/);
+		assert.match(mainAgent, /combined root-cause analysis \+ code search \+ implementation \+ verification mega-lane/);
+		assert.match(mainAgent, /repository-wide code search with patch writing/);
+		assert.match(mainAgent, /progress events without a final answer/);
+		assert.match(mainAgent, /Retrying the same prompt on a different model is not enough/);
 		assert.match(mainAgent, /inconsistent_finalizing_without_terminal/);
+		assert.doesNotMatch(mainAgent, /Completion continuation policy/);
+		assert.doesNotMatch(mainAgent, /continue with that next todo automatically/);
+		assert.doesNotMatch(mainAgent, /response-waiting mode/);
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");

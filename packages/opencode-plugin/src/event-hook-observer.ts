@@ -239,10 +239,51 @@ function eventProgress(event: unknown): { phase: FlowDeskAgentTaskProgressV1["ph
 	if (type === "message.part.updated") {
 		const part = isRecord(properties?.part) ? properties.part : undefined;
 		if (part?.type === "step-finish") return { phase: "finalizing", label: "agent task terminal step event observed" };
-		if (part?.type === "tool" && isRecord(part.state) && part.state.status === "error") return { phase: "waiting", label: "agent task tool error event observed" };
+		// V11.2 Slice 1: emit per-callID tool state transitions so the watchdog can
+		// derive toolRunningNow from an event-based open-tool set instead of a
+		// polling snapshot. The callID is encoded in the label with a stable marker
+		// the monitor parses; open = running/pending, settled = completed/error.
+		if (part?.type === "tool") {
+			const state = isRecord(part.state) ? part.state : undefined;
+			const status = typeof state?.status === "string" ? state.status : undefined;
+			const callId = typeof part.callID === "string" && part.callID.length > 0
+				? part.callID
+				: (typeof part.id === "string" ? part.id : "unknown");
+			if (status === "running" || status === "pending") {
+				return { phase: "waiting", label: `agent task tool running callid=${callId}` };
+			}
+			if (status === "completed") {
+				return { phase: "waiting", label: `agent task tool settled callid=${callId}` };
+			}
+			if (status === "error") {
+				return { phase: "waiting", label: `agent task tool error callid=${callId}` };
+			}
+		}
 		return { phase: "waiting", label: "agent task message part event observed" };
 	}
-	if (type === "message.updated" || type === "session.updated" || type === "session.diff") return { phase: "waiting", label: `agent task ${type} event observed` };
+	if (type === "message.updated") {
+		// V11.2 Slice 2: TURN_COMPLETED authority. An assistant message whose
+		// info.time.completed is set means the turn has genuinely ended (NOT a
+		// step-finish, which is only a step boundary). Encode the assistant message
+		// id and its created/completed timestamps in the label so the monitor can
+		// bind capture to the EXPECTED turn (created after the lane epoch) instead of
+		// "latest". Non-completed message.updated stays generic activity.
+		const info = isRecord(properties?.info) ? properties.info : undefined;
+		const role = typeof info?.role === "string" ? info.role : undefined;
+		const isAssistant = role === "assistant" || role === "model";
+		const time = isRecord(info?.time) ? info.time : undefined;
+		const completedMs = typeof time?.completed === "number" ? time.completed : undefined;
+		const createdMs = typeof time?.created === "number" ? time.created : undefined;
+		const messageId = typeof info?.id === "string" && info.id.length > 0 ? info.id : undefined;
+		if (isAssistant && completedMs !== undefined && messageId !== undefined) {
+			return {
+				phase: "finalizing",
+				label: `agent task turn completed msgid=${messageId} created=${createdMs ?? 0} completed=${completedMs}`,
+			};
+		}
+		return { phase: "waiting", label: "agent task message.updated event observed" };
+	}
+	if (type === "session.updated" || type === "session.diff") return { phase: "waiting", label: `agent task ${type} event observed` };
 	return undefined;
 }
 

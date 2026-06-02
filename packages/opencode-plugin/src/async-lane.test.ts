@@ -707,7 +707,9 @@ test("monitorChildSessions sends noReply nudge after quiet period", async () => 
 			_messagesTimeoutMs: 100,
 		});
 
-		// Simulate 25 seconds of silence
+		// Simulate 25 seconds of silence. Isolate the legacy raw noReply nudge
+		// path: enable the raw-nudge capability gate and disable idle
+		// continuation injection (which is the new default recovery).
 		const futureNow = new Date(Date.now() + 25_000);
 		const monResult = await monitorChildSessionsV1({
 			rootDir: root,
@@ -715,6 +717,8 @@ test("monitorChildSessions sends noReply nudge after quiet period", async () => 
 			client,
 			now: futureNow,
 			nudgeQuietPeriodMs: 20_000,
+			allowRawPromptNoReplyNudge: true,
+			maxIdleContinuations: 0,
 		});
 
 		assert.equal(monResult.lanesNudged, 1);
