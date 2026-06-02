@@ -375,6 +375,172 @@ test("status live materializes finalizing-without-terminal inconsistency idempot
 	}
 });
 
+test("status live keeps active awaiting_body_capture as bounded running progress", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-awaiting-body-active-"));
+	try {
+		const workflowId = "workflow-status-awaiting-body-active";
+		const laneId = "lane-status-awaiting-body-active";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-awaiting-body-active", runningLifecycle(workflowId, laneId, "attempt-awaiting-body-active"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-awaiting-body-active", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-awaiting-body-active",
+			child_session_id: "ses-child-awaiting-body-active",
+			parent_session_ref: "ses-status-parent-1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 0,
+			awaiting_body_capture_attempts: 1,
+			awaiting_body_capture_since: "2026-05-27T00:01:00.000Z",
+			created_at: "2026-05-27T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-awaiting-body-active", {
+			...finalizingProgress(workflowId, laneId, "task-awaiting-body-active", 9),
+			observed_at: "2026-05-27T00:01:00.000Z",
+			progress_label: "async agent task awaiting body capture after turn completed event (attempt 1/3)",
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 30_000, finalizingAbsoluteMaxMs: 180_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:02:00.000Z"),
+		});
+
+		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, undefined);
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "running");
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.classification, "progressing_normal");
+		assert.match(result.workflows[0].laneProgressCards?.[0]?.progressLabel ?? "", /awaiting body capture/);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live materializes expired awaiting_body_capture finalizing inconsistency", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-awaiting-body-expired-"));
+	try {
+		const workflowId = "workflow-status-awaiting-body-expired";
+		const laneId = "lane-status-awaiting-body-expired";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-awaiting-body-expired", runningLifecycle(workflowId, laneId, "attempt-awaiting-body-expired"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-awaiting-body-expired", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-awaiting-body-expired",
+			child_session_id: "ses-child-awaiting-body-expired",
+			parent_session_ref: "ses-status-parent-1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 0,
+			awaiting_body_capture_attempts: 1,
+			awaiting_body_capture_since: "2026-05-27T00:01:00.000Z",
+			created_at: "2026-05-27T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-awaiting-body-expired", {
+			...finalizingProgress(workflowId, laneId, "task-awaiting-body-expired", 9),
+			observed_at: "2026-05-27T00:01:00.000Z",
+			progress_label: "async agent task awaiting body capture after turn completed event (attempt 1/3)",
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 30_000, finalizingAbsoluteMaxMs: 60_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:02:01.000Z"),
+		});
+
+		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 1);
+		assert.equal(result.workflows[0].worstLaneStallClassification, "inconsistent_finalizing_without_terminal");
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live extends finalizing wait while strong child progress continues before absolute cap", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalizing-progress-"));
+	try {
+		const workflowId = "workflow-status-finalizing-progress";
+		const laneId = "lane-status-finalizing-progress";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-finalizing-progress", runningLifecycle(workflowId, laneId, "attempt-finalizing-progress"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-progress-1", {
+			...finalizingProgress(workflowId, laneId, "task-finalizing-progress", 1),
+			observed_at: "2026-05-27T00:01:00.000Z",
+			progress_label: "async agent task awaiting body capture after turn completed event (attempt 1/3)",
+		});
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-progress-tool", {
+			schema_version: "flowdesk.agent_task_progress.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-finalizing-progress",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			progress_seq: 2,
+			observed_at: "2026-05-27T00:02:45.000Z",
+			phase: "waiting",
+			progress_label: "agent task tool running callid=call-finalizing-still-working",
+			progress_ref: "progress-lane-status-finalizing-progress-2",
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 30_000, finalizingAbsoluteMaxMs: 180_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+
+		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 0);
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, undefined);
+		assert.equal(result.workflows[0].worstLaneStallClassification, "progressing_normal");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live does not extend finalizing wait beyond absolute cap even with later progress", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalizing-absolute-cap-"));
+	try {
+		const workflowId = "workflow-status-finalizing-absolute-cap";
+		const laneId = "lane-status-finalizing-absolute-cap";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-finalizing-absolute-cap", runningLifecycle(workflowId, laneId, "attempt-finalizing-absolute-cap"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-absolute-cap-1", {
+			...finalizingProgress(workflowId, laneId, "task-finalizing-absolute-cap", 1),
+			observed_at: "2026-05-27T00:01:00.000Z",
+			progress_label: "async agent task awaiting body capture after turn completed event (attempt 1/3)",
+		});
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-finalizing-absolute-cap-tool", {
+			schema_version: "flowdesk.agent_task_progress.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-finalizing-absolute-cap",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			progress_seq: 2,
+			observed_at: "2026-05-27T00:04:05.000Z",
+			phase: "waiting",
+			progress_label: "agent task message.updated event observed",
+			progress_ref: "progress-lane-status-finalizing-absolute-cap-2",
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 30_000, finalizingAbsoluteMaxMs: 180_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:04:10.000Z"),
+		});
+
+		assert.equal(result.totalInconsistentFinalizingWithoutTerminalLaneCount, 1);
+		assert.equal(result.workflows[0].worstLaneStallClassification, "inconsistent_finalizing_without_terminal");
+		assert.equal(result.workflows[0].evidenceCounts.agent_task_inconsistency, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("status live does not materialize inconsistency when finalizing has task_result", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalizing-result-"));
 	try {
@@ -451,6 +617,103 @@ test("status live does not materialize inconsistency when finalizing has task_re
 		assert.equal(result.workflows[0].laneProgressAggregate?.expected, 1);
 		assert.equal(result.workflows[0].laneProgressAggregate?.normalCompleted, 0);
 		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, false);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionAvailable, true);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionKind, "repair_summary");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live classifies task_result as terminal over stale running lifecycle and progress", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-result-stale-running-"));
+	try {
+		const workflowId = "workflow-long-review-smoke-20260602-regression";
+		const laneId = "lane-task-long-review-smoke-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-stale-running-result-1", {
+			...runningLifecycle(workflowId, laneId, "attempt-stale-running-result-1"),
+			updated_at: "2026-06-02T00:00:00.000Z",
+		});
+		writeStatusRecord(rootDir, workflowId, "agent_task_progress", "agent-task-progress-stale-running-result-1", {
+			...finalizingProgress(workflowId, laneId, "task-stale-running-result-1", 4),
+			observed_at: "2026-06-02T00:01:00.000Z",
+		});
+		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-stale-running-result-1", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-stale-running-result-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "done",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			created_at: "2026-06-02T00:02:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-06-02T00:10:00.000Z"),
+		});
+
+		assert.equal(result.totalStalledLaneCount, 0);
+		assert.equal(result.workflows[0].worstLaneStallClassification, "terminal");
+		assert.equal(result.workflows[0].laneStallProjection?.entries[0]?.classification, "terminal");
+		assert.equal(result.workflows[0].laneStallProjection?.entries[0]?.lifecycleState, "task_result");
+		assert.equal(result.workflows[0].laneStallProjection?.entries[0]?.lastSignalSource, "task_result");
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.state, "task_result");
+		assert.equal(result.workflows[0].laneProgressCards?.[0]?.classification, "terminal");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.state, "task_result");
+		assert.equal(result.workflows[0].subtaskActivityRows?.[0]?.classification, "terminal");
+		assert.doesNotMatch(result.summaryForUser ?? "", /stalled/);
+		assert.match(result.summaryForUser ?? "", /lane_state=task_result\/terminal/);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live reports salvage next action for terminal no_output lanes", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-no-output-next-"));
+	try {
+		const workflowId = "workflow-status-no-output-next-1";
+		const laneId = "lane-task-no-output-next-1";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-no-output-next-1", {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			attempt_id: "attempt-no-output-next-1",
+			parent_session_ref: "ses-parent",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "no_output",
+			timeout_ms: 0,
+			orphan_max_age_ms: 0,
+			retry_count: 0,
+			created_at: "2026-05-27T00:00:00.000Z",
+			updated_at: "2026-05-27T00:01:00.000Z",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, agentTaskFinalizingInconsistencyGraceMs: 90_000 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+
+		assert.equal(result.workflows[0].laneProgressAggregate?.terminal, 1);
+		assert.equal(result.workflows[0].laneProgressAggregate?.taskResult, 0);
+		assert.equal(result.workflows[0].laneProgressAggregate?.autoNextStepEligible, false);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionAvailable, true);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionKind, "salvage_or_verify");
+		assert.match(result.summaryForUser ?? "", /next_action=salvage_or_verify_ready/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

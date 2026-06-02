@@ -14,6 +14,8 @@ type UiRow = {
 	classification: "progressing_normal" | "progressing_late" | "stalled" | "terminal" | "inconsistent_finalizing_without_terminal" | "unknown";
 	progressPhase?: string;
 	startedAt?: string;
+	completedAt?: string;
+	durationMs?: number;
 	lastObservedAt?: string;
 	nudgeCount?: number;
 	rawNudgeCount?: number;
@@ -36,6 +38,44 @@ type SynthesisCacheRow = {
 	conflictDetected: boolean;
 	summaryPreview: string;
 	observedAt: string;
+};
+
+type CompletionWakeReadyRow = {
+	workflowId: string;
+	parentSessionRef?: string;
+	completionKind: "task_result" | "task_failed" | "auto_next_ready";
+	readyAt: string;
+	dedupeKey: string;
+	consumptionKey: string;
+	consumed: boolean;
+	consumedAt?: string;
+	laneIds: readonly string[];
+	taskResultRefs: readonly string[];
+	taskFailedRefs: readonly string[];
+	taskSummaries: readonly string[];
+	notificationLabel: string;
+	nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
+};
+
+type AgentTaskLogIndexRow = {
+	workflowId: string;
+	laneId: string;
+	taskId?: string;
+	childSessionId?: string;
+	childSessionRef?: string;
+	parentSessionRef?: string;
+	agentRef?: string;
+	providerQualifiedModelId?: string;
+	createdAt?: string;
+	terminalAt?: string;
+	nudgeCount: number;
+	lastNudgeAt?: string;
+	progressEvents: readonly { label: string; phase?: string; observedAt: string; progressRef?: string }[];
+	sessionErrorLabels: readonly string[];
+	taskResultRef?: string;
+	taskFailedRef?: string;
+	lifecycleRef?: string;
+	openCodeLocalSessionRefs: { childSessionId?: string; sessionDiffPath?: string };
 };
 
 const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch|fallback|reselect/i;
@@ -99,6 +139,32 @@ function observedTime(value: unknown): number {
 	return typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
 }
 
+function preferredStartedAt(existing: unknown, candidate: unknown): string | undefined {
+	const existingMs = observedTime(existing);
+	const candidateMs = observedTime(candidate);
+	if (existingMs > 0 && (candidateMs === 0 || existingMs <= candidateMs) && typeof existing === "string") return existing;
+	if (candidateMs > 0 && typeof candidate === "string") return candidate;
+	return undefined;
+}
+
+function rowDisplayTime(row: UiRow): number {
+	return observedTime(row.startedAt) || observedTime(row.lastObservedAt);
+}
+
+function withStableRowTimes(row: UiRow, previous?: UiRow): UiRow {
+	const startedAt = preferredStartedAt(previous?.startedAt, row.startedAt);
+	const completedAt = row.completedAt ?? previous?.completedAt;
+	const startedMs = observedTime(startedAt);
+	const completedMs = observedTime(completedAt);
+	const durationMs = startedMs > 0 && completedMs > 0 && completedMs >= startedMs ? completedMs - startedMs : row.durationMs ?? previous?.durationMs;
+	return {
+		...row,
+		...(startedAt === undefined ? {} : { startedAt }),
+		...(completedAt === undefined ? {} : { completedAt }),
+		...(durationMs === undefined ? {} : { durationMs }),
+	};
+}
+
 function monotonicObservedAt(candidate: string, existing: unknown): string {
 	const candidateMs = observedTime(candidate);
 	const existingMs = observedTime(existing);
@@ -133,16 +199,16 @@ function rowRichness(row: UiRow): number {
  *      the candidate.
  */
 function choosePreferredRow(existing: UiRow | undefined, candidate: UiRow): UiRow {
-	if (existing === undefined) return { ...candidate };
+	if (existing === undefined) return withStableRowTimes({ ...candidate });
 	const existingRank = rowTerminalRank(existing);
 	const candidateRank = rowTerminalRank(candidate);
-	if (candidateRank > existingRank) return { ...existing, ...candidate };
-	if (candidateRank < existingRank) return { ...existing };
+	if (candidateRank > existingRank) return withStableRowTimes({ ...existing, ...candidate }, existing);
+	if (candidateRank < existingRank) return withStableRowTimes({ ...existing });
 	const existingTime = observedTime(existing.lastObservedAt);
 	const candidateTime = observedTime(candidate.lastObservedAt);
-	if (candidateTime > existingTime) return { ...existing, ...candidate };
-	if (candidateTime < existingTime) return { ...existing };
-	return rowRichness(candidate) >= rowRichness(existing) ? { ...existing, ...candidate } : { ...existing };
+	if (candidateTime > existingTime) return withStableRowTimes({ ...existing, ...candidate }, existing);
+	if (candidateTime < existingTime) return withStableRowTimes({ ...existing });
+	return rowRichness(candidate) >= rowRichness(existing) ? withStableRowTimes({ ...existing, ...candidate }, existing) : withStableRowTimes({ ...existing });
 }
 
 function choosePreferredWorkflow(existing: Record<string, unknown> | undefined, candidate: Record<string, unknown>): Record<string, unknown> {
@@ -178,6 +244,11 @@ function safeSummaryPreview(value: string | undefined): string | undefined {
 	return compact.length > 80 ? `${compact.slice(0, 79)}…` : compact;
 }
 
+function boundedLogLabel(value: string): string {
+	const compact = value.replace(/\s+/g, " ").trim();
+	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
+}
+
 function mergeRowsByWorkflowLane(input: {
 	existing: unknown;
 	workflowId: string;
@@ -205,8 +276,30 @@ function mergeRowsByWorkflowLane(input: {
 		merged.set(key, choosePreferredRow(merged.get(key), row));
 	}
 	return [...merged.values()]
-		.sort((left, right) => observedTime(right.lastObservedAt) - observedTime(left.lastObservedAt))
+		.sort((left, right) => rowDisplayTime(right) - rowDisplayTime(left))
 		.slice(0, SUBTASK_ACTIVITY_CACHE_ROW_LIMIT);
+}
+
+function mergeAgentTaskLogIndexRows(input: {
+	existing: unknown;
+	rows: readonly AgentTaskLogIndexRow[];
+}): readonly AgentTaskLogIndexRow[] {
+	const merged = new Map<string, AgentTaskLogIndexRow>();
+	if (Array.isArray(input.existing)) {
+		for (const row of input.existing) {
+			if (!isRecord(row)) continue;
+			const workflowId = getString(row, "workflowId");
+			const laneId = getString(row, "laneId");
+			if (workflowId === undefined || laneId === undefined) continue;
+			merged.set(`${workflowId}\u0000${laneId}`, row as AgentTaskLogIndexRow);
+		}
+	}
+	for (const row of input.rows) {
+		merged.set(`${row.workflowId}\u0000${row.laneId}`, row);
+	}
+	return [...merged.values()]
+		.sort((left, right) => observedTime(right.terminalAt ?? right.createdAt) - observedTime(left.terminalAt ?? left.createdAt))
+		.slice(0, 50);
 }
 
 function mergeReadyWorkflows(input: {
@@ -271,6 +364,142 @@ function mergeSynthesisRows(input: {
 		.slice(0, 5);
 }
 
+function mergeCompletionWakeReadyRows(input: {
+	existing: unknown;
+	row: CompletionWakeReadyRow | undefined;
+}): readonly CompletionWakeReadyRow[] {
+	const merged = new Map<string, CompletionWakeReadyRow>();
+	if (Array.isArray(input.existing)) {
+		for (const row of input.existing) {
+			if (!isRecord(row)) continue;
+			const workflowId = getString(row, "workflowId");
+			const readyAt = getString(row, "readyAt");
+			const dedupeKey = getString(row, "dedupeKey");
+			const consumptionKey = getString(row, "consumptionKey");
+			const completionKind = getString(row, "completionKind");
+			if (workflowId === undefined || readyAt === undefined || dedupeKey === undefined || consumptionKey === undefined) continue;
+			if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready") continue;
+			const parentSessionRef = getString(row, "parentSessionRef");
+			merged.set(dedupeKey, {
+				workflowId,
+				...(parentSessionRef === undefined ? {} : { parentSessionRef }),
+				completionKind,
+				readyAt,
+				dedupeKey,
+				consumptionKey,
+				consumed: row.consumed === true,
+				...(getString(row, "consumedAt") === undefined ? {} : { consumedAt: getString(row, "consumedAt") }),
+				laneIds: Array.isArray(row.laneIds) ? row.laneIds.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
+				taskResultRefs: Array.isArray(row.taskResultRefs) ? row.taskResultRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
+				taskFailedRefs: Array.isArray(row.taskFailedRefs) ? row.taskFailedRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
+				taskSummaries: Array.isArray(row.taskSummaries) ? row.taskSummaries.filter((value): value is string => typeof value === "string" && value.length > 0 && !FORBIDDEN_SUMMARY_MARKERS.test(value)).map((value) => value.slice(0, 20)).slice(0, 3) : [],
+				notificationLabel: getString(row, "notificationLabel")?.slice(0, 80) ?? "FlowDesk completion ready",
+				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+			});
+		}
+	}
+	if (input.row !== undefined) {
+		const existing = merged.get(input.row.dedupeKey);
+		if (existing === undefined || observedTime(input.row.readyAt) >= observedTime(existing.readyAt)) {
+			const consumedCarryover = existing?.consumed === true && existing.consumptionKey === input.row.consumptionKey;
+			merged.set(input.row.dedupeKey, consumedCarryover ? { ...input.row, consumed: true, ...(existing.consumedAt === undefined ? {} : { consumedAt: existing.consumedAt }) } : input.row);
+		}
+	}
+	return [...merged.values()]
+		.sort((left, right) => observedTime(right.readyAt) - observedTime(left.readyAt))
+		.slice(0, 8);
+}
+
+function evidenceEntriesByLane(entries: readonly FlowDeskSessionEvidenceReloadEntryV1[], evidenceClass: string): Map<string, FlowDeskSessionEvidenceReloadEntryV1[]> {
+	const byLane = new Map<string, FlowDeskSessionEvidenceReloadEntryV1[]>();
+	for (const entry of entries) {
+		if (entry.evidenceClass !== evidenceClass) continue;
+		const laneId = getString(entry.record, "lane_id");
+		if (laneId === undefined) continue;
+		const current = byLane.get(laneId) ?? [];
+		current.push(entry);
+		byLane.set(laneId, current);
+	}
+	return byLane;
+}
+
+function childSessionIdFromRecord(record: Record<string, unknown> | undefined): string | undefined {
+	const childSessionId = getString(record ?? {}, "child_session_id");
+	if (childSessionId !== undefined) return childSessionId;
+	const childSessionRef = getString(record ?? {}, "child_session_ref");
+	return childSessionRef?.startsWith("ses-") ? childSessionRef.slice("ses-".length) : undefined;
+}
+
+function buildAgentTaskLogIndexRows(input: {
+	workflowId: string;
+	entries: readonly FlowDeskSessionEvidenceReloadEntryV1[];
+	resultByLane: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+	failedByLane: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+	contextByLane: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+	childSessionByLane: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+	terminalLifecycleByLane: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+	laneIds: Set<string>;
+}): AgentTaskLogIndexRow[] {
+	const progressEntriesByLane = evidenceEntriesByLane(input.entries, "agent_task_progress");
+	return [...input.laneIds].map((laneId) => {
+		const resultEntry = input.resultByLane.get(laneId);
+		const failedEntry = input.failedByLane.get(laneId);
+		const contextEntry = input.contextByLane.get(laneId);
+		const childSessionEntry = input.childSessionByLane.get(laneId);
+		const lifecycleEntry = input.terminalLifecycleByLane.get(laneId);
+		const result = resultEntry?.record;
+		const failed = failedEntry?.record;
+		const context = contextEntry?.record;
+		const childSession = childSessionEntry?.record;
+		const lifecycle = lifecycleEntry?.record;
+		const progressEvents = (progressEntriesByLane.get(laneId) ?? [])
+			.map((entry) => ({
+				label: boundedLogLabel(getString(entry.record, "progress_label") ?? "agent task progress"),
+				...(getString(entry.record, "phase") === undefined ? {} : { phase: getString(entry.record, "phase") }),
+				observedAt: getString(entry.record, "observed_at") ?? getString(entry.record, "created_at") ?? new Date(0).toISOString(),
+				...(getString(entry.record, "progress_ref") === undefined ? {} : { progressRef: getString(entry.record, "progress_ref") }),
+			}))
+			.sort((left, right) => observedTime(left.observedAt) - observedTime(right.observedAt))
+			.slice(0, 50);
+		const sessionErrorLabels = [
+			getString(failed ?? {}, "failure_category"),
+			getString(failed ?? {}, "redacted_error_details"),
+		]
+			.filter((value): value is string => typeof value === "string" && value.length > 0)
+			.map((value) => boundedLogLabel(value))
+			.slice(0, 8);
+		const childSessionId = childSessionIdFromRecord(childSession) ?? childSessionIdFromRecord(lifecycle);
+		const sessionDiffPath = getString(childSession ?? {}, "session_diff_path") ?? getString(lifecycle ?? {}, "session_diff_path");
+		const nudgeCount = typeof childSession?.nudge_count === "number" && Number.isFinite(childSession.nudge_count) ? childSession.nudge_count : 0;
+		const terminalAt = getString(result ?? failed ?? lifecycle ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? {}, "created_at");
+		return {
+			workflowId: input.workflowId,
+			laneId,
+			...(getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "task_id") === undefined ? {} : { taskId: getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "task_id") }),
+			...(childSessionId === undefined ? {} : { childSessionId }),
+			...(getString(childSession ?? lifecycle ?? {}, "child_session_ref") === undefined ? {} : { childSessionRef: getString(childSession ?? lifecycle ?? {}, "child_session_ref") }),
+			...(getString(context ?? childSession ?? lifecycle ?? {}, "parent_session_ref") === undefined ? {} : { parentSessionRef: getString(context ?? childSession ?? lifecycle ?? {}, "parent_session_ref") }),
+			...(getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "agent_ref") === undefined ? {} : { agentRef: getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "agent_ref") }),
+			...(getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "provider_qualified_model_id") === undefined ? {} : { providerQualifiedModelId: getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "provider_qualified_model_id") }),
+			...(getString(context ?? childSession ?? lifecycle ?? {}, "created_at") === undefined ? {} : { createdAt: getString(context ?? childSession ?? lifecycle ?? {}, "created_at") }),
+			...(terminalAt === undefined ? {} : { terminalAt }),
+			nudgeCount,
+			...(getString(childSession ?? {}, "last_nudge_at") === undefined ? {} : { lastNudgeAt: getString(childSession ?? {}, "last_nudge_at") }),
+			progressEvents,
+			sessionErrorLabels,
+			...(resultEntry === undefined ? {} : { taskResultRef: resultEntry.evidenceId }),
+			...(failedEntry === undefined ? {} : { taskFailedRef: failedEntry.evidenceId }),
+			...(lifecycleEntry === undefined ? {} : { lifecycleRef: lifecycleEntry.evidenceId }),
+			openCodeLocalSessionRefs: {
+				...(childSessionId === undefined ? {} : { childSessionId }),
+				...(sessionDiffPath === undefined ? {} : { sessionDiffPath }),
+			},
+		};
+	})
+		.sort((left, right) => observedTime(right.terminalAt ?? right.createdAt) - observedTime(left.terminalAt ?? left.createdAt))
+		.slice(0, 50);
+}
+
 export function refreshFlowDeskCompletionUiCachesV1(input: {
 	rootDir: string;
 	workflowId: string;
@@ -285,21 +514,25 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const sidebarCachePath = join(uiDir, "subtask-activity-sidebar.json");
 		const autoNextCachePath = join(uiDir, "auto-next-ready.json");
 		const synthesisCachePath = join(uiDir, "latest-synthesis.json");
+		const wakeReadyCachePath = join(uiDir, "completion-wake-ready.json");
+		const agentTaskLogIndexPath = join(uiDir, "agent-task-log-index.json");
 		const existingSidebar = readJsonRecord(sidebarCachePath);
 		const existingAutoNext = readJsonRecord(autoNextCachePath);
 		const existingSynthesis = readJsonRecord(synthesisCachePath);
+		const existingWakeReady = readJsonRecord(wakeReadyCachePath);
 		// Invariant: the file-level `observed_at` MUST be monotonic across every
 		// previously persisted cache file. A back-dated/duplicate terminal event
 		// (e.g. an older `task_failed` arriving after a newer one was already
 		// merged) must never regress the visible `observed_at`. We fold in
-		// sidebar, auto-next, AND synthesis observed_at so any one of them can
+		// sidebar, auto-next, synthesis, AND wake-ready observed_at so any one of them can
 		// pin monotonicity.
+		const existingSynthesisObservedAt = typeof existingSynthesis?.observed_at === "string" ? existingSynthesis.observed_at : requestedObservedAt;
 		const observedAt = monotonicObservedAt(
 			monotonicObservedAt(
 				monotonicObservedAt(requestedObservedAt, existingSidebar?.observed_at),
 				existingAutoNext?.observed_at,
 			),
-			existingSynthesis?.observed_at,
+			monotonicObservedAt(existingSynthesisObservedAt, existingWakeReady?.observed_at),
 		);
 		const resultByLane = latestByLane(reload.entries, "task_result");
 		const failedByLane = latestByLane(reload.entries, "task_failed");
@@ -380,7 +613,14 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				? "finalizing"
 				: isFailedLike
 					? "failed"
-					: getString(progress ?? {}, "phase") ?? "waiting";
+				: getString(progress ?? {}, "phase") ?? "waiting";
+			const startedAt = getString(context ?? {}, "created_at") ?? getString(childSession ?? {}, "created_at");
+			const completedAt = isTerminal
+				? getString(result ?? failed ?? lifecycle ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? {}, "created_at")
+				: undefined;
+			const startedMs = observedTime(startedAt);
+			const completedMs = observedTime(completedAt);
+			const durationMs = startedMs > 0 && completedMs > 0 && completedMs >= startedMs ? completedMs - startedMs : undefined;
 			return {
 				workflowId: input.workflowId,
 				laneId,
@@ -389,7 +629,9 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				state,
 				classification: isTerminal ? "terminal" : "progressing_normal",
 				progressPhase,
-				...(getString(context ?? {}, "created_at") === undefined ? {} : { startedAt: getString(context ?? {}, "created_at") }),
+				...(startedAt === undefined ? {} : { startedAt }),
+				...(completedAt === undefined ? {} : { completedAt }),
+				...(durationMs === undefined ? {} : { durationMs }),
 				lastObservedAt: getString(result ?? failed ?? lifecycle ?? progress ?? context ?? childSession ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? progress ?? context ?? childSession ?? {}, "created_at") ?? getString(progress ?? {}, "observed_at") ?? observedAt,
 				...(effectiveNudgeCount === undefined ? {} : { nudgeCount: effectiveNudgeCount }),
 				...(rawNudgeCount === undefined || rawNudgeCount === effectiveNudgeCount ? {} : { rawNudgeCount }),
@@ -444,6 +686,61 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			expires_at: new Date(Date.parse(observedAt) + 120_000).toISOString(),
 			workflows: readyWorkflows,
 			authority: { displayOnly: true, realOpenCodeDispatch: false, providerCall: false, runtimeExecution: false, fallbackAuthority: false, hardCancelOrNoReplyAuthority: false },
+		}, null, 2)}\n`, "utf8");
+
+		const terminalComplete = rows.length > 0 && rows.every((row) => row.classification === "terminal");
+		const resultRefs = rows.filter((row) => row.state === "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
+		const failedRefs = rows.filter((row) => row.state !== "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
+		const wakeReadyAt = terminalComplete ? rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0) : 0;
+		const wakeKind = ready ? "auto_next_ready" : failedRefs.length > 0 ? "task_failed" : "task_result";
+		const wakeParentScope = parentSessionRef ?? "global";
+		const wakeReadyIso = wakeReadyAt > 0 ? new Date(wakeReadyAt).toISOString() : observedAt;
+		const wakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}`;
+		const wakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:${wakeReadyIso}:${resultRefs.length}:${failedRefs.length}`;
+		const wakeReadyRow: CompletionWakeReadyRow | undefined = terminalComplete ? {
+			workflowId: input.workflowId,
+			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
+			completionKind: wakeKind,
+			readyAt: wakeReadyIso,
+			dedupeKey: wakeDedupeKey,
+			consumptionKey: wakeConsumptionKey,
+			consumed: false,
+			laneIds: rows.map((row) => row.laneId).slice(0, 32),
+			taskResultRefs: resultRefs,
+			taskFailedRefs: failedRefs,
+			taskSummaries: rows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
+			notificationLabel: ready ? "FlowDesk synthesis ready" : failedRefs.length > 0 ? "FlowDesk task completed with failures" : "FlowDesk task completed",
+			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+		} : undefined;
+		const wakeReadyRows = mergeCompletionWakeReadyRows({ existing: existingWakeReady?.rows, row: wakeReadyRow });
+		writeFileSync(wakeReadyCachePath, `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: observedAt,
+			expires_at: new Date(Date.parse(observedAt) + 120_000).toISOString(),
+			rows: wakeReadyRows,
+			authority: { displayOnly: true, realOpenCodeDispatch: false, parentPromptInjection: false, providerCall: false, runtimeExecution: false, actualLaneLaunch: false, fallbackAuthority: false, hardCancelOrNoReplyAuthority: false },
+		}, null, 2)}\n`, "utf8");
+
+		const agentTaskLogRows = buildAgentTaskLogIndexRows({
+			workflowId: input.workflowId,
+			entries: reload.entries,
+			resultByLane,
+			failedByLane,
+			contextByLane,
+			childSessionByLane,
+			terminalLifecycleByLane,
+			laneIds,
+		});
+		const mergedAgentTaskLogRows = mergeAgentTaskLogIndexRows({
+			existing: readJsonRecord(agentTaskLogIndexPath)?.rows,
+			rows: agentTaskLogRows,
+		});
+		writeFileSync(agentTaskLogIndexPath, `${JSON.stringify({
+			schema_version: "flowdesk.agent_task_log_index.v1",
+			observed_at: observedAt,
+			expires_at: new Date(Date.parse(observedAt) + 120_000).toISOString(),
+			rows: mergedAgentTaskLogRows,
+			authority: { displayOnly: true, redactedTimelineOnly: true, realOpenCodeDispatch: false, providerCall: false, runtimeExecution: false, actualLaneLaunch: false, storesRawPrompts: false, storesProviderPayloads: false },
 		}, null, 2)}\n`, "utf8");
 
 		const synthesisRecord = latestSynthesisEntry?.record;

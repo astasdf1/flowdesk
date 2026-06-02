@@ -81,7 +81,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		if (!taskId) continue;
 
 		const usageMap = buildUsageMapFromProviders(rows, () => selectionNow);
-		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds }, () => selectionNow);
+		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds, availabilitySource: "durable_cache" }, () => selectionNow);
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		const assignmentId = `assignment-${randomBytes(4).toString("hex")}`;

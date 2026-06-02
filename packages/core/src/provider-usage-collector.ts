@@ -180,6 +180,7 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
       freshness_ttl: ttlMinutes,
       reset_time: resetAt,
       reset_bucket: remaining === 0 ? `0% ${bucket.resetBucket}` : bucket.resetBucket,
+      remaining_percent: remaining,
       dispatchability: usageOk ? "dispatchable" : "non_dispatchable",
       uncertainty_flags: [],
       source_ref: target.sourceRef
@@ -228,6 +229,7 @@ export async function collectManagedDispatchBetaUsageEvidenceV1(
           freshness_ttl: ttlMinutes,
           reset_time: addResetAt,
           reset_bucket: addBucket.remaining !== null ? `${addBucket.remaining}% ${addBucket.resetBucket}` : addBucket.resetBucket,
+          remaining_percent: addRemaining,
           dispatchability: addOk ? "dispatchable" : "non_dispatchable",
           uncertainty_flags: [],
           source_ref: target.sourceRef,

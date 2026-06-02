@@ -142,6 +142,7 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.abort.request.v1": [...requestEnvelopeOptional, "attempt_id", "lane_id"],
   "flowdesk.abort.response.v1": responseEnvelopeOptional,
   "flowdesk.usage.response.v1": [...responseEnvelopeOptional, "provider_health_snapshot_ref"],
+  "flowdesk.usage_snapshot.v1": ["remaining_percent"],
   "flowdesk.provider_health_snapshot.v1": ["model_family", "retry_after_bucket", "runtime_config_ref", "telemetry_ref"],
   "flowdesk.bootstrap_install_plan.v1": ["confirmation_ref"],
   "flowdesk.command_generation_summary.v1": ["alias_conformance_ref"],
@@ -182,7 +183,7 @@ const optionalFields: Record<string, readonly string[]> = {
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {
   if (fieldName === "status" || fieldName === "freshness" || fieldName === "verdict_status") return "string";
   if (fieldName.startsWith("is_") || fieldName.startsWith("allow_") || fieldName.startsWith("requires_") || fieldName.endsWith("_eligible") || fieldName.endsWith("_enabled") || fieldName.endsWith("_authorized") || fieldName.endsWith("_bypassed") || fieldName.endsWith("_applied") || fieldName.endsWith("_attempted") || fieldName.endsWith("_required") || fieldName.endsWith("_allowed") || fieldName.endsWith("_confirmed") || fieldName.endsWith("_inferred") || fieldName.endsWith("_ok") || fieldName === "ok" || fieldName === "refresh" || fieldName === "available" || fieldName === "persist_report" || fieldName === "providerCall" || fieldName === "actualLaneLaunch" || fieldName === "runtimeExecution" || fieldName === "cache_usable_for_assignment" || fieldName === "unrelated_profile_mutation" || fieldName === "omitted_legacy_runtime_imports") return "boolean";
-  if (fieldName.endsWith("_count") || fieldName === "priority" || fieldName === "freshness_ttl" || fieldName === "byte_count" || fieldName === "file_count") return "number";
+  if (fieldName.endsWith("_count") || fieldName === "priority" || fieldName === "freshness_ttl" || fieldName === "byte_count" || fieldName === "file_count" || fieldName === "remaining_percent") return "number";
   if (fieldName.endsWith("s") || fieldName.endsWith("_refs") || fieldName.endsWith("_hashes") || fieldName === "safe_next_actions" || fieldName === "lane_refs" || fieldName === "uncertainty_flags" || fieldName === "include_sections" || fieldName === "diagnostic_observations") return "array";
   if (["error", "provider_health_summary", "guard_precheck", "blocker", "blocker_summary", "retention", "usage_policy", "provider_health_policy", "hook_policy", "taxonomy", "model_requirements", "retention_override", "usage_policy_override", "provider_health_policy_override", "hook_policy_override", "promotion_readiness", "managed_dispatch_boundary_input", "managed_dispatch_request", "managed_dispatch_manifest", "managed_dispatch_reloaded_evidence"].includes(fieldName)) return "object";
   return "string";

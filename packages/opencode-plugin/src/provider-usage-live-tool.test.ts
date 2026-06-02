@@ -217,6 +217,53 @@ test("provider usage live reuses a fresh durable snapshot before collecting prov
 	}
 });
 
+test("provider usage live reuses durable snapshot remaining_percent without bucket prefix", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-reuse-explicit-percent-"));
+	try {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-provider-usage-live",
+			evidenceId: "provider-usage-snapshot-claude-20260524T000000000Z",
+			record: {
+				schema_version: "flowdesk.usage_snapshot.v1",
+				snapshot_id: "usage-live-claude-20260524T000000000Z",
+				provider_family: "claude",
+				model_family: "sonnet-4",
+				freshness: "fresh",
+				freshness_ttl: 5,
+				reset_time: "2026-06-01T00:00:00.000Z",
+				reset_bucket: "claude-weekly",
+				remaining_percent: 53,
+				dispatchability: "dispatchable",
+				uncertainty_flags: [],
+				source_ref: "usage-live-source-claude-20260524T000000000Z",
+			},
+		});
+		assert.equal(prepared.ok, true);
+		assert.ok(prepared.writeIntent);
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent]).ok, true);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["claude"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "claude" },
+			now: fixedNow,
+		});
+
+		assert.deepEqual(result.snapshotReuse?.reusedEvidenceIds, [
+			"provider-usage-snapshot-claude-20260524T000000000Z",
+		]);
+		assert.equal(result.providers[0]?.resetBucket, "claude-weekly");
+		assert.equal(result.providers[0]?.remainingPercent, 53);
+		assert.equal(result.providers[0]?.alertLevel, "ok");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("provider usage live preserves sidebar cache percent when reusing bucket-label snapshot", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-sidebar-reuse-"));
 	try {

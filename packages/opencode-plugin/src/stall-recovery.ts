@@ -1591,6 +1591,9 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 const AGENT_TASK_IDLE_CONTINUATION_TEXT =
 	"You appear to have become idle without producing a final answer. If your work is complete, output your complete final answer now. If you are blocked, state the blocker concisely in one short paragraph." as const;
 
+const AGENT_TASK_FINAL_REPORT_REPAIR_TEXT =
+	"FlowDesk detected that your turn completed, but no final answer body was captured. Do not inspect more files, run more commands, or edit files. Provide only a concise final report in this format:\n\nFLOWDESK_FINAL:\nstatus: completed | changes_required | blocked | failed\nsummary: ...\nfiles_changed:\n- ...\ntests_run:\n- ...\nnext_recommended_action: ..." as const;
+
 /**
  * Classify an agent_task_progress record as MEANINGFUL model/runtime activity
  * vs ambient/self-authored noise. Meaningful activity resets the watchdog nudge
@@ -1752,6 +1755,7 @@ async function sendIdleContinuationPrompt(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	timeoutMs = 5_000,
+	promptText: string = AGENT_TASK_IDLE_CONTINUATION_TEXT,
 ): Promise<"sent" | "timeout" | "skipped"> {
 	const promptFn = client.session.promptAsync ?? client.session.prompt;
 	if (promptFn === undefined) return "skipped";
@@ -1759,7 +1763,7 @@ async function sendIdleContinuationPrompt(
 		await Promise.race([
 			(promptFn as (o: unknown) => unknown).call(client.session, {
 				sessionID: childSessionId,
-				parts: [{ type: "text", text: AGENT_TASK_IDLE_CONTINUATION_TEXT }],
+				parts: [{ type: "text", text: promptText }],
 			}),
 			new Promise<never>((_, reject) =>
 				setTimeout(() => reject(new Error("continuation timeout")), timeoutMs),
@@ -2014,29 +2018,42 @@ function parseChildTurnCompletedProgressV1(value: unknown): { messageId: string;
 }
 
 /**
- * V11.2 Slice 2 (G3) — resolve the EXPECTED completed turn for this lane attempt.
+ * V11.2 Slice 2 (G3) — resolve the finalizable completed turn for this lane attempt.
  *
  * The watchdog cannot know the assistant message id before the model creates it,
- * so it binds to the FIRST assistant turn whose message was created at/after the
- * lane epoch (created_at). This avoids capturing a stale/late `time.completed`
- * from an unrelated or earlier turn ("latest" fallback is explicitly forbidden).
+ * so it only considers assistant turns whose message was created at/after the lane
+ * epoch (created_at). For tool-heavy/multi-turn tasks, a completed assistant turn
+ * can be an intermediate tool-call turn, not the task's final answer. Therefore the
+ * caller may provide minObservedAtMs (usually the latest meaningful tool/message
+ * activity) and we select the latest qualifying turn observed at/after that floor.
+ * This mirrors OMO's completion discipline: a turn-completed event is a candidate
+ * signal, while later meaningful work keeps the task open.
  *
- * Returns the bound turn-completed signal, or undefined when no completed turn for
- * this attempt has been observed yet (caller must HOLD capture, never fall back).
+ * Returns the finalizable turn-completed signal, or undefined when no qualifying
+ * completed turn for this attempt has been observed yet (caller must HOLD capture,
+ * never fall back to an older/intermediate completed turn).
  */
 export function resolveFlowDeskExpectedTurnCompletedV1(input: {
 	transitions: ReadonlyArray<{ observedAtMs: number; label: string }>;
 	laneEpochMs: number;
+	minObservedAtMs?: number;
 }): { messageId: string; completedMs: number; observedAtMs: number } | undefined {
 	let best: { messageId: string; completedMs: number; observedAtMs: number; createdMs: number } | undefined;
+	const minObservedAtMs = typeof input.minObservedAtMs === "number" && Number.isFinite(input.minObservedAtMs)
+		? input.minObservedAtMs
+		: input.laneEpochMs;
 	for (const t of input.transitions) {
 		const parsed = parseChildTurnCompletedProgressV1(t.label);
 		if (parsed === undefined) continue;
 		// Only consider turns created at/after the lane epoch (this attempt's turn).
 		if (Number.isFinite(parsed.createdMs) && parsed.createdMs > 0 && parsed.createdMs < input.laneEpochMs) continue;
-		// Bind to the EARLIEST qualifying turn (the first turn of this attempt), not
-		// the latest, so a later unexpected turn cannot re-trigger capture.
-		if (best === undefined || parsed.createdMs < best.createdMs) {
+		// Ignore completed turns that were observed before newer meaningful activity
+		// (for example the assistant tool-call turn before the tool result arrived).
+		if (Number.isFinite(t.observedAtMs) && t.observedAtMs < minObservedAtMs) continue;
+		// Among finalizable candidates, prefer the latest observed/completed turn. A
+		// later assistant turn after tools settle is more likely to be the task answer
+		// than an earlier intermediate turn.
+		if (best === undefined || t.observedAtMs > best.observedAtMs || (t.observedAtMs === best.observedAtMs && parsed.createdMs > best.createdMs)) {
 			best = { messageId: parsed.messageId, completedMs: parsed.completedMs, observedAtMs: t.observedAtMs, createdMs: parsed.createdMs };
 		}
 	}
@@ -2188,10 +2205,12 @@ export async function monitorChildSessionsV1(input: {
 	 * yet synced), the lane is NOT immediately failed as no_response: it is marked
 	 * awaiting_body_capture and retried on later cycles up to bodyRetryMax. After
 	 * the retries are exhausted the lane is terminalized (turn_completed_empty when
-	 * a turn completed, else no_response). bodyRetryIntervalMs is advisory for tests.
+	 * a turn completed, else no_response). finalizingAbsoluteMaxMs is a hard cap
+	 * for this bounded finalizing wait. bodyRetryIntervalMs is advisory for tests.
 	 */
 	bodyRetryMax?: number;         // default 3
 	bodyRetryIntervalMs?: number;  // default 2_000 (advisory)
+	finalizingAbsoluteMaxMs?: number; // default 180_000
 	_forceTaskResultWriteFailureForTest?: boolean;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
@@ -2223,6 +2242,9 @@ export async function monitorChildSessionsV1(input: {
 	const bodyRetryMax = typeof input.bodyRetryMax === "number" && input.bodyRetryMax >= 0
 		? Math.floor(input.bodyRetryMax)
 		: 3;
+	const finalizingAbsoluteMaxMs = typeof input.finalizingAbsoluteMaxMs === "number" && input.finalizingAbsoluteMaxMs > 0
+		? Math.floor(input.finalizingAbsoluteMaxMs)
+		: 180_000;
 	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
 
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
@@ -2427,12 +2449,17 @@ export async function monitorChildSessionsV1(input: {
 			? nowMs - laneToolState.oldestOpenAtMs
 			: 0;
 
-		// V11.2 Slice 2: resolve the EXPECTED completed turn for this attempt (G3).
-		// Bound to the first assistant turn created at/after the lane epoch; never
-		// falls back to "latest", so a stale/late completion of an unrelated turn
-		// cannot trigger capture against the wrong turn.
+		// V11.2 Slice 2: resolve the finalizable completed turn for this attempt (G3).
+		// A message.updated time.completed event marks an assistant turn boundary, not
+		// necessarily the task boundary. If newer meaningful activity (tool running /
+		// settled, text delta, etc.) occurred after a completed turn, that turn was an
+		// intermediate candidate and must not drive body-capture/empty terminalization.
 		const turnCompletedTransitions = (turnCompletedByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
-		const expectedTurnCompleted = resolveFlowDeskExpectedTurnCompletedV1({ transitions: turnCompletedTransitions, laneEpochMs: createdAtMs });
+		const expectedTurnCompleted = resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: turnCompletedTransitions,
+			laneEpochMs: createdAtMs,
+			minObservedAtMs: Math.max(createdAtMs, latestProgressAtMs ?? createdAtMs),
+		});
 
 		// 0. V11.2 Slice 2 — event-primary TURN_COMPLETED capture. When an assistant
 		// turn for THIS attempt has reported time.completed (the authoritative turn-end
@@ -2520,6 +2547,46 @@ export async function monitorChildSessionsV1(input: {
 				const priorAttempts = typeof recordForWrites.awaiting_body_capture_attempts === "number" ? recordForWrites.awaiting_body_capture_attempts : 0;
 				const nextAttempts = priorAttempts + 1;
 				const nowIso = new Date(nowMs).toISOString();
+				const awaitingSinceMs = typeof recordForWrites.awaiting_body_capture_since === "string"
+					? Date.parse(recordForWrites.awaiting_body_capture_since)
+					: nowMs;
+				const finalizingWaitExpired = Number.isFinite(awaitingSinceMs) && nowMs - awaitingSinceMs >= finalizingAbsoluteMaxMs;
+				if (finalizingWaitExpired) {
+					if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+						const token = randomBytes(4).toString("hex");
+						writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-finalizing-absolute-${token}`, {
+							schema_version: "flowdesk.task_failed.v1",
+							workflow_id: input.workflowId,
+							lane_id: laneId,
+							task_id: taskId,
+							agent_ref: agentRef,
+							provider_qualified_model_id: modelId,
+							failure_category: "no_response",
+							redacted_reason: `turn completed but no body captured before finalizing absolute max ${finalizingAbsoluteMaxMs}ms (turn_completed_empty)`,
+							created_at: nowIso,
+							dispatch_authority_enabled: false,
+						});
+						writeAgentTaskProgressEvidence({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							laneId,
+							taskId,
+							agentRef,
+							providerQualifiedModelId: modelId,
+							phase: "failed",
+							progressSeq: 20 + nudgeCount,
+							progressLabel: "async agent task turn completed empty; finalizing absolute max exceeded",
+							observedAt: nowIso,
+						});
+						refreshFlowDeskCompletionUiCachesV1({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							observedAt: nowIso,
+						});
+						result.lanesAborted++;
+						continue;
+					}
+				}
 				if (nextAttempts <= bodyRetryMax) {
 					// Persist the retry counter and wait for a later cycle (bounded).
 					recordForWrites = {
@@ -2544,9 +2611,63 @@ export async function monitorChildSessionsV1(input: {
 					});
 					continue;
 				}
-				// Retries exhausted: terminalize as turn_completed_empty (a turn DID
-				// complete, but no body materialized). Reuse the no_response failure
-				// category enum; the reason records that the turn completed empty.
+				// Retries exhausted: before terminalizing, inject one narrow final-report
+				// repair prompt into the SAME child session. A turn can complete before the
+				// SDK exposes a readable final body, or a child may finish file/tool work
+				// without writing a final answer. The repair prompt is report-only: no new
+				// inspection, tool use, or edits. If this also fails to produce text after a
+				// fresh bounded retry window, fall through to turn_completed_empty below.
+				const repairCount = typeof recordForWrites.turn_completed_empty_repair_count === "number"
+					? recordForWrites.turn_completed_empty_repair_count
+					: 0;
+				if (repairCount < 1) {
+					const repairAt = nowIso;
+					const deliveryStatus = await sendIdleContinuationPrompt(
+						input.client,
+						childSessionId,
+						5_000,
+						AGENT_TASK_FINAL_REPORT_REPAIR_TEXT,
+					);
+					if (deliveryStatus === "sent") {
+						writeAgentTaskProgressEvidence({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							laneId,
+							taskId,
+							agentRef,
+							providerQualifiedModelId: modelId,
+							phase: "nudged",
+							progressSeq: 15 + repairCount,
+							progressLabel: "async agent task final-report repair prompt injected after turn completed empty",
+							observedAt: repairAt,
+						});
+						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, {
+							...recordForWrites,
+							awaiting_body_capture_attempts: 0,
+							turn_completed_empty_repair_count: repairCount + 1,
+							last_turn_completed_empty_repair_at: repairAt,
+							last_turn_completed_empty_repair_delivery_status: deliveryStatus,
+							last_activity_at: repairAt,
+						});
+						result.lanesNudged++;
+						continue;
+					}
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "failed",
+						progressSeq: 15 + repairCount,
+						progressLabel: "async agent task final-report repair prompt unavailable after turn completed empty",
+						observedAt: repairAt,
+					});
+				}
+				// Repair unavailable or exhausted: terminalize as turn_completed_empty (a
+				// turn DID complete, but no body materialized). Reuse the no_response
+				// failure category enum; the reason records that the turn completed empty.
 				if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 					const token = randomBytes(4).toString("hex");
 					writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-turncompleted-empty-${token}`, {

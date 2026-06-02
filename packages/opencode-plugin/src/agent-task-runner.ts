@@ -215,6 +215,7 @@ async function extractAssistantTextFromResponse(
 		messagesTimeoutMs?: number;      // per-call cap for session.messages (default 3000ms)
 		firstTokenGraceMs?: number;      // widened silence window BEFORE first assistant token (heavy models)
 		heartbeatFn?: (elapsedMs: number) => void;
+		nudgeFn?: (nudgeCount: number, lastNudgeAt: string) => void;
 	},
 ): Promise<FlowDeskAgentTaskCaptureResultV1 | undefined> {
 	const messages = client.session.messages;
@@ -388,6 +389,7 @@ async function extractAssistantTextFromResponse(
 			if (nudgeCount < maxNudges) {
 				nudgeCount++;
 				await sendNudge();
+				opts?.nudgeFn?.(nudgeCount, new Date().toISOString());
 				// Reset activity clock after nudge — give a fresh quiet window
 				lastActivityMs = Date.now();
 				lastHeartbeatMs = lastActivityMs;
@@ -540,6 +542,46 @@ function writeAgentTaskTerminalLifecycle(input: {
 		workflowId: input.workflowId,
 		evidenceId: input.evidenceId,
 		record: record as unknown as Record<string, unknown>,
+	});
+}
+
+function writeAgentTaskChildSessionIndex(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	childSessionId: string;
+	parentSessionRef: string;
+	providerQualifiedModelId: string;
+	agentRef: string;
+	nudgeCount: number;
+	lastNudgeAt: string | null;
+	nudgeQuietPeriodMs: number;
+	lastActivityAt: string;
+	createdAt: string;
+	evidenceId: string;
+}): void {
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: input.evidenceId,
+		record: {
+			schema_version: AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION,
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: input.taskId,
+			child_session_id: input.childSessionId,
+			child_session_ref: input.childSessionId.length > 0 ? `ses-${input.childSessionId}` : undefined,
+			parent_session_ref: input.parentSessionRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			agent_ref: input.agentRef,
+			nudge_count: input.nudgeCount,
+			last_nudge_at: input.lastNudgeAt,
+			nudge_quiet_period_ms: input.nudgeQuietPeriodMs,
+			last_activity_at: input.lastActivityAt,
+			created_at: input.createdAt,
+			dispatch_authority_enabled: false,
+		} as unknown as Record<string, unknown>,
 	});
 }
 
@@ -815,6 +857,7 @@ export async function executeFlowDeskAgentTaskV1(
 			provider_qualified_model_id: input.providerQualifiedModelId,
 			failure_category: failureCategory,
 			redacted_reason: String(redactedReason).slice(0, 500),
+			...(launchResult.redactedErrorLabel === undefined ? {} : { redacted_error_details: launchResult.redactedErrorLabel }),
 			created_at: observedAt,
 			dispatch_authority_enabled: false,
 		};
@@ -830,6 +873,7 @@ export async function executeFlowDeskAgentTaskV1(
 			laneId: input.laneId,
 			attemptId,
 			parentSessionRef,
+			childSessionRef: launchResult.childSessionRef,
 			agentRef: input.agentRef,
 			providerQualifiedModelId: input.providerQualifiedModelId,
 			state: "invocation_failed",
@@ -875,34 +919,48 @@ export async function executeFlowDeskAgentTaskV1(
 	const childSessionId = launchResult.childSessionRef?.startsWith("ses-")
 		? launchResult.childSessionRef.slice("ses-".length)
 		: undefined;
+	const nudgeQuietPeriodMs = typeof input._nudgeQuietPeriodMs === "number" && input._nudgeQuietPeriodMs > 0
+		? Math.floor(input._nudgeQuietPeriodMs)
+		: 10_000;
+	const childSessionEvidenceId = `agent-task-child-session-${input.laneId}-${token}`;
+	if (childSessionId !== undefined) {
+		writeAgentTaskChildSessionIndex({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			taskId: input.taskId,
+			childSessionId,
+			parentSessionRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			agentRef: input.agentRef,
+			nudgeCount: 0,
+			lastNudgeAt: null,
+			nudgeQuietPeriodMs,
+			lastActivityAt: observedAt,
+			createdAt: observedAt,
+			evidenceId: childSessionEvidenceId,
+		});
+	}
 
 	// ── Async mode: return immediately, watchdog handles polling/nudging/abort ──
 	if (input.asyncMode === true) {
 		const resolvedChildId = childSessionId ?? "";
-		const nudgeQuietPeriodMs = typeof input._nudgeQuietPeriodMs === "number" && input._nudgeQuietPeriodMs > 0
-			? Math.floor(input._nudgeQuietPeriodMs)
-			: 10_000;
 		// Write child session evidence so watchdog can find it
-		writeSessionEvidence({
+		writeAgentTaskChildSessionIndex({
 			rootDir: input.rootDir,
 			workflowId: input.workflowId,
-			evidenceId: `agent-task-child-session-${input.laneId}-${token}`,
-			record: {
-				schema_version: AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION,
-				workflow_id: input.workflowId,
-				lane_id: input.laneId,
-				task_id: input.taskId,
-				child_session_id: resolvedChildId,
-				parent_session_ref: parentSessionRef,
-				provider_qualified_model_id: input.providerQualifiedModelId,
-				agent_ref: input.agentRef,
-				nudge_count: 0,
-				last_nudge_at: null,
-				nudge_quiet_period_ms: nudgeQuietPeriodMs,
-				last_activity_at: observedAt,
-				created_at: observedAt,
-				dispatch_authority_enabled: false,
-			} as unknown as Record<string, unknown>,
+			laneId: input.laneId,
+			taskId: input.taskId,
+			childSessionId: resolvedChildId,
+			parentSessionRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			agentRef: input.agentRef,
+			nudgeCount: 0,
+			lastNudgeAt: null,
+			nudgeQuietPeriodMs,
+			lastActivityAt: observedAt,
+			createdAt: observedAt,
+			evidenceId: childSessionEvidenceId,
 		});
 		writeAgentTaskProgress({
 			rootDir: input.rootDir,
@@ -924,6 +982,8 @@ export async function executeFlowDeskAgentTaskV1(
 	}
 
 	let resultObservation: FlowDeskAgentTaskCaptureResultV1 | undefined;
+	let syncNudgeCount = 0;
+	let syncLastNudgeAt: string | null = null;
 	if (childSessionId !== undefined) {
 		const runtimeModel = launchResult.status === "lane_launch_started" && typeof launchResult.model === "string"
 			? launchResult.model : undefined;
@@ -942,6 +1002,26 @@ export async function executeFlowDeskAgentTaskV1(
 			runtimeModel,
 			agentName,
 			messagesTimeoutMs: input._messagesTimeoutMs,
+			nudgeFn: (nudgeCount, lastNudgeAt) => {
+				syncNudgeCount = nudgeCount;
+				syncLastNudgeAt = lastNudgeAt;
+				writeAgentTaskChildSessionIndex({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId: input.laneId,
+					taskId: input.taskId,
+					childSessionId,
+					parentSessionRef,
+					providerQualifiedModelId: input.providerQualifiedModelId,
+					agentRef: input.agentRef,
+					nudgeCount: syncNudgeCount,
+					lastNudgeAt: syncLastNudgeAt,
+					nudgeQuietPeriodMs,
+					lastActivityAt: lastNudgeAt,
+					createdAt: observedAt,
+					evidenceId: childSessionEvidenceId,
+				});
+			},
 			heartbeatFn: (elapsedMs) => {
 				recordFlowDeskLaneHeartbeatV1({
 					rootDir: input.rootDir,
@@ -956,6 +1036,22 @@ export async function executeFlowDeskAgentTaskV1(
 					progressSummaryLabel: `agent task waiting for response elapsed=${Math.floor(elapsedMs / 1000)}s`,
 				});
 			},
+		});
+		writeAgentTaskChildSessionIndex({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			taskId: input.taskId,
+			childSessionId,
+			parentSessionRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			agentRef: input.agentRef,
+			nudgeCount: syncNudgeCount,
+			lastNudgeAt: syncLastNudgeAt,
+			nudgeQuietPeriodMs,
+			lastActivityAt: syncLastNudgeAt ?? new Date().toISOString(),
+			createdAt: observedAt,
+			evidenceId: childSessionEvidenceId,
 		});
 	}
 

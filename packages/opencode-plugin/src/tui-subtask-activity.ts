@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type FlowDeskTuiSubtaskActivityClassificationV1 =
@@ -18,6 +18,8 @@ export interface FlowDeskTuiSubtaskActivityRowV1 {
 	classification: FlowDeskTuiSubtaskActivityClassificationV1;
 	progressPhase?: string;
 	startedAt?: string;
+	completedAt?: string;
+	durationMs?: number;
 	lastObservedAt?: string;
 	nudgeCount?: number;
 	rawNudgeCount?: number;
@@ -58,6 +60,27 @@ export interface FlowDeskTuiAutoNextReadyViewV1 {
 	observedAt: string;
 	rootDir: string;
 	workflows: readonly FlowDeskTuiAutoNextReadyWorkflowV1[];
+	redactedReason?: string;
+	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
+}
+
+export interface FlowDeskTuiCompletionWakeNoticeRowV1 {
+	workflowId: string;
+	parentSessionRef?: string;
+	completionKind: "task_result" | "task_failed" | "auto_next_ready";
+	readyAt: string;
+	consumedAt: string;
+	consumptionKey: string;
+	notificationLabel: string;
+	taskSummaries: readonly string[];
+	nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
+}
+
+export interface FlowDeskTuiCompletionWakeNoticeViewV1 {
+	status: "loaded" | "missing" | "stale" | "blocked";
+	observedAt: string;
+	rootDir: string;
+	notices: readonly FlowDeskTuiCompletionWakeNoticeRowV1[];
 	redactedReason?: string;
 	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
 }
@@ -104,6 +127,32 @@ function isClassification(value: unknown): value is FlowDeskTuiSubtaskActivityCl
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
 	const value = record[key];
 	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function safeTaskSummaries(value: unknown): readonly string[] {
+	return Array.isArray(value)
+		? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim().slice(0, 20)).slice(0, 3)
+		: [];
+}
+
+function wakeNoticeFromRecord(record: Record<string, unknown>, consumedAtFallback: string): FlowDeskTuiCompletionWakeNoticeRowV1 | undefined {
+	const workflowId = stringField(record, "workflowId");
+	const readyAt = stringField(record, "readyAt");
+	const consumptionKey = stringField(record, "consumptionKey");
+	const completionKind = stringField(record, "completionKind");
+	if (workflowId === undefined || readyAt === undefined || consumptionKey === undefined) return undefined;
+	if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready") return undefined;
+	return {
+		workflowId,
+		...(stringField(record, "parentSessionRef") === undefined ? {} : { parentSessionRef: stringField(record, "parentSessionRef") }),
+		completionKind,
+		readyAt,
+		consumedAt: stringField(record, "consumedAt") ?? consumedAtFallback,
+		consumptionKey,
+		notificationLabel: stringField(record, "notificationLabel")?.slice(0, 80) ?? "FlowDesk task completed",
+		taskSummaries: safeTaskSummaries(record.taskSummaries),
+		nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+	};
 }
 
 // Reduce any FlowDesk/OpenCode session ref to a canonical core id so refs that
@@ -162,6 +211,8 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		classification,
 		...(stringField(record, "progressPhase") === undefined ? {} : { progressPhase: stringField(record, "progressPhase") }),
 		...(stringField(record, "startedAt") === undefined ? {} : { startedAt: stringField(record, "startedAt") }),
+		...(stringField(record, "completedAt") === undefined ? {} : { completedAt: stringField(record, "completedAt") }),
+		...(numberField(record, "durationMs") === undefined ? {} : { durationMs: numberField(record, "durationMs") }),
 		...(stringField(record, "lastObservedAt") === undefined ? {} : { lastObservedAt: stringField(record, "lastObservedAt") }),
 		...(numberField(record, "nudgeCount") === undefined ? {} : { nudgeCount: numberField(record, "nudgeCount") }),
 		...(numberField(record, "rawNudgeCount") === undefined ? {} : { rawNudgeCount: numberField(record, "rawNudgeCount") }),
@@ -262,6 +313,76 @@ export function loadFlowDeskTuiAutoNextReadyViewV1(input: {
 	}
 }
 
+export function loadFlowDeskTuiCompletionWakeNoticeViewV1(input: {
+	rootDir?: string;
+	currentParentSessionRef?: string;
+	now?: () => Date;
+	consumeReady?: boolean;
+} = {}): FlowDeskTuiCompletionWakeNoticeViewV1 {
+	const observedAt = (input.now ? input.now() : new Date()).toISOString();
+	const nowMs = Date.parse(observedAt);
+	const rootDir = safeRootDir(input.rootDir);
+	const uiDir = join(rootDir, ".flowdesk", "ui");
+	const readyPath = join(uiDir, "completion-wake-ready.json");
+	const noticePath = join(uiDir, "main-session-wake-notifications.json");
+	try {
+		const existingNotice = (() => {
+			try {
+				const parsed = JSON.parse(readFileSync(noticePath, "utf8")) as unknown;
+				return isRecord(parsed) ? parsed : undefined;
+			} catch {
+				return undefined;
+			}
+		})();
+		const existingNoticeRows = Array.isArray(existingNotice?.notices)
+			? existingNotice.notices.filter(isRecord).map((row) => wakeNoticeFromRecord(row, observedAt)).filter((row): row is FlowDeskTuiCompletionWakeNoticeRowV1 => row !== undefined)
+			: [];
+		const noticeExpiresAtMs = typeof existingNotice?.expires_at === "string" ? Date.parse(existingNotice.expires_at) : Number.NaN;
+		const freshNoticeRows = Number.isFinite(noticeExpiresAtMs) && noticeExpiresAtMs <= nowMs ? [] : existingNoticeRows;
+
+		const readyCache = JSON.parse(readFileSync(readyPath, "utf8")) as unknown;
+		if (!isRecord(readyCache) || readyCache.schema_version !== "flowdesk.completion_wake_ready_cache.v1") {
+			const notices = rowsForCurrentSession(freshNoticeRows, input.currentParentSessionRef);
+			return { status: notices.length > 0 ? "loaded" : "missing", observedAt, rootDir, notices, ...(notices.length === 0 ? { redactedReason: "completion wake-ready cache missing" } : {}), safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
+		}
+		const readyRowsRaw = Array.isArray(readyCache.rows) ? readyCache.rows.filter(isRecord) : [];
+		const readyRows = readyRowsRaw.map((row) => wakeNoticeFromRecord(row, observedAt)).filter((row): row is FlowDeskTuiCompletionWakeNoticeRowV1 => row !== undefined);
+		const scopedReadyRows = rowsForCurrentSession(readyRowsRaw.filter((row) => row.consumed !== true).map((row) => wakeNoticeFromRecord(row, observedAt)).filter((row): row is FlowDeskTuiCompletionWakeNoticeRowV1 => row !== undefined), input.currentParentSessionRef);
+		const consumeKeys = new Set(scopedReadyRows.map((row) => row.consumptionKey));
+		let mergedNotices = [...freshNoticeRows];
+		if (input.consumeReady !== false && consumeKeys.size > 0) {
+			const byKey = new Map<string, FlowDeskTuiCompletionWakeNoticeRowV1>();
+			for (const row of mergedNotices) byKey.set(row.consumptionKey, row);
+			for (const row of scopedReadyRows) byKey.set(row.consumptionKey, { ...row, consumedAt: observedAt });
+			mergedNotices = [...byKey.values()].sort((left, right) => Date.parse(right.consumedAt) - Date.parse(left.consumedAt)).slice(0, 8);
+			const updatedReadyRows = readyRowsRaw.map((row) => {
+				const consumptionKey = stringField(row, "consumptionKey");
+				return consumptionKey !== undefined && consumeKeys.has(consumptionKey) ? { ...row, consumed: true, consumedAt: observedAt } : row;
+			});
+			writeFileSync(readyPath, `${JSON.stringify({ ...readyCache, observed_at: observedAt, rows: updatedReadyRows }, null, 2)}\n`, "utf8");
+			writeFileSync(noticePath, `${JSON.stringify({
+				schema_version: "flowdesk.main_session_wake_notifications.v1",
+				observed_at: observedAt,
+				expires_at: new Date(nowMs + 120_000).toISOString(),
+				notices: mergedNotices,
+				authority: { displayOnly: true, consumedWakeReady: true, parentPromptInjection: false, providerCall: false, runtimeExecution: false, actualLaneLaunch: false, hardCancelOrNoReplyAuthority: false },
+			}, null, 2)}\n`, "utf8");
+		}
+		const notices = rowsForCurrentSession(mergedNotices, input.currentParentSessionRef);
+		const readyExpiresAtMs = typeof readyCache.expires_at === "string" ? Date.parse(readyCache.expires_at) : Number.NaN;
+		return {
+			status: Number.isFinite(readyExpiresAtMs) && readyExpiresAtMs <= nowMs ? "stale" : "loaded",
+			observedAt: typeof readyCache.observed_at === "string" ? readyCache.observed_at : observedAt,
+			rootDir,
+			notices,
+			...(notices.length === 0 ? { redactedReason: "no completion wake notices cached" } : {}),
+			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		};
+	} catch {
+		return { status: "missing", observedAt, rootDir, notices: [], redactedReason: "completion wake notice cache unavailable", safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] };
+	}
+}
+
 export function loadFlowDeskTuiLatestSynthesisViewV1(input: {
 	rootDir?: string;
 	now?: () => Date;
@@ -347,8 +468,9 @@ function rowSortRank(row: FlowDeskTuiSubtaskActivityRowV1): number {
 }
 
 function observedAtMs(row: FlowDeskTuiSubtaskActivityRowV1): number {
-	if (row.lastObservedAt === undefined) return 0;
-	const parsed = Date.parse(row.lastObservedAt);
+	const source = row.startedAt ?? row.lastObservedAt;
+	if (source === undefined) return 0;
+	const parsed = Date.parse(source);
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 
@@ -385,6 +507,21 @@ export function formatFlowDeskTuiAutoNextReadyCompactLines(
 	limit = 2,
 ): readonly string[] {
 	return [];
+}
+
+export function formatFlowDeskTuiCompletionWakeNoticeCompactLines(
+	view: FlowDeskTuiCompletionWakeNoticeViewV1,
+	limit = 2,
+): readonly string[] {
+	if (view.notices.length === 0) return [];
+	const lines = [view.status === "stale" ? "FlowDesk ready (stale):" : "FlowDesk ready:"];
+	for (const row of view.notices.slice(0, Math.max(1, limit))) {
+		const glyph = row.completionKind === "task_failed" ? "!" : "✓";
+		const action = row.completionKind === "auto_next_ready" ? "continue" : "status";
+		const summary = row.taskSummaries[0] === undefined ? row.workflowId.replace(/^workflow-/, "").slice(0, 24) : row.taskSummaries[0];
+		lines.push(`${glyph} ${action}: ${summary}`);
+	}
+	return lines;
 }
 
 export function formatFlowDeskTuiLatestSynthesisCompactLines(

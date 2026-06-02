@@ -78,6 +78,31 @@ test("TUI usage snapshot view renders connected provider rows from durable snaps
 	}
 });
 
+test("TUI usage snapshot view reads remaining_percent from durable snapshots", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-usage-remaining-percent-"));
+	try {
+		const workflowId = "workflow-provider-usage-live";
+		writeSnapshot(root, workflowId, "claude", "20260527T010000000Z", {
+			reset_bucket: "claude-weekly",
+			reset_time: "2026-06-03T12:00:00.000Z",
+			remaining_percent: 53,
+		});
+		const view = loadFlowDeskTuiUsageSnapshotViewV1({
+			rootDir: root,
+			workflowId,
+			now: () => new Date("2026-05-27T01:02:00.000Z"),
+		});
+		const claude = view.providers.find((provider) => provider.providerFamily === "claude");
+		assert.equal(view.status, "loaded");
+		assert.equal(claude?.connected, true);
+		assert.equal(claude?.resetBucket, "claude-weekly");
+		assert.equal(claude?.remainingPercent, 53);
+		assert.equal(claude?.alertLevel, "ok");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("TUI usage snapshot view prefers sidebar cache with remaining percent", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-sidebar-cache-"));
 	try {
@@ -180,6 +205,69 @@ test("TUI usage snapshot view keeps expired sidebar cache visible as stale", () 
 		assert.equal(openai?.freshness, "stale");
 		assert.equal(openai?.alertLevel, "stale");
 		assert.match(formatFlowDeskTuiUsageSnapshotCompactLines(view).join("\n"), /OA 5\.5\s+42%/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI usage snapshot view applies sidebar freshness per provider row", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-sidebar-cache-mixed-freshness-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-27T00:00:00.000Z",
+					expires_at: "2026-05-27T00:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "claude",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							observed_at: "2026-05-27T01:00:00.000Z",
+							expires_at: "2026-05-27T01:05:00.000Z",
+							resetBucket: "claude-5h",
+							resetTime: "2026-05-27T03:00:00.000Z",
+							remainingPercent: 91,
+							alertLevel: "ok",
+						},
+						{
+							providerFamily: "openai",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							observed_at: "2026-05-27T00:00:00.000Z",
+							expires_at: "2026-05-27T00:05:00.000Z",
+							resetBucket: "openai-gpt-5h",
+							resetTime: "2026-05-27T03:00:00.000Z",
+							remainingPercent: 42,
+							alertLevel: "ok",
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		const view = loadFlowDeskTuiUsageSnapshotViewV1({ rootDir: root, now: () => new Date("2026-05-27T01:02:00.000Z") });
+		assert.equal(view.status, "loaded");
+		assert.equal(view.redactedReason, "provider usage sidebar cache is stale");
+		const claude = view.providers.find((provider) => provider.providerFamily === "claude");
+		const openai = view.providers.find((provider) => provider.providerFamily === "openai");
+		const gemini = view.providers.find((provider) => provider.providerFamily === "gemini");
+		assert.equal(claude?.connected, true);
+		assert.equal(claude?.freshness, "fresh");
+		assert.equal(claude?.remainingPercent, 91);
+		assert.equal(openai?.connected, false);
+		assert.equal(openai?.freshness, "stale");
+		assert.equal(openai?.alertLevel, "stale");
+		assert.equal(gemini?.connected, false);
+		assert.equal(gemini?.freshness, "unknown");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -922,6 +922,7 @@ export function validateUsageSnapshotV1(value: unknown): ValidationResult {
     typeof value.freshness_ttl === "number" && value.freshness_ttl >= 0 ? valid() : invalid("freshness_ttl is invalid"),
     typeof value.reset_time === "string" && value.reset_time.length > 0 ? validateNoForbiddenRawPayloads(value.reset_time, "reset_time") : invalid("reset_time is required"),
     typeof value.reset_bucket === "string" && value.reset_bucket.length > 0 ? validateNoForbiddenRawPayloads(value.reset_bucket, "reset_bucket") : invalid("reset_bucket is required"),
+    value.remaining_percent === undefined || value.remaining_percent === null || (typeof value.remaining_percent === "number" && Number.isFinite(value.remaining_percent) && value.remaining_percent >= 0 && value.remaining_percent <= 100) ? valid() : invalid("remaining_percent must be a finite percentage between 0 and 100"),
     isEnumValue(value.dispatchability, ["dispatchable", "diagnostic_only", "non_dispatchable"]) ? valid() : invalid("dispatchability is invalid"),
     validateStringArray(value.uncertainty_flags, "uncertainty_flags", USAGE_UNCERTAINTY_FLAGS),
     uncertainty.some((flag) => failClosedFlags.includes(String(flag))) && value.dispatchability !== "non_dispatchable" ? invalid("unsafe usage uncertainty must be non_dispatchable") : valid(),

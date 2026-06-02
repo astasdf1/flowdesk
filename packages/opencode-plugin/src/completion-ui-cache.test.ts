@@ -138,6 +138,102 @@ test("completion UI cache omits task summaries with forbidden markers", () => {
 	}
 });
 
+test("completion UI cache writes provider-free completion wake-ready row for synthesis-ready results", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-wake-ready-"));
+	try {
+		const workflowId = "workflow-wake-ready-1";
+		const laneId = "lane-task-wake-ready-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-wake-ready-1", {
+			schema_version: "flowdesk.agent_task_context.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-wake-ready-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_session_ref: "ses-parent-wake-ready-1",
+			prompt_text: "Review wake ready notification metadata only; do not dispatch anything.",
+			prompt_text_truncated: false,
+			prompt_text_sha256: "a".repeat(64),
+			redaction_version: "v1",
+			created_at: "2026-05-29T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-wake-ready-1", taskResult(workflowId, laneId, "task-wake-ready-1", "2026-05-29T00:02:00.000Z"));
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-05-29T00:02:01.000Z" });
+
+		const wake = readCache(rootDir, "completion-wake-ready.json");
+		assert.equal(wake.schema_version, "flowdesk.completion_wake_ready_cache.v1");
+		const rows = wake.rows as Array<Record<string, unknown>>;
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0].workflowId, workflowId);
+		assert.equal(rows[0].parentSessionRef, "ses-parent-wake-ready-1");
+		assert.equal(rows[0].completionKind, "auto_next_ready");
+		assert.equal(rows[0].readyAt, "2026-05-29T00:02:00.000Z");
+		assert.equal(rows[0].dedupeKey, `ses-parent-wake-ready-1\u0000${workflowId}`);
+		assert.equal(rows[0].consumptionKey, `ses-parent-wake-ready-1:${workflowId}:2026-05-29T00:02:00.000Z:1:0`);
+		assert.equal(rows[0].consumed, false);
+		assert.deepEqual(rows[0].taskResultRefs, ["task-wake-ready-1"]);
+		assert.deepEqual(rows[0].taskFailedRefs, []);
+		assert.deepEqual(rows[0].nextActionRefs, ["/flowdesk-status", "/flowdesk-export-debug"]);
+		assert.deepEqual(wake.authority, {
+			displayOnly: true,
+			realOpenCodeDispatch: false,
+			parentPromptInjection: false,
+			providerCall: false,
+			runtimeExecution: false,
+			actualLaneLaunch: false,
+			fallbackAuthority: false,
+			hardCancelOrNoReplyAuthority: false,
+		});
+		assert.equal(JSON.stringify(wake).includes("prompt_text"), false, "wake-ready cache must not persist raw prompt text");
+		assert.equal(JSON.stringify(wake).includes("do not dispatch anything"), false, "wake-ready cache must not persist raw prompt content");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache wake-ready rows are parent scoped and duplicate refreshes are monotonic", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-wake-scope-"));
+	try {
+		const workflowA = "workflow-wake-scope-a";
+		const workflowB = "workflow-wake-scope-b";
+		writeEvidence(rootDir, workflowA, "agent_task_context", "context-wake-scope-a", {
+			...agentTaskContext(workflowA, "lane-wake-scope-a", "task-wake-scope-a", "2026-05-29T00:01:00.000Z"),
+			parent_session_ref: "ses-parent-wake-scope-a",
+		});
+		writeEvidence(rootDir, workflowA, "task_result", "task-result-wake-scope-a", taskResult(workflowA, "lane-wake-scope-a", "task-wake-scope-a", "2026-05-29T00:03:00.000Z"));
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId: workflowA, observedAt: "2026-05-29T00:03:01.000Z" });
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId: workflowA, observedAt: "2026-05-29T00:02:01.000Z" });
+
+		writeEvidence(rootDir, workflowB, "agent_task_context", "context-wake-scope-b", {
+			...agentTaskContext(workflowB, "lane-wake-scope-b", "task-wake-scope-b", "2026-05-29T00:04:00.000Z"),
+			parent_session_ref: "ses-parent-wake-scope-b",
+		});
+		writeEvidence(rootDir, workflowB, "task_failed", "task-failed-wake-scope-b", taskFailed(workflowB, "lane-wake-scope-b", "task-wake-scope-b", "2026-05-29T00:05:00.000Z"));
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId: workflowB, observedAt: "2026-05-29T00:05:01.000Z" });
+
+		const wake = readCache(rootDir, "completion-wake-ready.json");
+		const rows = wake.rows as Array<Record<string, unknown>>;
+		assert.equal(rows.length, 2);
+		const rowA = rows.find((row) => row.workflowId === workflowA);
+		const rowB = rows.find((row) => row.workflowId === workflowB);
+		assert.ok(rowA);
+		assert.ok(rowB);
+		assert.equal(rowA!.parentSessionRef, "ses-parent-wake-scope-a");
+		assert.equal(rowB!.parentSessionRef, "ses-parent-wake-scope-b");
+		assert.equal(rowA!.completionKind, "auto_next_ready");
+		assert.equal(rowB!.completionKind, "task_failed");
+		assert.equal(rowA!.readyAt, "2026-05-29T00:03:00.000Z");
+		assert.equal(wake.observed_at, "2026-05-29T00:05:01.000Z");
+		assert.equal(rows.filter((row) => row.workflowId === workflowA).length, 1, "duplicate refresh must not add another wake-ready row");
+		assert.equal(typeof rowA!.consumptionKey, "string");
+		assert.equal(typeof rowB!.consumptionKey, "string");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("completion UI cache keeps only the twenty newest subtask sidebar rows", () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-row-limit-"));
 	try {
@@ -243,6 +339,50 @@ test("completion UI cache handles duplicate terminal signals idempotently and mo
 		assert.equal(duplicateRows[0].state, "invocation_failed");
 		assert.equal(duplicateRows[0].lastObservedAt, "2026-05-29T00:06:00.000Z");
 		assert.equal(sidebar.observed_at, "2026-05-29T00:06:01.000Z");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache preserves agent-task log index rows across workflow refreshes", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-log-index-merge-"));
+	try {
+		const workflowA = "workflow-log-index-a";
+		const workflowB = "workflow-log-index-b";
+		writeEvidence(rootDir, workflowA, "task_result", "task-result-a", taskResult(workflowA, "lane-log-a", "task-log-a", "2026-05-29T00:01:00.000Z"));
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId: workflowA, observedAt: "2026-05-29T00:01:01.000Z" });
+		writeEvidence(rootDir, workflowB, "task_result", "task-result-b", taskResult(workflowB, "lane-log-b", "task-log-b", "2026-05-29T00:02:00.000Z"));
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId: workflowB, observedAt: "2026-05-29T00:02:01.000Z" });
+
+		const logIndex = readCache(rootDir, "agent-task-log-index.json");
+		const rows = logIndex.rows as Array<Record<string, unknown>>;
+		assert.ok(rows.some((row) => row.workflowId === workflowA && row.laneId === "lane-log-a"), "older workflow row should be retained");
+		assert.ok(rows.some((row) => row.workflowId === workflowB && row.laneId === "lane-log-b"), "newer workflow row should be added");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache preserves terminal row start time and stores completion duration", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-terminal-times-"));
+	try {
+		const workflowId = "workflow-terminal-times-1";
+		const laneId = "lane-terminal-times-1";
+		const taskId = "task-terminal-times-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-terminal-times-1", agentTaskContext(workflowId, laneId, taskId, "2026-05-29T00:01:00.000Z"));
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-terminal-times-1", taskResult(workflowId, laneId, taskId, "2026-05-29T00:04:30.000Z"));
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-05-29T00:04:31.000Z" });
+
+		const sidebar = readCache(rootDir, "subtask-activity-sidebar.json");
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		const row = rows.find((candidate) => candidate.workflowId === workflowId && candidate.laneId === laneId);
+		assert.ok(row, "terminal row preserved");
+		assert.equal(row!.state, "task_result");
+		assert.equal(row!.startedAt, "2026-05-29T00:01:00.000Z");
+		assert.equal(row!.completedAt, "2026-05-29T00:04:30.000Z");
+		assert.equal(row!.lastObservedAt, "2026-05-29T00:04:30.000Z");
+		assert.equal(row!.durationMs, 210_000);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

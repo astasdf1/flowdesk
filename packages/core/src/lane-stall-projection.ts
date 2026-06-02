@@ -25,6 +25,7 @@ const TERMINAL_LIFECYCLE_STATES = new Set([
 	"late_output",
 	"orphaned",
 	"invocation_failed",
+	"task_result",
 ]);
 
 export type FlowDeskLaneStallClassificationV1 =
@@ -43,7 +44,7 @@ export interface FlowDeskLaneStallProjectionEntryV1 {
 	lifecycleState?: string;
 	lastSignalAt?: string;
 	lastSignalEvidenceId?: string;
-	lastSignalSource?: "lane_lifecycle" | "lane_heartbeat" | "agent_task_progress";
+	lastSignalSource?: "lane_lifecycle" | "lane_heartbeat" | "agent_task_progress" | "task_result";
 	lastHeartbeatSeq?: number;
 	expectedNextHeartbeatAt?: string;
 	expectedNextHeartbeatOverdue?: boolean;
@@ -83,7 +84,7 @@ interface LifecycleSnapshot {
 	updatedAt: string;
 	updatedAtMs: number;
 	evidenceId: string;
-	signalSource: "lane_lifecycle" | "lane_heartbeat" | "agent_task_progress";
+	signalSource: "lane_lifecycle" | "lane_heartbeat" | "agent_task_progress" | "task_result";
 	heartbeatSeq?: number;
 	expectedNextHeartbeatAt?: string;
 }
@@ -100,6 +101,8 @@ function pickLatestSnapshotForLane(
 			snapshot = lifecycleSnapshotFromEntry(entry, workflowId);
 		} else if (isHeartbeatEntry(entry)) {
 			snapshot = heartbeatSnapshotFromEntry(entry, workflowId);
+		} else if (isTaskResultEntry(entry)) {
+			snapshot = taskResultSnapshotFromEntry(entry, workflowId);
 		}
 		if (snapshot === undefined || !accept(snapshot)) continue;
 		const previous = selected.get(snapshot.laneId);
@@ -124,6 +127,14 @@ function shouldPreferSnapshot(
 	current: LifecycleSnapshot,
 	previous: LifecycleSnapshot,
 ): boolean {
+	// A captured task_result is the strongest terminal signal for an agent task.
+	// Status/backfill may later write a generic terminal lane_lifecycle such as
+	// "incomplete"; keep the result-bearing terminal state so downstream status,
+	// auto-next, and synthesis readiness do not regress to a generic lifecycle.
+	if (current.state === "task_result" && previous.state !== "task_result")
+		return true;
+	if (previous.state === "task_result" && current.state !== "task_result")
+		return false;
 	if (current.updatedAtMs !== previous.updatedAtMs)
 		return current.updatedAtMs > previous.updatedAtMs;
 	const currentPriority = lifecyclePriority(current.state);
@@ -158,6 +169,12 @@ function isHeartbeatEntry(
 	entry: FlowDeskSessionEvidenceReloadEntryV1,
 ): boolean {
 	return entry.evidenceClass === "lane_heartbeat";
+}
+
+function isTaskResultEntry(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+): boolean {
+	return entry.evidenceClass === "task_result";
 }
 
 function isInconsistencyEntry(
@@ -223,6 +240,29 @@ function heartbeatSnapshotFromEntry(
 	};
 }
 
+function taskResultSnapshotFromEntry(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+	workflowId: string,
+): LifecycleSnapshot | undefined {
+	const record = entry.record;
+	const laneId = getStringField(record, "lane_id");
+	const updatedAt =
+		getStringField(record, "updated_at") ?? getStringField(record, "created_at");
+	if (laneId === undefined || updatedAt === undefined) return undefined;
+	const parsed = Date.parse(updatedAt);
+	if (!Number.isFinite(parsed)) return undefined;
+	return {
+		workflowId,
+		laneId,
+		attemptId: getStringField(record, "attempt_id"),
+		state: "task_result",
+		updatedAt,
+		updatedAtMs: parsed,
+		evidenceId: entry.evidenceId,
+		signalSource: "task_result",
+	};
+}
+
 function pickLatestLifecyclePerLane(
 	reload: FlowDeskSessionEvidenceReloadResultV1,
 	workflowId: string,
@@ -242,6 +282,10 @@ function pickLatestLifecyclePerLane(
 	);
 	for (const [laneId, terminalSnapshot] of latestTerminalByLane) {
 		const activeSnapshot = latestByLane.get(laneId);
+		if (terminalSnapshot.signalSource === "task_result") {
+			latestByLane.set(laneId, terminalSnapshot);
+			continue;
+		}
 		if (
 			activeSnapshot !== undefined &&
 			shouldPreferSnapshot(terminalSnapshot, activeSnapshot)

@@ -131,12 +131,12 @@ Default reviewer bindings when usage is healthy:
 |-------------|-----------------|-----------------|
 | Security / policy | flowdesk-security-policy | anthropic/claude-opus-4-7 |
 | Architecture / design | flowdesk-architecture | openai/gpt-5.5 |
-| Implementation / verification | flowdesk-verifier-testing | google/gemini-3.1-pro-preview |
+| Implementation / verification | flowdesk-verifier-testing | google/gemini-3.1-flash-lite-preview |
 
 If a preferred provider row is `critical`, `exhausted`, `stale`, `unknown`, or `non_dispatchable`, avoid that top binding unless the user explicitly insists. Substitute in this order while preserving the review perspective label in the task prompt:
 
-1. Gemini Pro low/quota-critical → use Gemini Flash Lite first: `flowdesk-verifier-testing` with `google/gemini-3.1-flash-lite-preview`.
-2. Gemini Flash Lite unavailable or still unhealthy → move the implementation/verification perspective to `flowdesk-verifier-testing` or `flowdesk-code-backend` with `openai/gpt-5.5`, depending on whether the subtask is verification or implementation.
+1. Gemini exact model unavailable or Gemini Flash Lite low/quota-critical → move the implementation/verification perspective to `flowdesk-verifier-testing` or `flowdesk-code-backend` with `openai/gpt-5.5`, depending on whether the subtask is verification or implementation.
+2. Do not select `google/gemini-3.1-pro-preview` unless fresh exact-model availability evidence explicitly confirms it in the active OpenCode profile.
 3. Claude low/unavailable → move security/policy perspective to `flowdesk-security-policy` with `openai/gpt-5.5`; if OpenAI is also low, run only the available lanes and mark the skipped perspective incomplete.
 4. OpenAI low/unavailable → use `flowdesk-architecture` with `anthropic/claude-opus-4-7` for architecture/design if Claude is healthy; otherwise run only available lanes and mark the skipped perspective incomplete.
 5. If all candidate providers are critical/exhausted/unknown, stop before launching and ask the user whether to proceed with degraded/low-quota providers.

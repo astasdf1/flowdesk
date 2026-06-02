@@ -144,6 +144,7 @@ export interface FlowDeskStatusLiveConfigV1 {
 	laneHeartbeatLateThresholdMs?: number;
 	laneHeartbeatStallThresholdMs?: number;
 	agentTaskFinalizingInconsistencyGraceMs?: number;
+	finalizingAbsoluteMaxMs?: number;
 }
 
 export interface FlowDeskStatusLiveRequestV1 {
@@ -198,7 +199,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 		normalCompleted: number;
 		autoNextStepEligible: boolean;
 		nextActionAvailable: boolean;
-		nextActionKind?: "synthesis";
+		nextActionKind?: "synthesis" | "repair_summary" | "salvage_or_verify" | "retry_or_debug";
 		nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
 	};
 }
@@ -387,6 +388,9 @@ function synthesisSummaryPreview(value: string | undefined): string | undefined 
 const DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 90_000;
 const MIN_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 30_000;
 const MAX_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 600_000;
+const DEFAULT_FINALIZING_ABSOLUTE_MAX_MS = 180_000;
+const MIN_FINALIZING_ABSOLUTE_MAX_MS = 30_000;
+const MAX_FINALIZING_ABSOLUTE_MAX_MS = 600_000;
 
 function clampFinalizingInconsistencyGraceMs(value: number | undefined): number {
 	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
@@ -397,8 +401,35 @@ function clampFinalizingInconsistencyGraceMs(value: number | undefined): number 
 	);
 }
 
+function clampFinalizingAbsoluteMaxMs(value: number | undefined): number {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+		return DEFAULT_FINALIZING_ABSOLUTE_MAX_MS;
+	return Math.min(
+		MAX_FINALIZING_ABSOLUTE_MAX_MS,
+		Math.max(MIN_FINALIZING_ABSOLUTE_MAX_MS, Math.floor(value)),
+	);
+}
+
 function finalizingInconsistencyEvidenceId(laneId: string): string {
 	return `agent-task-inconsistency-${laneId}-finalizing-without-terminal`;
+}
+
+function agentTaskProgressExtendsFinalizingWait(label: string | undefined): boolean {
+	if (label === undefined) return false;
+	const normalized = label.toLowerCase();
+	// Strong runtime/model activity observed after a finalizing candidate means the
+	// response is still being written or the candidate was invalidated by more work.
+	// These signals extend the idle wait, but never the absolute finalizing cap.
+	if (normalized.startsWith("agent task tool running callid=")) return true;
+	if (normalized.startsWith("agent task tool settled callid=")) return true;
+	if (normalized.startsWith("agent task tool error callid=")) return true;
+	if (normalized === "agent task message part event observed") return true;
+	if (normalized === "agent task message.updated event observed") return true;
+	if (normalized === "agent task terminal step event observed") return true;
+	if (normalized.startsWith("agent task turn completed msgid=")) return true;
+	// Ambient status/diff churn and watchdog-authored finalizing/nudge records do not
+	// prove body progress and must not keep a lane alive indefinitely.
+	return false;
 }
 
 function materializeFinalizingWithoutTerminalInconsistencies(input: {
@@ -407,6 +438,7 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 	reload: FlowDeskSessionEvidenceReloadResultV1;
 	observedAt: string;
 	graceMs: number;
+	finalizingAbsoluteMaxMs: number;
 }): boolean {
 	const observedAtMs = Date.parse(input.observedAt);
 	if (!Number.isFinite(observedAtMs)) return false;
@@ -415,6 +447,8 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 	const attemptIdByLane = new Map<string, string>();
 	const taskIdByLane = new Map<string, string>();
 	const latestActiveSignalByLane = new Map<string, number>();
+	const latestFinalizingProgressSignalByLane = new Map<string, number>();
+	const awaitingBodyCaptureSinceByLane = new Map<string, number>();
 	const latestFinalizingByLane = new Map<
 		string,
 		{
@@ -429,6 +463,20 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 	for (const entry of input.reload.entries) {
 		const laneId = getStringField(entry.record, "lane_id");
 		if (laneId !== undefined) {
+			if (entry.evidenceClass === "agent_task_child_session") {
+				const awaitingSince = getStringField(entry.record, "awaiting_body_capture_since");
+				const awaitingSinceMs = awaitingSince === undefined ? NaN : Date.parse(awaitingSince);
+				const awaitingAttempts = entry.record.awaiting_body_capture_attempts;
+				if (
+					Number.isFinite(awaitingSinceMs) &&
+					typeof awaitingAttempts === "number" &&
+					awaitingAttempts > 0
+				) {
+					const current = awaitingBodyCaptureSinceByLane.get(laneId);
+					if (current === undefined || awaitingSinceMs > current)
+						awaitingBodyCaptureSinceByLane.set(laneId, awaitingSinceMs);
+				}
+			}
 			if (entry.evidenceClass === "lane_lifecycle" || entry.evidenceClass === "lane_heartbeat") {
 				const attemptId = getStringField(entry.record, "attempt_id");
 				if (attemptId !== undefined) attemptIdByLane.set(laneId, attemptId);
@@ -465,11 +513,18 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 		}
 		if (entry.evidenceClass !== "agent_task_progress") continue;
 		if (laneId === undefined) continue;
-		if (getStringField(entry.record, "phase") !== "finalizing") continue;
 		const progressObservedAt = getStringField(entry.record, "observed_at");
 		if (progressObservedAt === undefined) continue;
 		const progressObservedAtMs = Date.parse(progressObservedAt);
 		if (!Number.isFinite(progressObservedAtMs)) continue;
+		const progressLabel = getStringField(entry.record, "progress_label");
+		if (agentTaskProgressExtendsFinalizingWait(progressLabel)) {
+			const currentSignal = latestFinalizingProgressSignalByLane.get(laneId);
+			if (currentSignal === undefined || progressObservedAtMs > currentSignal) {
+				latestFinalizingProgressSignalByLane.set(laneId, progressObservedAtMs);
+			}
+		}
+		if (getStringField(entry.record, "phase") !== "finalizing") continue;
 		const current = latestFinalizingByLane.get(laneId);
 		if (current !== undefined && current.observedAtMs > progressObservedAtMs)
 			continue;
@@ -485,10 +540,29 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 	const intents: NonNullable<ReturnType<typeof prepareFlowDeskSessionEvidenceWriteIntentV1>["writeIntent"]>[] = [];
 	for (const progress of latestFinalizingByLane.values()) {
 		if (terminalLaneIds.has(progress.laneId)) continue;
+		const awaitingBodyCaptureSinceMs = awaitingBodyCaptureSinceByLane.get(progress.laneId);
+		if (
+			awaitingBodyCaptureSinceMs !== undefined &&
+			observedAtMs - awaitingBodyCaptureSinceMs < input.finalizingAbsoluteMaxMs
+		) {
+			continue;
+		}
 		const activeSignalMs = latestActiveSignalByLane.get(progress.laneId);
+		const finalizingProgressSignalMs = latestFinalizingProgressSignalByLane.get(progress.laneId);
 		const finalizingAgeMs = observedAtMs - progress.observedAtMs;
 		const activeSignalAgeMs =
 			activeSignalMs === undefined ? 0 : observedAtMs - activeSignalMs;
+		const progressSignalAgeMs =
+			finalizingProgressSignalMs === undefined ? Number.POSITIVE_INFINITY : observedAtMs - finalizingProgressSignalMs;
+		const progressSignalAfterFinalizing =
+			finalizingProgressSignalMs !== undefined && finalizingProgressSignalMs > progress.observedAtMs;
+		if (
+			finalizingAgeMs < input.finalizingAbsoluteMaxMs &&
+			progressSignalAfterFinalizing &&
+			progressSignalAgeMs < input.graceMs
+		) {
+			continue;
+		}
 		if (finalizingAgeMs < input.graceMs && activeSignalAgeMs < input.graceMs)
 			continue;
 		const attemptId = progress.attemptId ?? attemptIdByLane.get(progress.laneId);
@@ -795,6 +869,8 @@ function buildLaneProgressCards(
 		createdAtMs?: number;
 		lastActivityAt?: string;
 		nudgeQuietPeriodMs?: number;
+		awaitingBodyCaptureSince?: string;
+		awaitingBodyCaptureAttempts?: number;
 	}>();
 	const agentTaskProgressByLane = new Map<
 		string,
@@ -836,6 +912,8 @@ function buildLaneProgressCards(
 			const createdAt = getStringField(entry.record, "created_at");
 			const lastActivityAt = getStringField(entry.record, "last_activity_at");
 			const nudgeQuietPeriodMs = entry.record.nudge_quiet_period_ms;
+			const awaitingBodyCaptureSince = getStringField(entry.record, "awaiting_body_capture_since");
+			const awaitingBodyCaptureAttempts = entry.record.awaiting_body_capture_attempts;
 			if (laneId !== undefined) {
 				childSessionByLane.set(laneId, {
 					...(typeof nudgeCount === "number" && Number.isFinite(nudgeCount)
@@ -846,6 +924,10 @@ function buildLaneProgressCards(
 					...(lastActivityAt === undefined ? {} : { lastActivityAt }),
 					...(typeof nudgeQuietPeriodMs === "number" && Number.isFinite(nudgeQuietPeriodMs)
 						? { nudgeQuietPeriodMs }
+						: {}),
+					...(awaitingBodyCaptureSince === undefined ? {} : { awaitingBodyCaptureSince }),
+					...(typeof awaitingBodyCaptureAttempts === "number" && Number.isFinite(awaitingBodyCaptureAttempts)
+						? { awaitingBodyCaptureAttempts }
 						: {}),
 				});
 			}
@@ -910,7 +992,18 @@ function buildLaneProgressCards(
 			progress.observedAtMs > terminalSignalMs
 				? undefined
 				: progress;
-		const projectedState = meta?.state === "incomplete" && taskResultLaneIds.has(entry.laneId)
+		const effectiveProgress = visibleProgress ?? (
+			childSession?.awaitingBodyCaptureSince !== undefined &&
+			(childSession.awaitingBodyCaptureAttempts ?? 0) > 0
+				? {
+					observedAtMs: Date.parse(childSession.awaitingBodyCaptureSince),
+					phase: "finalizing",
+					label: "async agent task awaiting body capture after turn completed event",
+					observedAt: childSession.awaitingBodyCaptureSince,
+				}
+				: undefined
+		);
+		const projectedState = taskResultLaneIds.has(entry.laneId)
 			? "task_result"
 			: (meta?.state ?? entry.lifecycleState);
 		const taskId = context?.taskId ?? taskResult?.taskId;
@@ -958,9 +1051,9 @@ function buildLaneProgressCards(
 			...(childSession?.lastNudgeAt === undefined ? {} : { lastNudgeAt: childSession.lastNudgeAt }),
 			...(derivedLastActivityAt === undefined ? {} : { lastActivityAt: derivedLastActivityAt }),
 			...(childSession?.nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs: childSession.nudgeQuietPeriodMs }),
-			...(visibleProgress?.phase === undefined ? {} : { progressPhase: visibleProgress.phase }),
-			...(visibleProgress?.label === undefined ? {} : { progressLabel: visibleProgress.label }),
-			...(visibleProgress?.observedAt === undefined ? {} : { progressObservedAt: visibleProgress.observedAt }),
+			...(effectiveProgress?.phase === undefined ? {} : { progressPhase: effectiveProgress.phase }),
+			...(effectiveProgress?.label === undefined ? {} : { progressLabel: effectiveProgress.label }),
+			...(effectiveProgress?.observedAt === undefined ? {} : { progressObservedAt: effectiveProgress.observedAt }),
 			...(verdictLabel === undefined ? {} : { verdictLabel }),
 			...(taskResult?.completionStatus === undefined
 				? {}
@@ -993,10 +1086,31 @@ function buildLaneProgressAggregate(
 		card.state === "task_result" &&
 		card.classification === "terminal" &&
 		card.completionStatus !== "partial" &&
+		card.outputKind !== "process_notes" &&
 		card.usableForSynthesis !== false &&
 		card.failureHint === undefined,
 	).length;
-	const nextActionReady = expected > 0 && normalCompleted === expected && !synthesisAlreadyRecorded;
+	const allTerminal = expected > 0 && terminal === expected;
+	const needsRepairSummary = allTerminal && cards.some(card =>
+		card.state === "task_result" &&
+		(card.completionStatus === "partial" || card.outputKind === "process_notes" || card.usableForSynthesis === false),
+	);
+	const needsRetryOrDebug = allTerminal && !needsRepairSummary && cards.some(card =>
+		card.state === "invocation_failed" || card.state === "task_failed" || card.failureHint !== undefined,
+	);
+	const needsSalvageOrVerify = allTerminal && !needsRepairSummary && !needsRetryOrDebug && cards.some(card =>
+		card.state === "no_output" || card.progressLabel?.includes("turn completed empty") === true,
+	);
+	const nextActionKind = normalCompleted === expected && !synthesisAlreadyRecorded
+		? "synthesis" as const
+		: needsRepairSummary
+			? "repair_summary" as const
+			: needsSalvageOrVerify
+				? "salvage_or_verify" as const
+				: needsRetryOrDebug
+					? "retry_or_debug" as const
+					: undefined;
+	const nextActionReady = nextActionKind !== undefined;
 	return {
 		expected,
 		terminal,
@@ -1004,9 +1118,9 @@ function buildLaneProgressAggregate(
 		failed,
 		awaitingPermission,
 		normalCompleted,
-		autoNextStepEligible: nextActionReady,
+		autoNextStepEligible: nextActionKind === "synthesis",
 		nextActionAvailable: nextActionReady,
-		...(nextActionReady ? { nextActionKind: "synthesis" as const } : {}),
+		...(nextActionKind === undefined ? {} : { nextActionKind }),
 		nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
 	};
 }
@@ -1178,12 +1292,16 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		const graceMs = clampFinalizingInconsistencyGraceMs(
 			input.config.agentTaskFinalizingInconsistencyGraceMs,
 		);
+		const finalizingAbsoluteMaxMs = clampFinalizingAbsoluteMaxMs(
+			input.config.finalizingAbsoluteMaxMs,
+		);
 		const wroteInconsistency = materializeFinalizingWithoutTerminalInconsistencies({
 			workflowId,
 			rootDir,
 			reload,
 			observedAt,
 			graceMs,
+			finalizingAbsoluteMaxMs,
 		});
 		if (wroteInconsistency) {
 			reload = reloadFlowDeskSessionEvidenceV1({

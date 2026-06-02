@@ -82,6 +82,8 @@ function writeAgentTaskChildSession(
 		createdAt?: string;
 		nudgeCount?: number;
 		lastNudgeAt?: string | null;
+		awaitingBodyCaptureAttempts?: number;
+		awaitingBodyCaptureSince?: string;
 	} = {},
 	evidenceId = "agent-task-child-session-123",
 ): void {
@@ -96,6 +98,8 @@ function writeAgentTaskChildSession(
 		agent_ref: "agent-reviewer-123",
 		nudge_count: input.nudgeCount ?? 0,
 		last_nudge_at: input.lastNudgeAt ?? null,
+		...(input.awaitingBodyCaptureAttempts === undefined ? {} : { awaiting_body_capture_attempts: input.awaitingBodyCaptureAttempts }),
+		...(input.awaitingBodyCaptureSince === undefined ? {} : { awaiting_body_capture_since: input.awaitingBodyCaptureSince }),
 		created_at: input.createdAt ?? "2026-05-26T10:00:00.000Z",
 		dispatch_authority_enabled: false,
 	};
@@ -725,7 +729,7 @@ test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives tool
 	}
 });
 
-test("V11.2 resolveFlowDeskExpectedTurnCompletedV1: binds expected turn by lane epoch, never latest", () => {
+test("V11.2 resolveFlowDeskExpectedTurnCompletedV1: binds latest finalizable turn after lane epoch/activity floor", () => {
 	const epoch = 1_000_000;
 	const tc = (created: number, completed: number, msgid: string) =>
 		`agent task turn completed msgid=${msgid} created=${created} completed=${completed}`;
@@ -752,9 +756,9 @@ test("V11.2 resolveFlowDeskExpectedTurnCompletedV1: binds expected turn by lane 
 		assert.equal(r?.messageId, "msg-attempt");
 		assert.equal(r?.completedMs, epoch + 4_000);
 	}
-	// With an old turn AND this attempt's turn, the EARLIEST qualifying (>=epoch)
-	// turn binds — and the pre-epoch one is excluded, so a later unexpected turn
-	// cannot hijack capture ("latest" is explicitly not used).
+	// With an old turn AND multiple attempt turns, the latest qualifying turn binds.
+	// A later assistant turn after intervening tool/message activity is more likely
+	// to be the task-final answer than the first intermediate tool-call turn.
 	{
 		const r = resolveFlowDeskExpectedTurnCompletedV1({
 			transitions: [
@@ -765,7 +769,30 @@ test("V11.2 resolveFlowDeskExpectedTurnCompletedV1: binds expected turn by lane 
 			laneEpochMs: epoch,
 		});
 		assert.ok(r);
-		assert.equal(r?.messageId, "attempt-turn", "must bind earliest qualifying turn, not latest");
+		assert.equal(r?.messageId, "later-turn", "must bind latest qualifying finalizable turn");
+	}
+	// A completed turn observed before a caller-supplied activity floor is ignored.
+	// This protects tool-heavy tasks where the first completed assistant turn merely
+	// requested tools and meaningful tool activity arrived afterwards.
+	{
+		const r = resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: [
+				{ observedAtMs: epoch + 6_000, label: tc(epoch + 2_000, epoch + 5_000, "tool-call-turn") },
+				{ observedAtMs: epoch + 30_000, label: tc(epoch + 25_000, epoch + 29_000, "final-answer-turn") },
+			],
+			laneEpochMs: epoch,
+			minObservedAtMs: epoch + 20_000,
+		});
+		assert.ok(r);
+		assert.equal(r?.messageId, "final-answer-turn");
+	}
+	{
+		const r = resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: [{ observedAtMs: epoch + 6_000, label: tc(epoch + 2_000, epoch + 5_000, "tool-call-turn") }],
+			laneEpochMs: epoch,
+			minObservedAtMs: epoch + 20_000,
+		});
+		assert.equal(r, undefined, "must not bind an intermediate completed turn before later meaningful activity");
 	}
 });
 
@@ -1066,7 +1093,76 @@ test("V11.2 Slice 2: TURN_COMPLETED does NOT capture while a tool is still runni
 	}
 });
 
-test("V11.2 Slice 3: turn completed but empty body retries (awaiting_body_capture) then terminalizes as turn_completed_empty", async () => {
+test("V11.2 Slice 2: intermediate TURN_COMPLETED before later tool activity does not enter empty-body finalization", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-intermediate-turncompleted-"));
+	try {
+		const workflowId = "workflow-v112-intermediate-tc";
+		const laneId = "lane-v112-intermediate-tc";
+		const taskId = "task-v112-intermediate-tc";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-v112-intermediate-tc",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-v112-intermediate-tc");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		// First assistant turn completed at 10:00:08, then tool work continued and
+		// settled at 10:00:20. The 10:00:08 turn is therefore an intermediate
+		// tool-call turn and must not start awaiting_body_capture / no_output failure.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-tool-call created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-v112-itc-tc");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:09.000Z",
+			progressLabel: "agent task tool running callid=call-after-first-turn",
+		}, "agent-task-progress-v112-itc-toolopen");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:20.000Z",
+			progressLabel: "agent task tool settled callid=call-after-first-turn",
+		}, "agent-task-progress-v112-itc-toolsettled");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:25.000Z"),
+			nudgeQuietPeriodMs: 10_000,
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 1,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesCompleted, 0);
+		assert.equal(result.lanesNudged, 0, "must not inject final-report repair from an intermediate turn");
+		assert.equal(result.lanesAborted, 0, "must not terminalize no_output from an intermediate turn");
+		assert.equal(abortCalls, 0);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(
+			reload.entries.some((entry) => entry.evidenceClass === "task_failed"),
+			false,
+			"intermediate turn must not write task_failed evidence",
+		);
+		const child = reload.entries.find((entry) => entry.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.equal(child?.awaiting_body_capture_attempts, undefined);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("V11.2 Slice 3: turn completed but empty body retries, injects final-report repair, then terminalizes if still empty", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-awaiting-body-"));
 	try {
 		const workflowId = "workflow-v112-awaiting-body";
@@ -1087,17 +1183,19 @@ test("V11.2 Slice 3: turn completed but empty body retries (awaiting_body_captur
 		}, "agent-task-progress-v112-ab-tc");
 
 		// Body is EMPTY on every poll (SDK buffer never synced in this test).
+		let promptCalls = 0;
 		const emptyBodyClient = {
 			session: {
 				messages: async () => ({ messages: [] }),
-				prompt: async () => ({}),
-				promptAsync: async () => ({}),
+				prompt: async () => { promptCalls += 1; return {}; },
+				promptAsync: async () => { promptCalls += 1; return {}; },
 				abort: async () => ({}),
 			},
 		} as never;
 
 		// bodyRetryMax=2: first two cycles RETRY (no completion, no failure), third
-		// cycle terminalizes as turn_completed_empty (counts as an aborted lane).
+		// cycle injects a final-report repair prompt, and only the next exhausted
+		// retry window terminalizes as turn_completed_empty.
 		const c1 = await monitorChildSessionsV1({
 			rootDir, workflowId, now: new Date("2026-05-26T10:00:12.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
@@ -1121,7 +1219,29 @@ test("V11.2 Slice 3: turn completed but empty body retries (awaiting_body_captur
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
 		});
-		assert.equal(c3.lanesAborted, 1, "cycle 3 must terminalize as turn_completed_empty after retries");
+		assert.equal(c3.lanesAborted, 0, "cycle 3 must not terminalize before final-report repair");
+		assert.equal(c3.lanesNudged, 1, "cycle 3 must inject a final-report repair prompt");
+		assert.equal(promptCalls, 1);
+
+		await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:18.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 2, client: emptyBodyClient,
+		});
+		await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:20.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 2, client: emptyBodyClient,
+		});
+		const c6 = await monitorChildSessionsV1({
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:22.000Z"),
+			abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
+			bodyRetryMax: 2, client: emptyBodyClient,
+		});
+		assert.equal(c6.lanesAborted, 1, "must terminalize as turn_completed_empty after repair and bounded retries");
 
 		// Evidence: a task_failed with the turn_completed_empty reason exists.
 		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
@@ -1132,6 +1252,65 @@ test("V11.2 Slice 3: turn completed but empty body retries (awaiting_body_captur
 			&& ((e.record as Record<string, unknown>).redacted_reason as string).includes("turn_completed_empty"),
 		);
 		assert.ok(failed, "must record a turn_completed_empty task_failed");
+		const repairEvidence = reload.entries.find((e) =>
+			e.evidenceClass === "agent_task_child_session"
+			&& (e.record as Record<string, unknown>).turn_completed_empty_repair_count === 1,
+		);
+		assert.ok(repairEvidence, "must record the final-report repair prompt injection");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("watchdog terminalizes awaiting_body_capture after finalizingAbsoluteMaxMs", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-awaiting-body-absolute-max-"));
+	try {
+		const workflowId = "workflow-awaiting-body-absolute-max";
+		const laneId = "lane-awaiting-body-absolute-max";
+		const taskId = "task-awaiting-body-absolute-max";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-awaiting-body-absolute-max",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 1,
+			awaitingBodyCaptureSince: "2026-05-26T10:00:10.000Z",
+		}, "agent-task-child-session-awaiting-body-absolute-max");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-attempt created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-awaiting-body-absolute-max-tc");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:01:11.000Z"),
+			bodyRetryMax: 99,
+			finalizingAbsoluteMaxMs: 60_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesAborted, 1);
+		assert.equal(abortCalls, 0, "finalizing absolute max writes terminal evidence without SDK abort");
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		const failed = reload.entries.find((entry) =>
+			entry.evidenceClass === "task_failed" &&
+			typeof (entry.record as Record<string, unknown>).redacted_reason === "string" &&
+			((entry.record as Record<string, unknown>).redacted_reason as string).includes("finalizing absolute max"),
+		);
+		assert.ok(failed, "expected task_failed for expired awaiting_body_capture");
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

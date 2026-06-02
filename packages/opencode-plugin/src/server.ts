@@ -122,6 +122,10 @@ import {
 	type FlowDeskWorkflowDispatchPlanToolConfigV1,
 } from "./workflow-dispatch-plan-tool.js";
 import {
+	consumeFlowDeskCompletionWakeForMainSessionV1,
+	type FlowDeskCompletionWakeMainSessionConfigV1,
+} from "./completion-wake-main-session.js";
+import {
 	executeFlowDeskWorkflowDispatchToolV1,
 	type FlowDeskWorkflowDispatchToolConfigV1,
 } from "./workflow-dispatch-tool.js";
@@ -184,6 +188,7 @@ export const flowdeskUiProbeOption = "uiProbe" as const;
 export const flowdeskDefaultManagedDispatchAuthorizationOption =
 	"defaultManagedDispatchAuthorization" as const;
 export const flowdeskWatchdogOption = "watchdog" as const;
+export const flowdeskCompletionWakeMainSessionOption = "completionWakeMainSession" as const;
 export const flowdeskWatchdogTriggerToolName = "flowdesk_watchdog_trigger" as const;
 export const flowdeskManagedDispatchBetaToolName =
 	"flowdesk_managed_dispatch_beta" as const;
@@ -2776,6 +2781,28 @@ function durableStateRootFromOptions(
 		: undefined;
 }
 
+function completionWakeMainSessionConfigFromOptions(options?: PluginOptions): FlowDeskCompletionWakeMainSessionConfigV1 | undefined {
+	const value = options?.[flowdeskCompletionWakeMainSessionOption];
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	const rootDir = typeof value.rootDir === "string" && value.rootDir.trim().length > 0
+		? value.rootDir
+		: durableStateRootFromOptions(options);
+	const agentName = typeof value.agentName === "string" && value.agentName.trim().length > 0
+		? value.agentName.trim()
+		: "flowdesk-main";
+	const providerQualifiedModelId = typeof value.providerQualifiedModelId === "string" && value.providerQualifiedModelId.includes("/")
+		? value.providerQualifiedModelId.trim()
+		: "openai/gpt-5.5";
+	if (rootDir === undefined) return undefined;
+	return {
+		enabled: true,
+		rootDir,
+		agentName,
+		providerQualifiedModelId,
+		...(typeof value.directory === "string" && value.directory.trim().length > 0 ? { directory: value.directory.trim() } : {}),
+	};
+}
+
 function productionEnablementFromOptions(
 	options?: PluginOptions,
 ): FlowDeskLocalProductionEnablementOptionsV1 | undefined {
@@ -5011,6 +5038,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 
 	// P8 Background Watchdog
 	const watchdogConfig = watchdogConfigFromOptions(options);
+	const completionWakeMainSessionConfig = completionWakeMainSessionConfigFromOptions(options);
 	const chatStallAlertRaw = (options as Record<string, unknown> | undefined)?.[flowdeskChatMessageStallAlertOption];
 	const guardedAutoAbortForWatchdog = isRecord(chatStallAlertRaw) && isRecord(chatStallAlertRaw.guardedAutoAbort)
 		? (() => {
@@ -5048,6 +5076,13 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				client: capturedClient,
 				parentSessionId: capturedParentSessionId,
 				now: new Date(),
+			}).then(async () => {
+				if (completionWakeMainSessionConfig !== undefined) {
+					await consumeFlowDeskCompletionWakeForMainSessionV1({
+						config: completionWakeMainSessionConfig,
+						client: capturedClient,
+					});
+				}
 			}).catch(() => {
 				// errors are swallowed — watchdog must not crash the plugin
 			});

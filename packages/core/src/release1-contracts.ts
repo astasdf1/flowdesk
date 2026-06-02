@@ -1170,6 +1170,7 @@ export interface FlowDeskUsageSnapshotV1 {
   freshness_ttl: number;
   reset_time: string;
   reset_bucket: string;
+  remaining_percent?: number | null;
   dispatchability: "dispatchable" | "diagnostic_only" | "non_dispatchable";
   uncertainty_flags: UsageUncertaintyFlagV1[];
   source_ref: OpaqueRef;

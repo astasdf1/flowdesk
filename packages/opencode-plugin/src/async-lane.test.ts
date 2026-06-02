@@ -199,6 +199,58 @@ test("agent-task surfaces a provider dispatch error distinctly from sdk_create_f
 	}
 });
 
+test("failed agent-task lane writes redacted log index row for MessageAbortedError", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-log-index-aborted-"));
+	try {
+		const rawPrompt = "RAW_SECRET_PROMPT_TEXT should not appear in the log index";
+		const aborted = new Error("Message aborted by OpenCode");
+		aborted.name = "MessageAbortedError";
+		const client = makeClient({
+			create: async () => ({ id: "ses-child-aborted-01" }),
+			promptAsync: async () => { throw aborted; },
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-log-index-aborted-1",
+			taskId: "task-log-index-aborted-1",
+			laneId: "lane-log-index-aborted-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: rawPrompt,
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_failed");
+		const logIndexText = readFileSync(join(root, ".flowdesk", "ui", "agent-task-log-index.json"), "utf8");
+		assert.equal(logIndexText.includes(rawPrompt), false, "log index must not persist raw prompt text");
+		const logIndex = JSON.parse(logIndexText) as Record<string, unknown>;
+		assert.equal(logIndex.schema_version, "flowdesk.agent_task_log_index.v1");
+		const rows = logIndex.rows as Array<Record<string, unknown>>;
+		const row = rows.find((entry) => entry.laneId === "lane-log-index-aborted-1");
+		assert.ok(row, "failed lane should have a log index row");
+		assert.equal(row?.workflowId, "workflow-log-index-aborted-1");
+		assert.equal(row?.taskId, "task-log-index-aborted-1");
+		assert.equal(row?.childSessionId, "ses-child-aborted-01");
+		assert.equal(row?.parentSessionRef, "ses-parent-test");
+		assert.equal(row?.agentRef, "agent-test");
+		assert.equal(row?.providerQualifiedModelId, "openai/gpt-5.5");
+		assert.equal(row?.nudgeCount, 0, "nudge_count=0 must be preserved");
+		assert.equal(typeof row?.createdAt, "string");
+		assert.equal(typeof row?.terminalAt, "string");
+		assert.equal(typeof row?.taskFailedRef, "string");
+		assert.equal(typeof row?.lifecycleRef, "string");
+		assert.deepEqual(row?.sessionErrorLabels, ["provider_dispatch_error", "MessageAbortedError"]);
+		const progressEvents = row?.progressEvents as Array<Record<string, unknown>>;
+		assert.ok(progressEvents.some((event) => event.label === "agent task lane launch started"));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("heavy first-token model classification matches the operator policy", () => {
 	// Heavy: Claude Opus, non-fast GPT-5.x main, Codex.
 	assert.equal(isFlowDeskHeavyFirstTokenModelV1("anthropic/claude-opus-4-7"), true);

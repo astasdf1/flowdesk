@@ -378,6 +378,9 @@ function rowFromUsageSnapshot(
 function remainingPercentFromSnapshot(
 	snapshot: FlowDeskUsageSnapshotV1,
 ): number | null {
+	const explicit = (snapshot as { remaining_percent?: unknown }).remaining_percent;
+	if (typeof explicit === "number" && Number.isFinite(explicit)) return explicit;
+	if (explicit === null) return null;
 	const match = /^([0-9]+(?:\.[0-9]+)?)%/.exec(snapshot.reset_bucket);
 	if (match === null) return null;
 	const parsed = Number.parseFloat(match[1]);
@@ -812,68 +815,99 @@ function persistProviderUsageSidebarCache(
 	}
 	const cachePath = join(dir, "provider-usage-sidebar.json");
 	const tempPath = join(dir, `provider-usage-sidebar.${observedAt.replace(/[^0-9A-Za-z]/g, "")}.tmp`);
-	// Load previous sidebar to preserve weekly buckets when we're in the evidence-reuse path
+	const expiresAt = new Date(Date.parse(observedAt) + 5 * 60_000).toISOString();
+	// Load previous sidebar to preserve weekly buckets and unrelated provider rows during scoped refreshes.
+	let previousSidebarRowsByFamily = new Map<string, Record<string, unknown>>();
 	let previousSidebarBucketsByFamily = new Map<string, readonly Record<string, unknown>[]>();
 	try {
 		const prev = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
 		if (prev.schema_version === "flowdesk.provider_usage_sidebar_cache.v1" && Array.isArray(prev.providers)) {
+			const previousObservedAt = typeof prev.observed_at === "string" ? prev.observed_at : undefined;
+			const previousExpiresAt = typeof prev.expires_at === "string" ? prev.expires_at : undefined;
 			for (const p of prev.providers as Record<string, unknown>[]) {
-				if (typeof p.providerFamily === "string" && Array.isArray(p.buckets)) {
-					previousSidebarBucketsByFamily.set(p.providerFamily, p.buckets as Record<string, unknown>[]);
+				if (typeof p.providerFamily === "string") {
+					const normalizedBuckets = Array.isArray(p.buckets)
+						? (p.buckets as Record<string, unknown>[]).map((bucket) => ({
+							...bucket,
+							...(typeof bucket.observed_at === "string" || previousObservedAt === undefined ? {} : { observed_at: previousObservedAt }),
+							...(typeof bucket.expires_at === "string" || previousExpiresAt === undefined ? {} : { expires_at: previousExpiresAt }),
+						}))
+						: [];
+					const normalizedProvider = {
+						...p,
+						...(typeof p.observed_at === "string" || previousObservedAt === undefined ? {} : { observed_at: previousObservedAt }),
+						...(typeof p.expires_at === "string" || previousExpiresAt === undefined ? {} : { expires_at: previousExpiresAt }),
+						...(normalizedBuckets.length > 0 ? { buckets: normalizedBuckets } : {}),
+					};
+					previousSidebarRowsByFamily.set(p.providerFamily, normalizedProvider);
+					if (normalizedBuckets.length > 0) {
+						previousSidebarBucketsByFamily.set(p.providerFamily, normalizedBuckets);
+					}
 				}
 			}
 		}
 	} catch {}
+	const refreshedProviderFamilies = new Set(providers.map((row) => row.providerFamily));
+	const currentProviders = providers.map((row) => {
+		const primaryConnected =
+			row.dispatchability === "dispatchable" &&
+			row.freshness === "fresh" &&
+			row.usageAuthorityAcquired === true;
+		const primaryBucket = {
+			...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
+			...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
+			remainingPercent: row.remainingPercent,
+			freshness: row.freshness,
+			dispatchability: row.dispatchability,
+			connected: primaryConnected,
+			observed_at: observedAt,
+			expires_at: expiresAt,
+			...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
+		};
+		const freshAdditional = (additionalSnapshotsByFamily?.get(row.providerFamily) ?? []).map((snap) => ({
+			resetBucket: snap.reset_bucket,
+			...(snap.reset_time !== undefined && snap.reset_time !== "unknown" ? { resetTime: snap.reset_time } : {}),
+			remainingPercent: remainingPercentFromSnapshot(snap),
+			freshness: snap.freshness,
+			dispatchability: snap.dispatchability,
+			connected: snap.dispatchability === "dispatchable" && snap.freshness === "fresh",
+			observed_at: observedAt,
+			expires_at: expiresAt,
+			usageSnapshotRef: snap.snapshot_id,
+		}));
+		// When evidence-cache reuse path produced no additional buckets, preserve weekly etc. from previous sidebar.
+		const prevBuckets = previousSidebarBucketsByFamily.get(row.providerFamily) ?? [];
+		const primaryResetBucket = row.resetBucket ?? "";
+		const preservedBuckets = freshAdditional.length > 0
+			? []
+			: prevBuckets.filter((b) => typeof b.resetBucket === "string" && b.resetBucket !== primaryResetBucket);
+		const additionalBuckets = freshAdditional.length > 0 ? freshAdditional : preservedBuckets as typeof freshAdditional;
+		return {
+			providerFamily: row.providerFamily,
+			connected: primaryConnected,
+			dispatchability: row.dispatchability,
+			freshness: row.freshness,
+			observed_at: observedAt,
+			expires_at: expiresAt,
+			...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
+			...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
+			remainingPercent: row.remainingPercent,
+			alertLevel: row.alertLevel,
+			...(row.modelFamily === undefined ? {} : { modelFamily: row.modelFamily }),
+			...(row.redactedReason === undefined ? {} : { redactedReason: row.redactedReason }),
+			...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
+			buckets: [primaryBucket, ...additionalBuckets],
+			uncertaintyFlags: [...row.uncertaintyFlags],
+		};
+	});
+	const preservedProviders = [...previousSidebarRowsByFamily.entries()]
+		.filter(([family]) => !refreshedProviderFamilies.has(family as FlowDeskProviderUsageLiveProviderFamilyV1))
+		.map(([, row]) => row);
 	const record = {
 		schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
 		observed_at: observedAt,
-		expires_at: new Date(Date.parse(observedAt) + 5 * 60_000).toISOString(),
-		providers: providers.map((row) => {
-			const primaryConnected =
-				row.dispatchability === "dispatchable" &&
-				row.freshness === "fresh" &&
-				row.usageAuthorityAcquired === true;
-			const primaryBucket = {
-				...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
-				...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
-				remainingPercent: row.remainingPercent,
-				freshness: row.freshness,
-				dispatchability: row.dispatchability,
-				connected: primaryConnected,
-				...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
-			};
-			const freshAdditional = (additionalSnapshotsByFamily?.get(row.providerFamily) ?? []).map((snap) => ({
-				resetBucket: snap.reset_bucket,
-				...(snap.reset_time !== undefined && snap.reset_time !== "unknown" ? { resetTime: snap.reset_time } : {}),
-				remainingPercent: remainingPercentFromSnapshot(snap),
-				freshness: snap.freshness,
-				dispatchability: snap.dispatchability,
-				connected: snap.dispatchability === "dispatchable" && snap.freshness === "fresh",
-				usageSnapshotRef: snap.snapshot_id,
-			}));
-			// When evidence-cache reuse path produced no additional buckets, preserve weekly etc. from previous sidebar
-			const prevBuckets = previousSidebarBucketsByFamily.get(row.providerFamily) ?? [];
-			const primaryResetBucket = row.resetBucket ?? "";
-			const preservedBuckets = freshAdditional.length > 0
-				? []
-				: prevBuckets.filter((b) => typeof b.resetBucket === "string" && b.resetBucket !== primaryResetBucket);
-			const additionalBuckets = freshAdditional.length > 0 ? freshAdditional : preservedBuckets as typeof freshAdditional;
-			return {
-				providerFamily: row.providerFamily,
-				connected: primaryConnected,
-				dispatchability: row.dispatchability,
-				freshness: row.freshness,
-				...(row.resetBucket === undefined ? {} : { resetBucket: row.resetBucket }),
-				...(row.resetTime === undefined ? {} : { resetTime: row.resetTime }),
-				remainingPercent: row.remainingPercent,
-				alertLevel: row.alertLevel,
-				...(row.modelFamily === undefined ? {} : { modelFamily: row.modelFamily }),
-				...(row.redactedReason === undefined ? {} : { redactedReason: row.redactedReason }),
-				...(row.usageSnapshotRef === undefined ? {} : { usageSnapshotRef: row.usageSnapshotRef }),
-				buckets: [primaryBucket, ...additionalBuckets],
-				uncertaintyFlags: [...row.uncertaintyFlags],
-			};
-		}),
+		expires_at: expiresAt,
+		providers: [...currentProviders, ...preservedProviders],
 		safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
 		authority: {
 			realOpenCodeDispatch: false,

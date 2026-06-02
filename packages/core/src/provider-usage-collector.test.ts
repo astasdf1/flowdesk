@@ -74,6 +74,9 @@ test("Claude OAuth collector produces provider-native usage authority evidence",
 
   assertCollectorEvidenceValid(result);
   assert.equal(result.usageSnapshot.reset_bucket, "claude-5h");
+  assert.equal(result.usageSnapshot.remaining_percent, 75);
+  assert.equal(result.additionalSnapshots?.[0]?.reset_bucket, "90% claude-weekly");
+  assert.equal(result.additionalSnapshots?.[0]?.remaining_percent, 90);
 });
 
 test("Claude OAuth collector selects a later bucket when five-hour reset evidence is absent", async () => {
@@ -86,6 +89,7 @@ test("Claude OAuth collector selects a later bucket when five-hour reset evidenc
 
   assertCollectorEvidenceValid(result);
   assert.equal(result.usageSnapshot.reset_bucket, "claude-weekly");
+  assert.equal(result.usageSnapshot.remaining_percent, 90);
 });
 
 test("Codex/OpenAI collector produces provider-native usage authority evidence", async () => {
@@ -118,6 +122,7 @@ test("Codex/OpenAI collector preserves known 0 percent remaining without dispatc
   assert.equal(result.usageSnapshot.freshness, "fresh");
   assert.equal(result.usageSnapshot.dispatchability, "non_dispatchable");
   assert.equal(result.usageSnapshot.reset_bucket, "0% openai-gpt-5h");
+  assert.equal(result.usageSnapshot.remaining_percent, 0);
   assert.deepEqual(result.usageSnapshot.uncertainty_flags, []);
   assert.equal(result.bucketSnapshot?.remainingPercent, 0);
   assert.equal(result.usageAuthorityEvidence, undefined);

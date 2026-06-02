@@ -8,10 +8,13 @@ import {
 } from "./tui-usage-snapshot.js";
 import {
 	formatFlowDeskTuiAutoNextReadyCompactLines,
+	formatFlowDeskTuiCompletionWakeNoticeCompactLines,
 	formatFlowDeskTuiSubtaskActivityCompactLines,
 	loadFlowDeskTuiAutoNextReadyViewV1,
+	loadFlowDeskTuiCompletionWakeNoticeViewV1,
 	loadFlowDeskTuiSubtaskActivityViewV1,
 	type FlowDeskTuiAutoNextReadyViewV1,
+	type FlowDeskTuiCompletionWakeNoticeViewV1,
 	type FlowDeskTuiSubtaskActivityViewV1,
 } from "./tui-subtask-activity.js";
 
@@ -35,6 +38,7 @@ type UsageSnapshotState = {
 type SubtaskActivityState = {
 	view: (currentSessionRef?: string) => FlowDeskTuiSubtaskActivityViewV1;
 	autoNextView: (currentSessionRef?: string) => FlowDeskTuiAutoNextReadyViewV1;
+	wakeNoticeView: (currentSessionRef?: string) => FlowDeskTuiCompletionWakeNoticeViewV1;
 	dispose: () => void;
 };
 
@@ -73,6 +77,12 @@ function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): Subtas
 			rootDir: options.durableStateRootDir,
 			currentParentSessionRef: effectiveSessionRef(currentSessionRef),
 		});
+	const readWakeNotice = (currentSessionRef?: string): FlowDeskTuiCompletionWakeNoticeViewV1 =>
+		loadFlowDeskTuiCompletionWakeNoticeViewV1({
+			rootDir: options.durableStateRootDir,
+			currentParentSessionRef: effectiveSessionRef(currentSessionRef),
+			consumeReady: true,
+		});
 	const [refreshTick, setRefreshTick] = createSignal(0);
 	const refresh = () => {
 		setRefreshTick((tick) => tick + 1);
@@ -88,6 +98,10 @@ function createSubtaskActivityState(options: FlowDeskTuiPluginOptionsV1): Subtas
 		autoNextView: (currentSessionRef?: string) => {
 			refreshTick();
 			return readAutoNext(currentSessionRef);
+		},
+		wakeNoticeView: (currentSessionRef?: string) => {
+			refreshTick();
+			return readWakeNotice(currentSessionRef);
 		},
 		dispose: () => {
 			clearInterval(intervalId);
@@ -154,6 +168,7 @@ function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActiv
 			: "cache readable";
 	});
 	const autoNextLines = createMemo(() => formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView(currentSessionRef())));
+	const wakeNoticeLines = createMemo(() => formatFlowDeskTuiCompletionWakeNoticeCompactLines(subtaskState.wakeNoticeView(currentSessionRef())));
 	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view(currentSessionRef())));
 	// Build all lines dynamically so empty sections don't leave blank gaps
 	const allLines = createMemo(() => {
@@ -162,6 +177,11 @@ function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActiv
 		for (const line of usageLines()) lines.push(line);
 		lines.push(observedLine());
 		lines.push(statusLine());
+		const wnl = wakeNoticeLines();
+		if (wnl.length > 0) {
+			lines.push("");
+			for (const line of wnl) lines.push(line);
+		}
 		// Auto-next lines (only if non-empty)
 		const anl = autoNextLines();
 		if (anl.length > 0) {

@@ -505,6 +505,7 @@ export interface FlowDeskInjectedSdkRuntimeLaneLaunchResultV1 {
 	dispatchMethod?: FlowDeskRuntimeLaneLaunchDispatchMethodV1;
 	redactedBlockReason?: string;
 	redactedErrorCategory?: "runtime" | "provider_api" | "unknown";
+	redactedErrorLabel?: string;
 	safeNextActions: ["/flowdesk-status"] | ["/flowdesk-status", "/flowdesk-export-debug"];
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1 & {
 		runtimeLaneLaunchAuthorized: boolean;
@@ -3248,7 +3249,10 @@ function workingModelCacheAllowsDispatch(input: {
 		}
 
 		return { ok: true };
-	} catch {
+	} catch (error) {
+		const errorName = typeof (error as { name?: unknown })?.name === "string"
+			? (error as { name: string }).name
+			: "sdk_prompt_error";
 		return {
 			ok: false,
 			reason:
@@ -3820,7 +3824,12 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			fallbackPromptOptions,
 		);
 		if (isSdkErrorResponse(response)) throw new Error("sdk prompt failed");
-	} catch {
+	} catch (error) {
+		const errorLabel = typeof (error as { name?: unknown })?.name === "string"
+			? (error as { name: string }).name
+			: error instanceof Error
+				? error.message
+				: "sdk_prompt_error";
 		return {
 			adapterProfile: "injected_sdk_runtime_lane_launch_adapter",
 			status: "lane_launch_failed",
@@ -3835,6 +3844,7 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			model: runtimeModel,
 			dispatchMethod,
 			redactedErrorCategory: "provider_api",
+			redactedErrorLabel: errorLabel.slice(0, 120),
 			safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
 			authority: runtimeLaneLaunchAuthority(false),
 		};

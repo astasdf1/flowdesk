@@ -293,6 +293,7 @@ test("representative validators require usage and provider health evidence", () 
     freshness_ttl: 10,
     reset_time: "unknown",
     reset_bucket: "unknown",
+    remaining_percent: 42,
     dispatchability: "dispatchable",
     uncertainty_flags: []
   };
@@ -488,6 +489,8 @@ test("usage and provider health snapshots validate enums and fail-closed consist
     source_ref: "source-123"
   };
   assert.equal(validateUsageSnapshotV1(usageSnapshot).ok, true);
+  assert.equal(validateUsageSnapshotV1({ ...usageSnapshot, remaining_percent: -1 }).ok, false);
+  assert.equal(validateUsageSnapshotV1({ ...usageSnapshot, remaining_percent: 101 }).ok, false);
   assert.equal(validateUsageSnapshotV1({ ...usageSnapshot, freshness: "bad" }).ok, false);
   assert.equal(validateUsageSnapshotV1({ ...usageSnapshot, uncertainty_flags: ["stale"], dispatchability: "dispatchable" }).ok, false);
   assert.equal(validateUsageResponseV1({ schema_version: "flowdesk.usage.response.v1", ok: true, status: "diagnostic_only", safe_next_actions: ["/flowdesk-status"], user_message: "Usage is unknown.", usage_snapshot_ref: "usage-123", freshness: "unknown", dispatchability: "dispatchable", uncertainty_flags: ["unknown"] }).ok, false);

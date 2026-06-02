@@ -35,7 +35,8 @@ export interface ModelSelectionResult {
 }
 
 export interface WorkingModelSelectionInput {
-	availableModelIds?: readonly string[];
+	availableModelIds: readonly string[];
+	availabilitySource?: "local_db" | "durable_cache" | "cloud_cache" | "test_fixture";
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,9 @@ const MEDIUM_MODELS: ModelCandidate[] = [
 	{ providerQualifiedModelId: "openai/gpt-5.5", providerFamily: "openai", agentName: "reviewer-gpt-frontier", tier: "medium" },
 	{ providerQualifiedModelId: "anthropic/claude-sonnet-4-6", providerFamily: "claude", agentName: "reviewer-claude-opus", tier: "medium" },
 	{ providerQualifiedModelId: "google/gemini-3.1-pro-preview", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
-	{ providerQualifiedModelId: "google/gemini-3.1-flash-preview", providerFamily: "gemini", usageKey: "gemini-flash", agentName: "reviewer-gemini-pro", tier: "medium" },
+	{ providerQualifiedModelId: "google/gemini-3-pro-preview", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
+	{ providerQualifiedModelId: "google/gemini-2.5-pro", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
+	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite-preview", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "medium" },
 ];
 
 const LIGHT_MODELS: ModelCandidate[] = [
@@ -158,19 +161,20 @@ function usageNote(usage: ProviderUsageInput | undefined, nowMs = Date.now()): s
 export function selectModelForTask(
 	role: FlowDeskAgentRegistryRoleCategoryV1,
 	usageByFamily: Map<string, ProviderUsageInput>,
-	selectionContext: WorkingModelSelectionInput = {},
+	selectionContext: WorkingModelSelectionInput,
 	now?: () => Date,
 ): ModelSelectionResult | undefined {
 	const nowMs = (now ? now() : new Date()).getTime();
 	const mapping = ROLE_TIER_MAP[role];
 	if (!mapping) return undefined;
-	const allowedModelIds = selectionContext.availableModelIds === undefined ? undefined : new Set(selectionContext.availableModelIds);
+	const allowedModelIds = new Set(selectionContext.availableModelIds);
+	if (allowedModelIds.size === 0) return undefined;
 
 	// Deduplicate by providerQualifiedModelId and compute weights
 	const seen = new Set<string>();
 	const weighted: ModelSelectionResult[] = [];
 	for (const candidate of mapping.candidates) {
-		if (allowedModelIds !== undefined && !allowedModelIds.has(candidate.providerQualifiedModelId)) continue;
+		if (!allowedModelIds.has(candidate.providerQualifiedModelId)) continue;
 		if (seen.has(candidate.providerQualifiedModelId)) continue;
 		seen.add(candidate.providerQualifiedModelId);
 		const usage = usageByFamily.get(candidate.usageKey ?? candidate.providerFamily) ?? usageByFamily.get(candidate.providerFamily);
@@ -191,6 +195,8 @@ export function selectModelForTask(
 		if (byWeight !== 0) return byWeight;
 		const byTier = tierRank(a.candidate.tier) - tierRank(b.candidate.tier);
 		if (byTier !== 0) return byTier;
+		const byCatalogPreference = mapping.candidates.findIndex((candidate) => candidate.providerQualifiedModelId === a.candidate.providerQualifiedModelId) - mapping.candidates.findIndex((candidate) => candidate.providerQualifiedModelId === b.candidate.providerQualifiedModelId);
+		if (byCatalogPreference !== 0) return byCatalogPreference;
 		return a.candidate.providerQualifiedModelId.localeCompare(b.candidate.providerQualifiedModelId);
 	})[0];
 }

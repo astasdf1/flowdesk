@@ -91,6 +91,13 @@ function remainingPercentFromResetBucket(value: unknown): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
+function remainingPercentFromUsageSnapshotRecord(record: Record<string, unknown>): number | null {
+	const explicit = record.remaining_percent;
+	if (typeof explicit === "number" && Number.isFinite(explicit)) return explicit;
+	if (explicit === null) return null;
+	return remainingPercentFromResetBucket(record.reset_bucket);
+}
+
 function alertLevelFor(
 	freshness: FlowDeskTuiUsageProviderRowV1["freshness"],
 	remainingPercent: number | null,
@@ -187,7 +194,7 @@ function rowFromRecord(
 	const resetTime = typeof record.reset_time === "string" ? record.reset_time : undefined;
 	const resetMs = resetTime === undefined ? Number.NaN : Date.parse(resetTime);
 	const observedMs = timestampFromUsageSnapshotId(record.snapshot_id);
-	const remainingPercent = remainingPercentFromResetBucket(record.reset_bucket);
+	const remainingPercent = remainingPercentFromUsageSnapshotRecord(record);
 	const row: FlowDeskTuiUsageProviderRowV1 = {
 		providerFamily: family,
 		connected: dispatchability === "dispatchable" && freshness === "fresh",
@@ -212,8 +219,12 @@ function rowFromRecord(
 function bucketFromSidebarCacheRecord(
 	record: Record<string, unknown>,
 	nowMs: number,
-	forceStale = false,
+	fallbackExpiresAtMs?: number,
+	fallbackObservedAtMs?: number,
 ): FlowDeskTuiUsageProviderBucketV1 | undefined {
+	const expiresAtMs = sidebarCacheTimestampMs(record, "expires_at", "expiresAt", fallbackExpiresAtMs);
+	const observedAtMs = sidebarCacheTimestampMs(record, "observed_at", "observedAt", fallbackObservedAtMs);
+	const forceStale = Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs;
 	const dispatchability =
 		record.dispatchability === "dispatchable" ||
 		record.dispatchability === "diagnostic_only" ||
@@ -243,16 +254,40 @@ function bucketFromSidebarCacheRecord(
 		...(Number.isFinite(resetMs)
 			? { secondsUntilReset: Math.max(0, Math.floor((resetMs - nowMs) / 1000)) }
 			: {}),
+		...(Number.isFinite(observedAtMs)
+			? { secondsSinceObserved: Math.max(0, Math.floor((nowMs - observedAtMs) / 1000)) }
+			: {}),
 	};
+}
+
+function sidebarCacheTimestampMs(
+	record: Record<string, unknown>,
+	snakeKey: string,
+	camelKey: string,
+	fallback?: number,
+): number {
+	const value =
+		typeof record[snakeKey] === "string"
+			? record[snakeKey]
+			: typeof record[camelKey] === "string"
+				? record[camelKey]
+				: undefined;
+	const parsed = value === undefined ? Number.NaN : Date.parse(value);
+	if (Number.isFinite(parsed)) return parsed;
+	return fallback ?? Number.NaN;
 }
 
 function rowFromSidebarCacheRecord(
 	family: FlowDeskTuiProviderFamilyV1,
 	record: Record<string, unknown> | undefined,
 	nowMs: number,
-	forceStale = false,
+	fallbackExpiresAtMs?: number,
+	fallbackObservedAtMs?: number,
 ): FlowDeskTuiUsageProviderRowV1 {
 	if (record === undefined) return rowFromRecord(family, undefined, nowMs);
+	const expiresAtMs = sidebarCacheTimestampMs(record, "expires_at", "expiresAt", fallbackExpiresAtMs);
+	const observedAtMs = sidebarCacheTimestampMs(record, "observed_at", "observedAt", fallbackObservedAtMs);
+	const forceStale = Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs;
 	const dispatchability =
 		record.dispatchability === "dispatchable" ||
 		record.dispatchability === "diagnostic_only" ||
@@ -293,11 +328,14 @@ function rowFromSidebarCacheRecord(
 		...(Number.isFinite(resetMs)
 			? { secondsUntilReset: Math.max(0, Math.floor((resetMs - nowMs) / 1000)) }
 			: {}),
+		...(Number.isFinite(observedAtMs)
+			? { secondsSinceObserved: Math.max(0, Math.floor((nowMs - observedAtMs) / 1000)) }
+			: {}),
 	};
 	const explicitBuckets = Array.isArray(record.buckets)
 		? record.buckets
 				.filter(isRecord)
-				.map((bucket) => bucketFromSidebarCacheRecord(bucket, nowMs, forceStale))
+				.map((bucket) => bucketFromSidebarCacheRecord(bucket, nowMs, expiresAtMs, observedAtMs))
 				.filter((bucket): bucket is FlowDeskTuiUsageProviderBucketV1 => bucket !== undefined)
 		: [];
 	const fallbackBucket = bucketFromRow(row);
@@ -314,11 +352,8 @@ function loadSidebarCacheRows(
 			readFileSync(join(rootDir, ".flowdesk", "ui", "provider-usage-sidebar.json"), "utf8"),
 		) as unknown;
 		if (!isRecord(cache) || cache.schema_version !== "flowdesk.provider_usage_sidebar_cache.v1") return undefined;
-		let stale = false;
-		if (typeof cache.expires_at === "string") {
-			const expiresAtMs = Date.parse(cache.expires_at);
-			if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) stale = true;
-		}
+		const topLevelExpiresAtMs = typeof cache.expires_at === "string" ? Date.parse(cache.expires_at) : Number.NaN;
+		const topLevelObservedAtMs = typeof cache.observed_at === "string" ? Date.parse(cache.observed_at) : Number.NaN;
 		if (!Array.isArray(cache.providers)) return undefined;
 		const byFamily = new Map<FlowDeskTuiProviderFamilyV1, Record<string, unknown>>();
 		for (const row of cache.providers) {
@@ -326,12 +361,13 @@ function loadSidebarCacheRows(
 			byFamily.set(row.providerFamily, row);
 		}
 		if (byFamily.size === 0) return undefined;
-		return {
-			rows: providerFamilies.map((family) =>
-				rowFromSidebarCacheRecord(family, byFamily.get(family), nowMs, stale),
-			),
-			stale,
-		};
+		const rows = providerFamilies.map((family) =>
+			rowFromSidebarCacheRecord(family, byFamily.get(family), nowMs, topLevelExpiresAtMs, topLevelObservedAtMs),
+		);
+		const stale = rows.some(
+			(row) => row.freshness === "stale" || (row.buckets ?? []).some((bucket) => bucket.freshness === "stale"),
+		);
+		return { rows, stale };
 	} catch {
 		return undefined;
 	}

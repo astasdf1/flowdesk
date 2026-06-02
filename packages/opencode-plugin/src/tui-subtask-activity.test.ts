@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
 	formatFlowDeskTuiAutoNextReadyCompactLines,
+	formatFlowDeskTuiCompletionWakeNoticeCompactLines,
 	formatFlowDeskTuiLatestSynthesisCompactLines,
 	formatFlowDeskTuiSubtaskActivityCompactLines,
 	loadFlowDeskTuiAutoNextReadyViewV1,
+	loadFlowDeskTuiCompletionWakeNoticeViewV1,
 	loadFlowDeskTuiLatestSynthesisViewV1,
 	loadFlowDeskTuiSubtaskActivityViewV1,
 } from "./tui-subtask-activity.js";
@@ -299,11 +301,11 @@ test("TUI subtask activity compact lines use friendly labels for key states", ()
 	}, 5);
 	assert.deepEqual(lines, [
 		"Subtasks:",
+		"✓ 09:05 Review API",
 		"! --:-- task perm-1",
 		"!! --:-- task stall-1",
 		"! --:-- task slow-1",
 		"… --:-- task final-1",
-		"✓ 09:05 Review API",
 	]);
 });
 
@@ -323,6 +325,27 @@ test("TUI subtask activity compact lines distinguish duplicate summaries with st
 		"✓ 09:12 Live smoke",
 		"✓ 09:11 Live smoke",
 	]);
+});
+
+test("TUI subtask activity keeps completed rows ordered and displayed by start time metadata", () => {
+	const view = {
+		status: "loaded" as const,
+		observedAt: "2026-05-29T00:00:00.000Z",
+		rootDir: ".flowdesk",
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"] as const,
+		rows: [
+			{ workflowId: "w", laneId: "lane-task-old-start", taskId: "task-old-start", taskSummary: "Old start", state: "task_result", classification: "terminal" as const, startedAt: "2026-05-29T00:01:00.000Z", completedAt: "2026-05-29T00:10:00.000Z", durationMs: 540_000, lastObservedAt: "2026-05-29T00:10:00.000Z", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+			{ workflowId: "w", laneId: "lane-task-new-start", taskId: "task-new-start", taskSummary: "New start", state: "running", classification: "progressing_normal" as const, startedAt: "2026-05-29T00:05:00.000Z", lastObservedAt: "2026-05-29T00:06:00.000Z", recoveryActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"] },
+		],
+	};
+
+	assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view, 5), [
+		"Subtasks:",
+		"… 09:05 New start",
+		"✓ 09:01 Old start",
+	]);
+	assert.equal(view.rows[0].completedAt, "2026-05-29T00:10:00.000Z");
+	assert.equal(view.rows[0].durationMs, 540_000);
 });
 
 test("TUI subtask activity compact lines keep titles compact enough for one line", () => {
@@ -459,6 +482,85 @@ test("TUI auto-next ready compact lines mark stale cache freshness", () => {
 			nextActionAvailable: true,
 		}],
 	}), []);
+});
+
+test("TUI completion wake consumer consumes ready rows and renders main-session notice", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-wake-consumer-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "completion-wake-ready.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.completion_wake_ready_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [{
+					workflowId: "workflow-wake-current",
+					parentSessionRef: "ses-current",
+					completionKind: "auto_next_ready",
+					readyAt: "2026-05-29T00:00:30.000Z",
+					dedupeKey: "ses-current\u0000workflow-wake-current",
+					consumptionKey: "ses-current:workflow-wake-current:2026-05-29T00:00:30.000Z:1:0",
+					consumed: false,
+					laneIds: ["lane-a"],
+					taskResultRefs: ["task-a"],
+					taskFailedRefs: [],
+					taskSummaries: ["Review API"],
+					notificationLabel: "FlowDesk synthesis ready",
+					nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+				}],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		const view = loadFlowDeskTuiCompletionWakeNoticeViewV1({ rootDir: root, currentParentSessionRef: "ses-current", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(view.status, "loaded");
+		assert.equal(view.notices.length, 1);
+		assert.deepEqual(formatFlowDeskTuiCompletionWakeNoticeCompactLines(view), ["FlowDesk ready:", "✓ continue: Review API"]);
+
+		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedAt?: string }> };
+		assert.equal(ready.rows[0]?.consumed, true);
+		assert.equal(ready.rows[0]?.consumedAt, "2026-05-29T00:01:00.000Z");
+
+		const second = loadFlowDeskTuiCompletionWakeNoticeViewV1({ rootDir: root, currentParentSessionRef: "ses-current", now: () => new Date("2026-05-29T00:01:10.000Z") });
+		assert.equal(second.notices.length, 1, "consumed notice remains visible from notification cache");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI completion wake consumer does not consume other session rows", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-wake-session-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "completion-wake-ready.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.completion_wake_ready_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [{
+					workflowId: "workflow-wake-other",
+					parentSessionRef: "ses-other",
+					completionKind: "auto_next_ready",
+					readyAt: "2026-05-29T00:00:30.000Z",
+					dedupeKey: "ses-other\u0000workflow-wake-other",
+					consumptionKey: "ses-other:workflow-wake-other:2026-05-29T00:00:30.000Z:1:0",
+					consumed: false,
+					taskSummaries: ["Other"],
+				}],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+		const view = loadFlowDeskTuiCompletionWakeNoticeViewV1({ rootDir: root, currentParentSessionRef: "ses-current", now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.equal(view.notices.length, 0);
+		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean }> };
+		assert.equal(ready.rows[0]?.consumed, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("TUI latest synthesis view renders cached display-only synthesis", () => {

@@ -176,6 +176,57 @@ test("lane stall projection classifies a 7-minute idle running lane as stalled",
 	assert.ok(result.entries[0].safeNextActions.includes("/flowdesk-abort"));
 });
 
+test("lane stall projection treats task_result as terminal over stale running lifecycle and progress", () => {
+	const result = projectFlowDeskLaneStallV1({
+		workflowId,
+		observedAt,
+		reload: reload([
+			entry(
+				lifecycle({
+					updated_at: new Date(observedAtMs - 8 * 60_000).toISOString(),
+				}),
+				"lifecycle-stale-running-with-result",
+			),
+			genericEntry("agent_task_progress", "agent-task-progress-stale-with-result", {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-stall-1",
+				task_id: "task-stall-1",
+				agent_ref: "agent-reviewer",
+				provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+				progress_seq: 8,
+				observed_at: new Date(observedAtMs - 7 * 60_000).toISOString(),
+				phase: "waiting",
+				progress_label: "stale progress before task result",
+				progress_ref: "progress-lane-stall-1-8",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			}),
+			genericEntry("task_result", "task-result-stale-running-wins", {
+				schema_version: "flowdesk.task_result.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-stall-1",
+				task_id: "task-stall-1",
+				agent_ref: "agent-reviewer",
+				provider_qualified_model_id: "openai/gpt-5.4-mini-fast",
+				completion_status: "final",
+				output_kind: "final_answer",
+				created_at: new Date(observedAtMs - 6 * 60_000).toISOString(),
+				dispatch_authority_enabled: false,
+			}),
+		]),
+	});
+	assert.equal(result.entries.length, 1);
+	assert.equal(result.entries[0].classification, "terminal");
+	assert.equal(result.entries[0].lifecycleState, "task_result");
+	assert.equal(result.entries[0].lastSignalSource, "task_result");
+	assert.equal(result.entries[0].lastSignalEvidenceId, "task-result-stale-running-wins");
+	assert.equal(result.totalTerminalLanes, 1);
+	assert.equal(result.totalActiveLanes, 0);
+	assert.equal(result.totalStalledLanes, 0);
+	assert.equal(result.worstClassification, "terminal");
+});
+
 test("lane stall projection treats complete and aborted lanes as terminal", () => {
 	const result = projectFlowDeskLaneStallV1({
 		workflowId,
