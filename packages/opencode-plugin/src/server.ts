@@ -5028,13 +5028,20 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			})()
 		: undefined;
 	const durableStateRoot = durableStateRootFromOptions(options);
+	// V11.3 event-awakened watchdog: when the event hook observes a
+	// finalization-relevant child-session event, it pokes this debounced trigger
+	// so the watchdog cycle runs immediately instead of waiting up to the full
+	// setInterval period. Capture stays owned by the watchdog cycle (single
+	// entry point); the event hook only schedules it. Remains undefined unless
+	// the setInterval watchdog is enabled, so the event hook degrades gracefully.
+	let pokeWatchdogCycle: (() => void) | undefined;
 	if (watchdogConfig?.enabled === true && guardedAutoAbortForWatchdog !== undefined && durableStateRoot !== undefined) {
 		const capturedClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
 		const capturedParentSessionId = "";
 		const capturedRootDir = durableStateRoot;
 		const capturedConfig = guardedAutoAbortForWatchdog;
 
-		const watchdogInterval = setInterval(() => {
+		const runWatchdogCycle = () => {
 			runFlowDeskWatchdogCycleV1({
 				config: capturedConfig,
 				rootDir: capturedRootDir,
@@ -5044,7 +5051,24 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			}).catch(() => {
 				// errors are swallowed — watchdog must not crash the plugin
 			});
-		}, watchdogConfig.intervalMs ?? 30_000);
+		};
+
+		const watchdogInterval = setInterval(runWatchdogCycle, watchdogConfig.intervalMs ?? 30_000);
+
+		// Debounced poke: coalesce bursty finalization events into at most one
+		// extra cycle per debounce window. runFlowDeskWatchdogCycleV1 already
+		// guards re-entry (`cycle_already_running`), so overlap with the interval
+		// is safe; the debounce just avoids scheduling a flood of timers.
+		const pokeDebounceMs = 250;
+		let pokeTimer: ReturnType<typeof setTimeout> | undefined;
+		pokeWatchdogCycle = () => {
+			if (pokeTimer !== undefined) return;
+			pokeTimer = setTimeout(() => {
+				pokeTimer = undefined;
+				runWatchdogCycle();
+			}, pokeDebounceMs);
+			pokeTimer.unref?.();
+		};
 
 		// Allow the process to exit even if the interval is still active
 		watchdogInterval.unref();
@@ -5118,7 +5142,14 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					if (uiProbeEventObservations.length > 200) uiProbeEventObservations.splice(0, uiProbeEventObservations.length - 200);
 				}
 				if (eventRootDir !== undefined) {
-					await observeFlowDeskOpenCodeEventV1({ rootDir: eventRootDir, event: input.event });
+					const observed = await observeFlowDeskOpenCodeEventV1({ rootDir: eventRootDir, event: input.event });
+					// V11.3: if this was a matched, finalization-relevant child-session
+					// event, poke the watchdog so it captures/terminalizes immediately
+					// instead of waiting up to a full setInterval period. The watchdog
+					// (single capture owner) still does the actual work.
+					if (observed.matched && observed.finalizationRelevant === true) {
+						pokeWatchdogCycle?.();
+					}
 				}
 			};
 

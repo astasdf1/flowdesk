@@ -16,6 +16,28 @@ export interface FlowDeskEventHookObservationResultV1 {
 	laneId?: string;
 	taskId?: string;
 	evidenceWritten: number;
+	/**
+	 * V11.3: true when the observed event is finalization-relevant for a bound
+	 * child session (turn-completed, tool-settled, session.idle/status idle, or
+	 * session.error). The caller can use this to poke the watchdog cycle to run
+	 * immediately. This is an advisory scheduling hint only — the event hook
+	 * itself never captures or terminalizes (the watchdog owns that).
+	 */
+	finalizationRelevant?: boolean;
+}
+
+/**
+ * V11.3: classify whether an event type/label is finalization-relevant, i.e.
+ * likely to change a lane's terminal/capture decision, so the watchdog should
+ * be poked to run a cycle immediately. Streaming message/part churn is NOT
+ * finalization-relevant (it must not flood the watchdog with pokes).
+ */
+export function eventIsFinalizationRelevant(type: string | undefined, progressLabel: string | undefined): boolean {
+	if (type === "session.error" || type === "session.idle") return true;
+	if (type === "session.status") return true; // idle/retry/busy — idle handled by label below
+	if (type === "message.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task turn completed")) return true;
+	if (type === "message.part.updated" && typeof progressLabel === "string" && (progressLabel.startsWith("agent task tool settled") || progressLabel.startsWith("agent task terminal step"))) return true;
+	return false;
 }
 
 interface ChildSessionBinding {
@@ -313,5 +335,6 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 		laneId: binding.laneId,
 		taskId: binding.taskId,
 		evidenceWritten: (progressWritten ? 1 : 0) + terminalWritten,
+		finalizationRelevant: eventIsFinalizationRelevant(type, progress?.label),
 	};
 }
