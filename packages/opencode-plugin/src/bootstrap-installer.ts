@@ -469,6 +469,9 @@ interface FlowDeskMainAgentMaterializationRollbackState {
 	configPath: string;
 	configExisted: boolean;
 	previousConfigText?: string;
+	tuiConfigPath: string;
+	tuiConfigExisted: boolean;
+	previousTuiConfigText?: string;
 }
 
 interface FlowDeskMainAgentMaterializationResult extends ValidationResult {
@@ -554,12 +557,31 @@ function readOptionalText(path: string): ValidationResult & { exists: boolean; t
 	}
 }
 
+function flowDeskTuiConfig(profileRootDir: string, durableStateRootDir: string): Record<string, unknown> {
+	return {
+		plugin: [
+			[
+				resolve(profileRootDir, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js"),
+				{
+					durableStateRootDir: resolve(durableStateRootDir),
+					usageWorkflowId: "workflow-global-provider-usage",
+				},
+			],
+		],
+	};
+}
+
 function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMainAgentMaterializationResult {
+	return materializeFlowDeskMainAgentProfileWithTui(profileRootDir, profileRootDir);
+}
+
+function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, durableStateRootDir: string): FlowDeskMainAgentMaterializationResult {
 	const root = resolve(profileRootDir);
 	const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
 	const agentPath = resolve(root, flowDeskMainAgentRef);
 	const configPath = resolve(root, "opencode.json");
-	if (!agentPath.startsWith(rootPrefix) || !configPath.startsWith(rootPrefix)) {
+	const tuiConfigPath = resolve(root, "tui.json");
+	if (!agentPath.startsWith(rootPrefix) || !configPath.startsWith(rootPrefix) || !tuiConfigPath.startsWith(rootPrefix)) {
 		return { ...invalid("FlowDesk main agent paths escape profile root"), agentProfileFilesWritten: 0, profileConfigUpdated: false };
 	}
 
@@ -567,6 +589,8 @@ function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMa
 	if (!previousConfig.ok) return { ...previousConfig, agentProfileFilesWritten: 0, profileConfigUpdated: false };
 	const previousAgent = readOptionalText(agentPath);
 	if (!previousAgent.ok) return { ...previousAgent, agentProfileFilesWritten: 0, profileConfigUpdated: false };
+	const previousTuiConfig = readOptionalText(tuiConfigPath);
+	if (!previousTuiConfig.ok) return { ...previousTuiConfig, agentProfileFilesWritten: 0, profileConfigUpdated: false };
 
 	let config: Record<string, unknown>;
 	if (previousConfig.exists && previousConfig.text !== undefined) {
@@ -588,6 +612,7 @@ function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMa
 		mkdirSync(resolve(root, "agent"), { recursive: true });
 		writeFileSync(agentPath, flowDeskMainAgentMarkdown(), "utf8");
 		writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+		writeFileSync(tuiConfigPath, `${JSON.stringify(flowDeskTuiConfig(root, durableStateRootDir), null, 2)}\n`, "utf8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "unknown error";
 		return { ...invalid(`FlowDesk main agent profile write failed: ${message}`), agentProfileFilesWritten: 0, profileConfigUpdated: false };
@@ -596,7 +621,7 @@ function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMa
 	return {
 		...valid(),
 		profileRootDir: root,
-		writtenProfileRefs: [flowDeskMainAgentRef, "opencode.json"],
+		writtenProfileRefs: [flowDeskMainAgentRef, "opencode.json", "tui.json"],
 		agentProfileFilesWritten: 1,
 		profileConfigUpdated: true,
 		rollbackState: {
@@ -605,7 +630,10 @@ function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMa
 			previousAgentText: previousAgent.text,
 			configPath,
 			configExisted: previousConfig.exists,
-			previousConfigText: previousConfig.text
+			previousConfigText: previousConfig.text,
+			tuiConfigPath,
+			tuiConfigExisted: previousTuiConfig.exists,
+			previousTuiConfigText: previousTuiConfig.text,
 		}
 	};
 }
@@ -619,6 +647,9 @@ function rollbackFlowDeskMainAgentProfile(state: FlowDeskMainAgentMaterializatio
 	if (state.configExisted && state.previousConfigText !== undefined) writeFileSync(state.configPath, state.previousConfigText, "utf8");
 	else rmSync(state.configPath, { force: true });
 	rolledBack.push("opencode.json");
+	if (state.tuiConfigExisted && state.previousTuiConfigText !== undefined) writeFileSync(state.tuiConfigPath, state.previousTuiConfigText, "utf8");
+	else rmSync(state.tuiConfigPath, { force: true });
+	rolledBack.push("tui.json");
 	return rolledBack;
 }
 
@@ -637,7 +668,7 @@ export function installFlowDeskRelease1Bootstrap(request: FlowDeskRelease1Bootst
 		return { ...invalid(...commandMaterialization.errors), commandMaterialization, ...resultBase(), rollbackCommandRefs };
 	}
 
-	const mainAgentMaterialization = materializeFlowDeskMainAgentProfile(request.profileRootDir);
+	const mainAgentMaterialization = materializeFlowDeskMainAgentProfileWithTui(request.profileRootDir, request.durableStateRootDir);
 	if (!mainAgentMaterialization.ok) {
 		const rollbackCommandRefs = rollbackCommandFiles(request.profileRootDir, commandMaterialization.writtenCommandRefs);
 		const rollbackProfileRefs = rollbackFlowDeskMainAgentProfile(mainAgentMaterialization.rollbackState);

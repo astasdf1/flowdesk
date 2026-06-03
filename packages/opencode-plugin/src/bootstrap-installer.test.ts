@@ -116,6 +116,13 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");
+		const tuiConfig = JSON.parse(readFileSync(join(profileRoot, "tui.json"), "utf8")) as Record<string, unknown>;
+		const tuiPlugins = tuiConfig.plugin as unknown[];
+		assert.equal(Array.isArray(tuiPlugins), true);
+		const flowdeskTuiPlugin = tuiPlugins[0] as [string, Record<string, unknown>];
+		assert.equal(flowdeskTuiPlugin[0], join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js"));
+		assert.equal(flowdeskTuiPlugin[1].durableStateRootDir, durableRoot);
+		assert.equal(flowdeskTuiPlugin[1].usageWorkflowId, "workflow-global-provider-usage");
 
 		const bootstrapDir = join(durableRoot, ".flowdesk/bootstrap/install-plan-profile-release1");
     assert.deepEqual(readdirSync(bootstrapDir).sort(), ["bootstrap-report", "bootstrap-install-plan", "command-generation-summary", "doctor-handoff"].sort());
@@ -306,12 +313,13 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
 		assert.equal(result.profileConfigUpdated, false);
 		assert.equal(result.bootstrapArtifactsWritten, 0);
 		assert.equal(result.rollbackCommandRefs?.length, 9);
-		assert.deepEqual(result.rollbackProfileRefs?.sort(), ["agent/flowdesk-main.md", "opencode.json"].sort());
+		assert.deepEqual(result.rollbackProfileRefs?.sort(), ["agent/flowdesk-main.md", "opencode.json", "tui.json"].sort());
 		for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
 			assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), false, commandName);
 		}
 		assert.equal(existsSync(join(profileRoot, "agent", "flowdesk-main.md")), false);
 		assert.equal(existsSync(join(profileRoot, "opencode.json")), false);
+		assert.equal(existsSync(join(profileRoot, "tui.json")), false);
     const rawLedger = readFileSync(ledgerPath(durableRoot, confirmation.confirmationRef), "utf8");
     const ledger = JSON.parse(rawLedger) as Record<string, unknown>;
     assert.equal(ledger.status, "pending");
