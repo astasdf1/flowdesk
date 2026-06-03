@@ -106,6 +106,10 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /progress events without a final answer/);
 		assert.match(mainAgent, /Retrying the same prompt on a different model is not enough/);
 		assert.match(mainAgent, /inconsistent_finalizing_without_terminal/);
+		assert.match(mainAgent, /After FlowDesk is installed or updated, immediately verify the live diagnostics path/);
+		assert.match(mainAgent, /\/flowdesk-usage/);
+		assert.match(mainAgent, /If reviewer fanout diagnostics or SDK-health diagnostics are still unavailable/);
+		assert.match(mainAgent, /prefer a concrete safe next action over silent success/);
 		assert.doesNotMatch(mainAgent, /Completion continuation policy/);
 		assert.doesNotMatch(mainAgent, /continue with that next todo automatically/);
 		assert.doesNotMatch(mainAgent, /response-waiting mode/);

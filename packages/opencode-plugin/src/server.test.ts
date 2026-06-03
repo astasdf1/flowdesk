@@ -8109,7 +8109,8 @@ test("flowdesk_agent_task_run executes task and returns result text", async () =
 		const cards = workflows[0]?.laneProgressCards as Array<Record<string, unknown>>;
 		assert.ok(cards.some((card) => card.laneId === result.laneId && card.state === "task_result"));
 		assert.ok(cards.some((card) => card.laneId === result.laneId && card.promptPreview === "Analyze this code for security issues."));
-		assert.ok(cards.some((card) => card.laneId === result.laneId && card.progressPhase === "finalizing" && card.progressLabel === "agent task result captured"));
+		assert.ok(cards.some((card) => card.laneId === result.laneId && card.lastSignalSource === "task_result"));
+		assert.ok(cards.some((card) => card.laneId === result.laneId && card.completionStatus === "final"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

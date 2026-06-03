@@ -97,7 +97,7 @@ export interface FlowDeskBootstrapFailureEvidenceV1 {
   bootstrapAuthorityRequestedAfterDoctorPass?: boolean;
 }
 
-const BOOTSTRAP_SAFE_NEXT_ACTIONS = ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug", "continue_chat", "ask_clarification"] as const satisfies readonly SafeNextAction[];
+const BOOTSTRAP_SAFE_NEXT_ACTIONS = ["/flowdesk-doctor", "/flowdesk-usage", "/flowdesk-status", "/flowdesk-export-debug", "continue_chat", "ask_clarification"] as const satisfies readonly SafeNextAction[];
 const DOCTOR_SAFE_NEXT_ACTIONS = ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"] as const satisfies readonly SafeNextAction[];
 const REQUIRED_DISABLED_BOOTSTRAP_MODES = ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"] as const satisfies readonly DisabledModeV1[];
 const CHAT_DISABLED_MODES = ["chat_routed"] as const satisfies readonly DisabledModeV1[];

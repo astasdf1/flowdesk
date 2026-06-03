@@ -1,6 +1,6 @@
 {
   "name": "@flowdesk/opencode-plugin",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "FlowDesk OpenCode plugin with Release 1 non-dispatch command-backed registration.",
   "type": "module",
   "license": "MIT",
@@ -62,13 +62,13 @@
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@flowdesk/core": "^0.1.19"
+    "@flowdesk/core": "^0.1.20"
   },
   "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.14.40 <2",
     "@opentui/core": ">=0.2.15",
     "@opentui/keymap": ">=0.2.15",
-    "@opentui/solid": ">=0.2.15",
-    "@opencode-ai/plugin": ">=1.14.40 <2"
+    "@opentui/solid": ">=0.2.15"
   },
   "peerDependenciesMeta": {
     "@opencode-ai/plugin": {

@@ -398,7 +398,7 @@ function installPlan(nowIso: string, targetProfileRef: string, typedConfirmation
     confirmation_ref: typedConfirmationRef,
     package_ref: "package-flowdesk-opencode-plugin",
     rollback_plan_ref: rollbackPlanId,
-    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"]
+    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-usage", "/flowdesk-status"]
   };
 }
 
@@ -429,7 +429,7 @@ function bootstrapReport(nowIso: string, targetProfileRef: string, installPlanId
     command_generation_ref: generationId,
     doctor_handoff_ref: handoffId,
     disabled_modes: ["real_dispatch", "managed_fallback", "lane_launch", "hard_chat_blocking"],
-    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
+    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-usage", "/flowdesk-status"],
     audit_refs: ["audit-bootstrap-install"]
   };
 }
@@ -442,7 +442,7 @@ function doctorHandoff(nowIso: string, installPlanId: string, reportId: string, 
     install_plan_ref: installPlanId,
     bootstrap_report_ref: reportId,
     doctor_request_ref: "doctor-request-bootstrap-install",
-    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"]
+    safe_next_actions: ["/flowdesk-doctor", "/flowdesk-usage", "/flowdesk-status"]
   };
 }
 
@@ -516,6 +516,12 @@ Operational rules:
 9. Do not use OMO, OMC, Sisyphus, oh-my-openagent, or nested \`opencode run\` paths.
 10. Do not claim that FlowDesk auto-retries, auto-aborts, auto-fallbacks, force-kills, or hard-cancels chat on stall unless a first-class FlowDesk/OpenCode control surface proves it. Surface /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, and /flowdesk-export-debug as safe next actions.
 11. Never persist or print raw provider tokens, auth payloads, raw prompts, transcripts, or debug bodies.
+
+Install follow-through:
+
+12. After FlowDesk is installed or updated, immediately verify the live diagnostics path by running /flowdesk-doctor, /flowdesk-usage, and /flowdesk-status.
+13. If reviewer fanout diagnostics or SDK-health diagnostics are still unavailable, tell the user exactly which prerequisite is missing, whether a restart is required, and which command should be run next.
+14. When a diagnostics path fails during install-time follow-through, prefer a concrete safe next action over silent success: explain the missing config, evidence, or restart boundary in plain language.
 
 Work breakdown and lane sizing:
 
