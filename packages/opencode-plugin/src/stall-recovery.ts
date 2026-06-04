@@ -9,6 +9,7 @@ import {
 	type FlowDeskReviewerLaneContextV1,
 	type FlowDeskAgentTaskContextV1,
 	type FlowDeskAgentTaskProgressV1,
+	type FlowDeskAgentTaskInconsistencyV1,
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
 	type FlowDeskTopTierReviewVerdictV1,
@@ -34,7 +35,7 @@ import {
 	withTimeout,
 } from "./shared/with-timeout.js";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1 } from "./agent-task-runner.js";
-import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
+import { flowDeskAgentTaskMessageItems, observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
 export interface FlowDeskTimeoutConfig {
@@ -55,8 +56,9 @@ export async function checkSdkSessionApiHealthV1(
 		return { status: "unknown", reason: "sdk_messages_not_available" };
 	}
 	try {
+		const messages = client.session.messages as (options: unknown) => Promise<unknown>;
 		await withTimeout(
-			client.session.messages({ path: { id: sessionId } }) as Promise<unknown>,
+			messages.call(client.session, { sessionID: sessionId }),
 			timeouts.sessionReadMs ?? FLOWDESK_TIMEOUT_DEFAULTS.sessionReadMs,
 			"session.messages",
 		);
@@ -1615,6 +1617,7 @@ const AGENT_TASK_FINAL_REPORT_REPAIR_TEXT =
 export function flowDeskProgressIsMeaningfulActivityV1(phase: string, progressLabel: string | undefined): boolean {
 	if (phase === "nudged" || phase === "failed" || phase === "finalizing") return false;
 	const label = (progressLabel ?? "").toLowerCase();
+	if (label.includes("tool_run_overdue_observed") || label.includes("coordinator_attention_observed")) return false;
 	// Ambient session-status / diff churn is not, by itself, model progress.
 	if (label.includes("session busy") || label.includes("session.diff") || label.includes("session.updated")) return false;
 	if (label.includes("waiting for async child result")) return false;
@@ -1640,27 +1643,35 @@ function monitorSdkErrorResponse(value: unknown): boolean {
 	return record?.error !== undefined || data?.error !== undefined;
 }
 
+async function readAsyncMonitorChildSessionMessages(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	messagesTimeoutMs = 3_000,
+): Promise<unknown | null> {
+	const messages = client.session.messages;
+	if (typeof messages !== "function") return null;
+	const method = messages as (options: unknown) => unknown | Promise<unknown>;
+	const readMessages = (async (): Promise<unknown> => {
+		try {
+			const structured = await method.call(client.session, { path: { id: childSessionId } });
+			if (!monitorSdkErrorResponse(structured)) return structured;
+		} catch { /* fall through to legacy flat OpenCode 1.x shape */ }
+		return method.call(client.session, { sessionID: childSessionId });
+	})();
+	if (messagesTimeoutMs <= 0) return readMessages;
+	return Promise.race([
+		readMessages,
+		new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
+	]);
+}
+
 async function pollChildSessionOutput(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
 ): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean } | null> {
-	const messages = client.session.messages;
-	if (typeof messages !== "function") return null;
 	try {
-		const readMessages = async (): Promise<unknown> => {
-			const current = await (messages as (o: unknown) => Promise<unknown>).call(client.session, {
-				sessionID: childSessionId,
-			});
-			if (!monitorSdkErrorResponse(current)) return current;
-			return (messages as (o: unknown) => Promise<unknown>).call(client.session, {
-				path: { id: childSessionId },
-			});
-		};
-		const raw = await Promise.race([
-			readMessages(),
-			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
-		]);
+		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.terminalObserved && observed.latestText !== undefined && observed.latestText.trim().length > 0)
@@ -1676,18 +1687,8 @@ async function pollChildSessionCandidate(
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
 ): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean } | null> {
-	const messages = client.session.messages;
-	if (typeof messages !== "function") return null;
 	try {
-		const readMessages = async (): Promise<unknown> => {
-			const current = await (messages as (o: unknown) => Promise<unknown>).call(client.session, { sessionID: childSessionId });
-			if (!monitorSdkErrorResponse(current)) return current;
-			return (messages as (o: unknown) => Promise<unknown>).call(client.session, { path: { id: childSessionId } });
-		};
-		const raw = await Promise.race([
-			readMessages(),
-			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
-		]);
+		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.latestText !== undefined && observed.latestText.trim().length > 0)
@@ -1719,18 +1720,8 @@ async function pollChildSessionIdleConfirmedOutput(
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
 ): Promise<{ text: string | undefined; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; hasRunningTool: boolean } | null> {
-	const messages = client.session.messages;
-	if (typeof messages !== "function") return null;
 	try {
-		const readMessages = async (): Promise<unknown> => {
-			const current = await (messages as (o: unknown) => Promise<unknown>).call(client.session, { sessionID: childSessionId });
-			if (!monitorSdkErrorResponse(current)) return current;
-			return (messages as (o: unknown) => Promise<unknown>).call(client.session, { path: { id: childSessionId } });
-		};
-		const raw = await Promise.race([
-			readMessages(),
-			new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
-		]);
+		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		return {
@@ -1784,7 +1775,7 @@ async function abortChildSession(
 	if (typeof abort !== "function") return;
 	try {
 		await (abort as (o: unknown) => unknown).call(client.session, {
-			path: { id: childSessionId },
+			sessionID: childSessionId,
 		});
 	} catch { /* best-effort */ }
 }
@@ -1887,6 +1878,48 @@ function writeAgentTaskCompleteLifecycleForVerdict(input: {
 		provider_qualified_model_id: input.providerQualifiedModelId,
 		state: "complete",
 		verdict_ref: input.verdictId,
+		output_ref: `output-${input.taskResultEvidenceId}`,
+		runtime_echo_ref: `runtime-echo-${input.laneId}`,
+		telemetry_ref: `telemetry-${input.laneId}`,
+		timeout_ms: 0,
+		orphan_max_age_ms: 0,
+		retry_count: 0,
+		created_at: input.observedAt,
+		updated_at: input.observedAt,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	});
+}
+
+function writeAgentTaskTerminalLifecycleForTaskResult(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	attemptId: string;
+	parentSessionRef: string;
+	childSessionId: string;
+	taskResultEvidenceId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	observedAt: string;
+}): boolean {
+	return writeChildSessionEvidence(input.rootDir, input.workflowId, `lifecycle-agent-task-result-${input.laneId}-${input.taskResultEvidenceId}`, {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: input.laneId,
+		workflow_id: input.workflowId,
+		attempt_id: input.attemptId,
+		parent_session_ref: input.parentSessionRef,
+		child_session_ref: input.childSessionId.startsWith("ses-") ? input.childSessionId : `ses-${input.childSessionId}`,
+		message_ref: `msg-${input.laneId}`,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		// A task_result is terminal even when it is not a typed reviewer verdict. Use
+		// the existing terminal non-verdict state so status does not leave the earlier
+		// running lifecycle as the only lifecycle signal for a completed async lane.
+		state: "incomplete",
+		verdict_ref: undefined,
 		output_ref: `output-${input.taskResultEvidenceId}`,
 		runtime_echo_ref: `runtime-echo-${input.laneId}`,
 		telemetry_ref: `telemetry-${input.laneId}`,
@@ -2069,11 +2102,11 @@ export function resolveFlowDeskExpectedTurnCompletedV1(input: {
  * transition opens a callID, a `completed`/`error` transition closes it. The set
  * being non-empty means a tool is genuinely still running (`toolRunningNow`).
  *
- * Exception handling (V11.2 G1): if the set has been continuously non-empty for
- * longer than `staleToolMs` (a settle event was likely dropped), we do NOT treat
- * the lane as idle. Instead we report `toolStateUnknown` with the time the oldest
- * still-open call started, so the caller can BLOCK abort/continuation while only
- * polling body, and force-terminate after `unknownStateMaxMs`.
+ * Exception handling: if the set has been continuously non-empty for longer than
+ * `staleToolMs` (a settle event was likely dropped), we do NOT treat the lane as
+ * idle and we do not terminalize it. Instead we report `toolStateUnknown` with
+ * the time the oldest still-open call started so the caller can write advisory
+ * diagnostic attention while blocking abort/continuation.
  */
 export function deriveFlowDeskLaneToolStateV1(input: {
 	// ordered { observedAtMs, label } tool-state transitions for the lane, oldest first
@@ -2137,6 +2170,185 @@ function writeAgentTaskProgressEvidence(input: {
 	writeChildSessionEvidence(input.rootDir, input.workflowId, `agent-task-progress-${input.laneId}-${input.progressSeq}`, record as unknown as Record<string, unknown>);
 }
 
+type FlowDeskCaptureFailureDiagnosticV1 = {
+	observedAt: string;
+	childSessionId: string;
+	lastPartKind?: string;
+	finalTextPresent: boolean;
+	stepFinishPresent: boolean;
+	runningToolCallId?: string;
+	runningToolStatus?: string;
+	recommendedNextAction: "/flowdesk-status" | "/flowdesk-export-debug";
+};
+
+function safeDiagnosticString(value: unknown, fallback: string | undefined = undefined): string | undefined {
+	if (typeof value !== "string") return fallback;
+	const token = value.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 80);
+	return token.length > 0 ? token : fallback;
+}
+
+function extractCaptureFailureDiagnosticFromMessages(input: {
+	childSessionId: string;
+	observedAt: string;
+	raw: unknown;
+}): FlowDeskCaptureFailureDiagnosticV1 {
+	const observed = observeFlowDeskAgentTaskOutputV1(input.raw);
+	let lastPartKind: string | undefined;
+	let stepFinishPresent = observed.terminalObserved;
+	let runningToolCallId: string | undefined;
+	let runningToolStatus: string | undefined;
+	for (const item of flowDeskAgentTaskMessageItems(input.raw)) {
+		const msg = isRecord(item) ? item : undefined;
+		const info = isRecord(msg?.info) ? msg.info : msg;
+		let parts: unknown[] = Array.isArray(msg?.parts)
+			? msg.parts
+			: Array.isArray(info?.parts)
+				? info.parts as unknown[]
+				: [];
+		if (parts.length === 0 && msg !== undefined && Array.isArray(msg.content)) parts = msg.content;
+		for (const rawPart of parts) {
+			const part = isRecord(rawPart) ? rawPart : undefined;
+			if (part === undefined) continue;
+			lastPartKind = safeDiagnosticString(part.type, "unknown");
+			const type = typeof part.type === "string" ? part.type : "";
+			if (type === "step-finish" || type === "step_finish" || type === "finish") stepFinishPresent = true;
+			const state = isRecord(part.state) ? part.state : undefined;
+			const status = safeDiagnosticString(state?.status ?? part.status);
+			if (type === "tool" || part.tool !== undefined || part.callID !== undefined || part.call_id !== undefined) {
+				if (status === "running") {
+					runningToolStatus = status;
+					runningToolCallId = safeDiagnosticString(part.callID ?? part.call_id ?? part.id ?? state?.id, "unknown");
+				}
+			}
+		}
+	}
+	return {
+		observedAt: input.observedAt,
+		childSessionId: input.childSessionId,
+		...(lastPartKind === undefined ? {} : { lastPartKind }),
+		finalTextPresent: typeof observed.latestText === "string" && observed.latestText.trim().length > 0,
+		stepFinishPresent,
+		...(runningToolCallId === undefined ? {} : { runningToolCallId }),
+		...(runningToolStatus === undefined ? {} : { runningToolStatus }),
+		recommendedNextAction: observed.hasRunningTool ? "/flowdesk-status" : "/flowdesk-export-debug",
+	};
+}
+
+async function pollCaptureFailureDiagnostic(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	childSessionId: string;
+	observedAt: string;
+	messagesTimeoutMs?: number;
+}): Promise<FlowDeskCaptureFailureDiagnosticV1> {
+	try {
+		const raw = await readAsyncMonitorChildSessionMessages(input.client, input.childSessionId, input.messagesTimeoutMs ?? 3_000);
+		if (raw !== null) return extractCaptureFailureDiagnosticFromMessages({ childSessionId: input.childSessionId, observedAt: input.observedAt, raw });
+	} catch { /* diagnostic is best-effort */ }
+	return {
+		observedAt: input.observedAt,
+		childSessionId: input.childSessionId,
+		finalTextPresent: false,
+		stepFinishPresent: false,
+		recommendedNextAction: "/flowdesk-export-debug",
+	};
+}
+
+function withCaptureFailureDiagnosticFields(record: Record<string, unknown>, diagnostic: FlowDeskCaptureFailureDiagnosticV1, reason: string): Record<string, unknown> {
+	return {
+		...record,
+		capture_failure_diagnostic_observed_at: diagnostic.observedAt,
+		capture_failure_diagnostic_reason: childProgressLabel(reason),
+		capture_failure_child_session_id: diagnostic.childSessionId,
+		...(diagnostic.lastPartKind === undefined ? {} : { capture_failure_last_part_kind: diagnostic.lastPartKind }),
+		capture_failure_final_text_present: diagnostic.finalTextPresent,
+		capture_failure_step_finish_present: diagnostic.stepFinishPresent,
+		...(diagnostic.runningToolCallId === undefined ? {} : { capture_failure_running_tool_call_id: diagnostic.runningToolCallId }),
+		...(diagnostic.runningToolStatus === undefined ? {} : { capture_failure_running_tool_status: diagnostic.runningToolStatus }),
+		capture_failure_recommended_next_action: diagnostic.recommendedNextAction,
+		capture_failure_redaction_version: "v1",
+	};
+}
+
+function writeCoordinatorAttentionReviewRequestedEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	progressSeq: number;
+	observedAt: string;
+	reason: string;
+}): void {
+	writeAgentTaskProgressEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		taskId: input.taskId,
+		agentRef: input.agentRef,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		phase: "waiting",
+		progressSeq: input.progressSeq,
+		progressLabel: `coordinator_attention_observed; ${input.reason}; diagnostic only; re-check FlowDesk status/messages/process before deciding`,
+		observedAt: input.observedAt,
+	});
+}
+
+function writeToolTimeoutReviewRequestedEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	lastProgressSeq: number;
+	lastProgressObservedAt: string;
+	observedAt: string;
+	staleToolMs: number;
+}): void {
+	const graceWindowMs = Math.min(600_000, Math.max(30_000, Math.floor(input.staleToolMs)));
+	const advisoryLabel = childProgressLabel(
+		`tool_run_overdue_observed; diagnostic only; underlying child abort not confirmed; re-check status/messages/process before deciding`,
+	);
+	const inconsistency: FlowDeskAgentTaskInconsistencyV1 = {
+		schema_version: "flowdesk.agent_task_inconsistency.v1",
+		workflow_id: input.workflowId,
+		attempt_id: `attempt-${input.laneId}`,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		last_progress_seq: input.lastProgressSeq,
+		last_progress_observed_at: input.lastProgressObservedAt,
+		inconsistency_kind: "tool_run_overdue_observed",
+		grace_window_ms: graceWindowMs,
+		grace_source_label: advisoryLabel,
+		observed_at: input.observedAt,
+		safe_next_actions: ["/flowdesk-status", "/flowdesk-doctor", "/flowdesk-export-debug"],
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	};
+	writeChildSessionEvidence(
+		input.rootDir,
+		input.workflowId,
+		`agent-task-inconsistency-${input.laneId}-tool-run-overdue-observed`,
+		inconsistency as unknown as Record<string, unknown>,
+	);
+	writeChildSessionEvidence(input.rootDir, input.workflowId, `agent-task-progress-${input.laneId}-tool-run-overdue-observed`, {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		progress_seq: input.lastProgressSeq + 1,
+		observed_at: input.observedAt,
+		phase: "waiting",
+		progress_label: advisoryLabel,
+		progress_ref: `progress-${input.laneId}-tool-run-overdue-observed`,
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	});
+}
+
 export interface FlowDeskChildSessionMonitorResultV1 {
 	lanesPolled: number;
 	lanesCompleted: number;
@@ -2189,14 +2401,14 @@ export async function monitorChildSessionsV1(input: {
 	 * deterministic tests.
 	 *
 	 * - staleToolMs: how long a callID may stay open (no settle event) before the
-	 *   open-tool set is treated as `toolStateUnknown` (likely-dropped settle).
-	 * - unknownStateMaxMs: how long a lane may remain in `toolStateUnknown` with no
-	 *   body before it is force-terminated as `tool_state_unrecoverable` (G1).
+	 *   open-tool set is treated as `toolStateUnknown` and advisory diagnostic
+	 *   attention is written. This is a one-stage diagnostic threshold; it never
+	 *   terminalizes, aborts, retries, or falls back.
 	 * - absoluteLaneAgeMs: hard upper bound on total lane age, independent of the
 	 *   meaningful-activity gate, guaranteeing a true zero-event lane still
 	 *   terminates (G2).
 	 */
-	staleToolMs?: number;          // default 60_000
+	staleToolMs?: number;          // default 150_000
 	unknownStateMaxMs?: number;    // default 60_000
 	absoluteLaneAgeMs?: number;    // default 600_000
 	/**
@@ -2211,6 +2423,13 @@ export async function monitorChildSessionsV1(input: {
 	bodyRetryMax?: number;         // default 3
 	bodyRetryIntervalMs?: number;  // default 2_000 (advisory)
 	finalizingAbsoluteMaxMs?: number; // default 180_000
+	/**
+	 * Evidence-only coordinator attention timer. The timer is persisted on every
+	 * async child-session record, resets on meaningful state/progress changes, and
+	 * writes coordinator-attention diagnostic progress when overdue. It never aborts,
+	 * retries, falls back, or claims chat/runtime control.
+	 */
+	coordinatorAttentionMs?: number; // default abortThresholdMs
 	_forceTaskResultWriteFailureForTest?: boolean;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
@@ -2232,10 +2451,11 @@ export async function monitorChildSessionsV1(input: {
 	// V11.2 Slice 1 injectable timeout clocks.
 	const staleToolMs = typeof input.staleToolMs === "number" && input.staleToolMs > 0
 		? Math.floor(input.staleToolMs)
-		: 60_000;
+		: 150_000;
 	const unknownStateMaxMs = typeof input.unknownStateMaxMs === "number" && input.unknownStateMaxMs > 0
 		? Math.floor(input.unknownStateMaxMs)
 		: 60_000;
+	void unknownStateMaxMs;
 	const absoluteLaneAgeMs = typeof input.absoluteLaneAgeMs === "number" && input.absoluteLaneAgeMs > 0
 		? Math.floor(input.absoluteLaneAgeMs)
 		: 600_000;
@@ -2245,6 +2465,9 @@ export async function monitorChildSessionsV1(input: {
 	const finalizingAbsoluteMaxMs = typeof input.finalizingAbsoluteMaxMs === "number" && input.finalizingAbsoluteMaxMs > 0
 		? Math.floor(input.finalizingAbsoluteMaxMs)
 		: 180_000;
+	const coordinatorAttentionMs = typeof input.coordinatorAttentionMs === "number" && input.coordinatorAttentionMs > 0
+		? Math.floor(input.coordinatorAttentionMs)
+		: Math.max(300_000, Math.floor(abortThresholdMs));
 	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
 
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
@@ -2263,7 +2486,7 @@ export async function monitorChildSessionsV1(input: {
 	const terminalEndStates = collectTerminalLaneEndStatesV1(reloaded.entries);
 	const terminalLaneIds = new Set<string>(terminalEndStates.keys());
 	const awaitingPermissionLaneIds = new Set<string>();
-	const latestProgressByLane = new Map<string, { observedAtMs: number; phase: string }>();
+	const latestProgressByLane = new Map<string, { observedAtMs: number; phase: string; progressSeq: number }>();
 	const latestSessionIdleSignalByLane = new Map<string, number>();
 	const latestHandledSessionIdleSignalByLane = new Map<string, number>();
 	// Meaningful progress = real model/runtime activity (streaming message/part
@@ -2273,6 +2496,7 @@ export async function monitorChildSessionsV1(input: {
 	// resetting the nudge budget or deferring abort. This is what fixes the
 	// "lane looks alive forever" / stuck stall-detection problem.
 	const latestMeaningfulProgressByLane = new Map<string, number>();
+	const latestLifecycleStateChangeByLane = new Map<string, number>();
 	// V11.2 Slice 1: ordered per-lane tool-state transitions (running/settled),
 	// derived from event-hook progress labels, feeding the event-based open-tool
 	// set. Sorted by observedAtMs before use.
@@ -2300,13 +2524,28 @@ export async function monitorChildSessionsV1(input: {
 				}
 			}
 		}
+		if (entry.evidenceClass === "lane_lifecycle") {
+			const updatedAt = typeof rec.updated_at === "string" ? Date.parse(rec.updated_at)
+				: typeof rec.created_at === "string" ? Date.parse(rec.created_at)
+				: NaN;
+			if (Number.isFinite(updatedAt)) {
+				const currentLifecycle = latestLifecycleStateChangeByLane.get(laneIdVal);
+				if (currentLifecycle === undefined || currentLifecycle <= updatedAt) {
+					latestLifecycleStateChangeByLane.set(laneIdVal, updatedAt);
+				}
+			}
+		}
 		if (entry.evidenceClass === "agent_task_progress") {
 			const observedAtMs = typeof rec.observed_at === "string" ? Date.parse(rec.observed_at) : NaN;
 			const phase = typeof rec.phase === "string" ? rec.phase : undefined;
 			const progressLabel = typeof rec.progress_label === "string" ? rec.progress_label : undefined;
+			const isToolTimeoutReviewProgress = typeof progressLabel === "string" && progressLabel.toLowerCase().includes("tool_run_overdue_observed");
+			const progressSeq = typeof rec.progress_seq === "number" && Number.isInteger(rec.progress_seq) && rec.progress_seq > 0
+				? rec.progress_seq
+				: 1;
 			const current = latestProgressByLane.get(laneIdVal);
-			if (phase !== undefined && Number.isFinite(observedAtMs) && (current === undefined || current.observedAtMs <= observedAtMs)) {
-				latestProgressByLane.set(laneIdVal, { observedAtMs, phase });
+			if (!isToolTimeoutReviewProgress && phase !== undefined && Number.isFinite(observedAtMs) && (current === undefined || current.observedAtMs <= observedAtMs)) {
+				latestProgressByLane.set(laneIdVal, { observedAtMs, phase, progressSeq });
 			}
 			if (Number.isFinite(observedAtMs) && phase === "finalizing" && isChildSessionIdleSignalProgress(progressLabel)) {
 				const currentIdleSignal = latestSessionIdleSignalByLane.get(laneIdVal);
@@ -2389,6 +2628,10 @@ export async function monitorChildSessionsV1(input: {
 			: laneNudgeQuietPeriodMs;
 		const recordedNudgeCount = typeof record.nudge_count === "number" ? record.nudge_count : 0;
 		const lastNudgeAtMs = typeof record.last_nudge_at === "string" ? Date.parse(record.last_nudge_at) : createdAtMs;
+		const childSessionEvidenceId = reloaded.entries
+			.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
+			?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
+		let recordForWrites = record;
 		// Use MEANINGFUL progress (real model/runtime activity) for activity and
 		// nudge-budget decisions. Watchdog-authored progress (nudge/continuation/
 		// finalizing) and ambient session-status churn are intentionally ignored
@@ -2401,16 +2644,74 @@ export async function monitorChildSessionsV1(input: {
 			Number.isFinite(lastNudgeAtMs) ? lastNudgeAtMs : createdAtMs,
 			latestProgressAtMs !== undefined && Number.isFinite(latestProgressAtMs) ? latestProgressAtMs : createdAtMs,
 		);
+		const latestLifecycleStateChangeAtMs = latestLifecycleStateChangeByLane.get(laneId);
+		const coordinatorAttentionResetAtMs = Math.max(
+			createdAtMs,
+			latestLifecycleStateChangeAtMs !== undefined && Number.isFinite(latestLifecycleStateChangeAtMs) ? latestLifecycleStateChangeAtMs : createdAtMs,
+			latestProgressAtMs !== undefined && Number.isFinite(latestProgressAtMs) ? latestProgressAtMs : createdAtMs,
+		);
+		const coordinatorAttentionResetAt = new Date(coordinatorAttentionResetAtMs).toISOString();
+		const coordinatorAttentionDueAtMs = coordinatorAttentionResetAtMs + coordinatorAttentionMs;
+		const coordinatorAttentionDueAt = new Date(coordinatorAttentionDueAtMs).toISOString();
+		const priorCoordinatorResetAtMs = typeof recordForWrites.coordinator_attention_timer_reset_at === "string"
+			? Date.parse(recordForWrites.coordinator_attention_timer_reset_at)
+			: NaN;
+		const priorCoordinatorDueAt = typeof recordForWrites.coordinator_attention_due_at === "string"
+			? recordForWrites.coordinator_attention_due_at
+			: undefined;
+		const coordinatorTimerChanged = !Number.isFinite(priorCoordinatorResetAtMs) || priorCoordinatorResetAtMs !== coordinatorAttentionResetAtMs || priorCoordinatorDueAt !== coordinatorAttentionDueAt;
+		if (coordinatorTimerChanged) {
+			recordForWrites = {
+				...recordForWrites,
+				coordinator_attention_timer_reset_at: coordinatorAttentionResetAt,
+				coordinator_attention_timer_reset_reason: latestProgressAtMs !== undefined && latestProgressAtMs === coordinatorAttentionResetAtMs
+					? "meaningful_progress"
+					: latestLifecycleStateChangeAtMs !== undefined && latestLifecycleStateChangeAtMs === coordinatorAttentionResetAtMs
+						? "lane_state_change"
+						: "child_session_created",
+				coordinator_attention_due_at: coordinatorAttentionDueAt,
+				coordinator_attention_interval_ms: coordinatorAttentionMs,
+				coordinator_attention_status: "armed",
+			};
+			writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+		}
+		const priorCoordinatorReviewAtMs = typeof recordForWrites.coordinator_attention_last_review_requested_at === "string"
+			? Date.parse(recordForWrites.coordinator_attention_last_review_requested_at)
+			: NaN;
+		let coordinatorReviewRequestedThisCycle = false;
+		if (nowMs >= coordinatorAttentionDueAtMs && (!Number.isFinite(priorCoordinatorReviewAtMs) || priorCoordinatorReviewAtMs < coordinatorAttentionResetAtMs)) {
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const reviewAt = new Date(nowMs).toISOString();
+			const diagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: reviewAt });
+			recordForWrites = withCaptureFailureDiagnosticFields({
+				...recordForWrites,
+				coordinator_attention_status: "review_requested",
+				coordinator_attention_last_review_requested_at: reviewAt,
+				coordinator_attention_last_review_reason: "attention_timer_overdue",
+				coordinator_attention_review_request_count: (typeof recordForWrites.coordinator_attention_review_request_count === "number" ? recordForWrites.coordinator_attention_review_request_count : 0) + 1,
+			}, diagnostic, "attention_timer_overdue");
+			writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+			coordinatorReviewRequestedThisCycle = true;
+			writeCoordinatorAttentionReviewRequestedEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId,
+				agentRef,
+				providerQualifiedModelId: modelId,
+				progressSeq: 30 + (typeof recordForWrites.coordinator_attention_review_request_count === "number" ? recordForWrites.coordinator_attention_review_request_count : 1),
+				observedAt: reviewAt,
+				reason: "attention timer overdue",
+			});
+		}
 		const hasFreshSessionIdleSignal = latestSessionIdleSignalAtMs !== undefined &&
 			Number.isFinite(latestSessionIdleSignalAtMs) &&
 			latestSessionIdleSignalAtMs >= lastActivityMs &&
 			(latestProgressAtMs === undefined || latestProgressAtMs <= latestSessionIdleSignalAtMs);
 		const hasUnhandledFreshSessionIdleSignal = hasFreshSessionIdleSignal &&
 			(latestHandledSessionIdleSignalAtMs === undefined || latestHandledSessionIdleSignalAtMs < latestSessionIdleSignalAtMs);
-		const childSessionEvidenceId = reloaded.entries
-			.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
-			?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
-		let recordForWrites = record;
 		if (hasFreshSessionIdleSignal) {
 			const previousSignalMs = typeof record.last_session_idle_signal_at === "string" ? Date.parse(record.last_session_idle_signal_at) : NaN;
 			if (!Number.isFinite(previousSignalMs) || previousSignalMs < latestSessionIdleSignalAtMs) {
@@ -2514,6 +2815,18 @@ export async function monitorChildSessionsV1(input: {
 					dispatch_authority_enabled: false,
 				});
 				if (taskResultWritten) {
+					writeAgentTaskTerminalLifecycleForTaskResult({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						attemptId: `attempt-${laneId}`,
+						parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+						childSessionId,
+						taskResultEvidenceId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						observedAt: completedAt,
+					});
 					writeAgentTaskProgressEvidence({
 						rootDir: input.rootDir,
 						workflowId: input.workflowId,
@@ -2547,6 +2860,7 @@ export async function monitorChildSessionsV1(input: {
 				const priorAttempts = typeof recordForWrites.awaiting_body_capture_attempts === "number" ? recordForWrites.awaiting_body_capture_attempts : 0;
 				const nextAttempts = priorAttempts + 1;
 				const nowIso = new Date(nowMs).toISOString();
+				const captureDiagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: nowIso });
 				const awaitingSinceMs = typeof recordForWrites.awaiting_body_capture_since === "string"
 					? Date.parse(recordForWrites.awaiting_body_capture_since)
 					: nowMs;
@@ -2589,13 +2903,13 @@ export async function monitorChildSessionsV1(input: {
 				}
 				if (nextAttempts <= bodyRetryMax) {
 					// Persist the retry counter and wait for a later cycle (bounded).
-					recordForWrites = {
+					recordForWrites = withCaptureFailureDiagnosticFields({
 						...recordForWrites,
 						awaiting_body_capture_attempts: nextAttempts,
 						...(typeof recordForWrites.awaiting_body_capture_since === "string"
 							? {}
 							: { awaiting_body_capture_since: nowIso }),
-					};
+					}, captureDiagnostic, "awaiting_body_capture_empty");
 					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
 					writeAgentTaskProgressEvidence({
 						rootDir: input.rootDir,
@@ -2641,14 +2955,14 @@ export async function monitorChildSessionsV1(input: {
 							progressLabel: "async agent task final-report repair prompt injected after turn completed empty",
 							observedAt: repairAt,
 						});
-						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, {
+						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, withCaptureFailureDiagnosticFields({
 							...recordForWrites,
 							awaiting_body_capture_attempts: 0,
 							turn_completed_empty_repair_count: repairCount + 1,
 							last_turn_completed_empty_repair_at: repairAt,
 							last_turn_completed_empty_repair_delivery_status: deliveryStatus,
 							last_activity_at: repairAt,
-						});
+						}, captureDiagnostic, "turn_completed_empty_repair_prompt_sent"));
 						result.lanesNudged++;
 						continue;
 					}
@@ -2669,6 +2983,10 @@ export async function monitorChildSessionsV1(input: {
 				// turn DID complete, but no body materialized). Reuse the no_response
 				// failure category enum; the reason records that the turn completed empty.
 				if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, withCaptureFailureDiagnosticFields({
+						...recordForWrites,
+						capture_failure_terminalized_at: nowIso,
+					}, captureDiagnostic, "turn_completed_empty_terminalized"));
 					const token = randomBytes(4).toString("hex");
 					writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-turncompleted-empty-${token}`, {
 						schema_version: "flowdesk.task_failed.v1",
@@ -2743,6 +3061,11 @@ export async function monitorChildSessionsV1(input: {
 				dispatch_authority_enabled: false,
 			});
 			if (!taskResultWritten) {
+				const captureDiagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: completedAt });
+				writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, withCaptureFailureDiagnosticFields({
+					...recordForWrites,
+					capture_failure_terminalized_at: completedAt,
+				}, captureDiagnostic, "task_result_persistence_failed"));
 				writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-result-write-${token}`, {
 					schema_version: "flowdesk.task_failed.v1",
 					workflow_id: input.workflowId,
@@ -2801,6 +3124,19 @@ export async function monitorChildSessionsV1(input: {
 					agentRef,
 					providerQualifiedModelId: modelId,
 					verdictId: observedReviewerVerdict.verdict_id,
+					observedAt: completedAt,
+				});
+			} else {
+				writeAgentTaskTerminalLifecycleForTaskResult({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					attemptId: typeof runningLifecycle?.attempt_id === "string" ? runningLifecycle.attempt_id : `attempt-${laneId}`,
+					parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+					childSessionId,
+					taskResultEvidenceId,
+					agentRef,
+					providerQualifiedModelId: modelId,
 					observedAt: completedAt,
 				});
 			}
@@ -2879,6 +3215,18 @@ export async function monitorChildSessionsV1(input: {
 					dispatch_authority_enabled: false,
 				});
 				if (taskResultWritten) {
+					writeAgentTaskTerminalLifecycleForTaskResult({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						attemptId: `attempt-${laneId}`,
+						parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+						childSessionId,
+						taskResultEvidenceId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						observedAt: completedAt,
+					});
 					writeAgentTaskProgressEvidence({
 						rootDir: input.rootDir,
 						workflowId: input.workflowId,
@@ -2959,17 +3307,50 @@ export async function monitorChildSessionsV1(input: {
 		//  - NEVER abort while a tool is genuinely running (toolRunningNow): protects
 		//    long single tool calls / long reasoning that emit no mid events.
 		//  - While toolStateUnknown (likely-dropped settle), block the normal abort
-		//    path; only G1 (unknownStateMaxMs) may force-terminate it.
-		//  - G1: a lane stuck in UNKNOWN past unknownStateMaxMs with no body is
-		//    force-terminated as tool_state_unrecoverable.
+		//    path; this slice records diagnostic review evidence instead of terminalizing.
+		//  - At staleToolMs, a lane stuck in UNKNOWN wakes the coordinator with
+		//    advisory diagnostic evidence. Underlying child abort is NOT confirmed and
+		//    must be checked before any decision.
 		//  - G2: an absolute lane-age cap guarantees a true zero-event lane still
 		//    terminates even though the meaningful-activity silence gate never trips.
-		// G1: force-terminate only after the lane has been in UNKNOWN for
-		// unknownStateMaxMs. UNKNOWN begins once the open tool has been stuck for
-		// staleToolMs, so the total open age must exceed staleToolMs + unknownStateMaxMs.
-		const unknownForceTerminate = toolStateUnknown && unknownDwellMs >= staleToolMs + unknownStateMaxMs;
-		const laneAgeForceTerminate = totalAgeMs >= absoluteLaneAgeMs && !toolRunningNow;
-		const normalAbortEligible = silenceMs >= abortThresholdMs && !continuationBudgetPending && !toolRunningNow && !toolStateUnknown;
+		const unknownForceTerminate = false;
+		const laneAgeForceTerminate = totalAgeMs >= absoluteLaneAgeMs && !toolRunningNow && !toolStateUnknown && !coordinatorReviewRequestedThisCycle;
+		const normalAbortEligible = silenceMs >= abortThresholdMs && !continuationBudgetPending && !toolRunningNow && !toolStateUnknown && !coordinatorReviewRequestedThisCycle;
+		if (toolStateUnknown) {
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const latestProgress = latestProgressByLane.get(laneId);
+			const diagnosticAt = new Date((laneToolState.oldestOpenAtMs ?? nowMs) + staleToolMs).toISOString();
+			const diagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: diagnosticAt });
+			recordForWrites = withCaptureFailureDiagnosticFields({
+				...recordForWrites,
+				coordinator_attention_status: "review_requested",
+				coordinator_attention_last_review_requested_at: diagnosticAt,
+				coordinator_attention_last_review_reason: "tool_run_overdue_observed",
+			}, diagnostic, "tool_run_overdue_observed");
+			writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+			writeToolTimeoutReviewRequestedEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId,
+				agentRef,
+				providerQualifiedModelId: modelId,
+				lastProgressSeq: latestProgress?.progressSeq ?? 1,
+				lastProgressObservedAt: latestProgress === undefined
+					? new Date(laneToolState.oldestOpenAtMs ?? nowMs).toISOString()
+					: new Date(latestProgress.observedAtMs).toISOString(),
+				observedAt: diagnosticAt,
+				staleToolMs,
+			});
+			refreshFlowDeskCompletionUiCachesV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				observedAt: diagnosticAt,
+			});
+			continue;
+		}
 		if (normalAbortEligible || unknownForceTerminate || laneAgeForceTerminate) {
 			await abortChildSession(input.client, childSessionId);
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;

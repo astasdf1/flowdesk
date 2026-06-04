@@ -393,6 +393,170 @@ test("monitorChildSessions collects result when child session has text", async (
 	}
 });
 
+test("monitorChildSessions backfills finalizing_without_terminal lane when child has terminal final text", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-finalizing-backfill-"));
+	try {
+		const workflowId = "workflow-monitor-finalizing-backfill";
+		const laneId = "lane-finalizing-backfill";
+		const taskId = "task-finalizing-backfill";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const staleAt = "2026-06-01T00:00:00.000Z";
+		const progress = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-progress-finalizing-backfill",
+			record: {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				progress_seq: 99,
+				observed_at: staleAt,
+				phase: "finalizing",
+				progress_label: "async agent task stuck finalizing_without_terminal",
+				progress_ref: "progress-finalizing-backfill-99",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			},
+		});
+		const inconsistency = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-inconsistency-finalizing-backfill",
+			record: {
+				schema_version: "flowdesk.agent_task_inconsistency.v1",
+				workflow_id: workflowId,
+				attempt_id: `attempt-${laneId}`,
+				lane_id: laneId,
+				task_id: taskId,
+				last_progress_seq: 99,
+				last_progress_observed_at: staleAt,
+				inconsistency_kind: "finalizing_without_terminal",
+				grace_window_ms: 30_000,
+				grace_source_label: "test",
+				observed_at: staleAt,
+				safe_next_actions: ["/flowdesk-status", "/flowdesk-abort", "/flowdesk-retry", "/flowdesk-doctor", "/flowdesk-export-debug"],
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(progress.ok, true, progress.errors?.join("; "));
+		assert.equal(inconsistency.ok, true, inconsistency.errors?.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [progress.writeIntent as never, inconsistency.writeIntent as never]).ok, true);
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "final backfilled answer" }, { type: "step-finish", reason: "stop" }] }]),
+			}),
+			now: new Date("2026-06-01T00:01:00.000Z"),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency"), true);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.equal(taskResult?.result_text, "final backfilled answer");
+		const terminalLifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === laneId && (e.record as Record<string, unknown>).state === "incomplete");
+		assert.ok(terminalLifecycle, "terminal lifecycle should be backfilled despite prior inconsistency");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions writes terminal lifecycle for task_result without reviewer verdict", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-no-verdict-lifecycle-"));
+	try {
+		const workflowId = "workflow-monitor-no-verdict-lifecycle";
+		const laneId = "lane-no-verdict-lifecycle";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId: "task-no-verdict-lifecycle",
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "plain non-json final answer" }, { type: "step-finish", reason: "stop" }] }]),
+			}),
+			now: new Date("2026-06-01T00:02:00.000Z"),
+		});
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "reviewer_verdict"), false);
+		assert.equal(reloaded.entries.filter(e => e.evidenceClass === "task_result").length, 1);
+		const terminalLifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === laneId && (e.record as Record<string, unknown>).state === "incomplete");
+		assert.ok(terminalLifecycle, "plain task_result should still terminalize lifecycle");
+		assert.equal((terminalLifecycle.record as Record<string, unknown>).verdict_ref, undefined);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions is idempotent after task_result backfill", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-idempotent-result-"));
+	try {
+		const workflowId = "workflow-monitor-idempotent-result";
+		const laneId = "lane-idempotent-result";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId: "task-idempotent-result",
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "idempotent final answer" }, { type: "step-finish", reason: "stop" }] }]),
+		});
+		await monitorChildSessionsV1({ rootDir: root, workflowId, client: monitorClient, now: new Date("2026-06-01T00:03:00.000Z") });
+		const second = await monitorChildSessionsV1({ rootDir: root, workflowId, client: monitorClient, now: new Date("2026-06-01T00:04:00.000Z") });
+
+		assert.equal(second.lanesPolled, 0, "task_result-backed lane should be terminal on later monitor cycles");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.filter(e => e.evidenceClass === "task_result").length, 1);
+		assert.equal(reloaded.entries.filter(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === laneId && (e.record as Record<string, unknown>).state === "incomplete").length, 1);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("monitorChildSessions preserves marker-like task_result text", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-sanitize-"));
 	try {
@@ -563,15 +727,15 @@ test("executeFlowDeskAgentTaskV1 materializes typed reviewer verdict and complet
 	}
 });
 
-test("monitorChildSessions reads current SDK messages response shapes", async () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-current-shape-"));
+test("monitorChildSessions reads structured session.messages shape before flat fallback", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-structured-shape-"));
 	try {
 		const seenOptions: unknown[] = [];
 		const launchClient = makeClient({});
 		await executeFlowDeskAgentTaskV1({
-			workflowId: "workflow-monitor-current-shape",
-			taskId: "task-current-shape",
-			laneId: "lane-current-shape",
+			workflowId: "workflow-monitor-structured-shape",
+			taskId: "task-structured-shape",
+			laneId: "lane-structured-shape",
 			agentRef: "agent-test",
 			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "analyze",
@@ -586,25 +750,331 @@ test("monitorChildSessions reads current SDK messages response shapes", async ()
 		const monitorClient = makeClient({
 			messages: async (options) => {
 				seenOptions.push(options);
-				if ((options as Record<string, unknown>).sessionID !== undefined) return { error: { message: "legacy shape" } };
-				return { data: { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "current shape done" }, { type: "step-finish", reason: "stop" }] }] } };
+				const record = options as Record<string, unknown>;
+				if (typeof record.path === "object" && record.path !== null && (record.path as Record<string, unknown>).id === "ses-child-test-01") {
+					return { data: { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "structured shape done" }, { type: "step-finish", reason: "stop" }] }] } };
+				}
+				throw new Error("flat sessionID shape should not be needed");
 			},
 		});
 		const monResult = await monitorChildSessionsV1({
 			rootDir: root,
-			workflowId: "workflow-monitor-current-shape",
+			workflowId: "workflow-monitor-structured-shape",
 			client: monitorClient,
 			now: new Date(),
 		});
 
 		assert.equal(monResult.lanesCompleted, 1);
-		assert.ok(seenOptions.some((option) => (option as Record<string, unknown>).sessionID !== undefined));
-		assert.ok(seenOptions.some((option) => typeof (option as Record<string, unknown>).path === "object"));
-		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-current-shape" });
+		assert.equal(seenOptions.some((option) => (option as Record<string, unknown>).sessionID !== undefined), false);
+		assert.equal(seenOptions.some((option) => typeof (option as Record<string, unknown>).path === "object"), true);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-structured-shape" });
 		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
-		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "current shape done");
+		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "structured shape done");
+		assert.equal((taskResult?.record as Record<string, unknown>).finalization_reason, "terminal_marker");
 		const progress = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && (e.record as Record<string, unknown>).phase === "finalizing");
 		assert.equal((progress?.record as Record<string, unknown>).progress_label, "async agent task result captured by watchdog");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions falls back to flat session.messages shape after structured SDK error", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-flat-fallback-"));
+	try {
+		const seenOptions: unknown[] = [];
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-flat-fallback",
+			taskId: "task-flat-fallback",
+			laneId: "lane-flat-fallback",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async (options) => {
+				seenOptions.push(options);
+				const record = options as Record<string, unknown>;
+				if (typeof record.path === "object") return { error: { name: "NotFound", message: "structured shape unavailable" } };
+				if (record.sessionID === "ses-child-test-01") {
+					return [{ role: "assistant", parts: [{ type: "text", text: "flat fallback done" }, { type: "step-finish", reason: "stop" }] }];
+				}
+				return [];
+			},
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-flat-fallback",
+			client: monitorClient,
+			now: new Date(),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		assert.equal(seenOptions.some((option) => typeof (option as Record<string, unknown>).path === "object"), true);
+		assert.equal(seenOptions.some((option) => (option as Record<string, unknown>).sessionID === "ses-child-test-01"), true);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-flat-fallback" });
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "flat fallback done");
+		assert.equal((taskResult?.record as Record<string, unknown>).finalization_reason, "terminal_marker");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("executeFlowDeskAgentTaskV1 captures single-message SDK response with step-finish", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-single-message-"));
+	try {
+		const client = makeClient({
+			messages: async () => ({
+				info: { role: "assistant" },
+				parts: [{ type: "text", text: "single message final answer" }, { type: "step-finish", reason: "stop" }],
+			}),
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-sync-single-message",
+			taskId: "task-sync-single-message",
+			laneId: "lane-sync-single-message",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "work",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		assert.equal(result.status, "task_completed");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-sync-single-message" });
+		assert.ok(reloaded.ok);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "single message final answer");
+		assert.equal((taskResult?.record as Record<string, unknown>).finalization_reason, "terminal_marker");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions captures single-message SDK response with step-finish", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-single-message-"));
+	try {
+		const launchClient = makeClient({});
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-monitor-single-message",
+			taskId: "task-monitor-single-message",
+			laneId: "lane-monitor-single-message",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: launchClient,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const monitorClient = makeClient({
+			messages: async () => ({
+				info: { role: "assistant" },
+				parts: [{ type: "text", text: "watchdog single message final answer" }, { type: "step-finish", reason: "stop" }],
+			}),
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId: "workflow-monitor-single-message",
+			client: monitorClient,
+			now: new Date(),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-monitor-single-message" });
+		assert.ok(reloaded.ok);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result");
+		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "watchdog single message final answer");
+		assert.equal((taskResult?.record as Record<string, unknown>).finalization_reason, "terminal_marker");
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions records overdue tool diagnostic without aborting or failing lane", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-tool-overdue-"));
+	try {
+		const workflowId = "workflow-monitor-tool-overdue";
+		const laneId = "lane-tool-overdue";
+		const taskId = "task-tool-overdue";
+		let abortCalls = 0;
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const openedAt = new Date(Date.parse(String(child?.created_at)) + 1_000).toISOString();
+		const progress = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-progress-tool-overdue-running",
+			record: {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				progress_seq: 2,
+				observed_at: openedAt,
+				phase: "waiting",
+				progress_label: "agent task tool running callid=glob-call-overdue-1",
+				progress_ref: "progress-tool-overdue-running",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(progress.ok, true, progress.errors?.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [progress.writeIntent as never]).ok, true);
+
+		const monitorClient = makeClient({
+			messages: async () => ({
+				info: { role: "assistant" },
+				parts: [{ type: "tool", callID: "glob-call-overdue-1", state: { status: "running" } }],
+			}),
+			abort: async () => { abortCalls++; },
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: monitorClient,
+			now: new Date(Date.parse(openedAt) + 65_000),
+			staleToolMs: 60_000,
+			unknownStateMaxMs: 1_000,
+			absoluteLaneAgeMs: 61_000,
+			abortThresholdMs: 1_000,
+		});
+
+		assert.equal(monResult.lanesPolled, 1);
+		assert.equal(monResult.lanesAborted, 0);
+		assert.equal(abortCalls, 0, "watchdog must not abort solely because tool state is unknown/overdue");
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).state !== "running"), false);
+		const inconsistency = reloaded.entries.find(e => e.evidenceClass === "agent_task_inconsistency")?.record as Record<string, unknown> | undefined;
+		assert.equal(inconsistency?.inconsistency_kind, "tool_run_overdue_observed");
+		assert.match(String(inconsistency?.grace_source_label), /underlying child abort not confirmed/);
+		assert.equal(inconsistency?.grace_window_ms, 60_000);
+		const diagnosticProgress = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && String((e.record as Record<string, unknown>).progress_label).includes("tool_run_overdue_observed"));
+		assert.ok(diagnosticProgress, "overdue tool diagnostic progress should be written");
+		const childAfterDiagnostic = reloaded.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.equal(childAfterDiagnostic?.capture_failure_diagnostic_reason, "tool_run_overdue_observed");
+		assert.equal(childAfterDiagnostic?.capture_failure_running_tool_call_id, "glob-call-overdue-1");
+		assert.equal(childAfterDiagnostic?.capture_failure_running_tool_status, "running");
+		const wakeCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), "utf8")) as Record<string, unknown>;
+		const wakeRows = wakeCache.rows as Array<Record<string, unknown>>;
+		const diagnosticWake = wakeRows.find(row => row.completionKind === "diagnostic_attention");
+		assert.ok(diagnosticWake, "stale tool diagnostic should enqueue one advisory main wake row");
+		assert.equal(diagnosticWake.notificationLabel, "FlowDesk lane diagnostic attention requested");
+		assert.equal(wakeRows.filter(row => row.completionKind === "awaiting_permission").length, 0, "stale tool attention must remain distinct from permission awaiting");
+
+		await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: monitorClient,
+			now: new Date(Date.parse(openedAt) + 70_000),
+			staleToolMs: 60_000,
+			abortThresholdMs: 1_000,
+		});
+		const reloadedAgain = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloadedAgain.entries.filter(e => e.evidenceClass === "agent_task_inconsistency").length, 1);
+		assert.equal(reloadedAgain.entries.filter(e => e.evidenceClass === "agent_task_progress" && String((e.record as Record<string, unknown>).progress_label).includes("tool_run_overdue_observed")).length, 1);
+		const wakeCacheAgain = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), "utf8")) as Record<string, unknown>;
+		const wakeRowsAgain = wakeCacheAgain.rows as Array<Record<string, unknown>>;
+		assert.equal(wakeRowsAgain.filter(row => row.completionKind === "diagnostic_attention").length, 1, "duplicate stale tool events must not spam wake rows");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions captures final text before overdue tool diagnostic", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-tool-overdue-final-"));
+	try {
+		const workflowId = "workflow-monitor-tool-overdue-final";
+		const laneId = "lane-tool-overdue-final";
+		const taskId = "task-tool-overdue-final";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const openedAt = new Date(Date.parse(String(child?.created_at)) + 1_000).toISOString();
+		const progress = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-progress-tool-overdue-final-running",
+			record: {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				progress_seq: 2,
+				observed_at: openedAt,
+				phase: "waiting",
+				progress_label: "agent task tool running callid=call-overdue-final-1",
+				progress_ref: "progress-tool-overdue-final-running",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(progress.ok, true, progress.errors?.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [progress.writeIntent as never]).ok, true);
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: "final after tool" }, { type: "step-finish", reason: "stop" }] }]),
+			}),
+			now: new Date(Date.parse(openedAt) + 65_000),
+			staleToolMs: 60_000,
+			abortThresholdMs: 1_000,
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency"), false);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.equal(taskResult?.result_text, "final after tool");
+		assert.equal(taskResult?.finalization_reason, "terminal_marker");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -891,6 +1361,7 @@ test("monitorChildSessions aborts a stuck lane once silence exceeds the abort th
 
 		assert.equal(monResult.lanesAborted, 1);
 		assert.ok(aborted.length > 0, "session.abort should have been called");
+		assert.deepEqual(aborted[0], { sessionID: "ses-child-test-01" });
 
 		// task_failed evidence should be written
 		const reloaded2 = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-abort-1" });

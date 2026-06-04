@@ -7,6 +7,54 @@ import test from "node:test";
 import { FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES } from "@flowdesk/core";
 import { flowDeskBootstrapProfileRootRef, installFlowDeskRelease1Bootstrap } from "./index.js";
 
+const installedAgentProfiles = [
+  "flowdesk-main",
+  "flowdesk-docs-writer",
+  "flowdesk-explorer-researcher",
+  "flowdesk-git-master",
+  "flowdesk-code-backend",
+  "flowdesk-code-frontend",
+  "flowdesk-code-language-specialist",
+  "flowdesk-critical-reviewer",
+  "flowdesk-architecture",
+  "flowdesk-algorithm-architect",
+  "flowdesk-oracle-decision",
+  "flowdesk-verifier-testing",
+  "flowdesk-security-policy",
+  "flowdesk-performance",
+  "flowdesk-migration-refactor",
+] as const;
+
+const installedWriteCapableProfiles = new Set<string>([
+  "flowdesk-code-backend",
+  "flowdesk-code-frontend",
+  "flowdesk-code-language-specialist",
+  "flowdesk-docs-writer",
+  "flowdesk-migration-refactor",
+]);
+
+const installedBuildTestCapableProfiles = new Set<string>([
+  "flowdesk-code-backend",
+  "flowdesk-code-frontend",
+  "flowdesk-code-language-specialist",
+  "flowdesk-migration-refactor",
+  "flowdesk-performance",
+  "flowdesk-verifier-testing",
+]);
+
+const installedReadOnlyGitCapableProfiles = new Set<string>([
+	"flowdesk-architecture",
+	"flowdesk-algorithm-architect",
+	"flowdesk-critical-reviewer",
+  "flowdesk-docs-writer",
+  "flowdesk-explorer-researcher",
+  "flowdesk-git-master",
+  "flowdesk-oracle-decision",
+  "flowdesk-performance",
+  "flowdesk-security-policy",
+  "flowdesk-verifier-testing",
+]);
+
 function typedConfirmation(targetProfileRef: string, profileRootDir: string, suffix: string) {
   const confirmationRef = `confirmation-release1-${suffix}`;
   const profileRootRef = flowDeskBootstrapProfileRootRef(profileRootDir);
@@ -74,7 +122,7 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 
 		assert.equal(result.ok, true);
 		assert.equal(result.commandFilesWritten, 9);
-		assert.equal(result.agentProfileFilesWritten, 1);
+		assert.equal(result.agentProfileFilesWritten, 15);
 		assert.equal(result.profileConfigUpdated, true);
 		assert.equal(result.aliasFilesWritten, 0);
 		assert.equal(result.bootstrapArtifactsWritten, 4);
@@ -93,26 +141,79 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		const mainAgent = readFileSync(join(profileRoot, "agent", "flowdesk-main.md"), "utf8");
 		assert.match(mainAgent, /mode: primary/);
 		assert.match(mainAgent, /permission:\n\s+read: allow/);
+		assert.match(mainAgent, /^  bash:\n    "\*": allow$/m);
+		assert.doesNotMatch(mainAgent, /^    "git commit\*": deny$/m);
+		assert.doesNotMatch(mainAgent, /^    "git push\*": deny$/m);
+		assert.match(mainAgent, /^    "git commit --amend\*": deny$/m);
+		assert.match(mainAgent, /^    "git push --force\*": deny$/m);
+		assert.match(mainAgent, /^  edit: allow$/m);
+		assert.match(mainAgent, /^  task: deny$/m);
+		assert.match(mainAgent, /^  lsr: allow$/m);
+		assert.match(mainAgent, /^  external_directory:\n    "\*": allow$/m);
 		assert.match(mainAgent, /model: openai\/gpt-5\.3-codex-spark/);
-		assert.match(mainAgent, /FlowDesk workflow first/);
-		assert.match(mainAgent, /broad repository reading/);
-		assert.match(mainAgent, /sub-agent returns an empty result/);
-		assert.match(mainAgent, /Work breakdown and lane sizing/);
-		assert.match(mainAgent, /exactly one primary objective and one clear deliverable/);
-		assert.match(mainAgent, /Long or complex work must be split into small lanes/);
-		assert.match(mainAgent, /do not dispatch it yet; split it first/);
-		assert.match(mainAgent, /combined root-cause analysis \+ code search \+ implementation \+ verification mega-lane/);
-		assert.match(mainAgent, /repository-wide code search with patch writing/);
+		assert.match(mainAgent, /Mandatory dispatch boundary/);
+		assert.match(mainAgent, /flowdesk_agent_task_run/);
+		assert.match(mainAgent, /flowdesk_quick_reviewer_run.*quarantined/s);
+		assert.match(mainAgent, /Lane Size Gate — apply before every dispatch/);
+		assert.match(mainAgent, /exactly 1 primary objective/);
+		assert.match(mainAgent, /exactly 1 clear deliverable/);
+		assert.match(mainAgent, /installer\/materialization behavior/);
+		assert.match(mainAgent, /read-only root-cause slice/);
 		assert.match(mainAgent, /progress events without a final answer/);
-		assert.match(mainAgent, /Retrying the same prompt on a different model is not enough/);
 		assert.match(mainAgent, /inconsistent_finalizing_without_terminal/);
-		assert.match(mainAgent, /After FlowDesk is installed or updated, immediately verify the live diagnostics path/);
-		assert.match(mainAgent, /\/flowdesk-usage/);
-		assert.match(mainAgent, /If reviewer fanout diagnostics or SDK-health diagnostics are still unavailable/);
-		assert.match(mainAgent, /prefer a concrete safe next action over silent success/);
+		assert.match(mainAgent, /Auto-invocation rules/);
+		assert.match(mainAgent, /Todo and safety discipline/);
 		assert.doesNotMatch(mainAgent, /Completion continuation policy/);
 		assert.doesNotMatch(mainAgent, /continue with that next todo automatically/);
 		assert.doesNotMatch(mainAgent, /response-waiting mode/);
+		for (const profile of installedAgentProfiles) {
+			const agent = readFileSync(join(profileRoot, "agent", `${profile}.md`), "utf8");
+			assert.match(agent, /^  read: allow$/m, `${profile} read permission`);
+			assert.match(agent, /^  glob: allow$/m, `${profile} glob permission`);
+			assert.match(agent, /^  grep: allow$/m, `${profile} grep permission`);
+			assert.match(agent, /^  list: allow$/m, `${profile} list permission`);
+			if (profile === "flowdesk-main" || profile === "flowdesk-git-master") assert.match(agent, /^  bash:\n    "\*": allow$/m, `${profile} bash default`);
+			else assert.match(agent, /^  bash:\n    "\*": ask$/m, `${profile} bash default`);
+			if (profile !== "flowdesk-main") {
+				assert.match(agent, /^    "head \*": allow$/m, `${profile} head utility allow`);
+				assert.match(agent, /^    "grep \*": allow$/m, `${profile} grep utility allow`);
+				assert.match(agent, /^    "echo \*": allow$/m, `${profile} echo utility allow`);
+			}
+			if (profile === "flowdesk-main" || profile === "flowdesk-git-master") {
+				assert.doesNotMatch(agent, /^    "git commit\*": deny$/m, `${profile} allows ordinary git commit`);
+				assert.doesNotMatch(agent, /^    "git push\*": deny$/m, `${profile} allows ordinary git push`);
+				assert.match(agent, /^    "git commit --amend\*": deny$/m, `${profile} denies commit amend`);
+				assert.match(agent, /^    "git push --force\*": deny$/m, `${profile} denies force push`);
+			} else {
+				assert.match(agent, /^    "git commit\*": deny$/m, `${profile} denies git commit`);
+				assert.match(agent, /^    "git push\*": deny$/m, `${profile} denies git push`);
+			}
+			if (profile === "flowdesk-main") assert.match(agent, /^  edit: allow$/m, `${profile} edit allow`);
+			else if (installedWriteCapableProfiles.has(profile)) assert.match(agent, /^  edit: allow$/m, `${profile} edit allow`);
+			else assert.match(agent, /^  edit: deny$/m, `${profile} edit deny`);
+			if (installedReadOnlyGitCapableProfiles.has(profile)) assert.match(agent, /^    "git status\*": allow$/m, `${profile} read-only git allow`);
+			else assert.doesNotMatch(agent, /^    "git status\*": allow$/m, `${profile} no explicit git status allow`);
+			if (installedBuildTestCapableProfiles.has(profile)) assert.match(agent, /^    "npm run test\*": allow$/m, `${profile} test allow`);
+			else assert.doesNotMatch(agent, /^    "npm run test\*": allow$/m, `${profile} no explicit test allow`);
+		}
+		const gitMasterAgent = readFileSync(join(profileRoot, "agent", "flowdesk-git-master.md"), "utf8");
+		assert.match(gitMasterAgent, /mode: subagent/);
+		assert.match(gitMasterAgent, /edit: deny/);
+		assert.match(gitMasterAgent, /"git status\*": allow/);
+		assert.match(gitMasterAgent, /"git diff\*": allow/);
+		assert.doesNotMatch(gitMasterAgent, /"git commit\*": deny/);
+		assert.doesNotMatch(gitMasterAgent, /"git push\*": deny/);
+		assert.match(gitMasterAgent, /"git commit --amend\*": deny/);
+		assert.match(gitMasterAgent, /"git push --force\*": deny/);
+		const algorithmArchitectAgent = readFileSync(join(profileRoot, "agent", "flowdesk-algorithm-architect.md"), "utf8");
+		assert.match(algorithmArchitectAgent, /mode: subagent/);
+		assert.match(algorithmArchitectAgent, /edit: deny/);
+		assert.match(algorithmArchitectAgent, /"git status\*": allow/);
+		assert.match(algorithmArchitectAgent, /"git diff\*": allow/);
+		assert.match(algorithmArchitectAgent, /"git commit\*": deny/);
+		const verifierAgent = readFileSync(join(profileRoot, "agent", "flowdesk-verifier-testing.md"), "utf8");
+		assert.match(verifierAgent, /"npm run build\*": allow/);
+		assert.match(verifierAgent, /"node --test\*": allow/);
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");
@@ -313,11 +414,11 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
 		assert.equal(result.profileConfigUpdated, false);
 		assert.equal(result.bootstrapArtifactsWritten, 0);
 		assert.equal(result.rollbackCommandRefs?.length, 9);
-		assert.deepEqual(result.rollbackProfileRefs?.sort(), ["agent/flowdesk-main.md", "opencode.json", "tui.json"].sort());
+		assert.deepEqual(result.rollbackProfileRefs?.sort(), [...installedAgentProfiles.map((profile) => `agent/${profile}.md`), "opencode.json", "tui.json"].sort());
 		for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
 			assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), false, commandName);
 		}
-		assert.equal(existsSync(join(profileRoot, "agent", "flowdesk-main.md")), false);
+		for (const profile of installedAgentProfiles) assert.equal(existsSync(join(profileRoot, "agent", `${profile}.md`)), false, profile);
 		assert.equal(existsSync(join(profileRoot, "opencode.json")), false);
 		assert.equal(existsSync(join(profileRoot, "tui.json")), false);
     const rawLedger = readFileSync(ledgerPath(durableRoot, confirmation.confirmationRef), "utf8");

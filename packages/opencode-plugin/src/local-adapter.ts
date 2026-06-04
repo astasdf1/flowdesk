@@ -162,6 +162,12 @@ export interface FlowDeskLocalNonDispatchAdapterSessionOptionsV1 {
 	projectConfig?: FlowDeskLocalProjectConfigFileOptionsV1;
 	productionEnablement?: FlowDeskLocalProductionEnablementOptionsV1;
 	reviewerFanoutDiagnostics?: FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1;
+	devBetaAgentTaskRun?: {
+		enabled: boolean;
+		registered: boolean;
+		hasInjectedSdkClient: boolean;
+		durableStateRootConfigured: boolean;
+	};
 }
 
 export interface FlowDeskLocalProjectConfigFileOptionsV1 {
@@ -206,6 +212,12 @@ interface LocalAdapterState {
 	durableStateRootDir?: string;
 	productionEnablement?: FlowDeskLocalProductionEnablementOptionsV1;
 	reviewerFanoutDiagnostics?: FlowDeskLocalReviewerFanoutDiagnosticsOptionsV1;
+	devBetaAgentTaskRun?: {
+		enabled: boolean;
+		registered: boolean;
+		hasInjectedSdkClient: boolean;
+		durableStateRootConfigured: boolean;
+	};
 	policyContext: LocalPolicyContext;
 	durableStateWrites: number;
 	lastDurableStateWriteApplied: boolean;
@@ -1557,6 +1569,7 @@ function contextFor(
 				? {}
 				: { reviewerFanoutPlan: fanoutDiagnostics.fanoutPlan }),
 			fallbackRegatePlan,
+			devBetaAgentTaskRun: state.devBetaAgentTaskRun,
 			sdkSessionHealth: {
 				status: "unknown",
 				reason: "sdk_health_not_checked_non_dispatch_adapter",
@@ -1627,6 +1640,7 @@ export function createFlowDeskLocalNonDispatchAdapterSession(
 		durableStateRootDir: options.durableStateRootDir,
 		productionEnablement: options.productionEnablement,
 		reviewerFanoutDiagnostics: options.reviewerFanoutDiagnostics,
+		devBetaAgentTaskRun: options.devBetaAgentTaskRun,
 		policyContext: loadLocalPolicyContext(initialParts, options.projectConfig),
 		durableStateWrites: 0,
 		lastDurableStateWriteApplied: false,

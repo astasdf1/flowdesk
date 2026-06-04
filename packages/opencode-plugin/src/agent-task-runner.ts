@@ -240,10 +240,11 @@ async function extractAssistantTextFromResponse(
 	 */
 	const callMessages = (): Promise<unknown | null> => {
 		const messagePromise = (async () => {
-			const current = await method.call(client.session, { sessionID: childSessionId });
-			if (isSdkErrorResponse(current))
-				return method.call(client.session, { path: { id: childSessionId } });
-			return current;
+			try {
+				const structured = await method.call(client.session, { path: { id: childSessionId } });
+				if (!isSdkErrorResponse(structured)) return structured;
+			} catch { /* fall through to the flat OpenCode 1.x shape */ }
+			return method.call(client.session, { sessionID: childSessionId });
 		})();
 		// Only race against timeout when the API might block (MESSAGES_TIMEOUT_MS > 0)
 		if (MESSAGES_TIMEOUT_MS <= 0) return messagePromise;

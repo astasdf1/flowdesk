@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
@@ -136,6 +137,7 @@ import {
 	evaluateGuardedAutoRetryHookV1,
 	reconcileStalePendingRetryPlansV1,
 	checkSdkSessionApiHealthV1,
+	monitorChildSessionsV1,
 	runFlowDeskWatchdogCycleV1,
 	type FlowDeskAutoAbortConfigV1,
 	type FlowDeskSdkSessionHealthV1,
@@ -3649,6 +3651,7 @@ function providerUsageLiveConfigFromOptions(
 	const config: FlowDeskProviderUsageLiveConfigV1 = {};
 	if (typeof value.homeDir === "string" && value.homeDir.trim().length > 0)
 		config.homeDir = value.homeDir;
+	else config.homeDir = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	if (Array.isArray(value.providers)) {
 		const allowed = value.providers.filter(
 			(family): family is FlowDeskProviderUsageLiveProviderFamilyV1 =>
@@ -4625,13 +4628,21 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		isNaturalLanguageRoutingAllowedByProjectConfig(projectConfigLoad);
 	const localSession =
 		isLocalNonDispatchAdapterEnabled(options) || naturalLanguageRoutingEnabled
-			? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, {
-					durableStateRootDir: durableStateRootFromOptions(options),
-					projectConfig: localProjectConfigFileOptionsFromOptions(options),
-					productionEnablement: productionEnablementFromOptions(options),
-					reviewerFanoutDiagnostics:
-						reviewerFanoutDiagnosticsFromOptions(options),
-				})
+		? createFlowDeskLocalNonDispatchAdapterSession(new Date(), undefined, {
+				durableStateRootDir: durableStateRootFromOptions(options),
+				projectConfig: localProjectConfigFileOptionsFromOptions(options),
+				productionEnablement: productionEnablementFromOptions(options),
+				reviewerFanoutDiagnostics:
+					reviewerFanoutDiagnosticsFromOptions(options),
+				devBetaAgentTaskRun: {
+					enabled: isAgentTaskRunEnabled(options),
+					registered: isAgentTaskRunEnabled(options),
+					hasInjectedSdkClient:
+						isRecord(input) && isManagedDispatchBetaClient(input.client),
+					durableStateRootConfigured:
+						durableStateRootFromOptions(options) !== undefined,
+				},
+			})
 			: undefined;
 	const managedDispatchBetaClient =
 		isManagedDispatchBetaAdapterEnabled(options) ||
@@ -4852,6 +4863,18 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						? "chat_steering_command_backed_non_dispatch"
 						: "disabled",
 					naturalLanguageTools,
+					devBetaLaneCapability: {
+						agentTaskRunEnabled,
+						agentTaskRunRegistered: agentTaskRunEnabled,
+						hasInjectedSdkClient: agentTaskRunHasClient,
+						durableStateRootConfigured: agentTaskRunRoot !== undefined,
+						launchCapable:
+							agentTaskRunEnabled &&
+							agentTaskRunHasClient &&
+							agentTaskRunRoot !== undefined,
+						note:
+							"Explicit dev/beta agent-task lane capability is separate from the default production managed-dispatch promotion gate.",
+					},
 					productionPromotionGate:
 						defaultAuthorization === undefined
 							? "release1_non_dispatch_command_registration_ready"
@@ -5167,6 +5190,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	}
 
 	const eventRootDir = durableStateRootFromOptions(options);
+	const eventMonitorClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
 	const eventHook = eventRootDir === undefined && !uiProbeEnabled
 		? undefined
 		: async (input: { event: unknown }) => {
@@ -5183,7 +5207,47 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					// instead of waiting up to a full setInterval period. The watchdog
 					// (single capture owner) still does the actual work.
 					if (observed.matched && observed.finalizationRelevant === true) {
-						pokeWatchdogCycle?.();
+						if (pokeWatchdogCycle !== undefined) {
+							pokeWatchdogCycle();
+						} else if (eventMonitorClient !== undefined && observed.workflowId !== undefined) {
+							// Agent-task async capture must not depend on the guarded auto-abort
+							// watchdog being enabled. When guardedAutoAbort is not configured, run a
+							// bounded capture-oriented monitor pass for the affected workflow only.
+							// Use wide termination clocks so this event-poked path captures completed
+							// child output but does not act as a hidden auto-abort loop.
+							try {
+								await monitorChildSessionsV1({
+									rootDir: eventRootDir,
+									workflowId: observed.workflowId,
+									client: eventMonitorClient,
+									now: new Date(),
+									abortThresholdMs: 10 * 60_000,
+									absoluteLaneAgeMs: 60 * 60_000,
+								});
+								if (completionWakeMainSessionConfig !== undefined) {
+									// Advisory-only wake: consume ready rows after the monitor pass has
+									// persisted task_result and refreshed completion UI caches. This only
+									// prompts the main coordinator to inspect durable status; it does not
+									// auto-continue, synthesize, dispatch, fallback, write, or hard-cancel.
+									await consumeFlowDeskCompletionWakeForMainSessionV1({
+										config: completionWakeMainSessionConfig,
+										client: eventMonitorClient,
+									});
+								}
+							} catch {
+								// best-effort; event hook must not crash the plugin
+							}
+						}
+					}
+					if (observed.matched && observed.permissionAttentionRelevant === true && completionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
+						try {
+							await consumeFlowDeskCompletionWakeForMainSessionV1({
+								config: completionWakeMainSessionConfig,
+								client: eventMonitorClient,
+							});
+						} catch {
+							// advisory-only permission attention wake must not crash the plugin
+						}
 					}
 				}
 			};

@@ -908,7 +908,7 @@ test("V11.2 Slice 1: watchdog does NOT abort while a tool is genuinely running (
 	}
 });
 
-test("V11.2 Slice 1: stale open tool (dropped settle) is force-terminated only after unknownStateMaxMs", async () => {
+test("V11.2 Slice 1: stale open tool (dropped settle) records review diagnostic without abort authority", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-unknown-timeout-"));
 	try {
 		const workflowId = "workflow-v112-unknown";
@@ -920,15 +920,16 @@ test("V11.2 Slice 1: stale open tool (dropped settle) is force-terminated only a
 			createdAt: "2026-05-26T10:00:00.000Z",
 		}, "agent-task-child-session-v112-unknown");
 		// Tool opened at 10:00:05, settle event dropped. staleToolMs=30s so by
-		// 10:00:40 it is UNKNOWN; unknownStateMaxMs=30s so it is force-terminated
-		// only once the open tool has been stuck ~>=60s (10:01:10).
+		// 10:00:45 it is UNKNOWN. Current Release 1-safe behavior does NOT force-
+		// terminate this state; it writes advisory coordinator-review diagnostic
+		// evidence and leaves abort/retry to explicit user/Guard paths.
 		writeAgentTaskProgressRecord(rootDir, {
 			workflowId, laneId, taskId,
 			observedAt: "2026-05-26T10:00:05.000Z",
 			progressLabel: "agent task tool running callid=call-stuck",
 		}, "agent-task-progress-v112-unknown-open");
 
-		// At 10:00:45 (open 40s): unknown but not past unknownStateMaxMs from unknown entry → no abort.
+		// At 10:00:45 (open 40s): unknown/overdue → diagnostic only, no abort.
 		let abortCallsEarly = 0;
 		const early = await monitorChildSessionsV1({
 			rootDir, workflowId,
@@ -937,10 +938,13 @@ test("V11.2 Slice 1: stale open tool (dropped settle) is force-terminated only a
 			staleToolMs: 30_000, unknownStateMaxMs: 30_000, absoluteLaneAgeMs: 600_000,
 			client: { session: { messages: async () => ({ messages: [] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => { abortCallsEarly += 1; return {}; } } } as never,
 		});
-		assert.equal(early.lanesAborted, 0, "unknown within unknownStateMaxMs must not abort");
+		assert.equal(early.lanesAborted, 0, "unknown/overdue tool must not abort automatically");
 		assert.equal(abortCallsEarly, 0);
+		let reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reloaded.entries.some(entry => entry.evidenceClass === "task_failed"), false);
+		assert.equal(reloaded.entries.some(entry => entry.evidenceClass === "agent_task_inconsistency" && (entry.record as Record<string, unknown>).inconsistency_kind === "tool_run_overdue_observed"), true);
 
-		// At 10:01:20 (open ~75s >= staleToolMs 30 + unknownStateMaxMs 30): force-terminate.
+		// At 10:01:20 (open ~75s): still diagnostic only and idempotent.
 		let abortCallsLate = 0;
 		const late = await monitorChildSessionsV1({
 			rootDir, workflowId,
@@ -949,8 +953,10 @@ test("V11.2 Slice 1: stale open tool (dropped settle) is force-terminated only a
 			staleToolMs: 30_000, unknownStateMaxMs: 30_000, absoluteLaneAgeMs: 600_000,
 			client: { session: { messages: async () => ({ messages: [] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => { abortCallsLate += 1; return {}; } } } as never,
 		});
-		assert.equal(late.lanesAborted, 1, "stale tool past unknownStateMaxMs must force-terminate");
-		assert.equal(abortCallsLate, 1);
+		assert.equal(late.lanesAborted, 0, "stale tool must remain coordinator-review diagnostic only");
+		assert.equal(abortCallsLate, 0);
+		reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reloaded.entries.filter(entry => entry.evidenceClass === "agent_task_inconsistency" && (entry.record as Record<string, unknown>).inconsistency_kind === "tool_run_overdue_observed").length, 1);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -988,6 +994,55 @@ test("V11.2 Slice 1: true zero-event lane terminates via absoluteLaneAgeMs even 
 
 		assert.equal(result.lanesAborted, 1, "zero-event lane must terminate at absoluteLaneAgeMs");
 		assert.equal(abortCalls, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("coordinator attention timer records review-requested diagnostic without abort authority", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-coordinator-attention-"));
+	try {
+		const workflowId = "workflow-coordinator-attention";
+		const laneId = "lane-coordinator-attention";
+		const taskId = "task-coordinator-attention";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-coordinator-attention",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-coordinator-attention");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:40.000Z"),
+			coordinatorAttentionMs: 30_000,
+			abortThresholdMs: 600_000,
+			absoluteLaneAgeMs: 600_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [{ role: "assistant", parts: [{ type: "tool", callID: "call-diagnostic", state: { status: "running" } }] }] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesAborted, 0);
+		assert.equal(abortCalls, 0);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true, reload.errors.join("\n"));
+		const child = reload.entries.find(entry => entry.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown>;
+		assert.equal(child.coordinator_attention_status, "review_requested");
+		assert.equal(child.capture_failure_child_session_id, "ses-child-coordinator-attention");
+		assert.equal(child.capture_failure_last_part_kind, "tool");
+		assert.equal(child.capture_failure_final_text_present, false);
+		assert.equal(child.capture_failure_step_finish_present, false);
+		assert.equal(child.capture_failure_running_tool_call_id, "call-diagnostic");
+		assert.equal(child.capture_failure_running_tool_status, "running");
+		assert.equal(child.capture_failure_recommended_next_action, "/flowdesk-status");
+		assert.equal(reload.entries.some(entry => entry.evidenceClass === "agent_task_progress" && String((entry.record as Record<string, unknown>).progress_label).includes("coordinator_attention_observed")), true);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

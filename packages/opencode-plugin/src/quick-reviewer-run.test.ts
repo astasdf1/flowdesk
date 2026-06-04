@@ -319,15 +319,15 @@ test("quick reviewer run terminalizes completion timeout lanes", async () => {
 
 test("quick reviewer run supports per-perspective multi-model bindings", async () => {
 	const prompts: string[] = [];
-	const promptOptions: Array<{ agent?: string; model?: Record<string, unknown> }> = [];
+	const promptOptions: Array<{ agent?: string; model?: Record<string, unknown>; body?: { agent?: string; model?: Record<string, unknown> } }> = [];
 	const result = await executeFlowDeskQuickReviewerRunV1({
 		client: {
 			session: {
 				async create() {
 					return { id: "child-session-1" };
 				},
-				async prompt(options: { agent?: string; model?: Record<string, unknown>; parts?: Array<{ text?: string }>; body?: { parts?: Array<{ text?: string }> } }) {
-					promptOptions.push({ agent: options.agent, model: options.model });
+				async prompt(options: { agent?: string; model?: Record<string, unknown>; parts?: Array<{ text?: string }>; body?: { agent?: string; model?: Record<string, unknown>; parts?: Array<{ text?: string }> } }) {
+					promptOptions.push({ agent: options.agent, model: options.model, body: options.body });
 					prompts.push(String(options.parts?.[0]?.text ?? options.body?.parts?.[0]?.text ?? ""));
 					return { id: "message-multi-model" };
 				},
@@ -371,7 +371,7 @@ test("quick reviewer run supports per-perspective multi-model bindings", async (
 	assert.equal(JSON.parse(prompts[1].split("\n").at(-1) ?? "{}").source, "gpt_frontier");
 	assert.equal(JSON.parse(prompts[2].split("\n").at(-1) ?? "{}").source, "gemini_pro");
 	assert.deepEqual(
-		promptOptions.map((option) => option.agent),
+		promptOptions.map((option) => option.agent ?? option.body?.agent),
 		["reviewer-claude-opus", "reviewer-gpt-frontier", "reviewer-gemini-pro"],
 	);
 });

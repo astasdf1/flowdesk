@@ -1,6 +1,6 @@
 {
   "name": "@flowdesk/opencode-plugin",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "FlowDesk OpenCode plugin with Release 1 non-dispatch command-backed registration.",
   "type": "module",
   "license": "MIT",
@@ -62,7 +62,7 @@
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@flowdesk/core": "^0.1.21"
+    "@flowdesk/core": "^0.1.22"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.14.40 <2",

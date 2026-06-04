@@ -156,6 +156,77 @@ test("status live does not show progress observed after terminal lifecycle", asy
 	}
 });
 
+test("status live surfaces redaction-safe capture-failure diagnostics from child session evidence", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-capture-diagnostic-"));
+	try {
+		const workflowId = "workflow-status-capture-diagnostic";
+		const laneId = "lane-status-capture-diagnostic";
+		writeEvidence(rootDir, workflowId, "lane_lifecycle", "lifecycle-capture-diagnostic", {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			attempt_id: "attempt-capture-diagnostic",
+			parent_session_ref: "ses-parent",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running",
+			timeout_ms: 0,
+			orphan_max_age_ms: 0,
+			retry_count: 0,
+			created_at: "2026-05-27T00:00:00.000Z",
+			updated_at: "2026-05-27T00:00:30.000Z",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		});
+		writeEvidence(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-capture-diagnostic", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-capture-diagnostic",
+			child_session_id: "ses-child-capture-diagnostic",
+			parent_session_ref: "ses-parent",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 0,
+			last_nudge_at: null,
+			created_at: "2026-05-27T00:00:00.000Z",
+			capture_failure_diagnostic_observed_at: "2026-05-27T00:01:00.000Z",
+			capture_failure_diagnostic_reason: "attention_timer_overdue",
+			capture_failure_child_session_id: "ses-child-capture-diagnostic",
+			capture_failure_last_part_kind: "tool",
+			capture_failure_final_text_present: false,
+			capture_failure_step_finish_present: false,
+			capture_failure_running_tool_call_id: "call-safe",
+			capture_failure_running_tool_status: "running",
+			capture_failure_recommended_next_action: "/flowdesk-status",
+			capture_failure_redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:01:30.000Z"),
+		});
+
+		const diagnostic = result.workflows[0].captureFailureDiagnostics?.[0];
+		assert.equal(diagnostic?.childSessionId, "ses-child-capture-diagnostic");
+		assert.equal(diagnostic?.lastPartKind, "tool");
+		assert.equal(diagnostic?.finalTextPresent, false);
+		assert.equal(diagnostic?.stepFinishPresent, false);
+		assert.equal(diagnostic?.runningToolCallId, "call-safe");
+		assert.equal(diagnostic?.runningToolStatus, "running");
+		assert.equal(diagnostic?.recommendedNextAction, "/flowdesk-status");
+		assert.match(result.summaryForUser ?? "", /capture_diag=.*child=…agnostic/);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("status live reports first planning evidence slice summaries", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-slice-"));
 	try {

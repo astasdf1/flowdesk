@@ -74,6 +74,19 @@ export function flowDeskAgentTaskMessageItems(value: unknown): unknown[] {
 	if (!isRecord(data)) return [];
 	if (Array.isArray(data.items)) return data.items;
 	if (Array.isArray(data.messages)) return data.messages;
+	// Some OpenCode SDK/session surfaces return a single message object rather than
+	// an array/wrapper. Treat message-shaped records as a one-item transcript so a
+	// final assistant body followed by step-finish is captured instead of drifting
+	// into finalizing_without_terminal.
+	if (
+		Array.isArray(data.parts) ||
+		Array.isArray(data.content) ||
+		isRecord(data.info) ||
+		typeof data.role === "string" ||
+		typeof data.finish_reason === "string" ||
+		typeof data.finishReason === "string" ||
+		typeof data.status === "string"
+	) return [data];
 	// Gemini candidates wrapper: { candidates: [{ content: { role, parts }, finishReason }] }
 	if (Array.isArray(data.candidates)) {
 		const msgs: unknown[] = [];

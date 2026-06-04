@@ -160,9 +160,7 @@ async function callMessagesWithFallback(input: {
 	childSessionId: string;
 }): Promise<unknown> {
 	const method = input.client.session.messages as (options: unknown) => unknown | Promise<unknown>;
-	const current = await method.call(input.client.session, { sessionID: input.childSessionId });
-	if (!isSdkErrorResponse(current)) return current;
-	return method.call(input.client.session, { path: { id: input.childSessionId } });
+	return method.call(input.client.session, { sessionID: input.childSessionId });
 }
 
 function normalizedCompletionWaitOptions(

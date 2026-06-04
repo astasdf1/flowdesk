@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-type CompletionKind = "task_result" | "task_failed" | "auto_next_ready";
+type CompletionKind = "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
 
 export interface FlowDeskCompletionWakeMainSessionConfigV1 {
 	enabled: true;
@@ -73,7 +73,7 @@ function rowsFromCache(value: unknown): WakeRow[] {
 		const consumptionKey = stringField(raw, "consumptionKey");
 		const completionKind = stringField(raw, "completionKind");
 		if (workflowId === undefined || readyAt === undefined || dedupeKey === undefined || consumptionKey === undefined) continue;
-		if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready") continue;
+			if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready" && completionKind !== "awaiting_permission" && completionKind !== "diagnostic_attention") continue;
 		rows.push({
 			workflowId,
 			...(stringField(raw, "parentSessionRef") === undefined ? {} : { parentSessionRef: stringField(raw, "parentSessionRef") }),
@@ -93,6 +93,10 @@ function rowsFromCache(value: unknown): WakeRow[] {
 function wakePrompt(row: WakeRow): string {
 	const action = row.completionKind === "auto_next_ready"
 		? "Continue the FlowDesk workflow now by synthesizing the completed subtask result or moving to the next safe step."
+		: row.completionKind === "awaiting_permission"
+			? "Resume FlowDesk coordination now by checking durable status for the child lane awaiting an OpenCode permission response. Do not auto-approve, auto-deny, retry, fallback, dispatch, write, or hard-cancel."
+		: row.completionKind === "diagnostic_attention"
+			? "Resume FlowDesk coordination now by checking durable status/debug evidence for a child lane diagnostic attention signal. Treat this as advisory only; do not synthesize results, fail the task, abort, retry, fallback, dispatch, write, approve/deny permissions, or hard-cancel."
 		: row.completionKind === "task_failed"
 			? "Resume FlowDesk coordination now by checking the failed subtask status and deciding the next safe action."
 			: "Resume FlowDesk coordination now by checking the completed subtask result and deciding the next safe action.";

@@ -69,6 +69,12 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
     laneAbortResult?: FlowDeskLaneAbortHelperResultV1;
     sdkSessionHealth?: FlowDeskSdkSessionHealthV1;
+    devBetaAgentTaskRun?: {
+      enabled: boolean;
+      registered: boolean;
+      hasInjectedSdkClient: boolean;
+      durableStateRootConfigured: boolean;
+    };
   };
 }
 
@@ -274,6 +280,20 @@ function sdkSessionHealthRefs(context: FlowDeskCommandBackedHandlerContextV1): s
   ];
 }
 
+function devBetaAgentTaskRunRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const capability = context.diagnostic?.devBetaAgentTaskRun;
+  if (capability === undefined) return ["dev_beta_agent_task_run=not_reported"];
+  const launchCapable = capability.enabled && capability.registered && capability.hasInjectedSdkClient && capability.durableStateRootConfigured;
+  return [
+    `dev_beta_agent_task_run_enabled=${capability.enabled}`,
+    `dev_beta_agent_task_run_registered=${capability.registered}`,
+    `dev_beta_agent_task_run_has_sdk_client=${capability.hasInjectedSdkClient}`,
+    `dev_beta_agent_task_run_durable_root=${capability.durableStateRootConfigured}`,
+    `dev_beta_agent_task_run_launch_capable=${launchCapable}`,
+    "dev_beta_agent_task_run_note=separate_from_default_production_dispatch_gate"
+  ];
+}
+
 function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
@@ -282,9 +302,10 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const fanoutRefs = reviewerFanoutRefs(context);
   const fallbackRefs = fallbackRegateRefs(context);
   const sdkHealthRefs = sdkSessionHealthRefs(context);
+  const agentTaskRunRefs = devBetaAgentTaskRunRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 non-dispatch command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; default managed dispatch promotion, exact-model cache refresh, reviewer fan-out planning, and SDK session health diagnostics are diagnostic-only until their gates pass.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
   ];
@@ -324,7 +345,7 @@ function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1, context: Flo
     ok: category !== "dispatch_blocking",
     status: category === "dispatch_blocking" ? "blocked" : category === "degraded_mode_warning" ? "degraded" : "diagnostic_only",
     safe_next_actions: [...outcome.safe_next_actions],
-    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results only; no filesystem write occurred in this handler." : "FlowDesk doctor checked Release 1 install, compatibility, provider usage, and policy readiness without real dispatch, provider calls, or runtime execution.",
+    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results only; no filesystem write occurred in this handler." : "FlowDesk doctor checked default production dispatch gates separately from explicit dev/beta agent-task lane capability.",
     doctor_results: doctorSections,
     provider_health_summary: providerHealth,
     compatibility_ref: safeDiagnosticId("compatibility", request),

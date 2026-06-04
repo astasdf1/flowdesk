@@ -24,6 +24,12 @@ export interface FlowDeskEventHookObservationResultV1 {
 	 * itself never captures or terminalizes (the watchdog owns that).
 	 */
 	finalizationRelevant?: boolean;
+	/**
+	 * True when a child lane is awaiting an OpenCode permission response. This is
+	 * advisory attention only: no permission approval/denial or recovery action is
+	 * authorized by this flag.
+	 */
+	permissionAttentionRelevant?: boolean;
 }
 
 /**
@@ -38,6 +44,10 @@ export function eventIsFinalizationRelevant(type: string | undefined, progressLa
 	if (type === "message.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task turn completed")) return true;
 	if (type === "message.part.updated" && typeof progressLabel === "string" && (progressLabel.startsWith("agent task tool settled") || progressLabel.startsWith("agent task terminal step"))) return true;
 	return false;
+}
+
+function eventIsPermissionAttentionRelevant(type: string | undefined, phase: FlowDeskAgentTaskProgressV1["phase"] | undefined): boolean {
+	return type === "permission.asked" && phase === "awaiting_permission";
 }
 
 interface ChildSessionBinding {
@@ -248,7 +258,7 @@ function writeSessionErrorTerminal(rootDir: string, binding: ChildSessionBinding
 function eventProgress(event: unknown): { phase: FlowDeskAgentTaskProgressV1["phase"]; label: string } | undefined {
 	const type = eventType(event);
 	const properties = eventProperties(event);
-	if (type === "permission.updated") return { phase: "awaiting_permission", label: "agent task awaiting OpenCode permission response" };
+	if (type === "permission.asked" || type === "permission.updated") return { phase: "awaiting_permission", label: "agent task awaiting OpenCode permission response" };
 	if (type === "permission.replied") return { phase: "waiting", label: "agent task OpenCode permission response observed" };
 	if (type === "session.error") return { phase: "failed", label: compactLabel(sessionErrorSummary(event)) };
 	if (type === "session.idle") return { phase: "finalizing", label: "agent task session idle event observed" };
@@ -321,7 +331,8 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 	const progress = eventProgress(input.event);
 	const progressWritten = progress === undefined ? false : writeProgress(input.rootDir, binding, input.event, progress.phase, progress.label);
 	const terminalWritten = type === "session.error" ? writeSessionErrorTerminal(input.rootDir, binding, input.event) : 0;
-	if (terminalWritten > 0) {
+	const permissionAttentionRelevant = eventIsPermissionAttentionRelevant(type, progress?.phase);
+	if (terminalWritten > 0 || (permissionAttentionRelevant && progressWritten)) {
 		refreshFlowDeskCompletionUiCachesV1({
 			rootDir: input.rootDir,
 			workflowId: binding.workflowId,
@@ -336,5 +347,6 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 		taskId: binding.taskId,
 		evidenceWritten: (progressWritten ? 1 : 0) + terminalWritten,
 		finalizationRelevant: eventIsFinalizationRelevant(type, progress?.label),
+		permissionAttentionRelevant,
 	};
 }

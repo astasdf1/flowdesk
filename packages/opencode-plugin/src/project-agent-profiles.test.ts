@@ -17,6 +17,7 @@ const expectedProfiles = [
   "flowdesk-code-language-specialist",
   "flowdesk-critical-reviewer",
   "flowdesk-architecture",
+  "flowdesk-algorithm-architect",
   "flowdesk-oracle-decision",
   "flowdesk-verifier-testing",
   "flowdesk-security-policy",
@@ -31,6 +32,26 @@ const writeCapableProfiles = new Set<string>([
   "flowdesk-docs-writer",
   "flowdesk-migration-refactor",
 ]);
+
+const buildTestCapableProfiles = new Set<string>([
+  "flowdesk-code-backend",
+  "flowdesk-code-frontend",
+  "flowdesk-code-language-specialist",
+  "flowdesk-migration-refactor",
+  "flowdesk-verifier-testing",
+]);
+
+const readOnlyGitCapableProfiles = new Set<string>([
+	"flowdesk-architecture",
+	"flowdesk-algorithm-architect",
+	"flowdesk-critical-reviewer",
+  "flowdesk-git-master",
+  "flowdesk-security-policy",
+  "flowdesk-verifier-testing",
+]);
+
+const mutatingGitDenyPatterns = ["git add*", "git commit*", "git push*", "git reset*", "git checkout*", "git switch*", "git rebase*", "git merge*", "git clean*"];
+const ordinaryGitMutationProfiles = new Set<string>(["flowdesk-git-master"]);
 
 function readProfile(name: string): string {
   const path = resolve(agentDir, `${name}.md`);
@@ -54,10 +75,41 @@ test("Release 1 project subagent profiles exist and use supported frontmatter", 
     assert.match(frontmatter, /^mode: subagent$/m, `${profile} must be a subagent`);
     if (writeCapableProfiles.has(profile)) {
       assert.match(frontmatter, /^  edit: allow$/m, `${profile} should be bounded write-capable for its implementation role`);
-      assert.match(frontmatter, /^  bash: ask$/m, `${profile} should ask before verification commands`);
       assert.match(markdown, /bounded/i, `${profile} must describe bounded edit scope`);
     } else {
       assert.match(frontmatter, /^  edit: deny$/m, `${profile} must remain edit-denied`);
+    }
+    if (ordinaryGitMutationProfiles.has(profile)) assert.match(frontmatter, /^  bash:\n    "\*": allow$/m, `${profile} bash may default to allow for ordinary git actions`);
+    else assert.match(frontmatter, /^  bash:\n    "\*": ask$/m, `${profile} bash must default to ask`);
+    assert.match(frontmatter, /^    "head \*": allow$/m, `${profile} may run read-only head utility`);
+    assert.match(frontmatter, /^    "grep \*": allow$/m, `${profile} may run read-only grep utility`);
+    assert.match(frontmatter, /^    "echo \*": allow$/m, `${profile} may run read-only echo utility`);
+    for (const pattern of mutatingGitDenyPatterns) {
+      if (ordinaryGitMutationProfiles.has(profile) && ["git add*", "git commit*", "git push*"].includes(pattern)) continue;
+      const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*");
+      assert.match(frontmatter, new RegExp(`^    "${escaped}": deny$`, "m"), `${profile} must deny ${pattern}`);
+    }
+    if (ordinaryGitMutationProfiles.has(profile)) {
+      assert.doesNotMatch(frontmatter, /^    "git add\*": deny$/m, `${profile} must allow ordinary git add`);
+      assert.doesNotMatch(frontmatter, /^    "git commit\*": deny$/m, `${profile} must allow ordinary git commit`);
+      assert.doesNotMatch(frontmatter, /^    "git push\*": deny$/m, `${profile} must allow ordinary git push`);
+      assert.match(frontmatter, /^    "git commit --amend\*": deny$/m, `${profile} must deny commit amend`);
+      assert.match(frontmatter, /^    "git push --force\*": deny$/m, `${profile} must deny force push`);
+      assert.match(frontmatter, /^    "git push -f\*": deny$/m, `${profile} must deny shorthand force push`);
+    }
+    if (readOnlyGitCapableProfiles.has(profile)) {
+      assert.match(frontmatter, /^    "git status\*": allow$/m, `${profile} may run read-only git status`);
+      assert.match(frontmatter, /^    "git diff\*": allow$/m, `${profile} may run read-only git diff`);
+    } else {
+      assert.doesNotMatch(frontmatter, /^    "git status\*": allow$/m, `${profile} should not explicitly allow git status`);
+      assert.doesNotMatch(frontmatter, /^    "git diff\*": allow$/m, `${profile} should not explicitly allow git diff`);
+    }
+    if (buildTestCapableProfiles.has(profile)) {
+      assert.match(frontmatter, /^    "npm run build\*": allow$/m, `${profile} may run build checks`);
+      assert.match(frontmatter, /^    "npm run test\*": allow$/m, `${profile} may run test checks`);
+    } else {
+      assert.doesNotMatch(frontmatter, /^    "npm run build\*": allow$/m, `${profile} should not explicitly allow build checks`);
+      assert.doesNotMatch(frontmatter, /^    "npm run test\*": allow$/m, `${profile} should not explicitly allow test checks`);
     }
     assert.doesNotMatch(
       frontmatter,

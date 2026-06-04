@@ -188,8 +188,10 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	stalledLaneCount?: number;
 	progressingLateLaneCount?: number;
 	inconsistentFinalizingWithoutTerminalLaneCount?: number;
+	toolRunOverdueObservedLaneCount?: number;
 	laneProgressCards?: readonly FlowDeskStatusLiveLaneProgressCardV1[];
 	subtaskActivityRows?: readonly FlowDeskStatusLiveSubtaskActivityRowV1[];
+	captureFailureDiagnostics?: readonly FlowDeskStatusLiveCaptureFailureDiagnosticV1[];
 	laneProgressAggregate?: {
 		expected: number;
 		terminal: number;
@@ -230,8 +232,24 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	outputKind?: string;
 	usableForSynthesis?: boolean;
 	failureHint?: string;
+	captureFailureDiagnostic?: FlowDeskStatusLiveCaptureFailureDiagnosticV1;
 	statusCommandRef: "/flowdesk-status";
 	debugCommandRef: "/flowdesk-export-debug";
+}
+
+export interface FlowDeskStatusLiveCaptureFailureDiagnosticV1 {
+	workflowId: string;
+	laneId: string;
+	childSessionId?: string;
+	observedAt?: string;
+	reason?: string;
+	lastPartKind?: string;
+	finalTextPresent?: boolean;
+	stepFinishPresent?: boolean;
+	runningToolCallId?: string;
+	runningToolStatus?: string;
+	recommendedNextAction?: "/flowdesk-status" | "/flowdesk-export-debug";
+	redactionVersion?: string;
 }
 
 export interface FlowDeskStatusLiveSubtaskActivityRowV1 {
@@ -254,6 +272,7 @@ export interface FlowDeskStatusLiveSubtaskActivityRowV1 {
 	usableForSynthesis?: boolean;
 	verdictLabel?: "pass" | "changes_required" | "blocked" | "inconclusive";
 	failureHint?: string;
+	captureFailureDiagnostic?: FlowDeskStatusLiveCaptureFailureDiagnosticV1;
 	recoveryActionRefs?: readonly (
 		| "/flowdesk-status"
 		| "/flowdesk-retry"
@@ -646,6 +665,7 @@ function summarizeWorkflow(
 	let workflowSynthesisSummaryPreview: string | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
+	const toolRunOverdueLaneIds = new Set<string>();
 
 	for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
 		const classEntries = reload.entries.filter(
@@ -748,6 +768,13 @@ function summarizeWorkflow(
 				if (Array.isArray(tasks)) workflowDispatchPlanTaskCount = tasks.length;
 			}
 		}
+		if (evidenceClass === "agent_task_inconsistency") {
+			for (const entry of classEntries) {
+				if (getStringField(entry.record, "inconsistency_kind") !== "tool_run_overdue_observed") continue;
+				const laneId = getStringField(entry.record, "lane_id");
+				if (laneId !== undefined) toolRunOverdueLaneIds.add(laneId);
+			}
+		}
 	}
 
 	const providerUsageSummary = summarizeLatestProviderUsageSnapshot(
@@ -825,6 +852,9 @@ function summarizeWorkflow(
 		...(workflowDispatchPlanTaskCount !== undefined
 			? { latestWorkflowDispatchPlanTaskCount: workflowDispatchPlanTaskCount }
 			: {}),
+		...(toolRunOverdueLaneIds.size > 0
+			? { toolRunOverdueObservedLaneCount: toolRunOverdueLaneIds.size }
+			: {}),
 	};
 }
 
@@ -871,6 +901,7 @@ function buildLaneProgressCards(
 		nudgeQuietPeriodMs?: number;
 		awaitingBodyCaptureSince?: string;
 		awaitingBodyCaptureAttempts?: number;
+		captureFailureDiagnostic?: FlowDeskStatusLiveCaptureFailureDiagnosticV1;
 	}>();
 	const agentTaskProgressByLane = new Map<
 		string,
@@ -915,6 +946,32 @@ function buildLaneProgressCards(
 			const awaitingBodyCaptureSince = getStringField(entry.record, "awaiting_body_capture_since");
 			const awaitingBodyCaptureAttempts = entry.record.awaiting_body_capture_attempts;
 			if (laneId !== undefined) {
+				const diagnosticObservedAt = getStringField(entry.record, "capture_failure_diagnostic_observed_at");
+				const recommendedNextActionRaw = getStringField(entry.record, "capture_failure_recommended_next_action");
+				const recommendedNextAction: FlowDeskStatusLiveCaptureFailureDiagnosticV1["recommendedNextAction"] =
+					recommendedNextActionRaw === "/flowdesk-status" || recommendedNextActionRaw === "/flowdesk-export-debug"
+						? recommendedNextActionRaw
+						: undefined;
+				const captureFailureDiagnostic = diagnosticObservedAt === undefined
+					? undefined
+					: {
+						workflowId,
+						laneId,
+						childSessionId: getStringField(entry.record, "capture_failure_child_session_id"),
+						observedAt: diagnosticObservedAt,
+						reason: getStringField(entry.record, "capture_failure_diagnostic_reason"),
+						lastPartKind: getStringField(entry.record, "capture_failure_last_part_kind"),
+						...(typeof entry.record.capture_failure_final_text_present === "boolean"
+							? { finalTextPresent: entry.record.capture_failure_final_text_present }
+							: {}),
+						...(typeof entry.record.capture_failure_step_finish_present === "boolean"
+							? { stepFinishPresent: entry.record.capture_failure_step_finish_present }
+							: {}),
+						runningToolCallId: getStringField(entry.record, "capture_failure_running_tool_call_id"),
+						runningToolStatus: getStringField(entry.record, "capture_failure_running_tool_status"),
+						...(recommendedNextAction === undefined ? {} : { recommendedNextAction }),
+						redactionVersion: getStringField(entry.record, "capture_failure_redaction_version"),
+					};
 				childSessionByLane.set(laneId, {
 					...(typeof nudgeCount === "number" && Number.isFinite(nudgeCount)
 						? { nudgeCount }
@@ -929,6 +986,7 @@ function buildLaneProgressCards(
 					...(typeof awaitingBodyCaptureAttempts === "number" && Number.isFinite(awaitingBodyCaptureAttempts)
 						? { awaitingBodyCaptureAttempts }
 						: {}),
+					...(captureFailureDiagnostic === undefined ? {} : { captureFailureDiagnostic }),
 				});
 			}
 			continue;
@@ -1067,6 +1125,9 @@ function buildLaneProgressCards(
 			...(entry.failureHint === undefined
 				? {}
 				: { failureHint: entry.failureHint }),
+			...(childSession?.captureFailureDiagnostic === undefined
+				? {}
+				: { captureFailureDiagnostic: childSession.captureFailureDiagnostic }),
 			statusCommandRef: "/flowdesk-status" as const,
 			debugCommandRef: "/flowdesk-export-debug" as const,
 		};
@@ -1155,6 +1216,7 @@ function buildSubtaskActivityRows(
 			...(card.usableForSynthesis === undefined ? {} : { usableForSynthesis: card.usableForSynthesis }),
 			...(card.verdictLabel === undefined ? {} : { verdictLabel: card.verdictLabel }),
 			...(card.failureHint === undefined ? {} : { failureHint: card.failureHint }),
+			...(card.captureFailureDiagnostic === undefined ? {} : { captureFailureDiagnostic: card.captureFailureDiagnostic }),
 			recoveryActionRefs,
 			statusCommandRef: "/flowdesk-status" as const,
 			debugCommandRef: "/flowdesk-export-debug" as const,
@@ -1284,6 +1346,9 @@ export async function executeFlowDeskStatusLiveV1(input: {
 				projection,
 			);
 			summary.subtaskActivityRows = buildSubtaskActivityRows(summary.laneProgressCards);
+			summary.captureFailureDiagnostics = summary.laneProgressCards
+				.map((card) => card.captureFailureDiagnostic)
+				.filter((diagnostic): diagnostic is FlowDeskStatusLiveCaptureFailureDiagnosticV1 => diagnostic !== undefined);
 			summary.laneProgressAggregate = buildLaneProgressAggregate(
 				summary.laneProgressCards,
 				summary.latestWorkflowSynthesisTasksSummarized !== undefined,
@@ -1332,6 +1397,14 @@ export async function executeFlowDeskStatusLiveV1(input: {
 			sum + (summary.inconsistentFinalizingWithoutTerminalLaneCount ?? 0),
 		0,
 	);
+	const totalToolRunOverdueObserved = workflows.reduce(
+		(sum, summary) => sum + (summary.toolRunOverdueObservedLaneCount ?? 0),
+		0,
+	);
+	const totalAwaitingPermission = workflows.reduce(
+		(sum, summary) => sum + (summary.laneProgressAggregate?.awaitingPermission ?? 0),
+		0,
+	);
 	const worstLaneStallClassification: FlowDeskLaneStallClassificationV1 =
 		workflows.some(
 			(summary) =>
@@ -1366,6 +1439,8 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		totalStalled,
 		totalLate,
 		totalInconsistent,
+		totalToolRunOverdueObserved,
+		totalAwaitingPermission,
 		requestedWorkflowId,
 	});
 
@@ -1396,12 +1471,19 @@ export async function executeFlowDeskStatusLiveV1(input: {
 	};
 }
 
+function compactDiagnosticRef(value: string | undefined): string {
+	if (value === undefined || value.length === 0) return "unknown";
+	return value.length <= 12 ? value : `…${value.slice(-8)}`;
+}
+
 function buildStatusLiveSummaryForUser(input: {
 	workflows: readonly FlowDeskStatusLiveWorkflowEvidenceSummaryV1[];
 	worstLaneStallClassification: FlowDeskLaneStallClassificationV1;
 	totalStalled: number;
 	totalLate: number;
 	totalInconsistent: number;
+	totalToolRunOverdueObserved: number;
+	totalAwaitingPermission: number;
 	requestedWorkflowId?: string;
 }): string {
 	const workflowsCount = input.workflows.length;
@@ -1411,7 +1493,15 @@ function buildStatusLiveSummaryForUser(input: {
 			: "FlowDesk status: no durable workflows found.";
 	}
 	const headline =
-		input.totalInconsistent > 0
+		input.totalToolRunOverdueObserved > 0 && input.totalAwaitingPermission > 0
+			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalToolRunOverdueObserved} lane(s) have stale open-tool diagnostic attention and ${input.totalAwaitingPermission} lane(s) await OpenCode permission. Both are advisory; no permission was auto-approved and no result/failure/abort/retry/fallback was synthesized.`
+		: input.totalToolRunOverdueObserved > 0
+			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalToolRunOverdueObserved} lane(s) have stale open-tool diagnostic attention. This is advisory only; no result/failure/abort/retry/fallback was synthesized.`
+		: input.workflows.some((workflow) => (workflow.captureFailureDiagnostics ?? []).length > 0)
+			? `FlowDesk status: ${workflowsCount} workflow(s); capture-failure diagnostics available in status/debug evidence.`
+			: input.totalAwaitingPermission > 0
+			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalAwaitingPermission} lane(s) awaiting OpenCode permission attention. No permission was auto-approved.`
+			: input.totalInconsistent > 0
 			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalInconsistent} finalizing-without-terminal inconsistent lane(s) require manual recovery.`
 			: input.totalStalled > 0
 			? `FlowDesk status: ${workflowsCount} workflow(s); worst classification stalled (${input.totalStalled} stalled, ${input.totalLate} progressing-late).`
@@ -1473,13 +1563,19 @@ function buildStatusLiveSummaryForUser(input: {
 					.slice(0, 5)
 					.map((action) => action.replace("/flowdesk-", ""))
 					.join("|");
-				const compact = `${row.laneId}:${row.state ?? "unknown"}/${row.classification}${actions.length > 0 ? `[${actions}]` : ""}`;
+				const phase = row.progressPhase === "awaiting_permission" ? "/awaiting_permission" : "";
+				const compact = `${row.laneId}:${row.state ?? "unknown"}/${row.classification}${phase}${actions.length > 0 ? `[${actions}]` : ""}`;
 				return compact.length > 96 ? `${compact.slice(0, 95)}…` : compact;
 			})
 			.join("; ");
 		const laneText = lanePreview.length > 0 && subtaskPreview.length === 0 ? `, lanes=${lanePreview}` : "";
 		const subtaskText = subtaskPreview.length > 0 ? `, subtasks=${subtaskPreview}` : "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}`;
+		const captureDiagPreview = (workflow.captureFailureDiagnostics ?? [])
+			.slice(0, 2)
+			.map((diagnostic) => `${diagnostic.laneId}:child=${compactDiagnosticRef(diagnostic.childSessionId)}/part=${diagnostic.lastPartKind ?? "unknown"}/text=${diagnostic.finalTextPresent === true ? "yes" : "no"}/step_finish=${diagnostic.stepFinishPresent === true ? "yes" : "no"}/tool=${compactDiagnosticRef(diagnostic.runningToolCallId)}/${diagnostic.runningToolStatus ?? "none"}/next=${diagnostic.recommendedNextAction ?? "/flowdesk-export-debug"}`)
+			.join("; ");
+		const captureDiagText = captureDiagPreview.length > 0 ? `, capture_diag=${captureDiagPreview}` : "";
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

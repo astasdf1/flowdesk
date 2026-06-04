@@ -462,10 +462,195 @@ function rollbackCommandFiles(profileRootDir: string, refs: readonly string[] | 
 const flowDeskMainAgentName = "flowdesk-main";
 const flowDeskMainAgentRef = "agent/flowdesk-main.md";
 
+const flowDeskWriteCapableSubagentNames = new Set([
+	"flowdesk-code-backend",
+	"flowdesk-code-frontend",
+	"flowdesk-code-language-specialist",
+	"flowdesk-docs-writer",
+	"flowdesk-migration-refactor",
+]);
+
+const flowDeskBuildTestCapableSubagentNames = new Set([
+	"flowdesk-code-backend",
+	"flowdesk-code-frontend",
+	"flowdesk-code-language-specialist",
+	"flowdesk-migration-refactor",
+	"flowdesk-performance",
+	"flowdesk-verifier-testing",
+]);
+
+const flowDeskReadOnlyGitCapableSubagentNames = new Set([
+	"flowdesk-architecture",
+	"flowdesk-algorithm-architect",
+	"flowdesk-critical-reviewer",
+	"flowdesk-docs-writer",
+	"flowdesk-explorer-researcher",
+	"flowdesk-git-master",
+	"flowdesk-oracle-decision",
+	"flowdesk-performance",
+	"flowdesk-security-policy",
+	"flowdesk-verifier-testing",
+]);
+
+const flowDeskMutatingGitCommandDenials = [
+	"git add*",
+	"git am*",
+	"git apply*",
+	"git bisect*",
+	"git branch -d*",
+	"git branch -D*",
+	"git checkout*",
+	"git cherry-pick*",
+	"git clean*",
+	"git commit*",
+	"git merge*",
+	"git mv*",
+	"git pull*",
+	"git push*",
+	"git rebase*",
+	"git reflog expire*",
+	"git reset*",
+	"git restore*",
+	"git revert*",
+	"git rm*",
+	"git stash*",
+	"git switch*",
+	"git tag*",
+	"gh pr merge*",
+];
+
+const flowDeskDangerousGitCommandDenials = [
+	"git am*",
+	"git apply*",
+	"git bisect*",
+	"git branch -d*",
+	"git branch -D*",
+	"git checkout*",
+	"git cherry-pick*",
+	"git clean*",
+	"git commit --amend*",
+	"git merge*",
+	"git mv*",
+	"git pull*",
+	"git push --force*",
+	"git push -f*",
+	"git rebase*",
+	"git reflog expire*",
+	"git reset*",
+	"git restore*",
+	"git revert*",
+	"git rm*",
+	"git stash*",
+	"git switch*",
+	"git tag -d*",
+	"gh pr merge*",
+];
+
+const flowDeskSubagentProfiles = [
+	["flowdesk-docs-writer", "Use when FlowDesk documentation, README, changelog, runbook, or user guide text needs drafting, editing, or review.", "documentation writer", "Draft and edit concise documentation for FlowDesk features, user flows, runbooks, release notes, and troubleshooting material.", "openai/gpt-5.5"],
+	["flowdesk-explorer-researcher", "Use when an unknown FlowDesk code path, API surface, or implementation option needs repository research.", "explorer researcher", "Research repository structure, APIs, implementation options, and evidence without editing files.", "openai/gpt-5.5"],
+	["flowdesk-git-master", "Use when FlowDesk git status, diff scope, commit planning, commit execution, or push readiness is needed.", "git master", "Analyze git status, diffs, commit scope, branch readiness, and execute user-approved ordinary staging, commit, and non-force push actions.", "openai/gpt-5.5"],
+	["flowdesk-code-backend", "Use when FlowDesk backend, CLI, SDK, persistence, or TypeScript service logic needs implementation or a patch plan.", "backend code", "Implement bounded backend, CLI, SDK, persistence, and TypeScript service changes.", "openai/gpt-5.5"],
+	["flowdesk-code-frontend", "Use when FlowDesk UI, status card, chat surface, React, CSS, or accessibility work needs implementation or a patch plan.", "frontend code", "Implement bounded UI, status card, chat surface, React, CSS, and accessibility changes.", "openai/gpt-5.5"],
+	["flowdesk-code-language-specialist", "Use when a FlowDesk task depends on language-specific TypeScript, shell, JSON schema, config, or runtime details.", "language specialist", "Analyze and patch bounded TypeScript, Node.js, shell, JSON schema, package script, and config details.", "openai/gpt-5.5"],
+	["flowdesk-critical-reviewer", "Use when FlowDesk code, docs, plans, or designs need adversarial review for bugs and regressions.", "critical reviewer", "Review proposed code, docs, plans, or designs for correctness, regressions, missing tests, and unsafe claims.", "anthropic/claude-opus-4-7"],
+	["flowdesk-architecture", "Use when FlowDesk module boundaries, contracts, APIs, workflow design, or migration shape need architecture analysis.", "architecture reviewer", "Analyze module boundaries, contracts, APIs, workflow design, and migration shape.", "anthropic/claude-opus-4-7"],
+	["flowdesk-algorithm-architect", "Use when FlowDesk needs complex algorithm, data-structure, state-machine, scheduler, optimization, or formal design analysis before implementation.", "algorithm architect", "Design complex algorithms, data structures, state machines, schedulers, optimization strategies, and correctness constraints before implementation.", "openai/gpt-5.5"],
+	["flowdesk-oracle-decision", "Use when FlowDesk reviewer, architecture, implementation, or verification lanes disagree and need a recommendation.", "oracle decision", "Synthesize disagreements into a recommendation with assumptions, confidence, and residual risks.", "openai/gpt-5.5"],
+	["flowdesk-verifier-testing", "Use when FlowDesk tests, reproduction steps, validation commands, or verification evidence need analysis.", "verifier and testing", "Design verification plans, run or analyze bounded test/build evidence when allowed, and identify remaining gaps.", "openai/gpt-5.5"],
+	["flowdesk-security-policy", "Use when FlowDesk permissions, redaction, auth, provider use, safety gates, or threat-model policy need review.", "security policy", "Review permissions, redaction, auth, provider use, safety gates, and threat-model policy.", "anthropic/claude-opus-4-7"],
+	["flowdesk-performance", "Use when FlowDesk latency, quota, memory, fan-out cost, or bottleneck behavior needs analysis.", "performance", "Analyze latency, quota, memory, fan-out cost, and bottleneck behavior without editing files.", "openai/gpt-5.5"],
+	["flowdesk-migration-refactor", "Use when FlowDesk schema migration, module split, rename, cleanup, or refactor sequencing needs implementation or a plan.", "migration refactor", "Implement bounded schema migration, module split, rename, cleanup, or refactor sequencing changes.", "openai/gpt-5.5"],
+] as const;
+
+function flowDeskBashPermissionLines(agentName: string, indent = "  "): string {
+	const lines = [`${indent}bash:`, `${indent}  "*": ${agentName === "flowdesk-git-master" ? "allow" : "ask"}`];
+	lines.push(
+		`${indent}  "head *": allow`,
+		`${indent}  "grep *": allow`,
+		`${indent}  "echo *": allow`,
+	);
+	if (flowDeskReadOnlyGitCapableSubagentNames.has(agentName)) {
+		lines.push(
+			`${indent}  "git status*": allow`,
+			`${indent}  "git diff*": allow`,
+			`${indent}  "git log*": allow`,
+			`${indent}  "git show*": allow`,
+			`${indent}  "git branch --show-current": allow`,
+			`${indent}  "git remote -v": allow`,
+		);
+	}
+	if (flowDeskBuildTestCapableSubagentNames.has(agentName)) {
+		lines.push(
+			`${indent}  "npm run build*": allow`,
+			`${indent}  "npm run typecheck*": allow`,
+			`${indent}  "npm run test*": allow`,
+			`${indent}  "node --test*": allow`,
+		);
+	}
+	const deniedGitCommands = agentName === "flowdesk-git-master"
+		? flowDeskDangerousGitCommandDenials
+		: flowDeskMutatingGitCommandDenials;
+	for (const command of deniedGitCommands) lines.push(`${indent}  "${command}": deny`);
+	return lines.join("\n");
+}
+
+function flowDeskMainBashPermissionLines(indent = "  "): string {
+	const lines = [`${indent}bash:`, `${indent}  "*": allow`];
+	for (const command of flowDeskDangerousGitCommandDenials) lines.push(`${indent}  "${command}": deny`);
+	return lines.join("\n");
+}
+
+function flowDeskSubagentMarkdown([agentName, description, roleLabel, roleSummary, model]: (typeof flowDeskSubagentProfiles)[number]): string {
+	const editPermission = flowDeskWriteCapableSubagentNames.has(agentName) ? "allow" : "deny";
+	const gitPolicyLine = agentName === "flowdesk-git-master"
+		? "Bash allows ordinary git staging, commit, and non-force push when explicitly requested, while denying destructive rollback, force-push, and history-rewrite commands."
+		: "Bash has an explicit command allowlist, asks for all other commands, and denies mutating git commands.";
+	return `---
+description: ${description}
+mode: subagent
+model: ${model}
+permission:
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
+  edit: ${editPermission}
+${flowDeskBashPermissionLines(agentName)}
+---
+
+You are the FlowDesk ${roleLabel} subagent.
+
+Role:
+- ${roleSummary}
+- Keep work bounded to the assigned FlowDesk task and report uncertainty with file or evidence references.
+
+Release 1 constraints:
+- ${editPermission === "allow" ? "This profile is write-capable only for bounded edits that match the assigned implementation, documentation, or refactor task." : "Edit permission is denied; provide analysis, recommendations, or verification evidence without patching files."}
+- ${gitPolicyLine}
+- Do not claim dispatch approval, fallback approval, release approval, hard chat cancellation, or runtime execution authority.
+
+Output contract:
+- Return concise findings, changed or relevant files, caveats, and tests or evidence that should be run.
+`;
+}
+
+function flowDeskAgentProfileTemplates(): Array<{ ref: string; markdown: string }> {
+	return [
+		{ ref: flowDeskMainAgentRef, markdown: flowDeskMainAgentMarkdown() },
+		...flowDeskSubagentProfiles.map((profile) => ({ ref: `agent/${profile[0]}.md`, markdown: flowDeskSubagentMarkdown(profile) })),
+	];
+}
+
+interface FlowDeskAgentProfileRollbackEntry {
+	ref: string;
+	path: string;
+	existed: boolean;
+	previousText?: string;
+}
+
 interface FlowDeskMainAgentMaterializationRollbackState {
-	agentPath: string;
-	agentExisted: boolean;
-	previousAgentText?: string;
+	agentFiles: FlowDeskAgentProfileRollbackEntry[];
 	configPath: string;
 	configExisted: boolean;
 	previousConfigText?: string;
@@ -484,66 +669,143 @@ interface FlowDeskMainAgentMaterializationResult extends ValidationResult {
 
 function flowDeskMainAgentMarkdown(): string {
 	return `---
-description: Primary FlowDesk coordinator for normal OpenCode work. Routes work through FlowDesk workflows, keeps main context small, and treats raw subtask/background paths as untracked unless FlowDesk owns them.
+description: Primary FlowDesk coordinator. Plans workflows, splits work into small FlowDesk-owned lanes, and summarizes durable results.
 mode: primary
 model: openai/gpt-5.3-codex-spark
 permission:
   read: allow
-  edit: allow
   glob: allow
   grep: allow
   list: allow
+  edit: allow
   todowrite: allow
-  bash: allow
-  task: allow
+${flowDeskMainBashPermissionLines()}
+  task: deny
   question: allow
   skill: allow
   webfetch: allow
-  lsp: allow
+  lsr: allow
   external_directory:
     "*": allow
 ---
 
 You are the FlowDesk primary coordinator for OpenCode.
 
-Operational rules:
+## Role
 
-1. Treat normal work as a FlowDesk workflow first: intake, plan/update workflow state, run only command-backed or explicitly enabled FlowDesk lanes, then summarize results for the user.
-2. Keep the main-agent role small: workflow author, FlowDesk lane/sub-agent dispatcher, result summarizer, Guard handoff, and safe next-action presenter.
-3. Do not make the main session perform broad repository reading, large searches, multi-file investigation, or long review. Delegate that work to a FlowDesk-owned lane/sub-agent when available.
-4. If only the raw OpenCode \`task\`/background path is available, use it sparingly and treat it as untracked unless FlowDesk durable evidence and a result-retrieval surface are both available.
-5. For user requests that imply planning, review, run, status, diagnosis, install, or recovery, operate through FlowDesk commands and lanes first (/flowdesk-*), then summarize results.
-6. If a sub-agent returns an empty result, tool-only transcript, timeout, aborted execution, or no final verdict, classify it as incomplete. Do not count it as success, approval, or review completion.
-7. During delegated work, keep main context compact: ask for short findings, file/line references, decisions, blockers, and next actions; avoid copying full logs, prompts, transcripts, or large file contents into main context.
-8. Before launching or continuing any long-running lane, make progress visible through FlowDesk status, lifecycle, heartbeat, or checkpoint evidence when the tool surface exists. If no FlowDesk lane owns the work, say it is outside FlowDesk stall monitoring.
-9. Do not use OMO, OMC, Sisyphus, oh-my-openagent, or nested \`opencode run\` paths.
-10. Do not claim that FlowDesk auto-retries, auto-aborts, auto-fallbacks, force-kills, or hard-cancels chat on stall unless a first-class FlowDesk/OpenCode control surface proves it. Surface /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, and /flowdesk-export-debug as safe next actions.
-11. Never persist or print raw provider tokens, auth payloads, raw prompts, transcripts, or debug bodies.
+You orchestrate; you do not act as a broad implementer.
 
-Install follow-through:
+1. Plan: split the user's goal into small FlowDesk-owned slices.
+2. Dispatch: launch delegated work only through FlowDesk tools.
+3. Summarize: judge captured lane results and present concise next actions.
 
-12. After FlowDesk is installed or updated, immediately verify the live diagnostics path by running /flowdesk-doctor, /flowdesk-usage, and /flowdesk-status.
-13. If reviewer fanout diagnostics or SDK-health diagnostics are still unavailable, tell the user exactly which prerequisite is missing, whether a restart is required, and which command should be run next.
-14. When a diagnostics path fails during install-time follow-through, prefer a concrete safe next action over silent success: explain the missing config, evidence, or restart boundary in plain language.
+## Mandatory dispatch boundary
 
-Work breakdown and lane sizing:
+All delegated analysis, implementation, search, review, verification, and documentation subtasks must use \`flowdesk_agent_task_run\`. Do not use raw \`task\`, background sessions, ad-hoc subagents, nested OpenCode CLI execution, unsupported autonomous runtimes, or hidden prompt-injection patterns for FlowDesk work.
 
-12. Before dispatching implementation, refactor, verification, or multi-file investigation work, create a short lane plan and keep each lane narrowly scoped. The coordinator is responsible for preventing mega-lanes that combine unrelated edits, tests, reviews, and release notes.
-13. One lane should have exactly one primary objective and one clear deliverable. Long or complex work must be split into small lanes before dispatch, even when the user asks for one broad outcome. If the requested work cannot be expressed as a compact lane with one objective, do not dispatch it yet; split it first and launch only the first safe slice. Prefer 1-3 closely related files or one subsystem per implementation lane, and one failure mode, one bug, one test file, or one verification command family per analysis/verifier lane.
-14. Never create a combined root-cause analysis + code search + implementation + verification mega-lane. Run RCA/search as a read-only lane first, implementation as a focused slice lane second, and verification as a separate focused lane or command check. Do not combine repository-wide code search with patch writing in one lane unless the search is trivial and bounded to the same 1-3 files being edited. Treat evidence/log inspection, source-code location, patch writing, validation, and release/progress documentation as separate objectives unless the edit is trivial and explicitly bounded.
-15. Split into sequential lanes when a task combines two or more of these dimensions: durable evidence/schema, watchdog/runtime/session logic, TUI/sidebar/status presentation, workflow/auto-continue/fallback authority logic, agent/profile/config prompts, tests across multiple packages, or docs/progress snapshot updates.
-16. Recommended fix sequence: root-cause read-only lane, one slice implementation lane with focused tests, focused verifier or command check, next slice only after the prior slice is terminal and judged usable, then broader build/test after all slices are in the working tree.
-17. Unless the user explicitly overrides, run at most one active implementation lane for the same code area and at most two concurrent lanes total. Do not bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior.
-18. If a lane reaches \`inconsistent_finalizing_without_terminal\`, \`MessageAbortedError\`, \`invocation_failed\`, or repeated nudge symptoms, stop expanding scope. Inspect FlowDesk status/evidence, salvage any patch, and relaunch only a smaller next slice.
-19. If any lane receives one nudge, do not add scope or ask it to continue with extra work; wait only for its contracted deliverable. If it receives two nudges, ends with \`finalizing_without_terminal\`, or has many progress events without a final answer, treat the original slice as too large and retry only with a materially smaller scope. Do not treat continuous progress events as proof that a lane should keep running indefinitely. Retrying the same prompt on a different model is not enough; reduce the objective count and file/evidence scope first.
+Every \`flowdesk_agent_task_run\` call must include:
 
-Natural-language auto-invocation policy:
+\`\`\`ts
+parentSessionId: ""
+developerModeAcknowledged: true
+allowProviderCall: true
+nudgeQuietPeriodMs: 10000
+\`\`\`
 
-20. When the user's intent matches a registered FlowDesk natural-language tool's WHEN TO USE or ALSO PROACTIVELY USE block, call that tool directly instead of asking for confirmation. The plugin user already opted in at configuration time. Tools to auto-call on intent match: \`flowdesk_quick_reviewer_run\` (review/critique/audit), \`flowdesk_provider_usage_live\` (usage/quota/availability), \`flowdesk_status_live\` (status/progress/follow-up "방금/직전/결과는?"), \`flowdesk_quick_fallback_run\` (explicit provider switch), \`flowdesk_lane_heartbeat_record\` (heartbeat / progress signal request).
-21. Before launching a large multi-step task that depends on a specific provider (extensive refactor, long agentic loop, multi-perspective review), call \`flowdesk_provider_usage_live\` first; if worstAlertLevel is critical or exhausted, warn the user and ask whether to proceed, switch providers, or wait for reset.
-22. After invoking a real-work FlowDesk tool, when the user asks a vague follow-up about the just-completed work ("잘 됐어?", "결과는?", "how did it go?"), call \`flowdesk_status_live\` with the just-created workflowId rather than guessing from memory.
-23. When a FlowDesk tool result contains a \`summaryForUser\` string, surface that field verbatim or compress it; do not paraphrase critical fields (verdict labels, alert levels, blocker reasons) away.
-24. If user intent is ambiguous between a FlowDesk tool and general chat, ask one focused clarification question first; do not silently fall through to general chat for known intent phrases.
+\`flowdesk_quick_reviewer_run\` remains quarantined until explicitly revalidated by the user; use explicit \`flowdesk_agent_task_run\` reviewer lanes instead.
+
+If FlowDesk-owned lanes are unsafe or blocked, stop and report the blocker, or do only a bounded direct main-session action with normal tools. Do not bypass FlowDesk monitoring with untracked subagents.
+
+## Lane Size Gate — apply before every dispatch
+
+Before each \`flowdesk_agent_task_run\`, state the slice briefly and launch only if all are true:
+
+- exactly 1 primary objective
+- exactly 1 clear deliverable
+- compact scope: 1-3 closely related files, one subsystem, one failure mode, one bug, one test file, or one verification command family
+- no mixing of implementation with broad search, full-suite verification, release notes, docs/progress updates, or unrelated config/install work
+
+Split sequentially when a request combines two or more of these dimensions:
+
+1. durable evidence/schema
+2. watchdog/runtime/session logic
+3. TUI/sidebar/status presentation
+4. workflow/auto-continue/fallback authority logic
+5. agent/profile/config prompt changes
+6. installer/materialization behavior
+7. tests across multiple packages or full-suite verification
+8. docs/progress snapshot updates
+
+Recommended sequence: read-only root-cause slice → one focused implementation slice → focused verifier slice → next implementation slice only after the prior slice is terminal and judged usable → broader build/test at the end.
+
+Hard limits unless the user explicitly overrides:
+
+- at most 1 active implementation lane for the same code area
+- at most 5 concurrent lanes total, only for independent areas
+- never bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior
+- if a lane reaches \`inconsistent_finalizing_without_terminal\`, \`MessageAbortedError\`, \`invocation_failed\`, repeated nudges, or many progress events without a final answer, stop expanding scope; inspect status/evidence, salvage any patch, and relaunch only a materially smaller slice
+
+When presenting a plan, list slices explicitly, for example: \`slice 1: status display only; slice 2: quiet-period persistence; slice 3: focused tests\`.
+
+## Agent routing
+
+Use the narrowest project-local \`flowdesk-*\` agent whose role matches the slice. Do not send implementation, refactor, docs, or verification work to generic \`reviewer-*\` profiles unless the user explicitly asks.
+
+| Task type | Agent | Model |
+|---|---|---|
+| Backend/plugin/core implementation | flowdesk-code-backend | openai/gpt-5.5 |
+| Frontend/chat/status UI implementation | flowdesk-code-frontend | openai/gpt-5.5 |
+| TypeScript/schema/config/runtime detail | flowdesk-code-language-specialist | openai/gpt-5.5 |
+| Migration/refactor/module split | flowdesk-migration-refactor | openai/gpt-5.5 |
+| Tests/reproduction/verification | flowdesk-verifier-testing | openai/gpt-5.5 |
+| Documentation/user guide/runbook | flowdesk-docs-writer | openai/gpt-5.5 |
+| Security/policy analysis | flowdesk-security-policy | anthropic/claude-opus-4-7 |
+| Architecture/design | flowdesk-architecture | openai/gpt-5.5 |
+| Critical/adversarial review | flowdesk-critical-reviewer | anthropic/claude-opus-4-7 |
+| Git diff/commit planning | flowdesk-git-master | openai/gpt-5.5 |
+
+For implementation work, dispatch an edit-capable code/docs/refactor lane first, then a separate verifier/reviewer lane if needed.
+
+## Usage-aware multi-lane routing
+
+Before multi-perspective reviews or other multi-lane fan-out, call \`flowdesk_provider_usage_live\` and route from fresh usage evidence.
+
+Default healthy bindings:
+
+| Perspective | Agent | Model |
+|---|---|---|
+| Security/policy | flowdesk-security-policy | anthropic/claude-opus-4-7 |
+| Architecture/design | flowdesk-architecture | openai/gpt-5.5 |
+| Implementation/verification | flowdesk-verifier-testing | google/gemini-3.1-flash-lite-preview |
+
+If a provider is critical, exhausted, stale, unknown, or non-dispatchable, avoid that binding unless the user insists. Substitute usage-aware alternatives without calling managed fallback tools; this is pre-launch routing, not provider fallback authority. Do not select \`google/gemini-3.1-pro-preview\` unless fresh exact-model availability confirms it.
+
+## Status, nudge, and result handling
+
+After launching work, call \`flowdesk_status_live\`. Use durable status evidence for vague follow-ups such as “잘 됐어?”, “결과는?”, or “how did it go?”. For long-running work, record heartbeats only when you own a stable FlowDesk lane id.
+
+Never manually wait for a stalled lane. Let FlowDesk status/watchdog evidence classify it; then surface safe next actions such as /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, or /flowdesk-export-debug.
+
+Lane capture is not substantive approval. Read captured \`resultText\`/\`summaryForUser\` plus advisory metadata and judge success yourself. Treat a lane as failed only when it genuinely has no text or transport/launch failure (\`sdk_create_failed\`, \`launch_timeout\`, \`no_response\`). Do not reject results merely for missing JSON, process-note shape, or missing contract. On judged substance failure, retry at most twice with a fresh smaller prompt and a usage-aware different model; do not call managed fallback for this coordinator retry.
+
+## Auto-invocation rules
+
+Call FlowDesk tools directly on clear intent:
+
+- usage/quota/remaining/reset → \`flowdesk_provider_usage_live\`
+- status/progress/recent result/stalled → \`flowdesk_status_live\`
+- explicit provider switch/retry on another provider → \`flowdesk_quick_fallback_run\`
+- heartbeat/progress signal request → \`flowdesk_lane_heartbeat_record\`
+- delegated subtask to a specific agent/model → \`flowdesk_agent_task_run\`
+- review/critique/audit → explicit \`flowdesk_agent_task_run\` reviewer lane(s), not quarantined reviewer fan-out
+
+Ask one focused clarification question when intent is ambiguous between FlowDesk action and ordinary chat.
+
+## Todo and safety discipline
+
+Use \`todowrite\` for non-trivial work, verification, patching, reviews, multi-step investigation, or whenever new instructions arrive. Keep exactly one item \`in_progress\`; update it as work completes or blocks; do not give a final answer until todos reflect the real state.
+
+Keep main context small. Do not paste large file contents, raw transcripts, provider payloads, tokens, raw prompts, or debug bodies. Do not claim auto-retry, auto-abort, auto-fallback, hard chat cancellation, or no-reply authority unless durable FlowDesk/OpenCode evidence proves it.
 `;
 }
 
@@ -578,17 +840,22 @@ function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMa
 function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, durableStateRootDir: string): FlowDeskMainAgentMaterializationResult {
 	const root = resolve(profileRootDir);
 	const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
-	const agentPath = resolve(root, flowDeskMainAgentRef);
+	const agentTemplates = flowDeskAgentProfileTemplates();
+	const agentPaths = agentTemplates.map((template) => ({ ...template, path: resolve(root, template.ref) }));
 	const configPath = resolve(root, "opencode.json");
 	const tuiConfigPath = resolve(root, "tui.json");
-	if (!agentPath.startsWith(rootPrefix) || !configPath.startsWith(rootPrefix) || !tuiConfigPath.startsWith(rootPrefix)) {
+	if (agentPaths.some((entry) => !entry.path.startsWith(rootPrefix)) || !configPath.startsWith(rootPrefix) || !tuiConfigPath.startsWith(rootPrefix)) {
 		return { ...invalid("FlowDesk main agent paths escape profile root"), agentProfileFilesWritten: 0, profileConfigUpdated: false };
 	}
 
 	const previousConfig = readOptionalText(configPath);
 	if (!previousConfig.ok) return { ...previousConfig, agentProfileFilesWritten: 0, profileConfigUpdated: false };
-	const previousAgent = readOptionalText(agentPath);
-	if (!previousAgent.ok) return { ...previousAgent, agentProfileFilesWritten: 0, profileConfigUpdated: false };
+	const previousAgents: FlowDeskAgentProfileRollbackEntry[] = [];
+	for (const entry of agentPaths) {
+		const previousAgent = readOptionalText(entry.path);
+		if (!previousAgent.ok) return { ...previousAgent, agentProfileFilesWritten: 0, profileConfigUpdated: false };
+		previousAgents.push({ ref: entry.ref, path: entry.path, existed: previousAgent.exists, previousText: previousAgent.text });
+	}
 	const previousTuiConfig = readOptionalText(tuiConfigPath);
 	if (!previousTuiConfig.ok) return { ...previousTuiConfig, agentProfileFilesWritten: 0, profileConfigUpdated: false };
 
@@ -610,7 +877,7 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 
 	try {
 		mkdirSync(resolve(root, "agent"), { recursive: true });
-		writeFileSync(agentPath, flowDeskMainAgentMarkdown(), "utf8");
+		for (const entry of agentPaths) writeFileSync(entry.path, entry.markdown, "utf8");
 		writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 		writeFileSync(tuiConfigPath, `${JSON.stringify(flowDeskTuiConfig(root, durableStateRootDir), null, 2)}\n`, "utf8");
 	} catch (error) {
@@ -621,13 +888,11 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 	return {
 		...valid(),
 		profileRootDir: root,
-		writtenProfileRefs: [flowDeskMainAgentRef, "opencode.json", "tui.json"],
-		agentProfileFilesWritten: 1,
+		writtenProfileRefs: [...agentTemplates.map((template) => template.ref), "opencode.json", "tui.json"],
+		agentProfileFilesWritten: agentTemplates.length,
 		profileConfigUpdated: true,
 		rollbackState: {
-			agentPath,
-			agentExisted: previousAgent.exists,
-			previousAgentText: previousAgent.text,
+			agentFiles: previousAgents,
 			configPath,
 			configExisted: previousConfig.exists,
 			previousConfigText: previousConfig.text,
@@ -641,9 +906,11 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 function rollbackFlowDeskMainAgentProfile(state: FlowDeskMainAgentMaterializationRollbackState | undefined): string[] {
 	if (state === undefined) return [];
 	const rolledBack: string[] = [];
-	if (state.agentExisted && state.previousAgentText !== undefined) writeFileSync(state.agentPath, state.previousAgentText, "utf8");
-	else rmSync(state.agentPath, { force: true });
-	rolledBack.push(flowDeskMainAgentRef);
+	for (const agent of state.agentFiles) {
+		if (agent.existed && agent.previousText !== undefined) writeFileSync(agent.path, agent.previousText, "utf8");
+		else rmSync(agent.path, { force: true });
+		rolledBack.push(agent.ref);
+	}
 	if (state.configExisted && state.previousConfigText !== undefined) writeFileSync(state.configPath, state.previousConfigText, "utf8");
 	else rmSync(state.configPath, { force: true });
 	rolledBack.push("opencode.json");

@@ -725,7 +725,8 @@ function fakeClient() {
 	const promptCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
 	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
 	const abortCalls: Array<{
-		path: { id: string };
+		sessionID?: string;
+		path?: { id: string };
 		query?: { directory?: string };
 	}> = [];
 	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
@@ -1019,12 +1020,12 @@ test("injected sdk lane observation reads child session refs without dispatch au
 	assert.equal(childrenCalls.length, 1);
 	assert.deepEqual(childrenCalls[0], {
 		sessionID: "session-123",
-		directory: "/tmp/flowdesk-project",
+		query: { directory: "/tmp/flowdesk-project" },
 	});
 	assert.equal(messageCalls.length, 1);
 	assert.deepEqual(messageCalls[0], {
 		sessionID: "child-session-123",
-		directory: "/tmp/flowdesk-project",
+		query: { directory: "/tmp/flowdesk-project" },
 	});
 });
 
@@ -1091,14 +1092,16 @@ test("injected sdk runtime lane launch creates child session and prompts exact r
 	assert.deepEqual(promptCalls, [
 		{
 			sessionID: "child-123",
-			model: { providerID: "anthropic", modelID: "sonnet-4" },
-			agent: "reviewer",
-			parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
+			body: {
+				model: { providerID: "anthropic", modelID: "sonnet-4" },
+				agent: "reviewer",
+				parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
+			},
 		},
 	]);
 });
 
-test("injected sdk runtime lane launch uses structured promptAsync options first", async () => {
+test("injected sdk runtime lane launch uses flat sessionID promptAsync options first", async () => {
 	const { client, promptCalls, promptAsyncCalls } = fakeRuntimeLaneClient();
 	const result = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
 		client,
@@ -1115,7 +1118,7 @@ test("injected sdk runtime lane launch uses structured promptAsync options first
 	assert.equal(promptCalls.length, 0);
 	assert.deepEqual(promptAsyncCalls, [
 		{
-			path: { id: "child-123" },
+			sessionID: "child-123",
 			body: {
 				model: { providerID: "anthropic", modelID: "sonnet-4" },
 				agent: "reviewer",
@@ -2613,7 +2616,7 @@ test("session abort control adapter calls SDK abort only after decision validati
 	assert.equal(result.authority.providerCall, false);
 	assert.equal(abortCalls.length, 1);
 	assert.deepEqual(abortCalls[0], {
-		path: { id: "session-123" },
+		sessionID: "session-123",
 		query: { directory: "/tmp/flowdesk-project" },
 	});
 });
@@ -2712,7 +2715,7 @@ test("managed dispatch beta adapter maps FlowDesk Claude binding to OpenCode Ant
 	assert.equal(reservation.completedCalls.length, 1);
 	assert.equal(reservation.failureCalls.length, 0);
 	assert.deepEqual(promptAsyncCalls[0], {
-		path: { id: "session-123" },
+		sessionID: "session-123",
 		query: { directory: "/tmp/flowdesk-project" },
 		body: {
 			model: { providerID: "anthropic", modelID: "sonnet-4" },

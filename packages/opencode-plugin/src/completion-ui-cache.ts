@@ -26,6 +26,7 @@ type UiRow = {
 	outputKind?: string;
 	usableForSynthesis?: boolean;
 	taskSummary?: string;
+	progressLabel?: string;
 	recoveryActionRefs: readonly string[];
 	statusCommandRef: "/flowdesk-status";
 	debugCommandRef: "/flowdesk-export-debug";
@@ -43,7 +44,7 @@ type SynthesisCacheRow = {
 type CompletionWakeReadyRow = {
 	workflowId: string;
 	parentSessionRef?: string;
-	completionKind: "task_result" | "task_failed" | "auto_next_ready";
+	completionKind: "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
 	readyAt: string;
 	dedupeKey: string;
 	consumptionKey: string;
@@ -378,7 +379,7 @@ function mergeCompletionWakeReadyRows(input: {
 			const consumptionKey = getString(row, "consumptionKey");
 			const completionKind = getString(row, "completionKind");
 			if (workflowId === undefined || readyAt === undefined || dedupeKey === undefined || consumptionKey === undefined) continue;
-			if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready") continue;
+			if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready" && completionKind !== "awaiting_permission" && completionKind !== "diagnostic_attention") continue;
 			const parentSessionRef = getString(row, "parentSessionRef");
 			merged.set(dedupeKey, {
 				workflowId,
@@ -399,6 +400,14 @@ function mergeCompletionWakeReadyRows(input: {
 		}
 	}
 	if (input.row !== undefined) {
+		if (input.row.completionKind !== "awaiting_permission") {
+			const parentScope = input.row.parentSessionRef ?? "global";
+			merged.delete(`${parentScope}\u0000${input.row.workflowId}\u0000awaiting_permission`);
+		}
+		if (input.row.completionKind !== "diagnostic_attention") {
+			const parentScope = input.row.parentSessionRef ?? "global";
+			merged.delete(`${parentScope}\u0000${input.row.workflowId}\u0000diagnostic_attention`);
+		}
 		const existing = merged.get(input.row.dedupeKey);
 		if (existing === undefined || observedTime(input.row.readyAt) >= observedTime(existing.readyAt)) {
 			const consumedCarryover = existing?.consumed === true && existing.consumptionKey === input.row.consumptionKey;
@@ -606,14 +615,17 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			const activityMs = Math.max(observedTime(childCreatedAt), lastNudgeAtMs, progressAtMs);
 			const lastActivityAt = activityMs > 0 ? new Date(activityMs).toISOString() : getString(childSession ?? {}, "last_activity_at");
 			const nudgeQuietPeriodMs = typeof childSession?.nudge_quiet_period_ms === "number" && Number.isFinite(childSession.nudge_quiet_period_ms) ? childSession.nudge_quiet_period_ms : undefined;
+			const rawProgressPhase = getString(progress ?? {}, "phase");
 			const actions = isFailedLike
 				? ["/flowdesk-status", "/flowdesk-retry", "/flowdesk-resume", "/flowdesk-abort", "/flowdesk-export-debug"]
+				: rawProgressPhase === "awaiting_permission"
+					? ["/flowdesk-status", "/flowdesk-export-debug"]
 				: ["/flowdesk-status", "/flowdesk-export-debug"];
 			const progressPhase = result !== undefined
 				? "finalizing"
 				: isFailedLike
 					? "failed"
-				: getString(progress ?? {}, "phase") ?? "waiting";
+					: rawProgressPhase ?? "waiting";
 			const startedAt = getString(context ?? {}, "created_at") ?? getString(childSession ?? {}, "created_at");
 			const completedAt = isTerminal
 				? getString(result ?? failed ?? lifecycle ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? {}, "created_at")
@@ -629,6 +641,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				state,
 				classification: isTerminal ? "terminal" : "progressing_normal",
 				progressPhase,
+				...(getString(progress ?? {}, "progress_label") === undefined ? {} : { progressLabel: getString(progress ?? {}, "progress_label") }),
 				...(startedAt === undefined ? {} : { startedAt }),
 				...(completedAt === undefined ? {} : { completedAt }),
 				...(durationMs === undefined ? {} : { durationMs }),
@@ -689,14 +702,27 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		}, null, 2)}\n`, "utf8");
 
 		const terminalComplete = rows.length > 0 && rows.every((row) => row.classification === "terminal");
+		const awaitingPermissionRows = terminalComplete ? [] : rows.filter((row) => row.progressPhase === "awaiting_permission");
+		const toolDiagnosticRows = terminalComplete || awaitingPermissionRows.length > 0 ? [] : rows.filter((row) => {
+			const progressLabel = row.progressLabel ?? "";
+			return progressLabel.includes("tool_run_overdue_observed") || progressLabel.includes("coordinator_attention_observed");
+		});
 		const resultRefs = rows.filter((row) => row.state === "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
 		const failedRefs = rows.filter((row) => row.state !== "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
-		const wakeReadyAt = terminalComplete ? rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0) : 0;
+		const wakeReadyAt = terminalComplete
+			? rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0)
+			: awaitingPermissionRows.length > 0
+				? awaitingPermissionRows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0)
+				: toolDiagnosticRows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0);
 		const wakeKind = ready ? "auto_next_ready" : failedRefs.length > 0 ? "task_failed" : "task_result";
 		const wakeParentScope = parentSessionRef ?? "global";
 		const wakeReadyIso = wakeReadyAt > 0 ? new Date(wakeReadyAt).toISOString() : observedAt;
 		const wakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}`;
+		const permissionWakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}\u0000awaiting_permission`;
+		const diagnosticWakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}\u0000diagnostic_attention`;
 		const wakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:${wakeReadyIso}:${resultRefs.length}:${failedRefs.length}`;
+		const permissionWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:awaiting_permission:${wakeReadyIso}:${awaitingPermissionRows.length}`;
+		const diagnosticWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:diagnostic_attention:${wakeReadyIso}:${toolDiagnosticRows.length}`;
 		const wakeReadyRow: CompletionWakeReadyRow | undefined = terminalComplete ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
@@ -710,6 +736,34 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			taskFailedRefs: failedRefs,
 			taskSummaries: rows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
 			notificationLabel: ready ? "FlowDesk synthesis ready" : failedRefs.length > 0 ? "FlowDesk task completed with failures" : "FlowDesk task completed",
+			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+		} : awaitingPermissionRows.length > 0 ? {
+			workflowId: input.workflowId,
+			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
+			completionKind: "awaiting_permission",
+			readyAt: wakeReadyIso,
+			dedupeKey: permissionWakeDedupeKey,
+			consumptionKey: permissionWakeConsumptionKey,
+			consumed: false,
+			laneIds: awaitingPermissionRows.map((row) => row.laneId).slice(0, 32),
+			taskResultRefs: [],
+			taskFailedRefs: [],
+			taskSummaries: awaitingPermissionRows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
+			notificationLabel: "FlowDesk lane awaiting OpenCode permission",
+			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+		} : toolDiagnosticRows.length > 0 ? {
+			workflowId: input.workflowId,
+			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
+			completionKind: "diagnostic_attention",
+			readyAt: wakeReadyIso,
+			dedupeKey: diagnosticWakeDedupeKey,
+			consumptionKey: diagnosticWakeConsumptionKey,
+			consumed: false,
+			laneIds: toolDiagnosticRows.map((row) => row.laneId).slice(0, 32),
+			taskResultRefs: [],
+			taskFailedRefs: [],
+			taskSummaries: toolDiagnosticRows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
+			notificationLabel: "FlowDesk lane diagnostic attention requested",
 			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
 		} : undefined;
 		const wakeReadyRows = mergeCompletionWakeReadyRows({ existing: existingWakeReady?.rows, row: wakeReadyRow });

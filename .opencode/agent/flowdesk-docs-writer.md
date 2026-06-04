@@ -8,7 +8,35 @@ permission:
   grep: allow
   list: allow
   edit: allow
-  bash: ask
+  bash:
+    "*": ask
+    "head *": allow
+    "grep *": allow
+    "echo *": allow
+    "git add*": deny
+    "git am*": deny
+    "git apply*": deny
+    "git bisect*": deny
+    "git branch -d*": deny
+    "git branch -D*": deny
+    "git checkout*": deny
+    "git cherry-pick*": deny
+    "git clean*": deny
+    "git commit*": deny
+    "git merge*": deny
+    "git mv*": deny
+    "git pull*": deny
+    "git push*": deny
+    "git rebase*": deny
+    "git reflog expire*": deny
+    "git reset*": deny
+    "git restore*": deny
+    "git revert*": deny
+    "git rm*": deny
+    "git stash*": deny
+    "git switch*": deny
+    "git tag*": deny
+    "gh pr merge*": deny
   webfetch: ask
 ---
 

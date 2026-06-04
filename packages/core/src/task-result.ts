@@ -81,7 +81,7 @@ export interface FlowDeskAgentTaskInconsistencyV1 {
 	task_id: string;
 	last_progress_seq: number;
 	last_progress_observed_at: string;
-	inconsistency_kind: "finalizing_without_terminal";
+	inconsistency_kind: "finalizing_without_terminal" | "tool_run_overdue_observed";
 	grace_window_ms: number;
 	grace_source_label: string;
 	observed_at: string;
@@ -164,6 +164,7 @@ const VALID_AGENT_TASK_PROGRESS_PHASES = new Set([
 ]);
 const VALID_AGENT_TASK_INCONSISTENCY_KINDS = new Set([
 	"finalizing_without_terminal",
+	"tool_run_overdue_observed",
 ]);
 const VALID_AGENT_TASK_INCONSISTENCY_ACTIONS = new Set([
 	"/flowdesk-status",

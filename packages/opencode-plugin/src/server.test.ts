@@ -3247,7 +3247,7 @@ test("prompt-backed provider acquisition calls prompt once with exact runtime mo
 		);
 		assert.equal(promptCalls.length, 1);
 		assert.deepEqual(promptCalls[0], {
-			path: { id: "provider-sdk-session-1" },
+			sessionID: "provider-sdk-session-1",
 			query: { directory: "/flowdesk-project" },
 			body: {
 				model: { providerID: "anthropic", modelID: "claude-opus-4-5" },
@@ -7282,7 +7282,7 @@ test("event hook records child session permission progress", async () => {
 		assert.ok(hooks.event);
 		await hooks.event({
 			event: {
-				type: "permission.updated",
+				type: "permission.asked",
 				properties: {
 					id: "perm-event-hook-progress",
 					type: "read",
@@ -7301,6 +7301,16 @@ test("event hook records child session permission progress", async () => {
 			entry.record.lane_id === "lane-event-hook-progress" &&
 			entry.record.phase === "awaiting_permission" &&
 			entry.record.progress_label === "agent task awaiting OpenCode permission response",
+		));
+		const wakeCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(wakeCache.schema_version, "flowdesk.completion_wake_ready_cache.v1");
+		assert.ok(Array.isArray(wakeCache.rows));
+		assert.ok(wakeCache.rows.some((row) =>
+			typeof row === "object" && row !== null &&
+			(row as Record<string, unknown>).workflowId === workflowId &&
+			(row as Record<string, unknown>).parentSessionRef === "ses-event-hook-parent" &&
+			(row as Record<string, unknown>).completionKind === "awaiting_permission" &&
+			(row as Record<string, unknown>).notificationLabel === "FlowDesk lane awaiting OpenCode permission",
 		));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -7924,6 +7934,37 @@ test("flowdesk_agent_task_run tool is absent by default and remains schema-visib
 				manyToolNames.indexOf(flowdeskControlledWriteApplyToolName),
 			"agent task tool should register before lower-priority developer write tools so provider-facing schema caps keep the FlowDesk-owned lane boundary visible",
 		);
+		const preSpikeDoctor = manyToolHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(preSpikeDoctor);
+		const preSpike = JSON.parse(
+			toolOutput(await preSpikeDoctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		const devBetaLaneCapability = preSpike.devBetaLaneCapability as Record<string, unknown>;
+		assert.equal(devBetaLaneCapability.agentTaskRunRegistered, true);
+		assert.equal(devBetaLaneCapability.hasInjectedSdkClient, true);
+		assert.equal(devBetaLaneCapability.durableStateRootConfigured, true);
+		assert.equal(devBetaLaneCapability.launchCapable, true);
+
+		const doctor = manyToolHooks.tool?.flowdesk_doctor;
+		assert.ok(doctor);
+		const doctorResult = JSON.parse(
+			toolOutput(
+				await doctor.execute(
+					{
+						schema_version: "flowdesk.doctor.request.v1",
+						request_id: "doctor-agent-task-capability-test",
+						input_mode: "test_fixture",
+						check_scope: "all",
+						profile: "development",
+						persist_report: false,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		const doctorText = JSON.stringify(doctorResult);
+		assert.match(doctorText, /dev_beta_agent_task_run_launch_capable=true/);
+		assert.match(doctorText, /separate_from_default_production_dispatch_gate/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

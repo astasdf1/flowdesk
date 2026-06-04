@@ -689,7 +689,7 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
 	assert.ok(compatibility);
 	assert.match(
 		compatibility.summary,
-		/non-dispatch command registration is ready/,
+		/Command registration is ready/,
 	);
 	assert.equal(compatibility.category, "informational");
 	assert.ok(
