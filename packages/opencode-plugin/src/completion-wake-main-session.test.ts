@@ -39,7 +39,7 @@ test("completion wake main-session consumer uses primary path prompt shape and m
 		assert.equal((prompts[0] as { path: { id: string } }).path.id, "ses_parent123");
 		assert.equal((prompts[0] as { query: { directory: string } }).query.directory, "/workspace/flowdesk");
 		assert.equal((prompts[0] as { body: { noReply: boolean } }).body.noReply, false);
-		assert.match(JSON.stringify(prompts[0]), /FlowDesk completion wake signal/);
+		assert.match(JSON.stringify(prompts[0]), /\[FlowDesk:done\]/);
 
 		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedAt?: string; consumedBy?: string }> };
 		assert.equal(ready.rows[0]?.consumed, true);
@@ -90,9 +90,7 @@ test("completion wake consumer treats awaiting permission as advisory attention 
 		assert.equal(result.status, "main_session_wake_completed");
 		assert.equal(prompts.length, 1);
 		const prompt = JSON.stringify(prompts[0]);
-		assert.match(prompt, /awaiting an OpenCode permission response/);
-		assert.match(prompt, /approve or deny through OpenCode's permission UI/);
-		assert.match(prompt, /Do not auto-approve, auto-deny, retry, fallback, dispatch, write, or hard-cancel/);
+		assert.match(prompt, /\[FlowDesk:permission\]/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -217,9 +215,9 @@ test("completion wake main-session consumer sets noReply by completion kind", as
 			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
 			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
 		});
-		assert.equal(result.wakeSucceeded, 2);
+		// Only 1 wake dispatched per cycle (burst cap). The second row stays unconsumed.
+		assert.equal(result.wakeSucceeded, 1);
 		assert.equal((prompts[0] as { body: { noReply: boolean } }).body.noReply, false);
-		assert.equal((prompts[1] as { body: { noReply: boolean } }).body.noReply, true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

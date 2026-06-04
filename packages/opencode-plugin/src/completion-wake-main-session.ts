@@ -148,17 +148,10 @@ function rowsFromCache(value: unknown): WakeRow[] {
 }
 
 function wakePrompt(row: WakeRow): string {
-	const action = row.completionKind === "auto_next_ready"
-		? "Continue the FlowDesk workflow now by synthesizing the completed subtask result or moving to the next safe step."
-		: row.completionKind === "awaiting_permission"
-			? "Notify the user that a child FlowDesk lane is awaiting an OpenCode permission response, then check durable status. The user must approve or deny through OpenCode's permission UI. Do not auto-approve, auto-deny, retry, fallback, dispatch, write, or hard-cancel."
-		: row.completionKind === "diagnostic_attention"
-			? "Resume FlowDesk coordination now by checking durable status/debug evidence for a child lane diagnostic attention signal. Treat this as advisory only; do not synthesize results, fail the task, abort, retry, fallback, dispatch, write, approve/deny permissions, or hard-cancel."
-		: row.completionKind === "task_failed"
-			? "Resume FlowDesk coordination now by checking the failed subtask status and deciding the next safe action."
-			: "Resume FlowDesk coordination now by checking the completed subtask result and deciding the next safe action.";
-	const summary = row.taskSummaries.length > 0 ? ` Summary: ${row.taskSummaries.join(", ")}.` : "";
-	return `FlowDesk completion wake signal. Workflow ${row.workflowId} is ${row.completionKind} at ${row.readyAt}.${summary} ${action} Use durable FlowDesk status evidence; do not invent results.`;
+	const kind = row.completionKind;
+	const tag = kind === "awaiting_permission" ? "permission" : kind === "diagnostic_attention" ? "attention" : kind === "task_failed" ? "failed" : "done";
+	const summary = row.taskSummaries.length > 0 ? ` ${row.taskSummaries[0]}` : "";
+	return `[FlowDesk:${tag}] ${row.workflowId}${summary}. Check /flowdesk-status.`;
 }
 
 async function dispatchParentWakePrompt(input: {
@@ -213,7 +206,21 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	const readyPath = join(uiDir, "completion-wake-ready.json");
 	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_ready_cache_missing" };
 	const parsed = JSON.parse(readFileSync(readyPath, "utf8")) as unknown;
-	const rows = rowsFromCache(parsed).filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined).slice(0, 3);
+	const allRows = rowsFromCache(parsed);
+	// Global cooldown: if any row was consumed within the last 10 seconds, skip
+	// this cycle entirely to prevent burst flooding when many events fire close together.
+	const WAKE_COOLDOWN_MS = 10_000;
+	const nowMs = (input.now ?? new Date()).getTime();
+	const recentlyConsumed = allRows.some((row) => {
+		if (row.consumed !== true) return false;
+		const consumedAt = typeof (row as unknown as Record<string, unknown>).consumedAt === "string" ? Date.parse(String((row as unknown as Record<string, unknown>).consumedAt)) : 0;
+		return Number.isFinite(consumedAt) && nowMs - consumedAt < WAKE_COOLDOWN_MS;
+	});
+	if (recentlyConsumed) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_cooldown_active" };
+	// Strict cap: dispatch at most 1 wake prompt per consume cycle to prevent
+	// context flooding when many workflows complete in a burst. The remaining
+	// unconsumed rows survive in the cache and will be retried on the next cycle.
+	const rows = allRows.filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined).slice(0, 1);
 	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
 	mkdirSync(uiDir, { recursive: true });
 	const observedAt = (input.now ?? new Date()).toISOString();
