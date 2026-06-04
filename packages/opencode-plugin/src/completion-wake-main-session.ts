@@ -15,6 +15,7 @@ export interface FlowDeskCompletionWakeMainSessionResultV1 {
 	status: "main_session_wake_completed" | "main_session_wake_skipped";
 	wakeAttempted: number;
 	wakeSucceeded: number;
+	retryScheduled: number;
 	skippedReason?: string;
 }
 
@@ -27,6 +28,8 @@ interface WakeRow {
 	consumptionKey: string;
 	consumed?: boolean;
 	consumedAt?: string;
+	retryCount?: number;
+	noReply?: boolean;
 	taskSummaries: readonly string[];
 	notificationLabel: string;
 }
@@ -35,10 +38,13 @@ interface PromptClient {
 	session?: {
 		prompt?(options: unknown): unknown;
 		promptAsync?(options: unknown): unknown;
+		status?(...args: unknown[]): unknown;
 	};
 }
 
 type PromptDispatch = (options: unknown) => unknown;
+
+const maxWakeRetriesPerConsumptionKey = 10;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -47,6 +53,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
 	const value = record[key];
 	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function numericField(record: Record<string, unknown>, key: string): number | undefined {
+	const value = record[key];
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
 
 function parentSessionIdFromRef(ref: string | undefined): string | undefined {
@@ -61,6 +72,48 @@ function modelParts(providerQualifiedModelId: string): { providerID: string; mod
 	const modelID = rest.join("/");
 	if (providerID.length === 0 || modelID.length === 0) return undefined;
 	return { providerID, modelID };
+}
+
+function noReplyForWakeRow(row: { completionKind: CompletionKind; noReply?: boolean }): boolean {
+	if (typeof row.noReply === "boolean") return row.noReply;
+	return row.completionKind === "diagnostic_attention";
+}
+
+function resultShape(value: unknown): Record<string, string> {
+	if (!isRecord(value)) return { type: typeof value };
+	const shape: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(value).slice(0, 12)) {
+		shape[key] = Array.isArray(entry) ? "array" : entry === null ? "null" : typeof entry;
+	}
+	return shape;
+}
+
+function logDispatchDiagnostic(input: { callShape: "primary_path" | "fallback_flat"; outcome: "resolved" | "rejected"; value?: unknown }): void {
+	console.info("FlowDesk main-session wake dispatch diagnostic", {
+		callShape: input.callShape,
+		outcome: input.outcome,
+		returnValueShape: input.outcome === "resolved" ? resultShape(input.value) : undefined,
+	});
+}
+
+function statusLooksActive(value: unknown): boolean {
+	if (typeof value === "string") return /active|busy|running|processing|streaming|generating/i.test(value) && !/idle/i.test(value);
+	if (!isRecord(value)) return false;
+	if (value.idle === false || value.isIdle === false) return true;
+	for (const key of ["status", "state", "phase", "activity"]) {
+		const field = value[key];
+		if (typeof field === "string" && /active|busy|running|processing|streaming|generating/i.test(field) && !/idle/i.test(field)) return true;
+	}
+	return false;
+}
+
+async function mainSessionIsActive(session: NonNullable<PromptClient["session"]>, sessionId: string): Promise<boolean> {
+	if (session.status === undefined) return false;
+	try {
+		return statusLooksActive(await session.status.call(session, sessionId));
+	} catch {
+		return false;
+	}
 }
 
 function rowsFromCache(value: unknown): WakeRow[] {
@@ -85,6 +138,8 @@ function rowsFromCache(value: unknown): WakeRow[] {
 			consumptionKey,
 			consumed: raw.consumed === true,
 			...(stringField(raw, "consumedAt") === undefined ? {} : { consumedAt: stringField(raw, "consumedAt") }),
+			...(numericField(raw, "retryCount") === undefined ? {} : { retryCount: numericField(raw, "retryCount") }),
+			...(typeof raw.noReply === "boolean" ? { noReply: raw.noReply } : {}),
 			taskSummaries: Array.isArray(raw.taskSummaries) ? raw.taskSummaries.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim().slice(0, 20)).slice(0, 3) : [],
 			notificationLabel: stringField(raw, "notificationLabel")?.slice(0, 80) ?? "FlowDesk task completed",
 		});
@@ -111,32 +166,35 @@ async function dispatchParentWakePrompt(input: {
 	session: NonNullable<PromptClient["session"]>;
 	sessionId: string;
 	directory?: string;
-	model: { providerID: string; modelID: string };
-	agentName: string;
 	text: string;
-}): Promise<void> {
+	noReply: boolean;
+}): Promise<boolean> {
 	const query = input.directory === undefined ? undefined : { directory: input.directory };
 	const body = {
-		model: input.model,
-		agent: input.agentName,
+		noReply: input.noReply,
 		parts: [{ type: "text", text: input.text.slice(0, 1_000) }],
 	};
 	try {
-		await input.dispatch.call(input.session, {
-			sessionID: input.sessionId,
+		const value = await input.dispatch.call(input.session, {
+			path: { id: input.sessionId },
 			...(query === undefined ? {} : { query }),
 			body,
 		});
-		return;
-	} catch (error) {
+		logDispatchDiagnostic({ callShape: "primary_path", outcome: "resolved", value });
+		return true;
+	} catch {
+		logDispatchDiagnostic({ callShape: "primary_path", outcome: "rejected" });
 		try {
-			await input.dispatch.call(input.session, {
-				path: { id: input.sessionId },
+			const value = await input.dispatch.call(input.session, {
+				sessionID: input.sessionId,
 				...(query === undefined ? {} : { query }),
 				body,
 			});
+			logDispatchDiagnostic({ callShape: "fallback_flat", outcome: "resolved", value });
+			return true;
 		} catch {
-			throw error;
+			logDispatchDiagnostic({ callShape: "fallback_flat", outcome: "rejected" });
+			return false;
 		}
 	}
 }
@@ -146,50 +204,71 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	client: PromptClient | undefined;
 	now?: Date;
 }): Promise<FlowDeskCompletionWakeMainSessionResultV1> {
-	if (input.client?.session === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, skippedReason: "opencode_sdk_client_unavailable" };
+	if (input.client?.session === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "opencode_sdk_client_unavailable" };
 	const dispatch = input.client.session.promptAsync ?? input.client.session.prompt;
-	if (dispatch === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, skippedReason: "session_prompt_unavailable" };
+	if (dispatch === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "session_prompt_unavailable" };
 	const model = modelParts(input.config.providerQualifiedModelId);
-	if (model === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, skippedReason: "invalid_model_id" };
+	if (model === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "invalid_model_id" };
 	const uiDir = join(input.config.rootDir, ".flowdesk", "ui");
 	const readyPath = join(uiDir, "completion-wake-ready.json");
-	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, skippedReason: "wake_ready_cache_missing" };
+	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_ready_cache_missing" };
 	const parsed = JSON.parse(readFileSync(readyPath, "utf8")) as unknown;
 	const rows = rowsFromCache(parsed).filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined).slice(0, 3);
-	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
+	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
 	mkdirSync(uiDir, { recursive: true });
 	const observedAt = (input.now ?? new Date()).toISOString();
 	let wakeSucceeded = 0;
+	let retryScheduled = 0;
 	const consumedKeys = new Set<string>();
+	const retryKeys = new Set<string>();
+	const cappedKeys = new Set<string>();
 	for (const row of rows) {
 		const sessionId = parentSessionIdFromRef(row.parentSessionRef);
 		if (sessionId === undefined) continue;
-		await dispatchParentWakePrompt({
+		if ((row.retryCount ?? 0) >= maxWakeRetriesPerConsumptionKey) {
+			cappedKeys.add(row.consumptionKey);
+			continue;
+		}
+		if (await mainSessionIsActive(input.client.session, sessionId)) {
+			retryScheduled += 1;
+			retryKeys.add(row.consumptionKey);
+			continue;
+		}
+		const succeeded = await dispatchParentWakePrompt({
 			dispatch,
 			session: input.client.session,
 			sessionId,
 			directory: input.config.directory,
-			model,
-			agentName: input.config.agentName,
 			text: wakePrompt(row),
+			noReply: noReplyForWakeRow(row),
 		});
-		wakeSucceeded += 1;
-		consumedKeys.add(row.consumptionKey);
+		if (succeeded) {
+			wakeSucceeded += 1;
+			consumedKeys.add(row.consumptionKey);
+		} else {
+			retryScheduled += 1;
+			retryKeys.add(row.consumptionKey);
+		}
 	}
-	if (consumedKeys.size > 0 && isRecord(parsed) && Array.isArray(parsed.rows)) {
+	if ((consumedKeys.size > 0 || retryKeys.size > 0 || cappedKeys.size > 0) && isRecord(parsed) && Array.isArray(parsed.rows)) {
 		const updatedRows = parsed.rows.map((raw) => {
 			if (!isRecord(raw)) return raw;
 			const key = stringField(raw, "consumptionKey");
-			return key !== undefined && consumedKeys.has(key) ? { ...raw, consumed: true, consumedAt: observedAt, consumedBy: "main_session_prompt" } : raw;
+			if (key !== undefined && consumedKeys.has(key)) return { ...raw, consumed: true, consumedAt: observedAt, consumedBy: "main_session_prompt" };
+			if (key !== undefined && cappedKeys.has(key)) return { ...raw, consumed: true, consumedAt: observedAt, consumedBy: "main_session_prompt_retry_cap" };
+			if (key !== undefined && retryKeys.has(key)) return { ...raw, consumed: false, retryCount: (numericField(raw, "retryCount") ?? 0) + 1, retryScheduledAt: observedAt };
+			return raw;
 		});
 		writeFileSync(readyPath, `${JSON.stringify({ ...parsed, observed_at: observedAt, rows: updatedRows }, null, 2)}\n`, "utf8");
-		writeFileSync(join(uiDir, "main-session-wake-notifications.json"), `${JSON.stringify({
-			schema_version: "flowdesk.main_session_wake_notifications.v1",
-			observed_at: observedAt,
-			expires_at: new Date(Date.parse(observedAt) + 120_000).toISOString(),
-			notices: rows.filter((row) => consumedKeys.has(row.consumptionKey)).map((row) => ({ ...row, consumedAt: observedAt, consumedBy: "main_session_prompt" })),
-			authority: { displayOnly: true, mainSessionPromptAttempted: true, parentPromptInjection: true, providerCall: true, runtimeExecution: true, actualLaneLaunch: false, hardCancelOrNoReplyAuthority: false },
-		}, null, 2)}\n`, "utf8");
+		if (consumedKeys.size > 0) {
+			writeFileSync(join(uiDir, "main-session-wake-notifications.json"), `${JSON.stringify({
+				schema_version: "flowdesk.main_session_wake_notifications.v1",
+				observed_at: observedAt,
+				expires_at: new Date(Date.parse(observedAt) + 120_000).toISOString(),
+				notices: rows.filter((row) => consumedKeys.has(row.consumptionKey)).map((row) => ({ ...row, consumedAt: observedAt, consumedBy: "main_session_prompt" })),
+				authority: { displayOnly: true, mainSessionPromptAttempted: true, parentPromptInjection: true, providerCall: true, runtimeExecution: true, actualLaneLaunch: false, hardCancelOrNoReplyAuthority: false },
+			}, null, 2)}\n`, "utf8");
+		}
 	}
-	return { status: "main_session_wake_completed", wakeAttempted: rows.length, wakeSucceeded };
+	return { status: "main_session_wake_completed", wakeAttempted: rows.length, wakeSucceeded, retryScheduled };
 }
