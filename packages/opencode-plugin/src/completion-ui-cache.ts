@@ -80,7 +80,7 @@ type AgentTaskLogIndexRow = {
 	openCodeLocalSessionRefs: { childSessionId?: string; sessionDiffPath?: string };
 };
 
-const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch|fallback|reselect/i;
+const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch.authority|fallback.authority|reselect.authority/i;
 const SUBTASK_ACTIVITY_CACHE_ROW_LIMIT = 20;
 
 const GENERIC_TASK_SUMMARY_WORDS = new Set([
