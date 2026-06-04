@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   applyBootstrapWriteIntentsToDurableState,
   type FlowDeskBootstrapInstallPlanV1,
@@ -836,6 +837,73 @@ function flowDeskTuiConfig(profileRootDir: string, durableStateRootDir: string):
 	};
 }
 
+function flowDeskPluginServerFileUrl(profileRootDir: string): string {
+	return pathToFileURL(resolve(profileRootDir, "node_modules", "@flowdesk", "opencode-plugin", "dist", "server.js")).href;
+}
+
+function flowDeskPluginDefaultOptions(durableStateRootDir: string): Record<string, unknown> {
+	return {
+		durableStateRoot: durableStateRootDir,
+		statusLive: { enabled: true, maxWorkflows: 10 },
+		providerUsageLive: {
+			enabled: true,
+			providers: ["claude", "openai", "gemini"],
+			claudeOAuthUsage: true,
+			codexLiveUsage: true,
+			geminiQuota: true,
+			persistSnapshots: true,
+			persistWorkflowId: "workflow-global-provider-usage",
+		},
+		reviewerFanoutDiagnostics: { enabled: true },
+		agentTaskRun: { enabled: true },
+		workflowDispatchPlanTool: { enabled: true },
+		workflowDispatch: { enabled: true, devBetaActualLaneLaunch: true },
+		autoContinueExecution: { enabled: true, devBetaActualLaneLaunch: true },
+		workflowOrchestrate: { enabled: true, devBetaActualLaneLaunch: true },
+		quickFallbackRun: { enabled: true },
+		managedFallbackRegate: { enabled: true },
+		laneHeartbeatWriter: { enabled: true, defaultExpectedIntervalMs: 120000 },
+		controlledWriteApply: { enabled: true, devBetaControlledWriteApply: true },
+		chatMessageStallAlert: { enabled: true, includeProgressCards: true, maxProgressCards: 4 },
+		completionWakeMainSession: { enabled: true },
+	};
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function fillMissingFlowDeskPluginOptions(target: Record<string, unknown>, defaults: Record<string, unknown>): void {
+	for (const [key, defaultValue] of Object.entries(defaults)) {
+		const existingValue = target[key];
+		if (existingValue === undefined) {
+			target[key] = defaultValue;
+			continue;
+		}
+		if (isPlainRecord(existingValue) && isPlainRecord(defaultValue)) fillMissingFlowDeskPluginOptions(existingValue, defaultValue);
+	}
+}
+
+function isFlowDeskPluginEntry(value: unknown): value is [string, unknown?] {
+	if (!Array.isArray(value) || typeof value[0] !== "string") return false;
+	return /(?:^|[/\\])@flowdesk[/\\]opencode-plugin[/\\]dist[/\\]server\.js$/.test(value[0]) || value[0].endsWith("@flowdesk/opencode-plugin/dist/server.js");
+}
+
+function ensureFlowDeskPluginConfig(config: Record<string, unknown>, profileRootDir: string, durableStateRootDir: string): void {
+	const pluginEntries = Array.isArray(config.plugin) ? config.plugin : [];
+	const defaults = flowDeskPluginDefaultOptions(durableStateRootDir);
+	const existingEntry = pluginEntries.find(isFlowDeskPluginEntry);
+	if (existingEntry !== undefined) {
+		const options = isPlainRecord(existingEntry[1]) ? existingEntry[1] : {};
+		existingEntry[1] = options;
+		fillMissingFlowDeskPluginOptions(options, defaults);
+		config.plugin = pluginEntries;
+		return;
+	}
+	pluginEntries.push([flowDeskPluginServerFileUrl(profileRootDir), defaults]);
+	config.plugin = pluginEntries;
+}
+
 function materializeFlowDeskMainAgentProfile(profileRootDir: string): FlowDeskMainAgentMaterializationResult {
 	return materializeFlowDeskMainAgentProfileWithTui(profileRootDir, profileRootDir);
 }
@@ -877,6 +945,7 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 	}
 	if (typeof config.$schema !== "string") config.$schema = "https://opencode.ai/config.json";
 	config.default_agent = flowDeskMainAgentName;
+	ensureFlowDeskPluginConfig(config, root, durableStateRootDir);
 
 	try {
 		mkdirSync(resolve(root, "agent"), { recursive: true });

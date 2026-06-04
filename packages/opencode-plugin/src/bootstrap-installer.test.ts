@@ -107,6 +107,19 @@ function writePendingLedger(durableRoot: string, confirmation: ReturnType<typeof
   writeLedger(durableRoot, confirmation, "pending", overrides);
 }
 
+function findFlowDeskPluginEntry(config: Record<string, unknown>): [string, Record<string, unknown>] {
+	const plugins = config.plugin as unknown[];
+	assert.equal(Array.isArray(plugins), true);
+	const entry = plugins.find((candidate): candidate is [string, Record<string, unknown>] => {
+		return Array.isArray(candidate) && typeof candidate[0] === "string" && candidate[0].includes("@flowdesk/opencode-plugin/dist/server.js");
+	});
+	if (entry === undefined) assert.fail("FlowDesk plugin entry missing");
+	assert.equal(typeof entry[1], "object");
+	assert.notEqual(entry[1], null);
+	assert.equal(Array.isArray(entry[1]), false);
+	return entry;
+}
+
 test("Release 1 bootstrap installer materializes commands and redacted bootstrap artifacts", () => {
   const profileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-"));
   const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-"));
@@ -220,6 +233,34 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");
+		const flowdeskPlugin = findFlowDeskPluginEntry(opencodeConfig);
+		assert.equal(flowdeskPlugin[0], `file://${join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "server.js")}`);
+		assert.equal(flowdeskPlugin[1].durableStateRoot, durableRoot);
+		assert.deepEqual(flowdeskPlugin[1].statusLive, { enabled: true, maxWorkflows: 10 });
+		assert.deepEqual(flowdeskPlugin[1].providerUsageLive, {
+			enabled: true,
+			providers: ["claude", "openai", "gemini"],
+			claudeOAuthUsage: true,
+			codexLiveUsage: true,
+			geminiQuota: true,
+			persistSnapshots: true,
+			persistWorkflowId: "workflow-global-provider-usage",
+		});
+		assert.deepEqual(flowdeskPlugin[1].reviewerFanoutDiagnostics, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].agentTaskRun, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].workflowDispatchPlanTool, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].workflowDispatch, { enabled: true, devBetaActualLaneLaunch: true });
+		assert.deepEqual(flowdeskPlugin[1].autoContinueExecution, { enabled: true, devBetaActualLaneLaunch: true });
+		assert.deepEqual(flowdeskPlugin[1].workflowOrchestrate, { enabled: true, devBetaActualLaneLaunch: true });
+		assert.deepEqual(flowdeskPlugin[1].quickFallbackRun, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].managedFallbackRegate, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].laneHeartbeatWriter, { enabled: true, defaultExpectedIntervalMs: 120000 });
+		assert.deepEqual(flowdeskPlugin[1].controlledWriteApply, { enabled: true, devBetaControlledWriteApply: true });
+		assert.deepEqual(flowdeskPlugin[1].chatMessageStallAlert, { enabled: true, includeProgressCards: true, maxProgressCards: 4 });
+		assert.deepEqual(flowdeskPlugin[1].completionWakeMainSession, { enabled: true });
+		assert.equal("homeDir" in flowdeskPlugin[1], false);
+		assert.equal("workspaceRoot" in flowdeskPlugin[1], false);
+		assert.equal("geminiProjectId" in flowdeskPlugin[1], false);
 		const tuiConfig = JSON.parse(readFileSync(join(profileRoot, "tui.json"), "utf8")) as Record<string, unknown>;
 		const tuiPlugins = tuiConfig.plugin as unknown[];
 		assert.equal(Array.isArray(tuiPlugins), true);
@@ -253,6 +294,74 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
     rmSync(profileRoot, { recursive: true, force: true });
     rmSync(durableRoot, { recursive: true, force: true });
   }
+});
+
+test("Release 1 bootstrap installer preserves existing plugin entries and fills missing FlowDesk plugin options", () => {
+	const profileRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-profile-existing-plugin-"));
+	const durableRoot = mkdtempSync(join(tmpdir(), "flowdesk-install-durable-existing-plugin-"));
+	try {
+		const nonFlowDeskPlugin = ["file:///tmp/other-opencode-plugin/server.js", { existing: true }];
+		const existingFlowDeskPlugin = [
+			"file:///custom/node_modules/@flowdesk/opencode-plugin/dist/server.js",
+			{
+				durableStateRoot: "/custom/durable/root",
+				statusLive: { enabled: false },
+				providerUsageLive: { providers: ["openai"] },
+				quickFallbackRun: {
+					enabled: false,
+					defaultFromProvider: "anthropic/claude-opus-4-7",
+					defaultToProvider: "openai/gpt-5.5",
+				},
+			},
+		];
+		writeFileSync(join(profileRoot, "opencode.json"), `${JSON.stringify({
+			$schema: "https://opencode.ai/config.json",
+			plugin: [nonFlowDeskPlugin, existingFlowDeskPlugin],
+			someExistingSetting: "preserved",
+		}, null, 2)}\n`, "utf8");
+
+		const confirmation = typedConfirmation("profile-existing-plugin", profileRoot, "existing-plugin");
+		const result = installFlowDeskRelease1Bootstrap({
+			profileRootDir: profileRoot,
+			durableStateRootDir: durableRoot,
+			targetProfileRef: "profile-existing-plugin",
+			typedConfirmation: confirmation,
+			now: new Date("2026-05-19T00:00:00.000Z")
+		});
+
+		assert.equal(result.ok, true);
+		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
+		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
+		assert.equal(opencodeConfig.someExistingSetting, "preserved");
+		const plugins = opencodeConfig.plugin as unknown[];
+		assert.equal(plugins.length, 2);
+		assert.deepEqual(plugins[0], nonFlowDeskPlugin);
+
+		const flowdeskPlugin = plugins[1] as [string, Record<string, unknown>];
+		assert.equal(flowdeskPlugin[0], existingFlowDeskPlugin[0]);
+		assert.equal(flowdeskPlugin[1].durableStateRoot, "/custom/durable/root");
+		assert.deepEqual(flowdeskPlugin[1].statusLive, { enabled: false, maxWorkflows: 10 });
+		assert.deepEqual(flowdeskPlugin[1].providerUsageLive, {
+			providers: ["openai"],
+			enabled: true,
+			claudeOAuthUsage: true,
+			codexLiveUsage: true,
+			geminiQuota: true,
+			persistSnapshots: true,
+			persistWorkflowId: "workflow-global-provider-usage",
+		});
+		assert.deepEqual(flowdeskPlugin[1].quickFallbackRun, {
+			enabled: false,
+			defaultFromProvider: "anthropic/claude-opus-4-7",
+			defaultToProvider: "openai/gpt-5.5",
+		});
+		assert.deepEqual(flowdeskPlugin[1].agentTaskRun, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].workflowDispatch, { enabled: true, devBetaActualLaneLaunch: true });
+		assert.deepEqual(flowdeskPlugin[1].controlledWriteApply, { enabled: true, devBetaControlledWriteApply: true });
+	} finally {
+		rmSync(profileRoot, { recursive: true, force: true });
+		rmSync(durableRoot, { recursive: true, force: true });
+	}
 });
 
 test("Release 1 bootstrap installer rejects a durable consumed confirmation before writes", () => {

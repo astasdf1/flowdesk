@@ -247,7 +247,12 @@ export function validateFlowDeskAgentTaskContextV1(value: unknown): ValidationRe
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("agent task context cannot enable dispatch authority");
-	errors.push(...validateNoForbiddenRawPayloads(record, "agent_task_context").errors);
+	// prompt_text is user-authored task description and legitimately contains file
+	// paths like "packages/opencode-plugin/src/server.ts". Validate the rest of the
+	// record for forbidden raw payloads but exempt prompt_text so agent_task_context
+	// evidence is not silently rejected and the sidebar can derive a task summary.
+	const { prompt_text: _promptText, prompt_text_sha256: _promptSha, ...metadataForRawPayloadValidation } = record as Record<string, unknown>;
+	errors.push(...validateNoForbiddenRawPayloads(metadataForRawPayloadValidation, "agent_task_context").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
