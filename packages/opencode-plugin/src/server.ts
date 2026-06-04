@@ -5296,16 +5296,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				client: capturedClient,
 				parentSessionId: capturedParentSessionId,
 				now: new Date(),
-			}).then(async () => {
-				if (completionWakeMainSessionConfig !== undefined) {
-					await consumeFlowDeskCompletionWakeForMainSessionV1({
-						config: completionWakeMainSessionConfig,
-						client: capturedClient,
-					});
-				}
 			}).catch(() => {
 				// errors are swallowed — watchdog must not crash the plugin
 			});
+			// Wake prompt injection is NOT triggered from the watchdog interval.
+			// It must only fire from the 4 event-driven routes: session.idle (done),
+			// session.error (failed), tool error (timeout), permission.asked (permission).
 		};
 
 		const watchdogInterval = setInterval(runWatchdogCycle, watchdogConfig.intervalMs ?? 30_000);

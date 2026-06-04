@@ -10,6 +10,28 @@ The format is loosely based on Keep a Changelog. Authority flags
 remain `false` by default across every release listed here unless an entry
 explicitly says otherwise.
 
+## 0.2.0 — 2026-06-04
+
+### Fixed
+
+- **Wake prompt burst elimination**: narrowed `eventIsFinalizationRelevant` to
+  only 3 events — `session.idle` (task success), `session.error` (task failure),
+  and `message.part.updated` with `agent task tool error` (tool timeout).
+  Previously `session.status`, `message.updated` turn-completed, `tool settled`,
+  and `terminal step` all triggered finalization, causing burst wake prompts
+  during normal tool usage.
+- **Removed watchdog-interval wake injection**: the watchdog periodic cycle no
+  longer calls `consumeFlowDeskCompletionWakeForMainSessionV1`. Wake prompts
+  now fire exclusively from the 4 event-driven routes (done, failed, tool error,
+  permission).
+- **Wake prompt model passthrough**: `dispatchParentWakePrompt` now passes
+  `body.model: { providerID, modelID }` from the configured
+  `providerQualifiedModelId`, preventing OpenCode from falling back to the
+  default spark model and triggering unwanted compact/summarize on wake.
+- **Removed TUI-polluting console.info**: the `logDispatchDiagnostic` function
+  was writing to stdout via `console.info`, which OpenCode TUI rendered as
+  assistant output, corrupting both the main chat area and sidebar. Now a no-op.
+
 ## 0.1.11 — 2026-05-25
 
 ### Added

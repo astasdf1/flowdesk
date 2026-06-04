@@ -79,21 +79,10 @@ function noReplyForWakeRow(row: { completionKind: CompletionKind; noReply?: bool
 	return row.completionKind === "diagnostic_attention";
 }
 
-function resultShape(value: unknown): Record<string, string> {
-	if (!isRecord(value)) return { type: typeof value };
-	const shape: Record<string, string> = {};
-	for (const [key, entry] of Object.entries(value).slice(0, 12)) {
-		shape[key] = Array.isArray(entry) ? "array" : entry === null ? "null" : typeof entry;
-	}
-	return shape;
-}
-
-function logDispatchDiagnostic(input: { callShape: "primary_path" | "fallback_flat"; outcome: "resolved" | "rejected"; value?: unknown }): void {
-	console.info("FlowDesk main-session wake dispatch diagnostic", {
-		callShape: input.callShape,
-		outcome: input.outcome,
-		returnValueShape: input.outcome === "resolved" ? resultShape(input.value) : undefined,
-	});
+// Intentionally silent — console.info pollutes the OpenCode TUI main chat area
+// because plugin stdout is rendered as assistant output.
+function logDispatchDiagnostic(_input: { callShape: "primary_path" | "fallback_flat"; outcome: "resolved" | "rejected"; value?: unknown }): void {
+	// no-op
 }
 
 function statusLooksActive(value: unknown): boolean {
@@ -161,11 +150,13 @@ async function dispatchParentWakePrompt(input: {
 	directory?: string;
 	text: string;
 	noReply: boolean;
+	model?: { providerID: string; modelID: string };
 }): Promise<boolean> {
 	const query = input.directory === undefined ? undefined : { directory: input.directory };
 	const body = {
 		noReply: input.noReply,
 		parts: [{ type: "text", text: input.text.slice(0, 1_000) }],
+		...(input.model !== undefined ? { model: input.model } : {}),
 	};
 	try {
 		const value = await input.dispatch.call(input.session, {
@@ -248,6 +239,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 			directory: input.config.directory,
 			text: wakePrompt(row),
 			noReply: noReplyForWakeRow(row),
+			model,
 		});
 		if (succeeded) {
 			wakeSucceeded += 1;

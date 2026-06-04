@@ -39,10 +39,15 @@ export interface FlowDeskEventHookObservationResultV1 {
  * finalization-relevant (it must not flood the watchdog with pokes).
  */
 export function eventIsFinalizationRelevant(type: string | undefined, progressLabel: string | undefined): boolean {
-	if (type === "session.error" || type === "session.idle") return true;
-	if (type === "session.status") return true; // idle/retry/busy — idle handled by label below
-	if (type === "message.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task turn completed")) return true;
-	if (type === "message.part.updated" && typeof progressLabel === "string" && (progressLabel.startsWith("agent task tool settled") || progressLabel.startsWith("agent task tool error") || progressLabel.startsWith("agent task terminal step"))) return true;
+	// Only 3 events trigger finalization (wake prompt injection + watchdog poke):
+	//   1. Task success completion — session.idle (sidebar: done)
+	//   2. Task full failure — session.error (sidebar: failed)
+	//   3. Tool use timeout — tool error (sidebar: attention)
+	// Permission attention is handled separately via permissionAttentionRelevant.
+	// Everything else (session.status, turn completed, tool settled, terminal step)
+	// is ambient churn that must NOT trigger wake prompts — this was the burst cause.
+	if (type === "session.idle" || type === "session.error") return true;
+	if (type === "message.part.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task tool error")) return true;
 	return false;
 }
 
