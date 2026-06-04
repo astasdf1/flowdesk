@@ -42,7 +42,7 @@ export function eventIsFinalizationRelevant(type: string | undefined, progressLa
 	if (type === "session.error" || type === "session.idle") return true;
 	if (type === "session.status") return true; // idle/retry/busy — idle handled by label below
 	if (type === "message.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task turn completed")) return true;
-	if (type === "message.part.updated" && typeof progressLabel === "string" && (progressLabel.startsWith("agent task tool settled") || progressLabel.startsWith("agent task terminal step"))) return true;
+	if (type === "message.part.updated" && typeof progressLabel === "string" && (progressLabel.startsWith("agent task tool settled") || progressLabel.startsWith("agent task tool error") || progressLabel.startsWith("agent task terminal step"))) return true;
 	return false;
 }
 

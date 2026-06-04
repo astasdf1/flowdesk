@@ -226,6 +226,17 @@ test("task failed validator accepts all failure categories", () => {
 	}
 });
 
+test("task failed validator accepts tool_execution_aborted failure category", () => {
+	assert.equal(VALID_TASK_FAILURE_CATEGORIES.has("tool_execution_aborted"), true);
+	const result = validateFlowDeskTaskFailedV1(
+		taskFailed({
+			failure_category: "tool_execution_aborted",
+			redacted_reason: "child tool execution aborted before assistant final text",
+		}),
+	);
+	assert.equal(result.ok, true, result.errors.join("; "));
+});
+
 test("task failed validator rejects invalid failure_category", () => {
 	const result = validateFlowDeskTaskFailedV1(
 		taskFailed({ failure_category: "bad_category" }),

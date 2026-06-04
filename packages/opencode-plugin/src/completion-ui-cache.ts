@@ -707,7 +707,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const awaitingPermissionRows = terminalComplete ? [] : rows.filter((row) => row.progressPhase === "awaiting_permission");
 		const toolDiagnosticRows = terminalComplete || awaitingPermissionRows.length > 0 ? [] : rows.filter((row) => {
 			const progressLabel = row.progressLabel ?? "";
-			return progressLabel.includes("tool_run_overdue_observed") || progressLabel.includes("coordinator_attention_observed");
+			return progressLabel.includes("tool_run_overdue_observed") || progressLabel.includes("tool_execution_aborted_observed") || progressLabel.includes("coordinator_attention_observed");
 		});
 		const resultRefs = rows.filter((row) => row.state === "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
 		const failedRefs = rows.filter((row) => row.state !== "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);

@@ -12,9 +12,13 @@ test("V11.3 eventIsFinalizationRelevant: finalization-relevant events poke the w
 		eventIsFinalizationRelevant("message.updated", "agent task turn completed msgid=m created=1 completed=2"),
 		true,
 	);
-	// Tool settled / terminal step — relevant (a tool finishing can unblock capture).
+	// Tool settled/error / terminal step — relevant (a tool finishing or failing can unblock coordinator judgement).
 	assert.equal(
 		eventIsFinalizationRelevant("message.part.updated", "agent task tool settled callid=A"),
+		true,
+	);
+	assert.equal(
+		eventIsFinalizationRelevant("message.part.updated", "agent task tool error callid=A"),
 		true,
 	);
 	assert.equal(

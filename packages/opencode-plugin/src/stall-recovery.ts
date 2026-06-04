@@ -1617,7 +1617,7 @@ const AGENT_TASK_FINAL_REPORT_REPAIR_TEXT =
 export function flowDeskProgressIsMeaningfulActivityV1(phase: string, progressLabel: string | undefined): boolean {
 	if (phase === "nudged" || phase === "failed" || phase === "finalizing") return false;
 	const label = (progressLabel ?? "").toLowerCase();
-	if (label.includes("tool_run_overdue_observed") || label.includes("coordinator_attention_observed")) return false;
+	if (label.includes("tool_run_overdue_observed") || label.includes("tool_execution_aborted_observed") || label.includes("coordinator_attention_observed")) return false;
 	// Ambient session-status / diff churn is not, by itself, model progress.
 	if (label.includes("session busy") || label.includes("session.diff") || label.includes("session.updated")) return false;
 	if (label.includes("waiting for async child result")) return false;
@@ -2040,6 +2040,79 @@ function parseChildToolStateProgressV1(value: unknown): { kind: "open" | "settle
 	return { kind, callId: m[2] };
 }
 
+function deriveOpenChildToolCallIdsV1(transitions: ReadonlyArray<{ observedAtMs: number; label: string }>): Set<string> {
+	const open = new Set<string>();
+	for (const transition of transitions) {
+		const parsed = parseChildToolStateProgressV1(transition.label);
+		if (parsed === undefined) continue;
+		if (parsed.kind === "open") open.add(parsed.callId);
+		else open.delete(parsed.callId);
+	}
+	return open;
+}
+
+type FlowDeskChildToolSnapshotTerminalV1 = {
+	callId: string;
+	settledKind: "settled" | "error";
+	status: "completed" | "error" | "cancelled" | "aborted";
+	toolExecutionAborted: boolean;
+};
+
+function hasExactToolExecutionAbortedLabelV1(value: unknown, depth = 0): boolean {
+	if (typeof value === "string") return value.trim() === "Tool execution aborted";
+	if (depth >= 4) return false;
+	if (Array.isArray(value)) return value.some((entry) => hasExactToolExecutionAbortedLabelV1(entry, depth + 1));
+	if (!isRecord(value)) return false;
+	for (const entry of Object.values(value)) {
+		if (hasExactToolExecutionAbortedLabelV1(entry, depth + 1)) return true;
+	}
+	return false;
+}
+
+function normalizeChildToolTerminalStatusV1(value: unknown): FlowDeskChildToolSnapshotTerminalV1["status"] | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "completed" || normalized === "error" || normalized === "cancelled" || normalized === "aborted") return normalized;
+	return undefined;
+}
+
+function extractChildSessionTerminalToolSnapshotsV1(input: {
+	raw: unknown;
+	openCallIds: ReadonlySet<string>;
+}): FlowDeskChildToolSnapshotTerminalV1[] {
+	const byCallId = new Map<string, FlowDeskChildToolSnapshotTerminalV1>();
+	for (const item of flowDeskAgentTaskMessageItems(input.raw)) {
+		const msg = isRecord(item) ? item : undefined;
+		const info = isRecord(msg?.info) ? msg.info : msg;
+		let parts: unknown[] = Array.isArray(msg?.parts)
+			? msg.parts
+			: Array.isArray(info?.parts)
+				? info.parts as unknown[]
+				: [];
+		if (parts.length === 0 && msg !== undefined && Array.isArray(msg.content)) parts = msg.content;
+		for (const rawPart of parts) {
+			const part = isRecord(rawPart) ? rawPart : undefined;
+			if (part === undefined) continue;
+			const type = typeof part.type === "string" ? part.type : "";
+			if (type !== "tool" && part.tool === undefined && part.callID === undefined && part.call_id === undefined) continue;
+			const state = isRecord(part.state) ? part.state : undefined;
+			const status = normalizeChildToolTerminalStatusV1(state?.status ?? part.status);
+			if (status === undefined) continue;
+			const callId = safeDiagnosticString(part.callID ?? part.call_id ?? part.id ?? state?.id);
+			if (callId === undefined || !input.openCallIds.has(callId)) continue;
+			byCallId.set(callId, {
+				callId,
+				status,
+				settledKind: status === "completed" ? "settled" : "error",
+				toolExecutionAborted: hasExactToolExecutionAbortedLabelV1(part.error)
+					|| hasExactToolExecutionAbortedLabelV1(part.state)
+					|| hasExactToolExecutionAbortedLabelV1(part),
+			});
+		}
+	}
+	return [...byCallId.values()].sort((a, b) => a.callId.localeCompare(b.callId));
+}
+
 // V11.2 Slice 2: parse an event-hook TURN_COMPLETED progress label
 // (`agent task turn completed msgid=<id> created=<ms> completed=<ms>`) emitted
 // when an assistant message.updated carries info.time.completed.
@@ -2349,6 +2422,36 @@ function writeToolTimeoutReviewRequestedEvidence(input: {
 	});
 }
 
+function writeToolExecutionAbortedReviewRequestedEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	lastProgressSeq: number;
+	observedAt: string;
+}): void {
+	const advisoryLabel = childProgressLabel(
+		"tool_execution_aborted_observed; diagnostic only; child tool reported error/aborted/cancelled; main coordinator must inspect durable status before deciding",
+	);
+	writeChildSessionEvidence(input.rootDir, input.workflowId, `agent-task-progress-${input.laneId}-tool-execution-aborted-observed`, {
+		schema_version: "flowdesk.agent_task_progress.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		progress_seq: input.lastProgressSeq + 1,
+		observed_at: input.observedAt,
+		phase: "waiting",
+		progress_label: advisoryLabel,
+		progress_ref: `progress-${input.laneId}-tool-execution-aborted-observed`,
+		redaction_version: "v1",
+		dispatch_authority_enabled: false,
+	});
+}
+
 export interface FlowDeskChildSessionMonitorResultV1 {
 	lanesPolled: number;
 	lanesCompleted: number;
@@ -2539,7 +2642,8 @@ export async function monitorChildSessionsV1(input: {
 			const observedAtMs = typeof rec.observed_at === "string" ? Date.parse(rec.observed_at) : NaN;
 			const phase = typeof rec.phase === "string" ? rec.phase : undefined;
 			const progressLabel = typeof rec.progress_label === "string" ? rec.progress_label : undefined;
-			const isToolTimeoutReviewProgress = typeof progressLabel === "string" && progressLabel.toLowerCase().includes("tool_run_overdue_observed");
+			const diagnosticProgressLabel = typeof progressLabel === "string" ? progressLabel.toLowerCase() : "";
+			const isToolTimeoutReviewProgress = diagnosticProgressLabel.includes("tool_run_overdue_observed") || diagnosticProgressLabel.includes("tool_execution_aborted_observed");
 			const progressSeq = typeof rec.progress_seq === "number" && Number.isInteger(rec.progress_seq) && rec.progress_seq > 0
 				? rec.progress_seq
 				: 1;
@@ -2632,6 +2736,81 @@ export async function monitorChildSessionsV1(input: {
 			.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
 			?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
 		let recordForWrites = record;
+		let toolTransitions = (toolTransitionsByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
+		const openToolCallIdsBeforeSnapshot = deriveOpenChildToolCallIdsV1(toolTransitions);
+		if (openToolCallIdsBeforeSnapshot.size > 0) {
+			try {
+				const rawSnapshot = await readAsyncMonitorChildSessionMessages(input.client, childSessionId, 3_000);
+				if (rawSnapshot !== null) {
+					const snapshotObservation = observeFlowDeskAgentTaskOutputV1(rawSnapshot);
+					const snapshotHasAssistantFinalText = typeof snapshotObservation.latestText === "string" && snapshotObservation.latestText.trim().length > 0;
+					const terminalToolSnapshots = extractChildSessionTerminalToolSnapshotsV1({
+						raw: rawSnapshot,
+						openCallIds: openToolCallIdsBeforeSnapshot,
+					});
+					if (terminalToolSnapshots.length > 0) {
+						const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+						const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+						const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+						const observedAt = new Date(nowMs).toISOString();
+						const latestProgress = latestProgressByLane.get(laneId);
+						let progressSeq = latestProgress?.progressSeq ?? 1;
+						for (const snapshot of terminalToolSnapshots) {
+							progressSeq++;
+							const label = `agent task tool ${snapshot.settledKind} callid=${snapshot.callId}`;
+							writeAgentTaskProgressEvidence({
+								rootDir: input.rootDir,
+								workflowId: input.workflowId,
+								laneId,
+								taskId,
+								agentRef,
+								providerQualifiedModelId: modelId,
+								phase: "waiting",
+								progressSeq,
+								progressLabel: label,
+								observedAt,
+							});
+							toolTransitions.push({ observedAtMs: nowMs, label });
+						}
+						latestProgressByLane.set(laneId, { observedAtMs: nowMs, phase: "waiting", progressSeq });
+						latestMeaningfulProgressByLane.set(laneId, nowMs);
+					}
+					const toolExecutionAbortedObserved = terminalToolSnapshots.some((snapshot) => snapshot.toolExecutionAborted)
+						|| hasExactToolExecutionAbortedLabelV1(monitorRecord(monitorResponseData(rawSnapshot))?.error);
+					if (toolExecutionAbortedObserved && !snapshotHasAssistantFinalText && !laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+						const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+						const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+						const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+						const observedAt = new Date(nowMs).toISOString();
+						const diagnosticProgressAt = new Date(nowMs + 1).toISOString();
+						const diagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt });
+						recordForWrites = withCaptureFailureDiagnosticFields({
+							...recordForWrites,
+							coordinator_attention_status: "review_requested",
+							coordinator_attention_last_review_requested_at: observedAt,
+							coordinator_attention_last_review_reason: "tool_execution_aborted_observed",
+						}, diagnostic, "tool_execution_aborted_observed");
+						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+						writeToolExecutionAbortedReviewRequestedEvidence({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							laneId,
+							taskId,
+							agentRef,
+							providerQualifiedModelId: modelId,
+							lastProgressSeq: latestProgressByLane.get(laneId)?.progressSeq ?? 1,
+							observedAt: diagnosticProgressAt,
+						});
+						refreshFlowDeskCompletionUiCachesV1({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							observedAt: diagnosticProgressAt,
+						});
+						continue;
+					}
+				}
+			} catch { /* best-effort snapshot reconciliation; later diagnostics still apply */ }
+		}
 		// Use MEANINGFUL progress (real model/runtime activity) for activity and
 		// nudge-budget decisions. Watchdog-authored progress (nudge/continuation/
 		// finalizing) and ambient session-status churn are intentionally ignored
@@ -2741,7 +2920,6 @@ export async function monitorChildSessionsV1(input: {
 		// dropped settle event demotes the lane to toolStateUnknown (not idle), which
 		// also blocks abort/continuation but allows body polling, and is force-
 		// terminated only after unknownStateMaxMs (G1).
-		const toolTransitions = (toolTransitionsByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
 		const laneToolState = deriveFlowDeskLaneToolStateV1({ transitions: toolTransitions, nowMs, staleToolMs });
 		const toolRunningNow = laneToolState.toolRunningNow;
 		const toolStateUnknown = laneToolState.toolStateUnknown;

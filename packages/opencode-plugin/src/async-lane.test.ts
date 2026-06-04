@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, isFlowDeskHeavyFirstTokenModelV1 } from "./agent-task-runner.js";
 import { flowDeskTextLooksLikeRefusalOrErrorV1 } from "./agent-task-output.js";
-import { monitorChildSessionsV1 } from "./stall-recovery.js";
+import { deriveFlowDeskLaneToolStateV1, monitorChildSessionsV1 } from "./stall-recovery.js";
 import { applyFlowDeskSessionEvidenceWriteIntentsV1, prepareFlowDeskSessionEvidenceWriteIntentV1, reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
 
@@ -1065,6 +1065,111 @@ test("monitorChildSessions records overdue tool diagnostic without aborting or f
 		const wakeCacheAgain = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), "utf8")) as Record<string, unknown>;
 		const wakeRowsAgain = wakeCacheAgain.rows as Array<Record<string, unknown>>;
 		assert.equal(wakeRowsAgain.filter(row => row.completionKind === "diagnostic_attention").length, 1, "duplicate stale tool events must not spam wake rows");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions wakes coordinator for aborted tool snapshot without auto-terminalizing", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-tool-error-reconcile-"));
+	try {
+		const workflowId = "workflow-monitor-tool-error-reconcile";
+		const laneId = "lane-tool-error-reconcile";
+		const taskId = "task-tool-error-reconcile";
+		let abortCalls = 0;
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const openedAt = new Date(Date.parse(String(child?.created_at)) + 1_000).toISOString();
+		const progress = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-progress-tool-error-reconcile-running",
+			record: {
+				schema_version: "flowdesk.agent_task_progress.v1",
+				workflow_id: workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: "agent-test",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				progress_seq: 2,
+				observed_at: openedAt,
+				phase: "waiting",
+				progress_label: "agent task tool running callid=bash-call-aborted-1",
+				progress_ref: "progress-tool-error-reconcile-running",
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(progress.ok, true, progress.errors?.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [progress.writeIntent as never]).ok, true);
+
+		const monitorClient = makeClient({
+			messages: async () => ({
+				info: { role: "assistant" },
+				parts: [{
+					type: "tool",
+					callID: "bash-call-aborted-1",
+					state: { status: "error" },
+					error: { name: "MessageAbortedError", message: "Tool execution aborted" },
+				}],
+			}),
+			abort: async () => { abortCalls++; },
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: monitorClient,
+			now: new Date(Date.parse(openedAt) + 65_000),
+			staleToolMs: 60_000,
+			absoluteLaneAgeMs: 600_000,
+			abortThresholdMs: 1_000,
+		});
+
+		assert.equal(monResult.lanesPolled, 1);
+		assert.equal(monResult.lanesAborted, 0);
+		assert.equal(abortCalls, 0, "snapshot reconciliation must not add abort/runtime authority");
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		// Wake-only: no task_failed, no terminal lifecycle — coordinator judges
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false, "tool error/aborted must not auto-write task_failed; coordinator decides");
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).state === "no_output"), false, "tool error/aborted must not auto-write terminal lifecycle");
+		const progressRecords = reloaded.entries
+			.filter(e => e.evidenceClass === "agent_task_progress")
+			.map(e => e.record as Record<string, unknown>);
+		assert.equal(progressRecords.some(rec => String(rec.progress_label).includes("tool error callid=bash-call-aborted-1") || String(rec.progress_label).includes("tool_execution_aborted")), true, "bounded diagnostic progress should close the call id or record attention");
+		const toolTransitions = progressRecords
+			.filter(rec => typeof rec.observed_at === "string" && typeof rec.progress_label === "string" && String(rec.progress_label).startsWith("agent task tool "))
+			.map(rec => ({ observedAtMs: Date.parse(String(rec.observed_at)), label: String(rec.progress_label) }))
+			.sort((a, b) => a.observedAtMs - b.observedAtMs);
+		const toolState = deriveFlowDeskLaneToolStateV1({
+			transitions: toolTransitions,
+			nowMs: Date.parse(openedAt) + 65_000,
+			staleToolMs: 60_000,
+		});
+		assert.equal(toolState.toolRunningNow, false);
+		assert.equal(toolState.toolStateUnknown, false);
+		for (const entry of reloaded.entries) {
+			const record = entry.record as Record<string, unknown>;
+			assert.notEqual(record.dispatch_authority_enabled, true);
+			assert.notEqual(record.fallback_authority_enabled, true);
+			assert.notEqual(record.write_authority_enabled, true);
+			assert.notEqual(record.hard_chat_authority_enabled, true);
+		}
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

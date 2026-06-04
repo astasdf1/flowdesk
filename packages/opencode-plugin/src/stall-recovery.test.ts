@@ -962,6 +962,68 @@ test("V11.2 Slice 1: stale open tool (dropped settle) records review diagnostic 
 	}
 });
 
+test("watchdog wakes diagnostic attention immediately for observed child tool aborted before staleToolMs", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-tool-aborted-attention-"));
+	try {
+		const workflowId = "workflow-tool-aborted-attention";
+		const laneId = "lane-tool-aborted-attention";
+		const taskId = "task-tool-aborted-attention";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-tool-aborted-attention",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-tool-aborted-attention");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId,
+			lane_id: laneId,
+			state: "running",
+			created_at: "2026-05-26T10:00:00.000Z",
+			updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-tool-aborted-attention-running");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:05.000Z",
+			progressLabel: "agent task tool running callid=call-aborted",
+		}, "agent-task-progress-tool-aborted-open");
+
+		let abortCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:10.000Z"),
+			staleToolMs: 150_000,
+			abortThresholdMs: 30_000,
+			absoluteLaneAgeMs: 600_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [{ role: "assistant", parts: [{ type: "tool", callID: "call-aborted", state: { status: "aborted" }, error: { message: "Tool execution aborted" } }] }] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => { abortCalls += 1; return {}; },
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesAborted, 0, "tool failure observation is advisory only");
+		assert.equal(result.lanesCompleted, 0);
+		assert.equal(abortCalls, 0);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_failed"), false, "must not write task_failed for observed tool failure alone");
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "lane_lifecycle" && (entry.record as Record<string, unknown>).state !== "running"), false, "must not terminalize lifecycle for observed tool failure alone");
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "agent_task_progress" && String((entry.record as Record<string, unknown>).progress_label).includes("tool_execution_aborted_observed")), true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "agent_task_progress" && (entry.record as Record<string, unknown>).progress_label === "agent task tool error callid=call-aborted"), true, "snapshot error closes the open tool wait before staleToolMs");
+
+		const wakeReady = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "completion-wake-ready.json"), "utf8")) as Record<string, unknown>;
+		const wakeRows = wakeReady.rows as Array<Record<string, unknown>>;
+		const diagnosticRow = wakeRows.find((row) => row.completionKind === "diagnostic_attention" && Array.isArray(row.laneIds) && row.laneIds.includes(laneId));
+		assert.ok(diagnosticRow, "diagnostic attention row should be ready for existing main-session wake consumption");
+		assert.equal(diagnosticRow?.parentSessionRef, "ses-parent-123");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("V11.2 Slice 1: true zero-event lane terminates via absoluteLaneAgeMs even without silence-from-activity", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-lane-age-cap-"));
 	try {

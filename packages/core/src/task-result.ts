@@ -49,6 +49,7 @@ export interface FlowDeskTaskFailedV1 {
 		| "sdk_prompt_timeout"
 		| "network_interrupted"
 		| "no_response"
+		| "tool_execution_aborted"
 		| "response_too_large"
 		| "unknown";
 	redacted_reason: string;
@@ -146,6 +147,7 @@ export const VALID_TASK_FAILURE_CATEGORIES = new Set([
 	"sdk_prompt_timeout",
 	"network_interrupted",
 	"no_response",
+	"tool_execution_aborted",
 	"response_too_large",
 	"unknown",
 ]);
