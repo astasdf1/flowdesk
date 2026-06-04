@@ -4,8 +4,11 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
+	authorizeFlowDeskDefaultManagedDispatchV1,
 	createFlowDeskChatHookAuthorityProbeV1,
+	evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1,
 	evaluateFlowDeskChatIntakeV1,
+	evaluateFlowDeskProductionEnablementV1,
 	type FlowDeskChatHookAuthorityProbeV1,
 	type FlowDeskChatIntakeRequestV1,
 	type FlowDeskConfiguredVerificationResultV1,
@@ -296,6 +299,35 @@ export interface FlowDeskManagedDispatchRunRouteOptionsV1 {
 	reservationStore?: FlowDeskManagedDispatchBetaReservationStoreV1;
 	durableStateRootDir?: string;
 	defaultAuthorization?: FlowDeskDefaultManagedDispatchAuthorizationV1;
+	deriveDefaultAuthorization?: (
+		request: Record<string, unknown>,
+	) => FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined;
+}
+
+interface FlowDeskDefaultManagedDispatchAuthorizationAutoOptionsV1 {
+	enabled: true;
+	authorizationId?: string;
+	actorRef: string;
+	profileRef: string;
+	releaseGateRef: string;
+	rollbackRef: string;
+	createdAt?: string;
+	expiresAt: string;
+	defaultEnablementRequested: boolean;
+	killSwitchState: "inactive" | "active";
+	durablePrecallRef: string;
+	adapterProfileRef: string;
+	sdkClientRef: string;
+	defaultReleaseEnablementRef: string;
+	allowUncertainty?: boolean;
+}
+
+interface FlowDeskDerivedDefaultManagedDispatchAuthorizationInputV1 {
+	request: Record<string, unknown>;
+	options?: PluginOptions;
+	durableStateRootDir?: string;
+	client?: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	now?: Date;
 }
 
 interface FlowDeskChatMessageOutput {
@@ -1460,7 +1492,8 @@ async function evaluateFlowDeskManagedDispatchRunRoute(
 			options.defaultAuthorization,
 		);
 	}
-	const authorization = options.defaultAuthorization;
+	const authorization =
+		options.defaultAuthorization ?? options.deriveDefaultAuthorization?.(request);
 	const authorizationResult =
 		authorization === undefined
 			? undefined
@@ -2528,9 +2561,10 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 	} else if (summary.workflowSummaries.some((workflow) => workflow.autoNextReady === true)) {
 		lines.push("All FlowDesk subtasks completed normally. Auto-next synthesis is ready.");
 	} else if (progressCardCount > 0) {
-		lines.push(
-			`Lane progress: ${progressCardCount} lane(s) visible on the main screen.`,
-		);
+		const permissionCount = summary.workflowSummaries.reduce((sum, workflow) => sum + (workflow.laneProgressAggregate?.awaitingPermission ?? 0), 0);
+		lines.push(permissionCount > 0
+			? `Permission attention: ${permissionCount} child FlowDesk lane(s) await OpenCode approval/denial in the permission UI.`
+			: `Lane progress: ${progressCardCount} lane(s) visible on the main screen.`);
 	} else {
 		lines.push(
 			`Lane progress check: ${summary.totalStalled} stalled, ${summary.totalLate} progressing-late.`,
@@ -2612,7 +2646,7 @@ function stallAlertText(summary: FlowDeskChatMessageStallSummaryV1): string {
 	])
 		lines.push(`- ${action}`);
 	if (progressCardCount > 0) {
-		lines.push("Lane log refs are command-based in this MVP; native clickable task UI is not claimed.");
+		lines.push("Lane log refs are command-based in this MVP; native clickable task UI is not claimed. Permission requests must be answered in OpenCode's permission UI when it is shown.");
 	}
 	return lines.join("\n");
 }
@@ -2902,8 +2936,146 @@ function defaultManagedDispatchAuthorizationFromOptions(
 		: undefined;
 }
 
+function defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
+	options?: PluginOptions,
+): FlowDeskDefaultManagedDispatchAuthorizationAutoOptionsV1 | undefined {
+	const production = options?.[flowdeskProductionEnablementOption];
+	if (!isRecord(production) || production.enabled !== true) return undefined;
+	const value = isRecord(production.defaultManagedDispatchAuthorizationMetadata)
+		? production.defaultManagedDispatchAuthorizationMetadata
+		: undefined;
+	if (!isRecord(value) || value.enabled !== true) return undefined;
+	if (
+		typeof value.actorRef !== "string" ||
+		typeof value.profileRef !== "string" ||
+		typeof value.releaseGateRef !== "string" ||
+		typeof value.rollbackRef !== "string" ||
+		typeof value.expiresAt !== "string" ||
+		typeof value.durablePrecallRef !== "string" ||
+		typeof value.adapterProfileRef !== "string" ||
+		typeof value.sdkClientRef !== "string" ||
+		typeof value.defaultReleaseEnablementRef !== "string" ||
+		typeof value.defaultEnablementRequested !== "boolean" ||
+		(value.killSwitchState !== "inactive" && value.killSwitchState !== "active")
+	)
+		return undefined;
+	return {
+		enabled: true,
+		...(typeof value.authorizationId === "string" && value.authorizationId.trim().length > 0
+			? { authorizationId: value.authorizationId }
+			: {}),
+		actorRef: value.actorRef,
+		profileRef: value.profileRef,
+		releaseGateRef: value.releaseGateRef,
+		rollbackRef: value.rollbackRef,
+		...(typeof value.createdAt === "string" && value.createdAt.trim().length > 0
+			? { createdAt: value.createdAt }
+			: {}),
+		expiresAt: value.expiresAt,
+		defaultEnablementRequested: value.defaultEnablementRequested,
+		killSwitchState: value.killSwitchState,
+		durablePrecallRef: value.durablePrecallRef,
+		adapterProfileRef: value.adapterProfileRef,
+		sdkClientRef: value.sdkClientRef,
+		defaultReleaseEnablementRef: value.defaultReleaseEnablementRef,
+		...(typeof value.allowUncertainty === "boolean"
+			? { allowUncertainty: value.allowUncertainty }
+			: {}),
+	};
+}
+
+function workflowIdFromManagedDispatchRunRequest(
+	request: Record<string, unknown>,
+): string | undefined {
+	if (typeof request.workflow_id === "string" && request.workflow_id.trim().length > 0)
+		return request.workflow_id;
+	if (
+		isRecord(request.managed_dispatch_boundary_input) &&
+		typeof request.managed_dispatch_boundary_input.workflowId === "string" &&
+		request.managed_dispatch_boundary_input.workflowId.trim().length > 0
+	)
+		return request.managed_dispatch_boundary_input.workflowId;
+	return undefined;
+}
+
+function deriveDefaultManagedDispatchAuthorizationFromProductionEnablement(
+	input: FlowDeskDerivedDefaultManagedDispatchAuthorizationInputV1,
+): FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined {
+	const autoOptions =
+		defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
+			input.options,
+		);
+	if (autoOptions === undefined) return undefined;
+	const productionOptions = productionEnablementFromOptions(input.options);
+	const workflowId = workflowIdFromManagedDispatchRunRequest(input.request);
+	if (
+		productionOptions === undefined ||
+		workflowId === undefined ||
+		input.durableStateRootDir === undefined ||
+		input.client === undefined
+	)
+		return undefined;
+	const evidenceReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: input.durableStateRootDir,
+	});
+	const productionEnablement = evaluateFlowDeskProductionEnablementV1({
+		workflowId,
+		evidenceReload,
+		preDispatchAuditRef: productionOptions.preDispatchAuditRef,
+		configuredVerificationRef: productionOptions.configuredVerificationRef,
+		configuredVerificationResult: productionOptions.configuredVerificationResult,
+		sanitizedAuthCaptureRef: productionOptions.sanitizedAuthCaptureRef,
+		sanitizedAuthCaptureResult: productionOptions.sanitizedAuthCaptureResult,
+		externalAuthPolicyRef: productionOptions.externalAuthPolicyRef,
+		providerPolicyRef: productionOptions.providerPolicyRef,
+		externalAuthProviderPolicyResult:
+			productionOptions.externalAuthProviderPolicyResult,
+		laneConformanceRefs: productionOptions.laneConformanceRefs,
+		allowIncompleteConformance: productionOptions.allowIncompleteConformance,
+		approvalDecision: productionOptions.approvalDecision,
+	});
+	if (productionEnablement.plugin_satisfiable_gate_passed !== true)
+		return undefined;
+	const readiness = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+		productionEnablement,
+		durablePrecallRef: autoOptions.durablePrecallRef,
+		adapterProfileRef: autoOptions.adapterProfileRef,
+		sdkClientRef: autoOptions.sdkClientRef,
+		defaultReleaseEnablementRef: autoOptions.defaultReleaseEnablementRef,
+		allowUncertainty: autoOptions.allowUncertainty,
+	});
+	const now = input.now ?? new Date();
+	return authorizeFlowDeskDefaultManagedDispatchV1({
+		authorizationId:
+			autoOptions.authorizationId ??
+			safeToken(`default-managed-dispatch-authorization-${workflowId}`, "default-managed-dispatch-authorization"),
+		readiness,
+		actorRef: autoOptions.actorRef,
+		profileRef: autoOptions.profileRef,
+		releaseGateRef: autoOptions.releaseGateRef,
+		rollbackRef: autoOptions.rollbackRef,
+		createdAt: autoOptions.createdAt ?? now.toISOString(),
+		expiresAt: autoOptions.expiresAt,
+		defaultEnablementRequested: autoOptions.defaultEnablementRequested,
+		killSwitchState: autoOptions.killSwitchState,
+		now: now.getTime(),
+	});
+}
+
 function isDefaultManagedDispatchAuthorized(options?: PluginOptions): boolean {
 	return defaultManagedDispatchAuthorizationFromOptions(options) !== undefined;
+}
+
+function hasDefaultManagedDispatchAuthorizationOption(options?: PluginOptions): boolean {
+	return isRecord(options?.[flowdeskDefaultManagedDispatchAuthorizationOption]);
+}
+
+function hasDefaultManagedDispatchAuthorizationMetadata(options?: PluginOptions): boolean {
+	return (
+		defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(options) !==
+		undefined
+	);
 }
 
 function managedDispatchBetaClientFrom(
@@ -4657,6 +4829,20 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			: undefined;
 	const defaultAuthorization =
 		defaultManagedDispatchAuthorizationFromOptions(options);
+	const derivedDefaultAuthorizationMetadataConfigured =
+		!hasDefaultManagedDispatchAuthorizationOption(options) &&
+		hasDefaultManagedDispatchAuthorizationMetadata(options);
+	const managedDispatchRunRouteClient =
+		managedDispatchBetaClient ??
+		(derivedDefaultAuthorizationMetadataConfigured
+			? managedDispatchBetaClientFrom(input, options)
+			: undefined);
+	const managedDispatchRunRouteReservationStore =
+		managedDispatchBetaReservationStore ??
+		(derivedDefaultAuthorizationMetadataConfigured
+			? (managedDispatchBetaReservationStoreFrom(input, options) ??
+				managedDispatchBetaDurableReservationStoreFrom(options))
+			: undefined);
 	const exactModelProviderAcquisitionClient =
 		isExactModelProviderAcquisitionLiveTestEnabled(options)
 			? exactModelProviderAcquisitionClientFrom(input, options)
@@ -4915,10 +5101,21 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		Object.assign(
 			tools,
 			createFlowDeskLocalNonDispatchAdapterTools(new Date(), localSession, {
-				client: managedDispatchBetaClient,
-				reservationStore: managedDispatchBetaReservationStore,
+				client: managedDispatchRunRouteClient,
+				reservationStore: managedDispatchRunRouteReservationStore,
 				durableStateRootDir: durableStateRootFromOptions(options),
 				defaultAuthorization,
+				deriveDefaultAuthorization: (request) =>
+					derivedDefaultAuthorizationMetadataConfigured
+						? deriveDefaultManagedDispatchAuthorizationFromProductionEnablement({
+								request,
+								options,
+								durableStateRootDir: durableStateRootFromOptions(options),
+								...(managedDispatchRunRouteClient === undefined
+									? {}
+									: { client: managedDispatchRunRouteClient }),
+							})
+						: undefined,
 			}),
 		);
 	if (isNaturalLanguageRoutingEnabled(options))

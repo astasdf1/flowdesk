@@ -167,6 +167,9 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.doesNotMatch(mainAgent, /continue with that next todo automatically/);
 		assert.doesNotMatch(mainAgent, /response-waiting mode/);
 		for (const profile of installedAgentProfiles) {
+			const subagent = readFileSync(join(profileRoot, "agent", `${profile}.md`), "utf8");
+			assert.match(subagent, /^  external_directory:\n    "\*": allow$/m, `${profile} external directory boundary should allow read-only tools to inspect external paths`);
+			if (profile !== "flowdesk-main" && profile !== "flowdesk-git-master") assert.doesNotMatch(subagent, /^  bash:\n    "\*": allow$/m, `${profile} must not gain broad bash from external-directory policy`);
 			const agent = readFileSync(join(profileRoot, "agent", `${profile}.md`), "utf8");
 			assert.match(agent, /^  read: allow$/m, `${profile} read permission`);
 			assert.match(agent, /^  glob: allow$/m, `${profile} glob permission`);

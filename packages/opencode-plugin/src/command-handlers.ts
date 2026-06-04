@@ -187,6 +187,8 @@ function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1
     `production_enablement_state=${evaluation.state}`,
     `production_enablement_doctor_ref=${evaluation.doctor_state_ref}`,
     `production_managed_dispatch_ready=${evaluation.managed_dispatch_ready}`,
+    `production_managed_dispatch_ready_basis=${evaluation.managed_dispatch_ready_basis}`,
+    `production_plugin_satisfiable_gate_passed=${evaluation.plugin_satisfiable_gate_passed}`,
     `production_dispatch_authority_enabled=${evaluation.dispatch_authority_enabled}`,
     ...(evaluation.configured_verification_result === undefined ? [] : [`production_configured_verification_result=${evaluation.configured_verification_result}`]),
     ...(evaluation.configured_verification_ref === undefined ? [] : [`production_configured_verification_ref=${evaluation.configured_verification_ref}`]),
@@ -197,6 +199,11 @@ function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1
     ...(evaluation.provider_policy_ref === undefined ? [] : [`production_provider_policy_ref=${evaluation.provider_policy_ref}`]),
     ...(evaluation.approval_decision === undefined ? [] : [`production_approval_decision=${evaluation.approval_decision}`]),
     ...(evaluation.approval_ref === undefined ? [] : [`production_approval_ref=${evaluation.approval_ref}`]),
+    ...(evaluation.plugin_boundary_assessment === undefined ? [] : [
+      `production_plugin_boundary_plugin_satisfiable_count=${evaluation.plugin_boundary_assessment.plugin_satisfiable_count}`,
+      `production_plugin_boundary_skipped_platform_dependent_count=${evaluation.plugin_boundary_assessment.skipped_platform_dependent_count}`
+    ]),
+    ...((evaluation.skipped_platform_dependent_labels ?? []).map((label) => `production_skipped_platform_dependent=${label}`)),
     ...evaluation.blocker_labels.map((label) => `production_blocker=${label}`),
     ...evaluation.uncertainty_labels.map((label) => `production_uncertainty=${label}`)
   ];

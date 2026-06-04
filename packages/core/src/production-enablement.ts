@@ -431,6 +431,11 @@ function providerHealthSnapshotBlockers(
 		const record = entry.record;
 		return record.freshness === "fresh" && record.dispatchability === "dispatchable";
 	});
+	// A fresh dispatchable provider_usage_snapshot is plugin-verifiable usage
+	// evidence and clears the same provider readiness blocker as a fresh healthy
+	// provider_health_snapshot. The separate trusted usage_authority evidence class
+	// remains OpenCode/platform-dependent and is skipped by the plugin-satisfiable
+	// gate when absent.
 	if (hasFreshDispatchableUsage) return [];
 	if (healthEntries.length === 0) return ["provider_health_snapshot_missing"];
 	const hasFreshDispatchable = healthEntries.some((entry) => {

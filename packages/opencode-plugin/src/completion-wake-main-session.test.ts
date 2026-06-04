@@ -35,7 +35,7 @@ test("completion wake main-session consumer sends one parent prompt and marks co
 		assert.equal(result.status, "main_session_wake_completed");
 		assert.equal(result.wakeSucceeded, 1);
 		assert.equal(prompts.length, 1);
-		assert.equal((prompts[0] as { path: { id: string } }).path.id, "ses_parent123");
+		assert.equal((prompts[0] as { sessionID: string }).sessionID, "ses_parent123");
 		assert.match(JSON.stringify(prompts[0]), /FlowDesk completion wake signal/);
 		assert.doesNotMatch(JSON.stringify(prompts[0]), /noReply/);
 
@@ -88,7 +88,46 @@ test("completion wake consumer treats awaiting permission as advisory attention 
 		assert.equal(prompts.length, 1);
 		const prompt = JSON.stringify(prompts[0]);
 		assert.match(prompt, /awaiting an OpenCode permission response/);
+		assert.match(prompt, /approve or deny through OpenCode's permission UI/);
 		assert.match(prompt, /Do not auto-approve, auto-deny, retry, fallback, dispatch, write, or hard-cancel/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer falls back to structured prompt shape", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-shape-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-04T00:00:00.000Z",
+			expires_at: "2026-06-04T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-main-wake-shape",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "awaiting_permission",
+				readyAt: "2026-06-04T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-main-wake-shape\u0000awaiting_permission",
+				consumptionKey: "ses-ses_parent123:workflow-main-wake-shape:awaiting_permission:2026-06-04T00:00:30.000Z:1",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk lane awaiting OpenCode permission",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => {
+				prompts.push(options);
+				if ((options as { sessionID?: string }).sessionID !== undefined) throw new Error("flat unsupported");
+				return {};
+			} } },
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(prompts.length, 2);
+		assert.equal((prompts[1] as { path: { id: string } }).path.id, "ses_parent123");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

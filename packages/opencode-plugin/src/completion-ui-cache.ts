@@ -51,6 +51,7 @@ type CompletionWakeReadyRow = {
 	consumed: boolean;
 	consumedAt?: string;
 	laneIds: readonly string[];
+	taskIds: readonly string[];
 	taskResultRefs: readonly string[];
 	taskFailedRefs: readonly string[];
 	taskSummaries: readonly string[];
@@ -391,6 +392,7 @@ function mergeCompletionWakeReadyRows(input: {
 				consumed: row.consumed === true,
 				...(getString(row, "consumedAt") === undefined ? {} : { consumedAt: getString(row, "consumedAt") }),
 				laneIds: Array.isArray(row.laneIds) ? row.laneIds.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
+				taskIds: Array.isArray(row.taskIds) ? row.taskIds.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
 				taskResultRefs: Array.isArray(row.taskResultRefs) ? row.taskResultRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
 				taskFailedRefs: Array.isArray(row.taskFailedRefs) ? row.taskFailedRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
 				taskSummaries: Array.isArray(row.taskSummaries) ? row.taskSummaries.filter((value): value is string => typeof value === "string" && value.length > 0 && !FORBIDDEN_SUMMARY_MARKERS.test(value)).map((value) => value.slice(0, 20)).slice(0, 3) : [],
@@ -723,7 +725,8 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const wakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:${wakeReadyIso}:${resultRefs.length}:${failedRefs.length}`;
 		const permissionWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:awaiting_permission:${wakeReadyIso}:${awaitingPermissionRows.length}`;
 		const diagnosticWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:diagnostic_attention:${wakeReadyIso}:${toolDiagnosticRows.length}`;
-		const wakeReadyRow: CompletionWakeReadyRow | undefined = terminalComplete ? {
+		const terminalCompletedRows = rows.filter((row) => row.classification === "terminal" && (row.state === "task_result" || row.state === "invocation_failed" || row.state === "task_failed" || row.state === "no_output"));
+		const workflowWakeReadyRow: CompletionWakeReadyRow | undefined = terminalComplete ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
 			completionKind: wakeKind,
@@ -732,6 +735,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			consumptionKey: wakeConsumptionKey,
 			consumed: false,
 			laneIds: rows.map((row) => row.laneId).slice(0, 32),
+			taskIds: rows.map((row) => row.taskId).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32),
 			taskResultRefs: resultRefs,
 			taskFailedRefs: failedRefs,
 			taskSummaries: rows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
@@ -746,6 +750,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			consumptionKey: permissionWakeConsumptionKey,
 			consumed: false,
 			laneIds: awaitingPermissionRows.map((row) => row.laneId).slice(0, 32),
+			taskIds: awaitingPermissionRows.map((row) => row.taskId).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32),
 			taskResultRefs: [],
 			taskFailedRefs: [],
 			taskSummaries: awaitingPermissionRows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
@@ -760,13 +765,41 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			consumptionKey: diagnosticWakeConsumptionKey,
 			consumed: false,
 			laneIds: toolDiagnosticRows.map((row) => row.laneId).slice(0, 32),
+			taskIds: toolDiagnosticRows.map((row) => row.taskId).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32),
 			taskResultRefs: [],
 			taskFailedRefs: [],
 			taskSummaries: toolDiagnosticRows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
 			notificationLabel: "FlowDesk lane diagnostic attention requested",
 			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
 		} : undefined;
-		const wakeReadyRows = mergeCompletionWakeReadyRows({ existing: existingWakeReady?.rows, row: wakeReadyRow });
+		const laneWakeRows: CompletionWakeReadyRow[] = terminalComplete ? [] : terminalCompletedRows.map((row) => {
+			const rowParentScope = row.parentSessionRef ?? "global";
+			const rowReadyAt = row.lastObservedAt ?? observedAt;
+			const rowFailed = row.state !== "task_result";
+			return {
+				workflowId: input.workflowId,
+				...(row.parentSessionRef === undefined ? {} : { parentSessionRef: row.parentSessionRef }),
+				completionKind: rowFailed ? "task_failed" : "task_result",
+				readyAt: rowReadyAt,
+				dedupeKey: `${rowParentScope}\u0000${input.workflowId}\u0000${row.laneId}`,
+				consumptionKey: `${rowParentScope}:${input.workflowId}:${row.laneId}:${rowReadyAt}:${row.taskId ?? row.laneId}:${row.state ?? "terminal"}`,
+				consumed: false,
+				laneIds: [row.laneId],
+				taskIds: row.taskId === undefined ? [] : [row.taskId],
+				taskResultRefs: row.state === "task_result" ? [row.taskId ?? row.laneId] : [],
+				taskFailedRefs: rowFailed ? [row.taskId ?? row.laneId] : [],
+				taskSummaries: row.taskSummary === undefined ? [] : [row.taskSummary],
+				notificationLabel: rowFailed ? "FlowDesk lane completed with failure" : "FlowDesk lane result ready",
+				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+			};
+		});
+		let wakeReadyRows: readonly CompletionWakeReadyRow[] = mergeCompletionWakeReadyRows({
+			existing: existingWakeReady?.rows,
+			row: workflowWakeReadyRow,
+		});
+		for (const row of laneWakeRows) {
+			wakeReadyRows = mergeCompletionWakeReadyRows({ existing: wakeReadyRows, row });
+		}
 		writeFileSync(wakeReadyCachePath, `${JSON.stringify({
 			schema_version: "flowdesk.completion_wake_ready_cache.v1",
 			observed_at: observedAt,

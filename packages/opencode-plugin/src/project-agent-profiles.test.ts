@@ -81,6 +81,11 @@ test("Release 1 project subagent profiles exist and use supported frontmatter", 
     }
     if (ordinaryGitMutationProfiles.has(profile)) assert.match(frontmatter, /^  bash:\n    "\*": allow$/m, `${profile} bash may default to allow for ordinary git actions`);
     else assert.match(frontmatter, /^  bash:\n    "\*": ask$/m, `${profile} bash must default to ask`);
+    assert.match(frontmatter, /^  read: allow$/m, `${profile} must allow read-only file reads`);
+    assert.match(frontmatter, /^  glob: allow$/m, `${profile} must allow read-only glob searches`);
+    assert.match(frontmatter, /^  grep: allow$/m, `${profile} must allow read-only content searches`);
+    assert.match(frontmatter, /^  list: allow$/m, `${profile} must allow read-only directory listing`);
+    assert.match(frontmatter, /^  external_directory:\n    "\*": allow$/m, `${profile} must allow external read boundary crossing`);
     assert.match(frontmatter, /^    "head \*": allow$/m, `${profile} may run read-only head utility`);
     assert.match(frontmatter, /^    "grep \*": allow$/m, `${profile} may run read-only grep utility`);
     assert.match(frontmatter, /^    "echo \*": allow$/m, `${profile} may run read-only echo utility`);

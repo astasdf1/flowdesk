@@ -38,6 +38,8 @@ interface PromptClient {
 	};
 }
 
+type PromptDispatch = (options: unknown) => unknown;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -94,7 +96,7 @@ function wakePrompt(row: WakeRow): string {
 	const action = row.completionKind === "auto_next_ready"
 		? "Continue the FlowDesk workflow now by synthesizing the completed subtask result or moving to the next safe step."
 		: row.completionKind === "awaiting_permission"
-			? "Resume FlowDesk coordination now by checking durable status for the child lane awaiting an OpenCode permission response. Do not auto-approve, auto-deny, retry, fallback, dispatch, write, or hard-cancel."
+			? "Notify the user that a child FlowDesk lane is awaiting an OpenCode permission response, then check durable status. The user must approve or deny through OpenCode's permission UI. Do not auto-approve, auto-deny, retry, fallback, dispatch, write, or hard-cancel."
 		: row.completionKind === "diagnostic_attention"
 			? "Resume FlowDesk coordination now by checking durable status/debug evidence for a child lane diagnostic attention signal. Treat this as advisory only; do not synthesize results, fail the task, abort, retry, fallback, dispatch, write, approve/deny permissions, or hard-cancel."
 		: row.completionKind === "task_failed"
@@ -102,6 +104,41 @@ function wakePrompt(row: WakeRow): string {
 			: "Resume FlowDesk coordination now by checking the completed subtask result and deciding the next safe action.";
 	const summary = row.taskSummaries.length > 0 ? ` Summary: ${row.taskSummaries.join(", ")}.` : "";
 	return `FlowDesk completion wake signal. Workflow ${row.workflowId} is ${row.completionKind} at ${row.readyAt}.${summary} ${action} Use durable FlowDesk status evidence; do not invent results.`;
+}
+
+async function dispatchParentWakePrompt(input: {
+	dispatch: PromptDispatch;
+	session: NonNullable<PromptClient["session"]>;
+	sessionId: string;
+	directory?: string;
+	model: { providerID: string; modelID: string };
+	agentName: string;
+	text: string;
+}): Promise<void> {
+	const query = input.directory === undefined ? undefined : { directory: input.directory };
+	const body = {
+		model: input.model,
+		agent: input.agentName,
+		parts: [{ type: "text", text: input.text.slice(0, 1_000) }],
+	};
+	try {
+		await input.dispatch.call(input.session, {
+			sessionID: input.sessionId,
+			...(query === undefined ? {} : { query }),
+			body,
+		});
+		return;
+	} catch (error) {
+		try {
+			await input.dispatch.call(input.session, {
+				path: { id: input.sessionId },
+				...(query === undefined ? {} : { query }),
+				body,
+			});
+		} catch {
+			throw error;
+		}
+	}
 }
 
 export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
@@ -127,14 +164,14 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	for (const row of rows) {
 		const sessionId = parentSessionIdFromRef(row.parentSessionRef);
 		if (sessionId === undefined) continue;
-		await dispatch.call(input.client.session, {
-			path: { id: sessionId },
-			...(input.config.directory === undefined ? {} : { query: { directory: input.config.directory } }),
-			body: {
-				model,
-				agent: input.config.agentName,
-				parts: [{ type: "text", text: wakePrompt(row).slice(0, 1_000) }],
-			},
+		await dispatchParentWakePrompt({
+			dispatch,
+			session: input.client.session,
+			sessionId,
+			directory: input.config.directory,
+			model,
+			agentName: input.config.agentName,
+			text: wakePrompt(row),
 		});
 		wakeSucceeded += 1;
 		consumedKeys.add(row.consumptionKey);

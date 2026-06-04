@@ -193,6 +193,54 @@ test("completion UI cache writes provider-free completion wake-ready row for syn
 	}
 });
 
+test("completion UI cache writes lane-scoped wake-ready row when one delegated lane completes before workflow is fully terminal", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-lane-wake-ready-"));
+	try {
+		const workflowId = "workflow-lane-wake-ready-1";
+		const completedLaneId = "lane-task-lane-wake-ready-1";
+		const runningLaneId = "lane-task-lane-wake-running-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-lane-wake-ready-1", {
+			...agentTaskContext(workflowId, completedLaneId, "task-lane-wake-ready-1", "2026-05-29T00:00:00.000Z"),
+			parent_session_ref: "ses-parent-lane-wake-ready-1",
+			prompt_text: "Review completion wake presentation metadata",
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-lane-wake-ready-1", taskResult(workflowId, completedLaneId, "task-lane-wake-ready-1", "2026-05-29T00:02:00.000Z"));
+		writeEvidence(rootDir, workflowId, "agent_task_child_session", "child-lane-wake-running-1", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: runningLaneId,
+			task_id: "task-lane-wake-running-1",
+			child_session_id: "ses-child-lane-wake-running-1",
+			parent_session_ref: "ses-parent-lane-wake-ready-1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-flowdesk-verifier-testing",
+			nudge_count: 0,
+			last_nudge_at: null,
+			created_at: "2026-05-29T00:01:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-05-29T00:02:01.000Z" });
+
+		const autoNext = readCache(rootDir, "auto-next-ready.json");
+		assert.deepEqual(autoNext.workflows, [], "workflow must not be auto-next-ready while another lane is still running");
+		const wake = readCache(rootDir, "completion-wake-ready.json");
+		const rows = wake.rows as Array<Record<string, unknown>>;
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0].workflowId, workflowId);
+		assert.equal(rows[0].parentSessionRef, "ses-parent-lane-wake-ready-1");
+		assert.equal(rows[0].completionKind, "task_result");
+		assert.equal(rows[0].readyAt, "2026-05-29T00:02:00.000Z");
+		assert.equal(rows[0].dedupeKey, `ses-parent-lane-wake-ready-1\u0000${workflowId}\u0000${completedLaneId}`);
+		assert.deepEqual(rows[0].laneIds, [completedLaneId]);
+		assert.deepEqual(rows[0].taskIds, ["task-lane-wake-ready-1"]);
+		assert.deepEqual(rows[0].taskResultRefs, ["task-lane-wake-ready-1"]);
+		assert.equal(rows[0].notificationLabel, "FlowDesk lane result ready");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("completion UI cache wake-ready rows are parent scoped and duplicate refreshes are monotonic", () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-wake-scope-"));
 	try {

@@ -72,10 +72,10 @@ All implementation work must be traced to a final target feature and to the rele
 | Hook harness containment | Release 1 | Harness modes, supported hook surfaces, fail-closed behavior, off-mode safe fallback |
 | Subagent lane observability | Release 1 | Status card or command summary schema, openable reference conformance gate, event/log/debug ref schema, redaction rules, fallback commands |
 | OpenCode conformance | Release 1 and every later release | Compatibility artifact, evidence matrix, schema-conversion gate, release-mode disable rules |
-| Real OpenCode dispatch | Release 2+ | Trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, sanitized auth capture, external auth/provider policy, configured verification, Guard approval, durable pre-dispatch audit |
-| Internal agent/model lane routing | Release 2.5 or Release 3 entry | OpenCode `subtask: true` command lane or injected SDK/client path, explicit agent id, concrete provider-qualified model id, binding registry entry, runtime echo, telemetry persistence, no nested `opencode run`, Guard-compatible override policy |
-| Top-tier multi-perspective reviewer lanes | Release 2.5 or Release 3 entry | Canonical `reviewer` profile extensions for every registered highest-tier available reviewer/model binding in the active FlowDesk registry; when only one highest-tier model is registered, multiple reviewer agents or perspective bindings may share that model, with provider-qualified concrete model ids, fresh auth/usage/quota evidence, runtime echo, telemetry persistence, typed critical review schema, no silent fallback, no approval authority |
-| Managed model/provider fallback and reselection | Release 2+ | Fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, new attempt id, explicit Guard approval |
+| Real OpenCode dispatch | Release 2+ | Plugin-satisfiable dispatch bundle: configured authorization, fresh usage/provider health, sanitized auth capture, external auth/provider policy, configured verification, consumed Guard/user approval, durable pre-dispatch audit, dispatch idempotency/reservation, and intended SDK dispatch path. OpenCode platform-dependent proof gaps such as trusted runtime echo issuer, trusted telemetry correlation, lane conformance, and usage authority attestation are surfaced as skipped diagnostics unless a future OpenCode conformance artifact proves them. |
+| Internal agent/model lane routing | Release 2.5 or Release 3 entry | OpenCode `subtask: true` command lane or injected SDK/client path, explicit agent id, concrete provider-qualified model id, binding registry entry, observed lifecycle/result/status evidence through exposed plugin/SDK surfaces, plugin-verifiable telemetry refs, no nested `opencode run`, Guard-compatible override policy. Platform-internal lane conformance remains a skipped diagnostic unless OpenCode exposes a verifiable boundary. |
+| Top-tier multi-perspective reviewer lanes | Release 2.5 or Release 3 entry | Canonical `reviewer` profile extensions for every registered highest-tier available reviewer/model binding in the active FlowDesk registry; when only one highest-tier model is registered, multiple reviewer agents or perspective bindings may share that model, with provider-qualified concrete model ids, fresh auth/usage/quota evidence, observed lifecycle/result/status evidence, plugin-verifiable telemetry refs, typed critical review schema, no silent fallback, no approval authority. Reviewer lane platform conformance is observed/un-attested unless a future OpenCode artifact proves it. |
+| Managed model/provider fallback and reselection | Release 2+ | Fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed lifecycle/result/status evidence, plugin-verifiable telemetry refs, durable pre-dispatch audit, new attempt id, explicit Guard approval. Automatic fallback/reselection stays forbidden unless this separate gate is explicitly promoted. |
 | Operational intelligence and proposal optimization | Release 3+ | Proposal/fan-out/scoring schemas, usage reserve, cadence limits, advisory-only ranking gates |
 | GitHub/private ledger and external DB migration | Release 3+ | Canonical forbidden payload enforcement, hash-chain, partition/rollup/archive/migration schemas, OIDC identity |
 | Federated score registry | Release 4+ | Explicit opt-in, preview, revoke/retention policy, registry schema, anti-Sybil and self-hosting controls |
@@ -102,7 +102,7 @@ If a target feature lacks one of the required contracts above, implementation mu
 15. No Release 1 path may depend on broad invisible prompt or prefix injection. Message mutation is allowed only for transparent steering, command-backed routing, or conformance-proven containment; it is not a substitute for approval, blocking intake, or Guard.
 16. No production orchestration path may use `opencode run` to launch delegated authoring, reviewer lanes, review fan-out, arbitrary agent/model override lanes, or normal multi-model orchestration. Those paths must use conformance-proven internal OpenCode subtask lanes or injected SDK/client calls with explicit `agent` and provider-qualified concrete `model` binding.
 17. No dedicated reviewer profile may replace the canonical `reviewer` id, approve dispatch, replace Guard, self-approve, or turn a critical review into user approval. Dedicated top-tier reviewer and perspective bindings are bindings of the `reviewer` capability profile, not separate authority classes.
-18. Plugin verification boundary. FlowDesk is an OpenCode plugin and may only verify what happens inside its own boundary: what it asked OpenCode to do and what OpenCode returned. A plugin cannot, by itself, attest platform-internal facts such as a trusted/attested runtime echo, that OpenCode actually ran in a given conformance mode (for example real-opencode-dispatch, runtime_echo_mode=trusted, or hook_harness=enforce), or how the OpenCode binary behaves internally. Those are OpenCode PLATFORM capabilities. FlowDesk implementation and verification work must stay inside the plugin boundary; it may OBSERVE platform behavior and record it as observed/un-attested evidence, but it must not attempt to "verify" or self-attest an OpenCode platform capability, and must not treat the absence of such a platform capability as a FlowDesk defect. When a gate requires platform-dependent evidence FlowDesk cannot self-attest, FlowDesk classifies that evidence as opencode-platform-dependent and reports the gate as blocked-outside-plugin-boundary rather than failing to implement it. The plugin-satisfiable vs opencode-platform-dependent classification is materialized by `assessFlowDeskPluginVerificationBoundaryV1` and surfaced in production-enablement evaluation.
+18. Plugin verification boundary. FlowDesk is an OpenCode plugin and may only verify what happens inside its own boundary: what it asked OpenCode to do, what plugin code persisted, and what OpenCode returned through exposed plugin/SDK surfaces. A plugin cannot, by itself, attest platform-internal facts such as a trusted/attested runtime echo issuer, that OpenCode actually ran in a given conformance mode (for example real-opencode-dispatch, runtime_echo_mode=trusted, or hook_harness=enforce), trusted telemetry correlation, lane conformance, usage authority attestation, or how the OpenCode binary behaves internally. Those are OpenCode PLATFORM capabilities. FlowDesk implementation and verification work must stay inside the plugin boundary; it may OBSERVE platform behavior and record it as observed/un-attested evidence, but it must not attempt to "verify" or self-attest an OpenCode platform capability, and must not fabricate those proofs. When a managed-dispatch gate requires platform-dependent evidence FlowDesk cannot self-attest, FlowDesk classifies that evidence as opencode-platform-dependent and keeps it visible as a skipped diagnostic while evaluating the plugin-satisfiable gate. The plugin-satisfiable vs opencode-platform-dependent classification is materialized by `assessFlowDeskPluginVerificationBoundaryV1` and surfaced in production-enablement evaluation.
 
 Bootstrap exception: the installer may perform a narrow set of setup mutations before normal Guard operation exists, but only under the bootstrap authority model in section 6.5.
 
@@ -281,7 +281,7 @@ Usage Availability Snapshot rules:
 5. Usage snapshots may persist only normalized dispatchability fields, freshness metadata, provider/model family identifiers, reset bucket metadata, uncertainty flags, and redacted source references.
 6. Usage snapshots must not persist provider response bodies, account identifiers beyond a redacted stable reference, raw local session excerpts, auth headers, API keys, or model-generated usage claims.
 
-OpenUsage-style usage checking may be used as a reference pattern, not as authority by default. FlowDesk may borrow the pattern of a provider capability matrix and explicit source labels for each metric, such as provider API truth, local observed history, response `usage` accounting, rate-limit/header probe, authenticated diagnostic probe, or inferred estimate. A Usage Availability Snapshot that relies on local observed history, including OpenCode SQLite/history style evidence, must label the source as local-only and may not claim account-wide quota truth across devices or sessions. FlowDesk must not copy browser cookie extraction, HAR capture, provider console scraping, undocumented subscription or quota endpoints, permissive local HTTP cache assumptions, or unmerged OpenCode `/usage` pull request behavior into Release 1. FlowDesk's internal provider-native collector may implement pinned DEX Conductor/OpenUsage-style acquisition logic for Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota, but it may emit trusted managed-dispatch usage authority only when it actually acquires auth-bound usage/quota/reset evidence and redacts all raw provider payloads. If DEX Conductor or an external OpenUsage-compatible local API is used as Release 2 evidence, it must be opt-in, loopback-only, version-pinned, redacted, continuously auditable, and bound by a conformance artifact proving the exact provider, concrete non-alias model id, model family, auth profile, credential scope, account/project boundary, actual usage acquisition, quota evidence, reset time, reset bucket, and source authority. Managed-dispatch beta represents that proof as `flowdesk.managed_dispatch_beta.usage_authority_evidence.v1`, matching the Usage Snapshot `snapshot_id`, `provider_family`, `model_family`, `reset_time`, `reset_bucket`, and `source_ref` plus the Guard-approved provider-qualified model id without storing raw provider payloads.
+OpenUsage-style usage checking may be used as a reference pattern, not as authority by default. FlowDesk may borrow the pattern of a provider capability matrix and explicit source labels for each metric, such as provider API truth, local observed history, response `usage` accounting, rate-limit/header probe, authenticated diagnostic probe, or inferred estimate. A Usage Availability Snapshot that relies on local observed history, including OpenCode SQLite/history style evidence, must label the source as local-only and may not claim account-wide quota truth across devices or sessions. FlowDesk must not copy browser cookie extraction, HAR capture, provider console scraping, undocumented subscription or quota endpoints, permissive local HTTP cache assumptions, or unmerged OpenCode `/usage` pull request behavior into Release 1. FlowDesk's internal provider-native collector may implement pinned DEX Conductor/OpenUsage-style acquisition logic for Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota, but it may emit managed-dispatch usage evidence only when it actually acquires auth-bound usage/quota/reset evidence and redacts all raw provider payloads. The plugin can verify its collector inputs, normalization, freshness, and redacted persistence; it cannot self-attest OpenCode platform-internal usage authority for an account, credential, or provider surface it did not directly verify. If DEX Conductor or an external OpenUsage-compatible local API is used as Release 2 evidence, it must be opt-in, loopback-only, version-pinned, redacted, continuously auditable, and bound by plugin-verifiable evidence for the exact provider, concrete non-alias model id, model family, auth profile ref, credential scope ref, account/project boundary ref, actual usage acquisition, quota evidence, reset time, reset bucket, and source label. Any broader usage-authority attestation remains OpenCode/platform dependent and must be surfaced as a skipped diagnostic unless a conformance artifact proves the plugin can verify it. Managed-dispatch beta represents the plugin-verifiable portion as `flowdesk.managed_dispatch_beta.usage_authority_evidence.v1`, matching the Usage Snapshot `snapshot_id`, `provider_family`, `model_family`, `reset_time`, `reset_bucket`, and `source_ref` plus the Guard-approved provider-qualified model id without storing raw provider payloads.
 
 Provider Health Snapshot minimum fields:
 
@@ -708,8 +708,8 @@ Promotion order is strict:
 1. Release 1 production handlers are implemented and verified before OpenCode production registration is promoted.
 2. Plugin tool schema evidence proves the pinned OpenCode plugin path, provider/model transforms, and FlowDesk runtime validation preserve the selected FDS boundary.
 3. Production OpenCode registration is enabled only for command-backed non-dispatch handlers after doctor, schema, Guard, audit, policy, redaction, and disabled-mode checks pass.
-4. Telemetry and runtime-echo conformance is proven before any real dispatch path is implemented.
-5. A single low-risk `real-opencode-dispatch` beta path is promoted only after trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh provider health, sanitized auth capture, external auth/provider policy, Guard approval, durable pre-dispatch audit, and configured verification all pass.
+4. Telemetry and runtime-echo conformance is recorded as observed plugin/SDK evidence before any real dispatch path is implemented; OpenCode platform-internal proof remains outside the plugin boundary unless a future conformance artifact proves it.
+5. A single low-risk `real-opencode-dispatch` beta path is promoted only after the plugin-satisfiable dispatch bundle passes: configured authorization, fresh usage/provider health, sanitized auth capture, external auth/provider policy, configured verification, consumed Guard/user approval, durable pre-dispatch audit, dispatch idempotency/reservation, and intended SDK dispatch path. OpenCode platform-dependent proof gaps remain visible as skipped diagnostics and must not be self-attested by FlowDesk.
 6. Hard chat no-reply/cancellation, actual delegated lane launch, and automatic provider/model fallback or reselection remain separate later gates. They must not be bundled into the production-registration gate or the first real-dispatch beta gate.
 
 Generated command templates must be static. The allowed template shape is a fixed instruction to call the matching FlowDesk tool with schema-reviewed fields supplied by OpenCode command arguments or by a redacted intake reference. Templates must not include shell interpolation, arbitrary shell blocks, dynamic imports, provider calls, raw prompt persistence, or command text that widens the tool schema.
@@ -729,7 +729,7 @@ Supported dispatch modes:
 | `command-steering` | Uses command hooks and chat steering to guide user/model text into FlowDesk envelope without real privileged dispatch | Allowed in Release 1 after conformance-backed mutation/throw tests |
 | `real-opencode-dispatch` | Executes a Guard-approved step inside the active OpenCode runtime through a conformance-proven model/agent binding path | Disabled until a later real-dispatch release gate passes |
 
-Real dispatch requires conformance evidence for both trusted model/agent binding and trusted runtime echo source. Without that evidence, `/flowdesk-run` may only perform guarded dry-run or fake-runtime dispatch according to release mode.
+Real dispatch requires a passing plugin-satisfiable dispatch bundle and redaction-safe observed binding/runtime evidence from the intended OpenCode plugin/SDK path. Trusted platform-internal runtime echo, telemetry correlation, lane conformance, or usage authority attestation are required only if OpenCode exposes a conformance-proven way for the plugin to verify them; otherwise they remain skipped diagnostics and must not be fabricated. Without the plugin-satisfiable bundle, `/flowdesk-run` may only perform guarded dry-run or fake-runtime dispatch according to release mode.
 
 OpenCode 1.14.40 PoC result: `command.execute.before` mutation can steer command-backed flows, and `command.execute.before` throw prevents downstream chat dispatch. This is sufficient for command-backed Release 1 steering, but not a substitute for trusted real runtime dispatch.
 
@@ -864,7 +864,7 @@ FlowDesk must not use event telemetry for:
 
 If the minimum telemetry surfaces are unavailable, delayed beyond policy tolerance, lossy in a way that prevents safe coordination, or not correlated to stable session/message/tool identifiers, FlowDesk must disable real dispatch, managed fallback/reselection, and any recovery mode that depends on those surfaces. Command-driven guarded dry-run and fake-runtime dispatch may remain available.
 
-Event-derived lifecycle states such as `completed`, `failed`, `cancelled`, or `idle` are observations only. They may update status displays and recovery hints, but they must not transition a workflow to `complete`, promote artifacts, mark verification passed, or mark execution successful without trusted runtime echo, configured verification when required, and durable audit outcome records.
+Event-derived lifecycle states such as `completed`, `failed`, `cancelled`, or `idle` are observations only. They may update status displays and recovery hints, but they must not transition a workflow to `complete`, promote artifacts, mark verification passed, or mark execution successful without the plugin-verifiable completion bundle: observed lifecycle/result/status evidence from the intended SDK path, configured verification when required, and durable audit outcome records. Trusted platform-internal runtime echo, telemetry correlation, lane conformance, or usage-authority attestation may strengthen a future gate only when OpenCode exposes a conformance-proven plugin-verifiable source; otherwise those items remain skipped diagnostics.
 
 ### 6.7a Lane Heartbeat and Stall Detection Contract
 
@@ -924,7 +924,7 @@ Fail-closed rules:
 2. In `enforce` mode, a hook failure blocks the dependent workflow and shows a safe recovery path.
 3. In `observe` mode, FlowDesk must not rely on observation as containment; any privileged automation that needs containment remains disabled.
 4. In `off` mode, FlowDesk must not treat disabled hooks as permission to bypass safety. It disables managed and privileged automation and leaves safe manual fallback only.
-5. Real dispatch remains disabled until the real-dispatch gate proves trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, Guard approval, and durable pre-dispatch audit.
+5. Real dispatch remains disabled until the plugin-satisfiable real-dispatch gate has real evidence for authorization, fresh usage/provider health, configured verification, approval, durable pre-dispatch audit, idempotency/reservation, and the intended SDK dispatch path. Platform-dependent proof gaps remain skipped diagnostics unless OpenCode conformance proves the plugin can verify them.
 
 ### 6.9 Workflow Authoring Delegation and Lane Observability
 
@@ -956,7 +956,7 @@ Minimum contract:
 13. A planned todo continuation supervisor may watch only FlowDesk-owned durable workflow task records, not raw OpenCode/OMO todo lists or transcripts. If incomplete tasks remain after a turn, it may continue only through a conformance-proven post-turn or pre-turn control surface, durable checkpoint state, explicit lane completion contracts, bounded retry policy, and required user/Guard approvals. Without that conformance, it must degrade to visible guidance or command-backed safe next actions and must not inject hidden system directives.
 14. Todo continuation is recovery orchestration, not authority. It cannot approve dispatch, widen scope, bypass confirmation, bypass configured verification, replace a failed reviewer/QA/security verdict, or treat a no-output lane as complete.
 
-Release 1 lane behavior is limited to delegated authoring records, fake-runtime lane summaries, command/status summaries, and degraded fallback records. Any actual OpenCode subtask/model/provider lane launch requires the managed-dispatch gate: trusted binding, trusted runtime echo, sufficient telemetry, fresh usage when provider/model selection is involved, fresh provider health, sanitized auth capture, external auth/provider policy, Guard approval for privileged work, configured verification, and durable pre-dispatch audit.
+Release 1 lane behavior is limited to delegated authoring records, fake-runtime lane summaries, command/status summaries, and degraded fallback records. Any actual OpenCode subtask/model/provider lane launch requires the managed-dispatch gate: the plugin-satisfiable evidence bundle, Guard/user approval for privileged work, configured verification, durable pre-dispatch audit, dispatch idempotency/reservation, and redaction-safe observed runtime/lifecycle/result evidence from the intended SDK path. Trusted runtime echo issuer, trusted telemetry correlation, lane conformance, and usage authority attestation remain OpenCode platform-dependent diagnostics unless a future conformance artifact proves the plugin can verify them.
 
 Planned top-tier reviewer and perspective bindings for Release 2.5 or Release 3 entry:
 
@@ -1140,7 +1140,7 @@ Exact persisted Release 1 state schemas are normative in `docs/schemas/RELEASE_1
 4. `flowdesk.checkpoint_record.v1` for `.flowdesk/workflows/<workflow_id>/checkpoints/<checkpoint_id>.json`.
 5. `flowdesk.active_attempt_lock.v1` for `.flowdesk/workflows/<workflow_id>/locks/active-attempt.lock`.
 
-Release 1 persisted attempts must use `guarded-dry-run`, `fake-runtime`, or `command-steering` run modes only. Provider/model/usage/runtime fields in attempt records are opaque evidence refs when available and must be omitted when not applicable; they must not be represented by placeholder provider ids that imply real dispatch. `runtime_echo_validation` is `not_applicable` for command-steering and fake-runtime paths unless a pinned conformance report proves a trusted runtime echo surface for the specific path.
+Release 1 persisted attempts must use `guarded-dry-run`, `fake-runtime`, or `command-steering` run modes only. Provider/model/usage/runtime fields in attempt records are opaque evidence refs when available and must be omitted when not applicable; they must not be represented by placeholder provider ids that imply real dispatch. `runtime_echo_validation` is `not_applicable` for command-steering and fake-runtime paths unless a pinned conformance report proves a plugin-verifiable runtime echo/status surface for the specific path.
 
 `active.json` is an index for safe status/recovery lookup only. If it points to a missing, corrupt, stale, or mismatched workflow or attempt record, FlowDesk must treat the active workflow as blocked for resume/retry and offer only `/flowdesk-status`, `/flowdesk-abort`, or `/flowdesk-export-debug` as appropriate. It cannot be used as standalone proof that a workflow is eligible to run.
 
@@ -1475,7 +1475,7 @@ chat input
   -> policy and approval gates
   -> Guard decision for privileged work
   -> dispatch mode allowed by release gate
-  -> trusted echo, verification, audit, and recovery updates
+  -> plugin-verifiable runtime observations, verification, audit, and recovery updates
 ```
 
 Future real-dispatch pipeline, enabled only after the managed dispatch beta gate passes:
@@ -1486,7 +1486,7 @@ approved workflow step
   -> final fresh provider health check
   -> durable redacted pre-dispatch audit
   -> GuardApprovedDispatch through conformance-proven runtime binding
-  -> trusted runtime echo validation
+  -> redaction-safe observed lifecycle/result/status validation from the intended SDK path
   -> configured verification
   -> artifact quarantine or promotion
   -> durable redacted outcome audit
@@ -1504,8 +1504,8 @@ Future Release 2+ managed fallback/reselection may proceed only when every condi
 2. Fresh Provider Health Snapshot with `dispatchability=dispatchable` and no unresolved provider/API/model failure class.
 3. Runtime compatibility and OpenCode conformance for the new provider/model, command shape, runtime variant, and lane or dispatch surface.
 4. Policy Pack eligibility, user approval where required, budget/reserve checks, and professional-boundary checks.
-5. Trusted binding evidence before dispatch and trusted runtime echo after dispatch.
-6. Sufficient telemetry for the enabled real-dispatch and recovery modes.
+5. Trusted or plugin-verifiable binding evidence before dispatch and redaction-safe observed lifecycle/result/status evidence after dispatch. Platform-internal runtime echo remains a skipped diagnostic unless OpenCode exposes a conformance-proven plugin-verifiable source.
+6. Plugin-verifiable telemetry refs for the enabled real-dispatch and recovery modes; platform-internal correlation remains a skipped diagnostic unless OpenCode exposes a verifiable boundary.
 7. Durable redacted pre-dispatch audit for the new binding before any provider call.
 8. A new attempt id. Fallback must never reuse the failed attempt id as if it were the same execution.
 9. Explicit FlowDesk Guard approval for the new provider/model/account/auth binding and scope.
@@ -1857,8 +1857,8 @@ Before enabling production dispatch, implement tests for:
 8. Generated command templates reject shell interpolation or equivalent pre-hook execution.
 9. Tool before/after hooks cannot authorize dispatch.
 10. Model-driven built-in tool calls can be denied by policy hooks with zero side effect in tested paths.
-11. Runtime echo evidence is collected from trusted OpenCode runtime surfaces.
-12. Fake-provider request headers/params are recorded separately from trusted runtime echo.
+11. Runtime/lifecycle/result evidence is collected from plugin-verifiable OpenCode plugin/SDK surfaces, and any platform-internal runtime-echo claim is classified as skipped diagnostic unless a conformance artifact proves the plugin can verify it.
+12. Fake-provider request headers/params are recorded separately from runtime/lifecycle/result evidence and never treated as trusted platform-internal runtime echo.
 13. Missing runtime model/agent evidence quarantines artifacts.
 14. Stale usage blocks dispatch.
 15. Non-dispatchable Provider Health Snapshot blocks real dispatch and managed fallback/reselection.
@@ -1882,7 +1882,7 @@ Before enabling production dispatch, implement tests for:
 33. Workflow taxonomy stores separate axes for category, difficulty drivers, coupling, algorithmic hardness, architecture hardness, migration/state hardness, domain uncertainty, verification hardness, operational risk, and policy/professional boundary.
 34. Workflow optimizer scores cannot override Guard, policy, usage, runtime compatibility, conformance, or human approval.
 35. Multi-model proposal fan-out is blocked unless the surplus usage gate passes with fresh provider-native dispatchable usage, fresh provider health where provider/model selection is involved, preserved reserve, budget cap, explicit opt-in, and a redacted prompt envelope.
-36. Future managed fallback/reselection is blocked unless fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, a new attempt id, and explicit Guard approval all pass.
+36. Future managed fallback/reselection is blocked unless fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed lifecycle/result/status evidence, telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval all pass; platform-internal proof remains skipped unless OpenCode exposes it through a verifiable boundary.
 37. GitHub score ledger tests prove private repo JSONL stores only redacted schema-safe fields, reusable rollups come only from sealed partitions, canonical event hash chains and trusted chain heads detect tampering, duplicate replays cannot inflate aggregates, Actions artifacts are temporary, Pages summaries are aggregate only, GitHub workflows use least-privilege permissions, and external managed database access uses OIDC or an approved workload identity path with a cutover manifest and ingestion watermark.
 
 ## 16. Release Tracks and Implementation Sequence
@@ -1951,7 +1951,7 @@ Exit criteria: command-driven guarded dry-run and one fake-runtime execution pas
 1. Pin OpenCode version or commit.
 2. Test chat hook event ordering, steering semantics, and blocking semantics.
 3. Test command parser aliases.
-4. Test trusted runtime echo source.
+4. Test plugin-verifiable runtime/lifecycle/result observation sources and classify any platform-internal runtime-echo gap as a skipped diagnostic.
 5. Test the minimum harness telemetry surfaces for lifecycle, message progress, tool activity, permission/shell/command activity where applicable, and failure/cancellation signals.
 6. Test provider/API/model failure observation and classification without treating event hooks or provider health as fallback approval.
 7. Test plugin tool schema compatibility for every registered FlowDesk tool, including crash-free conversion before provider dispatch.
@@ -1960,9 +1960,9 @@ Exit criteria: conformance artifact records `blocking`, `steering`, `observe_onl
 
 ### Phase 5: Managed Dispatch Beta Gate
 
-1. Prove a trusted OpenCode model/agent binding path.
-2. Prove trusted runtime echo source.
-3. Prove minimum harness telemetry surfaces are available and correlated within policy tolerance.
+1. Prove a plugin-verifiable OpenCode model/agent binding path.
+2. Prove plugin-verifiable runtime/lifecycle/result observation from the intended SDK path; keep platform-internal runtime echo as a skipped diagnostic unless OpenCode exposes a verifiable source.
+3. Prove minimum plugin-verifiable telemetry surfaces are available and correlated within policy tolerance, while surfacing platform-internal correlation as a skipped diagnostic when not verifiable.
 4. Require fresh Usage Availability Snapshot and fresh Provider Health Snapshot before any provider/model binding.
 5. Enable `real-opencode-dispatch` for a single low-risk command-driven step.
 6. Keep hard chat dispatch disabled unless Phase 4 also proves blocking chat intake; Release 1 chat routing remains limited to command-backed workflows unless promoted by a later gate.
@@ -2015,9 +2015,9 @@ Exit criteria: evaluation can rank eligible candidates without overriding Guard;
 5. Guard approval is required for every privileged operation.
 6. Usage is provider-native and fresh.
 7. Provider health is fresh, provider-native or OpenCode-native where applicable, and separately checked from usage.
-8. Runtime echo trust is enforced.
-9. Minimum harness event telemetry is conformance-proven for the enabled real-dispatch, recovery, and managed fallback/reselection modes.
-10. Managed fallback/reselection, if enabled, requires a new attempt id, fresh usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, durable pre-dispatch audit, and explicit Guard approval.
+8. Runtime echo/status is observed through plugin/SDK surfaces; platform-internal runtime echo trust is enforced only when OpenCode exposes a conformance-proven plugin-verifiable source, otherwise it remains a skipped diagnostic.
+9. Minimum plugin-verifiable event telemetry is conformance-proven for the enabled real-dispatch, recovery, and managed fallback/reselection modes; platform-internal correlation remains skipped unless verifiable.
+10. Managed fallback/reselection, if enabled, requires a new attempt id, fresh usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed lifecycle/result/status evidence, durable pre-dispatch audit, and explicit Guard approval.
 11. Audit is complete and redacted.
 12. Recovery commands work for blocked, failed verification, retry, resume, and abort states.
 13. Evaluation and reference-pack features are advisory/source-grounded and cannot approve dispatch.

@@ -313,6 +313,63 @@ test("heavy model captures a slow first token that exceeds the light quiet perio
 	}
 });
 
+test("sync capture timeout leaves launched child non-terminal for watchdog backfill", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-timeout-nonterminal-"));
+	try {
+		const client = makeClient({
+			create: async () => ({ id: "ses-sync-timeout-child-01" }),
+			promptAsync: async () => ({}),
+			messages: async () => [],
+		});
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-sync-timeout-nonterminal",
+			taskId: "task-sync-timeout-nonterminal",
+			laneId: "lane-sync-timeout-nonterminal",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			promptText: "work",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_nudgeQuietPeriodMs: 20,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 5,
+		});
+
+		assert.equal(result.status, "task_launched");
+		if (result.status !== "task_launched") return;
+		assert.equal(result.childSessionId, "ses-sync-timeout-child-01");
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			rootDir: root,
+			workflowId: "workflow-sync-timeout-nonterminal",
+		});
+		assert.ok(reloaded.ok);
+		assert.equal(
+			reloaded.entries.some((entry) => entry.evidenceClass === "task_failed"),
+			false,
+			"bounded sync capture must not materialize premature task_failed/no_response while child session exists",
+		);
+		assert.equal(
+			reloaded.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					(entry.record as Record<string, unknown>).state === "no_output",
+			),
+			false,
+			"bounded sync capture must not terminalize no_output while child session can still be backfilled",
+		);
+		assert.equal(
+			reloaded.entries.some((entry) => entry.evidenceClass === "agent_task_child_session"),
+			true,
+			"child session index must remain for watchdog/status backfill",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("agent task launch prefers promptAsync when available", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-promptasync-"));
 	try {

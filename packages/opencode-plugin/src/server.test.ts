@@ -8319,7 +8319,7 @@ test("flowdesk_agent_task_run fails fast for FlowDesk session refs used as paren
 	}
 });
 
-test("flowdesk_agent_task_run writes terminal no_output lifecycle when no response text is found", async () => {
+test("flowdesk_agent_task_run keeps child-session no-response launch non-terminal for watchdog handoff", async () => {
 	const dummyClient = {
 		session: {
 			create() {
@@ -8366,22 +8366,41 @@ test("flowdesk_agent_task_run writes terminal no_output lifecycle when no respon
 				),
 			),
 		) as Record<string, unknown>;
-		assert.equal(result.status, "task_failed");
-		assert.equal(result.failureCategory, "no_response");
+		assert.equal(result.status, "task_launched");
+		assert.equal(result.childSessionId, "parent-agent-task-no-response-1");
 
 		const evidence = reloadFlowDeskSessionEvidenceV1({
 			workflowId: "workflow-task-no-response-1",
 			rootDir: root,
 		});
 		assert.equal(evidence.ok, true, evidence.errors.join("; "));
-		assert.ok(
+		assert.equal(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "task_failed" &&
+					entry.record.lane_id === result.laneId,
+			),
+			false,
+			"bounded sync capture timeout with a child session should not write task_failed",
+		);
+		assert.equal(
 			evidence.entries.some(
 				(entry) =>
 					entry.evidenceClass === "lane_lifecycle" &&
 					entry.record.lane_id === result.laneId &&
-					entry.record.state === "no_output" &&
-					entry.record.output_ref === undefined,
+					entry.record.state === "no_output",
 			),
+			false,
+			"bounded sync capture timeout with a child session should not write no_output lifecycle",
+		);
+		assert.equal(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_child_session" &&
+					entry.record.lane_id === result.laneId,
+			),
+			true,
+			"child session evidence should be preserved for watchdog/status handoff",
 		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

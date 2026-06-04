@@ -19,7 +19,7 @@ import {
 // anything, reports which plugin_satisfiable evidence inputs have actually been
 // supplied for a workflow and which are still pending real input (a passed
 // verification result, a sanitized auth capture, a policy result, fresh
-// usage/health, a durable audit, an idempotency reservation, and a human
+	// usage/health evidence visible to the plugin, a durable audit, an idempotency reservation, and a human
 // Guard approval). It never fabricates evidence; it only classifies presence.
 //
 // This keeps the work strictly inside the plugin boundary: it inspects inputs
@@ -50,7 +50,8 @@ export const FLOWDESK_PLUGIN_SATISFIABLE_PRODUCERS: Record<
 > = {
 	provider_health_snapshot: {
 		clears_blocker: "provider_health_snapshot_missing",
-		producer_label: "collectManagedDispatchBetaUsageEvidenceV1 (fresh provider health)",
+		producer_label:
+			"collectManagedDispatchBetaUsageEvidenceV1 (fresh provider usage or provider health observed by the plugin)",
 		requires_human: false,
 	},
 	pre_dispatch_audit: {

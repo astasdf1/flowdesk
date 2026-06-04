@@ -83,8 +83,8 @@ Required deliverables:
 
 1. `flowdesk.connector_profile.v1` and `flowdesk.connector_recipe_ref.v1` contracts.
 2. Profile/playbook binding for MCP/API/CLI usage instructions without treating playbooks as authority.
-3. Generic gateway that executes only profile/recipe-bound operations after consumed `external_write` approval, committed pre-write audit, connector capability proof, and idempotency reservation.
-4. Durable remote-write evidence and post-write verification summaries.
+3. Generic gateway that executes only profile/recipe-bound operations after consumed `external_write` approval, committed pre-write audit, plugin-verifiable connector capability evidence, and idempotency reservation.
+4. Durable remote-write evidence and post-write observed-ref summaries; remote platform proof beyond those observable refs remains un-attested/skipped unless a connector exposes a verifiable boundary.
 5. Fake gateway tests before any user-approved live connector smoke.
 
 ## Stage 3: Runtime Lane Lifecycle Productization
@@ -248,7 +248,7 @@ The implemented 2026-05-23 slice is intentionally non-authorizing. It adds `flow
 
 Fan-out planning deterministically creates `flowdesk.runtime_lane_launch_request.v1` records for the required reviewer perspectives. This is request materialization only: each resulting plan still requires a later runtime launch plan and explicit lane-launch approval, records `launch_attempted=false`, `approval_inferred=false`, and keeps dispatch/provider/lane/runtime authority disabled.
 
-Completed follow-up slice: durable fan-out evidence persistence and doctor/status projection now exist for `flowdesk.reviewer_fanout_plan.v1` records. Actual reviewer lane launch remains blocked until runtime launch planning, approval, SDK-client availability, durable evidence-root refs, and live lane conformance all pass.
+Completed follow-up slice: durable fan-out evidence persistence and doctor/status projection now exist for `flowdesk.reviewer_fanout_plan.v1` records. Actual reviewer lane launch remains blocked until runtime launch planning, approval, SDK-client availability, durable evidence-root refs, and plugin-visible lane observation pass. Platform-internal lane conformance remains skipped unless OpenCode exposes a verifiable boundary.
 
 ## Confirmed Follow-Up Slice: Reviewer Fan-Out Evidence and Diagnostics
 

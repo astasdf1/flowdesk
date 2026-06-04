@@ -201,7 +201,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 		normalCompleted: number;
 		autoNextStepEligible: boolean;
 		nextActionAvailable: boolean;
-		nextActionKind?: "synthesis" | "repair_summary" | "salvage_or_verify" | "retry_or_debug";
+		nextActionKind?: "synthesis" | "collect_result" | "repair_summary" | "salvage_or_verify" | "retry_or_debug";
 		nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
 	};
 }
@@ -468,6 +468,8 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 	const latestActiveSignalByLane = new Map<string, number>();
 	const latestFinalizingProgressSignalByLane = new Map<string, number>();
 	const awaitingBodyCaptureSinceByLane = new Map<string, number>();
+	const latestAwaitingPermissionByLane = new Map<string, number>();
+	const latestPermissionResponseByLane = new Map<string, number>();
 	const latestFinalizingByLane = new Map<
 		string,
 		{
@@ -537,13 +539,24 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 		const progressObservedAtMs = Date.parse(progressObservedAt);
 		if (!Number.isFinite(progressObservedAtMs)) continue;
 		const progressLabel = getStringField(entry.record, "progress_label");
+		const progressPhase = getStringField(entry.record, "phase");
+		if (progressPhase === "awaiting_permission") {
+			const current = latestAwaitingPermissionByLane.get(laneId);
+			if (current === undefined || progressObservedAtMs > current)
+				latestAwaitingPermissionByLane.set(laneId, progressObservedAtMs);
+		}
+		if (progressPhase === "waiting" && progressLabel?.includes("permission response") === true) {
+			const current = latestPermissionResponseByLane.get(laneId);
+			if (current === undefined || progressObservedAtMs > current)
+				latestPermissionResponseByLane.set(laneId, progressObservedAtMs);
+		}
 		if (agentTaskProgressExtendsFinalizingWait(progressLabel)) {
 			const currentSignal = latestFinalizingProgressSignalByLane.get(laneId);
 			if (currentSignal === undefined || progressObservedAtMs > currentSignal) {
 				latestFinalizingProgressSignalByLane.set(laneId, progressObservedAtMs);
 			}
 		}
-		if (getStringField(entry.record, "phase") !== "finalizing") continue;
+		if (progressPhase !== "finalizing") continue;
 		const current = latestFinalizingByLane.get(laneId);
 		if (current !== undefined && current.observedAtMs > progressObservedAtMs)
 			continue;
@@ -559,6 +572,9 @@ function materializeFinalizingWithoutTerminalInconsistencies(input: {
 	const intents: NonNullable<ReturnType<typeof prepareFlowDeskSessionEvidenceWriteIntentV1>["writeIntent"]>[] = [];
 	for (const progress of latestFinalizingByLane.values()) {
 		if (terminalLaneIds.has(progress.laneId)) continue;
+		const awaitingPermissionAt = latestAwaitingPermissionByLane.get(progress.laneId);
+		const permissionResponseAt = latestPermissionResponseByLane.get(progress.laneId);
+		if (awaitingPermissionAt !== undefined && (permissionResponseAt === undefined || awaitingPermissionAt > permissionResponseAt)) continue;
 		const awaitingBodyCaptureSinceMs = awaitingBodyCaptureSinceByLane.get(progress.laneId);
 		if (
 			awaitingBodyCaptureSinceMs !== undefined &&
@@ -1164,6 +1180,8 @@ function buildLaneProgressAggregate(
 	);
 	const nextActionKind = normalCompleted === expected && !synthesisAlreadyRecorded
 		? "synthesis" as const
+		: normalCompleted > 0 && !synthesisAlreadyRecorded
+			? "collect_result" as const
 		: needsRepairSummary
 			? "repair_summary" as const
 			: needsSalvageOrVerify
@@ -1499,8 +1517,8 @@ function buildStatusLiveSummaryForUser(input: {
 			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalToolRunOverdueObserved} lane(s) have stale open-tool diagnostic attention. This is advisory only; no result/failure/abort/retry/fallback was synthesized.`
 		: input.workflows.some((workflow) => (workflow.captureFailureDiagnostics ?? []).length > 0)
 			? `FlowDesk status: ${workflowsCount} workflow(s); capture-failure diagnostics available in status/debug evidence.`
-			: input.totalAwaitingPermission > 0
-			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalAwaitingPermission} lane(s) awaiting OpenCode permission attention. No permission was auto-approved.`
+		: input.totalAwaitingPermission > 0
+			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalAwaitingPermission} lane(s) awaiting OpenCode permission attention. The user must approve or deny in OpenCode's permission UI; no permission was auto-approved.`
 			: input.totalInconsistent > 0
 			? `FlowDesk status: ${workflowsCount} workflow(s); ${input.totalInconsistent} finalizing-without-terminal inconsistent lane(s) require manual recovery.`
 			: input.totalStalled > 0

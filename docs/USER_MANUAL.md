@@ -8,7 +8,7 @@ Release 1 is a General-Use MVP. Use natural-language chat first. FlowDesk routes
 
 Final product purpose: FlowDesk keeps the main agent from carrying the whole plan in context. Heavy workflow drafting, refinement, and review should run in bounded subagent lanes when the active release and pinned OpenCode conformance permit actual lane launch. In Release 1, FlowDesk may instead use delegated authoring records, fake-runtime lane summaries, and command-backed fallback summaries. The main agent routes the request, receives compact typed summaries, shows status, and asks FlowDesk Guard for any required decision.
 
-Current claims are bounded to OpenCode 1.14.40 evidence. In plain language: Release 1 can help route and check work, but it cannot secretly take over OpenCode or run real external-provider work for you. It does not claim real OpenCode dispatch, automatic provider/model switching, hard chat cancellation, hard no-reply control, or trusted runtime echo for real external providers.
+Current claims are bounded to OpenCode 1.14.40 evidence and FlowDesk's plugin-verifiable boundary. In plain language: Release 1 can help route and check work, but it cannot secretly take over OpenCode or run real external-provider work for you. It does not claim real OpenCode dispatch, automatic provider/model switching, hard chat cancellation, hard no-reply control, or OpenCode platform-internal runtime/telemetry/lane attestation for real external providers.
 
 FlowDesk should not silently rewrite most chat. If a request looks like ordinary chat, FlowDesk should stay out of the way. If a request looks like it could benefit from workflow help, FlowDesk may show a visible suggestion such as “FlowDesk로 정리” or “계획 보기”. If you explicitly ask FlowDesk to manage a request, FlowDesk can route it into a command-backed workflow. Any execution-like step still requires confirmation before Release 1 guarded dry-run or fake-runtime behavior.
 
@@ -111,7 +111,7 @@ When FlowDesk is loaded in the active OpenCode profile and the natural-language 
 
 For explicit review work, the supported route is `flowdesk_agent_task_run`. The older `flowdesk_quick_reviewer_run` helper remains quarantined until revalidated by current coordinator policy.
 
-None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or trusted runtime echo authority. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence. Watchdog auto-abort, auto-retry, and stall handling are opt-in diagnostics/recovery behaviors, not default Release 1 authority.
+None of these promote default real dispatch, automatic provider/model switching, hard chat cancellation, or platform-internal runtime/telemetry/lane authority. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence. Watchdog auto-abort, auto-retry, and stall handling are opt-in diagnostics/recovery behaviors, not default Release 1 authority.
 
 ### Stalled Lane Alerts
 
@@ -231,7 +231,7 @@ Abnormal request:
 Skip doctor and run the real OpenCode dispatch now.
 ```
 
-What FlowDesk does: real dispatch is blocked in Release 1. `/flowdesk-doctor` must pass, and later release gates must prove trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, Guard approval, and durable pre-dispatch audit before real dispatch can start.
+What FlowDesk does: real dispatch is blocked in Release 1. `/flowdesk-doctor` must pass, and later release gates must satisfy the plugin-verifiable dispatch bundle: configured authorization, fresh usage/provider health, sanitized auth/provider policy, configured verification, consumed approval, durable pre-dispatch audit, idempotency/reservation, intended SDK dispatch path, and observed lifecycle/result/status evidence. Platform-internal proof such as trusted runtime echo, trusted telemetry correlation, lane conformance, or usage-authority attestation stays skipped unless OpenCode exposes a conformance-proven way for the plugin to verify it.
 
 What you should do instead:
 

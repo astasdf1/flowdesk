@@ -2521,7 +2521,7 @@ test("guarded auto-retry cap prevents generic agent task retry", async () => {
 	assert.equal("reason" in result && result.reason, "cap_reached");
 });
 
-test("guarded auto-retry records generic retry failure and terminal lifecycle", async () => {
+test("guarded auto-retry keeps generic no-response retry non-terminal for watchdog handoff", async () => {
 	const rootDir = withTempRoot("flowdesk-auto-retry-agent-task-failed-");
 	writeGuardSignOff(rootDir);
 	writeLifecycle(
@@ -2549,21 +2549,31 @@ test("guarded auto-retry records generic retry failure and terminal lifecycle", 
 		now: new Date("2026-05-26T10:06:00.000Z"),
 	});
 
-	assert.equal(result.status, "retry_failed");
+	assert.equal(result.status, "retry_launched");
 	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId: "workflow-agent-task-123" });
 	assert.equal(reload.ok, true);
 	const newLaneId = reload.entries.find(
-		(e) => (e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1",
+		(e) => (e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_executed.v1",
 	)?.record.new_lane_id as string | undefined;
 	assert.ok(newLaneId);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_executed.v1" &&
+				(e.record as Record<string, unknown>)?.new_lane_id === newLaneId &&
+				(e.record as Record<string, unknown>)?.retry_kind === "agent_task",
+		),
+		true,
+		"retry_executed evidence should be written for generic retry handoff",
+	);
 	assert.equal(
 		reload.entries.some(
 			(e) =>
 				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.retry_failed.v1" &&
 				(e.record as Record<string, unknown>)?.new_lane_id === newLaneId,
 		),
-		true,
-		"retry_failed evidence should be written for generic retry",
+		false,
+		"generic retry handoff should not write retry_failed while child session exists",
 	);
 	assert.equal(
 		reload.entries.some(
@@ -2572,17 +2582,26 @@ test("guarded auto-retry records generic retry failure and terminal lifecycle", 
 				(e.record as Record<string, unknown>)?.lane_id === newLaneId &&
 				(e.record as Record<string, unknown>)?.state === "no_output",
 		),
+		false,
+		"generic retry handoff should not write terminal no_output lifecycle for the new lane",
+	);
+	assert.equal(
+		reload.entries.some(
+			(e) =>
+				e.evidenceClass === "agent_task_child_session" &&
+				(e.record as Record<string, unknown>)?.lane_id === newLaneId,
+		),
 		true,
-		"failed generic retry should write terminal lifecycle for the new lane",
+		"generic retry should preserve child session evidence for watchdog/status handoff",
 	);
 	assert.equal(
 		reload.entries.some(
 			(e) =>
 				(e.record as Record<string, unknown>)?.schema_version === "flowdesk.pending_retry_plan.v1" &&
-				(e.record as Record<string, unknown>)?.status === "failed",
+				(e.record as Record<string, unknown>)?.status === "launched",
 		),
 		true,
-		"pending retry plan should be marked failed",
+		"pending retry plan should be marked launched",
 	);
 });
 

@@ -1058,6 +1058,30 @@ export async function executeFlowDeskAgentTaskV1(
 
 	const resultText = resultObservation?.text;
 	if (resultText === undefined) {
+		if (childSessionId !== undefined) {
+			writeAgentTaskProgress({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId: input.laneId,
+				taskId: input.taskId,
+				agentRef: input.agentRef,
+				providerQualifiedModelId: input.providerQualifiedModelId,
+				phase: "waiting",
+				progressSeq: 3,
+				progressLabel:
+					"agent task still awaiting child output after bounded sync capture; watchdog/status may backfill result",
+			});
+			refreshFlowDeskCompletionUiCachesV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				observedAt: new Date().toISOString(),
+			});
+			return {
+				status: "task_launched",
+				laneId: input.laneId,
+				childSessionId,
+			};
+		}
 		// No response text - write task_failed
 		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}`;
 		const failureCategory = "no_response";

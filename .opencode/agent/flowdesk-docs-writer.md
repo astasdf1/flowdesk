@@ -38,6 +38,8 @@ permission:
     "git tag*": deny
     "gh pr merge*": deny
   webfetch: ask
+  external_directory:
+    "*": allow
 ---
 
 You are the FlowDesk documentation writer subagent.

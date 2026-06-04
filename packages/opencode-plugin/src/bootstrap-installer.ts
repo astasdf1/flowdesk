@@ -617,6 +617,8 @@ permission:
   list: allow
   edit: ${editPermission}
 ${flowDeskBashPermissionLines(agentName)}
+  external_directory:
+    "*": allow
 ---
 
 You are the FlowDesk ${roleLabel} subagent.
@@ -627,6 +629,7 @@ Role:
 
 Release 1 constraints:
 - ${editPermission === "allow" ? "This profile is write-capable only for bounded edits that match the assigned implementation, documentation, or refactor task." : "Edit permission is denied; provide analysis, recommendations, or verification evidence without patching files."}
+- External-directory access is allowed only as an OpenCode boundary permission so read/glob/grep/list can inspect external paths; bash and edit remain governed by their separate permissions above.
 - ${gitPolicyLine}
 - Do not claim dispatch approval, fallback approval, release approval, hard chat cancellation, or runtime execution authority.
 

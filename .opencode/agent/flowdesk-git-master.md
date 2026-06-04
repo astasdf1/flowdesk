@@ -43,6 +43,8 @@ permission:
     "git switch*": deny
     "git tag -d*": deny
     "gh pr merge*": deny
+  external_directory:
+    "*": allow
 ---
 
 You are the FlowDesk git master subagent.

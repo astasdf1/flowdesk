@@ -13,6 +13,10 @@ import test from "node:test";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	consumeFlowDeskProductionApprovalSourceV1,
+	createFlowDeskConfiguredVerificationResultV1,
+	createFlowDeskExternalAuthProviderPolicyResultV1,
+	createFlowDeskProductionApprovalDecisionV1,
+	createFlowDeskSanitizedAuthCaptureResultV1,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
 	type FlowDeskConformanceRuntimeMetadataV1,
 	type FlowDeskControlledExternalWriteRequestV1,
@@ -71,6 +75,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskManagedDispatchBetaAdapterOption,
 	flowdeskManagedDispatchBetaToolName,
 	flowdeskPreSpikeDoctorToolName,
+	flowdeskProductionEnablementOption,
 } from "./server.js";
 
 function toolOutput(value: string | { output: string }): string {
@@ -717,6 +722,148 @@ function reloadedEvidence(
 		actualLaneLaunch: false,
 		providerCall: false,
 		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function writeDerivedDefaultAuthorizationEvidence(rootDir: string): void {
+	const records: Record<string, unknown>[] = [
+		usageAuthorityEvidence() as unknown as Record<string, unknown>,
+		runtimeEchoEvidence() as unknown as Record<string, unknown>,
+		telemetryCorrelation() as unknown as Record<string, unknown>,
+		dispatchableHealth() as unknown as Record<string, unknown>,
+		{
+			schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+			workflow_id: "workflow-123",
+			pre_dispatch_audit_ref: "audit-123",
+			observed_at: now,
+			attempt_id: "attempt-123",
+			approval_ref: "approval-123",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		},
+		consumedApproval() as unknown as Record<string, unknown>,
+		{
+			schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+			workflow_id: "workflow-123",
+			snapshot_ref: "idempotency-snapshot-123",
+			observed_at: now,
+			entries: [],
+			dispatch_authority_enabled: false,
+			realOpenCodeDispatch: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+		},
+	];
+	const intents = records.map((record, index) => {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-123",
+			evidenceId: `derived-default-auth-evidence-${index + 1}`,
+			record,
+		});
+		assert.equal(prepared.ok, true, prepared.errors.join("; "));
+		assert.ok(prepared.writeIntent);
+		return prepared.writeIntent;
+	});
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
+	assert.equal(applied.ok, true, applied.errors.join("; "));
+}
+
+function derivedDefaultAuthorizationProductionEnablement(
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		enabled: true,
+		preDispatchAuditRef: "audit-123",
+		configuredVerificationRef: "verification-123",
+		configuredVerificationResult: createFlowDeskConfiguredVerificationResultV1({
+			verificationRef: "verification-123",
+			workflowId: "workflow-123",
+			result: "passed",
+			producedAt: now,
+			sourceRef: "configured-verification-source-123",
+			checkLabels: ["typecheck", "unit-tests"],
+			evidenceRefs: ["verification-evidence-123"],
+		}),
+		sanitizedAuthCaptureRef: "sanitized-auth-capture-123",
+		sanitizedAuthCaptureResult: createFlowDeskSanitizedAuthCaptureResultV1({
+			sanitizedAuthCaptureRef: "sanitized-auth-capture-123",
+			durableCaptureRef: "durable-auth-capture-123",
+			workflowId: "workflow-123",
+			providerFamily: "claude",
+			providerQualifiedModelId: "claude/sonnet-4",
+			authProfileRef: "auth-profile-123",
+			authEvidenceRef: "auth-evidence-123",
+			credentialScopeRef: "principal-scope-123",
+			accountBoundaryRef: "account-boundary-123",
+			sanitizerRef: "sanitizer-123",
+			sourceRef: "external-auth-source-123",
+			result: "passed",
+			capturedAt: now,
+			metadataLabels: ["raw-plugin-object-redacted", "scope-bound"],
+			evidenceRefs: ["sanitized-auth-capture-evidence-123"],
+		}),
+		externalAuthPolicyRef: "external-auth-policy-123",
+		providerPolicyRef: "provider-policy-123",
+		externalAuthProviderPolicyResult:
+			createFlowDeskExternalAuthProviderPolicyResultV1({
+				externalAuthPolicyRef: "external-auth-policy-123",
+				providerPolicyRef: "provider-policy-123",
+				workflowId: "workflow-123",
+				providerFamily: "claude",
+				providerQualifiedModelId: "claude/sonnet-4",
+				authProfileRef: "auth-profile-123",
+				authEvidenceRef: "auth-evidence-123",
+				credentialScopeRef: "principal-scope-123",
+				accountBoundaryRef: "account-boundary-123",
+				sanitizerRef: "sanitizer-123",
+				sourceRef: "external-auth-source-123",
+				result: "passed",
+				sanitizedAt: now,
+				metadataLabels: ["account-boundary-bound", "scope-bound"],
+				evidenceRefs: ["external-auth-policy-evidence-123"],
+			}),
+		laneConformanceRefs: ["lane-conformance-123"],
+		approvalDecision: createFlowDeskProductionApprovalDecisionV1({
+			approvalId: "approval-123",
+			workflowId: "workflow-123",
+			decision: "approve",
+			createdAt: now,
+			requiredEvidenceRefs: [
+				"usage-authority-123",
+				"runtime-echo-123",
+				"telemetry-123",
+				"health-123",
+				"audit-123",
+				"verification-123",
+				"verification-evidence-123",
+				"sanitized-auth-capture-123",
+				"sanitized-auth-capture-evidence-123",
+				"external-auth-policy-123",
+				"external-auth-policy-evidence-123",
+				"provider-policy-123",
+				"lane-conformance-123",
+			],
+		}),
+		defaultManagedDispatchAuthorizationMetadata: {
+			enabled: true,
+			authorizationId: "derived-default-auth-123",
+			actorRef: "actor-ops-123",
+			profileRef: "profile-prod-123",
+			releaseGateRef: "release-gate-123",
+			rollbackRef: "rollback-123",
+			createdAt: now,
+			expiresAt: "2099-01-01T00:00:00.000Z",
+			defaultEnablementRequested: true,
+			killSwitchState: "inactive",
+			durablePrecallRef: "durable-precall-123",
+			adapterProfileRef: "adapter-profile-123",
+			sdkClientRef: "sdk-client-123",
+			defaultReleaseEnablementRef: "default-release-enable-123",
+		},
 		...overrides,
 	};
 }
@@ -3622,6 +3769,177 @@ test("/flowdesk-run managed-dispatch routes through default authorization and ma
 	assert.equal("response" in result, false);
 	assert.equal(promptAsyncCalls.length, 1);
 	assert.equal(reservation.reserveCalls.length, 1);
+	});
+});
+
+test("/flowdesk-run managed-dispatch can derive default authorization from route evidence", async () => {
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		writeDerivedDefaultAuthorizationEvidence(rootDir);
+		const { client, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client, reservationStore: reservation.store } as never,
+			{
+				[flowdeskDurableStateRootOption]: rootDir,
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskProductionEnablementOption]:
+					derivedDefaultAuthorizationProductionEnablement(),
+				naturalLanguageRouting: false,
+			},
+		);
+		const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(doctor);
+		const doctorResult = JSON.parse(
+			toolOutput(await doctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		assert.ok(
+			doctorResult.defaultManagedDispatchRegistrationAuthorized === false ||
+				doctorResult.defaultManagedDispatchRegistrationAuthorized === "disabled",
+			"derived route metadata must not register the beta SDK tool as an explicit default authorization",
+		);
+		for (const key of [
+			"realOpenCodeDispatch",
+			"providerCall",
+			"runtimeExecution",
+			"actualLaneLaunch",
+			"hardCancelOrNoReplyAuthority",
+		] as const)
+			assert.ok(
+				doctorResult[key] === false || doctorResult[key] === "disabled",
+				`${key} must remain disabled for derived route metadata`,
+			);
+
+		const runTool = hooks.tool?.flowdesk_run;
+		assert.ok(runTool);
+		const raw = await runTool.execute(
+			{
+				schema_version: "flowdesk.run.request.v1",
+				request_id: "request-managed-run-derived-auth",
+				input_mode: "portable_command",
+				workflow_id: "workflow-123",
+				run_mode: "managed-dispatch",
+				plan_revision_id: "plan-123",
+				step_id: "step-123",
+				managed_dispatch_boundary_input: managedDispatchInput(),
+				managed_dispatch_request: dispatchRequest({
+					directory: undefined,
+					promptText: undefined,
+					promptSummary: "Approved bounded step.",
+				}),
+				managed_dispatch_manifest: dispatchManifest(),
+				managed_dispatch_reloaded_evidence: reloadedEvidence(),
+			},
+			undefined as never,
+		);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(
+			result.runRouteProfile,
+			"flowdesk_run_default_managed_dispatch_route",
+		);
+		assert.equal(
+			result.defaultManagedDispatchAuthorizationRef,
+			"derived-default-auth-123",
+		);
+		assert.equal(
+			result.defaultManagedDispatchReadinessRef,
+			"default-managed-dispatch-default_candidate",
+		);
+		assert.equal(result.status, "dispatch_accepted");
+		assert.equal(result.dispatchAttempted, true);
+		assert.equal(result.responseObserved, false);
+		assert.equal(promptAsyncCalls.length, 1);
+		assert.equal(reservation.reserveCalls.length, 1);
+	});
+});
+
+test("/flowdesk-run managed-dispatch blocks invalid derived default authorization metadata", async () => {
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		writeDerivedDefaultAuthorizationEvidence(rootDir);
+		const { client, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client, reservationStore: reservation.store } as never,
+			{
+				[flowdeskDurableStateRootOption]: rootDir,
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskProductionEnablementOption]:
+					derivedDefaultAuthorizationProductionEnablement({
+						defaultManagedDispatchAuthorizationMetadata: {
+							enabled: true,
+							authorizationId: "derived-default-auth-invalid",
+							actorRef: "actor-ops-123",
+							profileRef: "profile-prod-123",
+							releaseGateRef: "release-gate-123",
+							rollbackRef: "rollback-123",
+							createdAt: now,
+							expiresAt: "2099-01-01T00:00:00.000Z",
+							defaultEnablementRequested: false,
+							killSwitchState: "inactive",
+							durablePrecallRef: "durable-precall-123",
+							adapterProfileRef: "adapter-profile-123",
+							sdkClientRef: "sdk-client-123",
+							defaultReleaseEnablementRef: "default-release-enable-123",
+						},
+					}),
+				naturalLanguageRouting: false,
+			},
+		);
+		const runTool = hooks.tool?.flowdesk_run;
+		assert.ok(runTool);
+		const raw = await runTool.execute(
+			{
+				schema_version: "flowdesk.run.request.v1",
+				request_id: "request-managed-run-derived-auth-invalid",
+				input_mode: "portable_command",
+				workflow_id: "workflow-123",
+				run_mode: "managed-dispatch",
+				plan_revision_id: "plan-123",
+				step_id: "step-123",
+				managed_dispatch_boundary_input: managedDispatchInput(),
+				managed_dispatch_request: dispatchRequest({
+					directory: undefined,
+					promptText: undefined,
+					promptSummary: "Approved bounded step.",
+				}),
+				managed_dispatch_manifest: dispatchManifest(),
+				managed_dispatch_reloaded_evidence: reloadedEvidence(),
+			},
+			undefined as never,
+		);
+		const result = JSON.parse(toolOutput(raw)) as Record<string, unknown>;
+		assert.equal(
+			result.runRouteProfile,
+			"flowdesk_run_default_managed_dispatch_route",
+		);
+		assert.equal(result.status, "blocked_before_dispatch");
+		assert.equal(result.dispatchAttempted, false);
+		assert.match(
+			String(result.redactedBlockReason),
+			/default managed-dispatch authorization/,
+		);
+		assert.equal(
+			result.defaultManagedDispatchAuthorizationRef,
+			"derived-default-auth-invalid",
+		);
+		assert.equal(
+			result.defaultManagedDispatchReadinessRef,
+			"default-managed-dispatch-default_candidate",
+		);
+		assert.deepEqual(result.authority, {
+			productionRegistrationEligible: false,
+			dispatchApprovalEligible: false,
+			realOpenCodeDispatch: false,
+			actualLaneLaunch: false,
+			providerCall: false,
+			runtimeExecution: false,
+			fallbackAuthority: false,
+			hardCancelOrNoReplyAuthority: false,
+			toolAuthority: false,
+		});
+		assert.equal(promptAsyncCalls.length, 0);
+		assert.equal(reservation.reserveCalls.length, 0);
 	});
 });
 

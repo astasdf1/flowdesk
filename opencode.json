@@ -7,5 +7,14 @@
       "enabled": true,
       "timeout": 10000
     }
+  },
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "external_directory": {
+      "*": "allow"
+    }
   }
 }

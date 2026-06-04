@@ -12,4 +12,4 @@ FlowDesk `0.1.19` reverts the `0.1.18` hardcoded Gemini fallback OAuth client.
 
 ## Authority boundary
 
-This release does not promote default dispatch, provider-call, runtime, fallback, write, or hard chat-control authority. Release 1 remains command-backed and non-dispatch by default. Production managed-dispatch promotion remains later-gated behind human Guard approval and an unimplemented trusted runtime-echo/conformance issuance path.
+This release does not promote default dispatch, provider-call, runtime, fallback, write, or hard chat-control authority. Release 1 remains command-backed and non-dispatch by default. Production managed-dispatch promotion remains later-gated behind human Guard approval, the plugin-verifiable dispatch bundle, and OpenCode-dependent runtime/telemetry/lane attestation that FlowDesk must not self-attest.

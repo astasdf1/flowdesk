@@ -147,15 +147,16 @@ Stop condition: any generated FlowDesk command template can execute user-control
 
 ### T3: Event-Only False Success
 
-Threat: an event reports `completed`, `idle`, or similar and FlowDesk marks the workflow successful without trusted runtime echo or verification.
+Threat: an event reports `completed`, `idle`, or similar and FlowDesk marks the workflow successful without the plugin-verifiable completion bundle, durable audit, or required configured verification.
 
 Mitigations:
 
 1. Treat event lifecycle states as observations only.
-2. Require trusted runtime echo.
+2. Require observed lifecycle/result/status evidence from the intended SDK path when the path depends on a real OpenCode lane.
 3. Run configured verification when required.
 4. Require durable outcome audit.
-5. Quarantine artifacts on ambiguity.
+5. Treat platform-internal runtime echo issuer, telemetry correlation, lane conformance, and usage-authority attestation as observed/un-attested or skipped diagnostics unless OpenCode exposes a conformance-proven plugin-verifiable source.
+6. Quarantine artifacts on ambiguity.
 
 Stop condition: event-only completion can promote artifacts or count as success.
 
@@ -224,7 +225,7 @@ Mitigations:
 1. Keep Provider Health Snapshots separate from Usage Availability Snapshots.
 2. Classify provider/API/model failures as `auth_missing`, `auth_expired`, `provider_unavailable`, `rate_limited`, `model_unavailable`, `transport_timeout`, `provider_error`, `opencode_provider_load_failure`, or `telemetry_ambiguous`.
 3. In Release 1, treat these failures as diagnostic, status, degraded-mode, or fake-runtime signals only. Do not perform real automatic provider/model switching.
-4. Future managed fallback/reselection requires fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, a new attempt id, and explicit Guard approval.
+4. Future managed fallback/reselection requires fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed echo/status, plugin-verifiable telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval. Platform-internal fallback proof that FlowDesk cannot verify remains a skipped diagnostic, not an authority source.
 5. Block fallback on stale, unknown, refused, shared-limit-suspected, fallback-derived, model-generated, telemetry-ambiguous, policy-ineligible, runtime-incompatible, untrusted, unaudited, or Guard-rejected inputs.
 6. Never persist raw provider errors, provider payloads, credentials, prompts, transcripts, raw runtime echoes, raw logs, raw file paths, or stack traces in health, audit, debug, conformance, or status records.
 7. Treat plugin event observations as situational awareness only. They cannot approve dispatch, fallback, durable audit, or runtime echo.
@@ -494,7 +495,7 @@ Release 1 and later gated releases must include tests for the features they expo
 5. Unknown provider/model identity blocks dispatch.
 6. Provider Health Snapshot tests keep health separate from usage and classify auth missing/expired, provider unavailable, rate limited, model unavailable, transport timeout, provider error, OpenCode provider-load failure, and telemetry ambiguous states.
 7. Release 1 outage tests prove provider/API/model failures degrade to doctor, usage, status, fake-runtime, retry planning, or debug export and never perform real provider/model switching.
-8. Future fallback tests prove reselection blocks without fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, a new attempt id, and explicit Guard approval.
+8. Future fallback tests prove reselection blocks without fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding/observed echo/status, telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval. Platform-internal fallback proof remains skipped unless OpenCode exposes it through a verifiable boundary.
 9. Redaction tests prove provider health, fallback, conformance, audit, and debug records exclude raw provider errors, provider payloads, credentials, prompts, transcripts, raw runtime echoes, raw logs, raw file paths, and stack traces.
 10. Missing pre-dispatch audit blocks real dispatch.
 11. Audit rejection blocks or quarantines the triggering operation.

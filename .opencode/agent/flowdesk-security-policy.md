@@ -44,6 +44,8 @@ permission:
     "git tag*": deny
     "gh pr merge*": deny
   webfetch: deny
+  external_directory:
+    "*": allow
 ---
 
 You are the FlowDesk security and policy subagent.

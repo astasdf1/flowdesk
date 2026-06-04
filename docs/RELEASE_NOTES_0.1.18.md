@@ -8,4 +8,4 @@ FlowDesk `0.1.18` fixes Gemini usage collection under the Bun-compiled OpenCode 
 
 ## Authority boundary
 
-This release does not promote default dispatch, provider-call, runtime, fallback, write, or hard chat-control authority. Release 1 remains command-backed and non-dispatch by default. Production managed-dispatch promotion remains later-gated behind human Guard approval and a trusted runtime-echo/conformance issuance path that is not yet implemented.
+This release does not promote default dispatch, provider-call, runtime, fallback, write, or hard chat-control authority. Release 1 remains command-backed and non-dispatch by default. Production managed-dispatch promotion remains later-gated behind human Guard approval, the plugin-verifiable dispatch bundle, and OpenCode-dependent runtime/telemetry/lane attestation that FlowDesk must not self-attest.

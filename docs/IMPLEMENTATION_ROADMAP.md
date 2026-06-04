@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This roadmap turns `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md` into an implementation sequence. It is intentionally conservative: Release 1 proves the safety harness through chat-routed command-backed workflows, guarded dry-run, fake runtime, provider health diagnostics, audit, abnormal-use guidance, and conformance before enabling real OpenCode dispatch, automatic provider/model fallback, or hard chat cancellation authority.
+This roadmap turns `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md` into an implementation sequence. It is intentionally conservative: Release 1 proves the safety harness through chat-routed command-backed workflows, guarded dry-run, fake runtime, provider health diagnostics, audit, abnormal-use guidance, and conformance before enabling real OpenCode dispatch, automatic provider/model fallback, or hard chat cancellation authority. For managed dispatch, completion is judged at the FlowDesk plugin boundary: plugin-verifiable evidence must be real and durable, while OpenCode platform-internal proof gaps remain skipped diagnostics unless OpenCode exposes a conformance-proven verification surface.
 
 ## Release Tracks
 
@@ -67,7 +67,7 @@ The current progress estimate lives in `PROGRESS_SNAPSHOT.md`. Update that file 
 
 ### Release 2: Managed Dispatch Beta
 
-Release 2 enables managed real dispatch for low-risk workflows after conformance proves model/agent binding, runtime echo, harness event telemetry, fresh usage, fresh provider health, sanitized auth capture, external auth/provider policy, configured verification, Guard approval, and durable pre-dispatch audit. Managed fallback or reselection is still optional and requires a new attempt id, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, fresh usage, fresh provider health, durable pre-dispatch audit, and explicit Guard approval for the new binding.
+Release 2 enables managed real dispatch for low-risk workflows after the plugin-satisfiable dispatch bundle is complete: configured authorization, fresh usage/provider health, sanitized auth capture, external auth/provider policy, configured verification, consumed Guard/user approval, durable pre-dispatch audit, dispatch idempotency/reservation, intended SDK dispatch path, and redaction-safe observed lifecycle/result/status evidence. OpenCode platform-dependent proof gaps such as trusted runtime echo issuer, trusted telemetry correlation, lane conformance, and usage authority attestation stay visible as skipped diagnostics rather than FlowDesk-fabricated evidence. Managed fallback or reselection is still optional and requires a new attempt id, runtime compatibility, policy eligibility, fresh usage, fresh provider health, durable pre-dispatch audit, explicit Guard approval for the new binding, and any separately proven platform evidence available at that time.
 
 ### Release 2.5: Top-Tier Multi-Perspective Review Lane Entry Gate
 
@@ -239,7 +239,7 @@ Exit criteria:
 
 1. `docs/OPENCODE_CONFORMANCE_PLAN.md` has a completed evidence table for the pinned version.
 2. Conformance artifact records `blocking`, `steering`, `observe_only`, or `off` for chat intake.
-3. Real dispatch remains disabled unless binding, echo, telemetry, fresh usage, fresh provider health, Guard approval, and durable pre-dispatch audit all pass.
+3. Real dispatch remains disabled unless the plugin-verifiable dispatch bundle passes: configured authorization, fresh usage/provider health, sanitized auth/provider policy, configured verification, consumed approval, durable pre-dispatch audit, idempotency/reservation, intended SDK dispatch path, and observed lifecycle/result/status evidence. OpenCode platform-internal facts such as trusted runtime echo issuer, trusted telemetry correlation, lane conformance, and usage authority attestation remain observed/un-attested or skipped diagnostics unless OpenCode exposes a conformance-proven plugin-verifiable source.
 4. Managed fallback/reselection remains disabled unless all future fallback gates pass with a new attempt id and explicit Guard approval.
 
 Gate resolution order:
@@ -248,10 +248,10 @@ Gate resolution order:
 2. Complete provider-facing schema evidence for the plugin tool path. The current FDS-1 runtime-closed compatibility pass is sufficient for handler safety, but production registration still needs pinned evidence for OpenCode registry conversion, provider/model transform output, and any FlowDesk-side schema hardening required to preserve the runtime-closed boundary.
 3. Promote production OpenCode registration only for non-dispatch command-backed handlers after doctor, schema, Guard, audit, policy, redaction, and disabled-mode checks pass. This gate must not enable real dispatch, actual lane launch, automatic fallback/reselection, or hard chat cancellation.
 4. Add the telemetry and runtime-echo conformance harness before any real dispatch. The harness must correlate workflow id, attempt id, command/tool id, model/provider binding, tool schema hash, event refs, and audit refs without persisting raw prompts, transcripts, provider payloads, or runtime echo bodies.
-5. Promote a single low-risk managed-dispatch beta step only after trusted binding, trusted runtime echo, sufficient telemetry, fresh usage, fresh Provider Health Snapshot, sanitized auth capture, external auth/provider policy, Guard approval, durable pre-dispatch audit, and configured verification all pass.
+5. Promote a single low-risk managed-dispatch beta step only after the plugin-verifiable dispatch bundle passes: trusted/requested binding as observed through plugin/SDK surfaces, fresh usage/provider health, sanitized auth capture, external auth/provider policy, Guard/user approval, durable pre-dispatch audit, idempotency/reservation, configured verification, intended SDK dispatch path, and redaction-safe observed lifecycle/result/status evidence. Platform-internal runtime echo issuer, telemetry correlation, lane conformance, or usage-authority attestation that the plugin cannot verify stay skipped diagnostics, not completion criteria.
 6. Prove hard managed chat/no-reply/cancellation separately. Until e2e evidence proves no duplicate assistant reply, pending-tool abort, lane cleanup, and audit transitions, abort remains best-effort and chat remains steering/command-backed.
 7. Promote actual delegated lane launch only after the managed-dispatch gate also proves task ref capture, reference-kind separation, incomplete-result detection, timeout/correlation handling, redacted status/debug refs, and bounded retry behavior for the pinned OpenCode surface.
-8. Promote dedicated top-tier multi-perspective reviewer lanes only after actual delegated lane launch also proves provider-qualified concrete model ids, fresh auth/usage/quota evidence, runtime echo, telemetry persistence, reviewer output schema validation, registered highest-tier binding selection, same-model multi-agent perspective assignment, and no silent lower-tier substitution.
+8. Promote dedicated top-tier multi-perspective reviewer lanes only after actual delegated lane launch also proves provider-qualified concrete model ids, fresh auth/usage/quota evidence, plugin-verifiable lifecycle/result/status observation, telemetry persistence from exposed plugin/SDK surfaces, reviewer output schema validation, registered highest-tier binding selection, same-model multi-agent perspective assignment, and no silent lower-tier substitution. Platform-internal echo or telemetry claims remain skipped diagnostics unless separately proven.
 9. Keep automatic provider/model fallback or reselection last. It requires all real-dispatch gates plus runtime compatibility, policy eligibility, a new attempt id, fresh usage, fresh provider health, durable audit for the new binding, and explicit Guard approval.
 
 ## Phase 5: Managed Dispatch Beta Gate
@@ -262,20 +262,20 @@ Tasks:
 
 1. Implement real `GuardApprovedDispatch` runtime path only after production non-dispatch registration and telemetry/echo conformance are already passing.
 2. Require trusted model/agent binding evidence.
-3. Require trusted runtime echo evidence.
-4. Require capability-discovered telemetry surfaces with stable correlation ids.
+3. Record runtime echo returned through exposed plugin/SDK surfaces as observed/un-attested evidence unless OpenCode supplies a conformance-proven trusted issuer.
+4. Require plugin-verifiable telemetry references and stable correlation ids; platform-internal telemetry correlation that FlowDesk cannot verify remains a skipped diagnostic.
 5. Require fresh provider-native usage and fresh Provider Health Snapshot.
 6. Require durable pre-dispatch audit.
 7. Run configured verification.
-8. Quarantine artifacts on missing evidence, failed verification, provider health failure, event ambiguity, missing echo, or mismatched binding.
+8. Quarantine artifacts on missing plugin-verifiable evidence, failed verification, provider health failure, event ambiguity, missing observed lifecycle/result/status evidence, or mismatched binding; classify un-attestable OpenCode platform proof as skipped diagnostics rather than fabricated evidence.
 
 Exit criteria:
 
 1. One low-risk managed step can execute in OpenCode.
 2. Event-only completion cannot mark success.
 3. Event-derived checkpoints cannot resume without durable FlowDesk state and audit references.
-4. Missing echo or required telemetry quarantines results.
-5. Any managed fallback/reselection uses a new attempt id and requires fresh usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, and explicit Guard approval.
+4. Missing plugin-visible echo/status or required plugin-verifiable telemetry quarantines results; missing platform-internal attestation is reported separately as an OpenCode-dependent skipped diagnostic.
+5. Any managed fallback/reselection uses a new attempt id and requires fresh usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed lifecycle/result/status evidence, plugin-verifiable telemetry refs, durable pre-dispatch audit, and explicit Guard approval. Automatic fallback/reselection remains disabled by default.
 
 ## Phase 6: Managed Chat and Recovery
 

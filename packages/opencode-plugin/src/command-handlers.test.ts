@@ -417,6 +417,7 @@ function productionEnablement(
 		evidence_refs: ["usage-authority-123", "runtime-echo-123", "telemetry-123"],
 		doctor_state_ref: "production-enable-configured",
 		managed_dispatch_ready: false,
+		plugin_satisfiable_gate_passed: false,
 		dispatch_authority_enabled: false,
 		default_release1_non_dispatch_preserved: true,
 		configured_verification_result: "passed",
@@ -746,6 +747,12 @@ test("doctor diagnostic handler can surface evaluated production enablement with
 	);
 	assert.ok(
 		compatibility.refs.includes("production_managed_dispatch_ready=false"),
+	);
+	assert.ok(
+		compatibility.refs.includes("production_managed_dispatch_ready_basis=not_ready"),
+	);
+	assert.ok(
+		compatibility.refs.includes("production_plugin_satisfiable_gate_passed=false"),
 	);
 	assert.ok(
 		compatibility.refs.includes("default_dispatch_candidate=false"),
