@@ -41,7 +41,7 @@ export const FORBIDDEN_RAW_PAYLOAD_MARKERS = [
 export const INPUT_MODES = ["chat_routed", "portable_command", "alias_command", "test_fixture"] as const;
 export type InputMode = (typeof INPUT_MODES)[number];
 
-export const PROVIDER_FAMILIES = ["claude", "openai", "gemini", "opencode_go", "z_ai", "unknown", "all"] as const;
+export const PROVIDER_FAMILIES = ["claude", "anthropic", "openai", "gemini", "opencode_go", "z_ai", "unknown", "all"] as const;
 export type ProviderFamily = (typeof PROVIDER_FAMILIES)[number];
 
 export const TOOL_STATUSES = [
