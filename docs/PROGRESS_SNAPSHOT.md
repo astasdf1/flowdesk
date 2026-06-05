@@ -14,6 +14,7 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-06 state:
 
+- Full task-result viewer: `flowdesk_result` now registers beside `flowdesk_status_live` when status-live durable root access is configured, returning full durable `task_result.result_text` for a selected workflow/task while preserving read-only/no-provider/no-dispatch/no-runtime/no-lane/no-write/no-fallback/no-hard-chat authority. Multi-result workflows return a compact taskId selector unless a specific taskId is supplied.
 - Short debug wrapper: `flowdesk_debug` now registers beside `flowdesk_export_debug` under the normal command-backed local tool path as a compact redacted debug-export alias with explicit section selection, safe request-id generation, default export retention, and false provider/dispatch/runtime/lane/fallback/write/hard-chat/noReply authority.
 - Short diagnostic wrapper: `flowdesk_check` now registers beside `flowdesk_doctor` under the normal command-backed local tool path as a compact doctor alias with safe defaults and false provider/dispatch/runtime/lane/fallback/write/hard-chat/noReply authority.
 - Short write wrapper: `flowdesk_write` now registers beside explicit opt-in `flowdesk_controlled_write_apply` as a compact dev/beta controlled-write alias while preserving explicit consent fields, path/hash checks, and false dispatch/provider/runtime/lane/fallback/hard-chat authority.
@@ -114,6 +115,7 @@ Latest archived 2026-06-05 verification includes:
 - Phase 6 live-smoke remediation verification: `npm run build`; `node --test packages/core/dist/approval-classifier.test.js packages/core/dist/chat-routing.test.js packages/opencode-plugin/dist/auto-continue-execution-tool.test.js` (29/29); corrected dist live smoke passed for chat `intent_outcome`, approval classifier, and auto-continue `no_output` block-before-launch cases.
 - Phase 6 MCP live-after-restart verification: `flowdesk_chat_intake` direct live calls passed for plan/general/unsafe-dispatch/status routing; unsafe dispatch blocked without `/flowdesk-run`, and all authority flags remained false.
 - `flowdesk_debug` wrapper verification: `npm run build`; `node --test --test-name-pattern="flowdesk_debug" packages/opencode-plugin/dist/server.test.js` (4/4) passed after adding the compact redacted debug-export alias. `git diff --check` was attempted but blocked by the active bash permission policy.
+- `flowdesk_result` viewer verification: `npm run build`; `node --test --test-name-pattern="flowdesk_result" packages/opencode-plugin/dist/server.test.js` (5/5) passed. `git diff --check` was attempted but blocked by the active bash permission policy.
 
 No broad test suite was run for this focused wrapper slice.
 

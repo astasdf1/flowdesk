@@ -214,6 +214,7 @@ export const flowdeskQuickReviewerRunToolName =
 export const flowdeskProviderUsageLiveToolName =
 	"flowdesk_provider_usage_live" as const;
 export const flowdeskStatusLiveToolName = "flowdesk_status_live" as const;
+export const flowdeskResultToolName = "flowdesk_result" as const;
 export const flowdeskNowToolName = "flowdesk_now" as const;
 export const flowdeskQuotaToolName = "flowdesk_quota" as const;
 export const flowdeskNextToolName = "flowdesk_next" as const;
@@ -5045,6 +5046,151 @@ function statusLiveConfigFromOptions(
 	return config;
 }
 
+const flowdeskResultReadOnlyAuthority = {
+	statusEvidenceObserved: true,
+	providerCall: false,
+	runtimeExecution: false,
+	actualLaneLaunch: false,
+	realOpenCodeDispatch: false,
+	dispatchAuthorityEnabled: false,
+	fallbackAuthority: false,
+	writeAuthority: false,
+	hardCancelOrNoReplyAuthority: false,
+} as const;
+
+function taskResultSummary(entry: FlowDeskSessionEvidenceReloadResultV1["entries"][number]) {
+	const record = entry.record;
+	return {
+		evidenceId: entry.evidenceId,
+		taskId: typeof record.task_id === "string" ? record.task_id : "",
+		laneId: typeof record.lane_id === "string" ? record.lane_id : undefined,
+		createdAt: typeof record.created_at === "string" ? record.created_at : undefined,
+		completionStatus:
+			typeof record.completion_status === "string"
+				? record.completion_status
+				: undefined,
+		outputKind:
+			typeof record.output_kind === "string" ? record.output_kind : undefined,
+		usableForSynthesis:
+			typeof record.usable_for_synthesis === "boolean"
+				? record.usable_for_synthesis
+				: undefined,
+	};
+}
+
+export function executeFlowDeskResultToolV1(config: { rootDir: string }, input: unknown): string {
+	const record = isRecord(input) ? input : {};
+	const workflowId = typeof record.workflowId === "string" ? record.workflowId : "";
+	const taskId = typeof record.taskId === "string" ? record.taskId : undefined;
+	if (workflowId.trim().length === 0) {
+		return JSON.stringify({
+			status: "blocked_before_task_result",
+			redactedBlockReason: "flowdesk_result requires workflowId.",
+			safeNextActions: ["/flowdesk-status"],
+			authority: { ...flowdeskResultReadOnlyAuthority, statusEvidenceObserved: false },
+		});
+	}
+
+	const reload = reloadFlowDeskSessionEvidenceV1({
+		rootDir: config.rootDir,
+		workflowId,
+	});
+	if (!reload.ok) {
+		return JSON.stringify({
+			status: "blocked_before_task_result",
+			workflowId,
+			redactedBlockReason:
+				reload.errors[0] ?? "durable task_result evidence could not be reloaded.",
+			safeNextActions: ["/flowdesk-status", "/flowdesk-doctor"],
+			authority: { ...flowdeskResultReadOnlyAuthority, statusEvidenceObserved: false },
+		});
+	}
+
+	const taskResults = reload.entries.filter(
+		(entry) =>
+			entry.evidenceClass === "task_result" &&
+			entry.record.schema_version === "flowdesk.task_result.v1" &&
+			typeof entry.record.task_id === "string" &&
+			typeof entry.record.result_text === "string",
+	);
+	const matches =
+		taskId === undefined
+			? taskResults
+			: taskResults.filter((entry) => entry.record.task_id === taskId);
+	if (taskId !== undefined && matches.length === 0) {
+		return JSON.stringify({
+			status: "blocked_before_task_result",
+			workflowId,
+			taskId,
+			redactedBlockReason: "requested task_result was not found for this workflow.",
+			availableTaskResults: taskResults.map(taskResultSummary),
+			safeNextActions: ["/flowdesk-status"],
+			authority: flowdeskResultReadOnlyAuthority,
+		});
+	}
+	if (taskId === undefined && matches.length === 0) {
+		return JSON.stringify({
+			status: "blocked_before_task_result",
+			workflowId,
+			redactedBlockReason: "no durable task_result evidence found for this workflow.",
+			safeNextActions: ["/flowdesk-status"],
+			authority: flowdeskResultReadOnlyAuthority,
+		});
+	}
+	if (taskId === undefined && matches.length > 1) {
+		return JSON.stringify({
+			status: "task_result_selector",
+			workflowId,
+			summaryForUser:
+				"Multiple task results are available. Call flowdesk_result again with a specific taskId to view the full text.",
+			availableTaskResults: matches.map(taskResultSummary),
+			safeNextActions: ["/flowdesk-status"],
+			authority: flowdeskResultReadOnlyAuthority,
+		});
+	}
+
+	const selected = matches[0];
+	const selectedRecord = selected.record;
+	const selectedTaskId = String(selectedRecord.task_id);
+	const resultText = String(selectedRecord.result_text);
+	return JSON.stringify({
+		status: "task_result_collected",
+		workflowId,
+		taskId: selectedTaskId,
+		evidenceId: selected.evidenceId,
+		laneId: typeof selectedRecord.lane_id === "string" ? selectedRecord.lane_id : undefined,
+		createdAt:
+			typeof selectedRecord.created_at === "string"
+				? selectedRecord.created_at
+				: undefined,
+		completionStatus:
+			typeof selectedRecord.completion_status === "string"
+				? selectedRecord.completion_status
+				: undefined,
+		outputKind:
+			typeof selectedRecord.output_kind === "string"
+				? selectedRecord.output_kind
+				: undefined,
+		usableForSynthesis:
+			typeof selectedRecord.usable_for_synthesis === "boolean"
+				? selectedRecord.usable_for_synthesis
+				: undefined,
+		resultText,
+		resultTextLength: resultText.length,
+		resultTextTruncated:
+			typeof selectedRecord.result_text_truncated === "boolean"
+				? selectedRecord.result_text_truncated
+				: undefined,
+		resultTextSha256:
+			typeof selectedRecord.result_text_sha256 === "string"
+				? selectedRecord.result_text_sha256
+				: undefined,
+		summaryForUser: `Full task_result text returned for ${selectedTaskId}.`,
+		safeNextActions: ["/flowdesk-status"],
+		authority: flowdeskResultReadOnlyAuthority,
+	});
+}
+
 export function createFlowDeskStatusLiveOptInTools(
 	config: FlowDeskStatusLiveConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
@@ -5096,6 +5242,22 @@ export function createFlowDeskStatusLiveOptInTools(
 			},
 			async execute(input) {
 				return executeStatusLive(input);
+			},
+		}),
+		[flowdeskResultToolName]: tool({
+			description:
+				"Return full durable task_result text for one workflow task. Read-only evidence viewer; no provider, dispatch, runtime, lane, write, fallback, hard-chat, or noReply authority.",
+			args: {
+				workflowId: tool.schema
+					.string()
+					.describe("Workflow id containing durable task_result evidence."),
+				taskId: tool.schema
+					.string()
+					.optional()
+					.describe("Optional task id. Required when the workflow has multiple task_results."),
+			},
+			async execute(input) {
+				return executeFlowDeskResultToolV1({ rootDir: config.rootDir }, input);
 			},
 		}),
 	};

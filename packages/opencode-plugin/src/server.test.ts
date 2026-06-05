@@ -68,6 +68,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskQuickFallbackRunOption,
 	flowdeskQuickFallbackRunToolName,
 	flowdeskRebindToolName,
+	flowdeskResultToolName,
 	flowdeskQuickReviewerRunOption,
 	flowdeskQuickReviewerRunToolName,
 	flowdeskReviewerFanoutDiagnosticsOption,
@@ -6994,6 +6995,252 @@ test("flowdesk_now wraps status live with read-only status evidence authority", 
 		const description = String(nowTool.description ?? "");
 		assert.ok(description.length < 240);
 		assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function taskResultRecordForServerTest(
+	workflowId: string,
+	taskId: string,
+	resultText: string,
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		schema_version: "flowdesk.task_result.v1",
+		workflow_id: workflowId,
+		lane_id: `lane-${taskId.slice("task-".length)}`,
+		task_id: taskId,
+		agent_ref: `agent-${taskId.slice("task-".length)}`,
+		provider_qualified_model_id: "openai/gpt-5.5",
+		task_prompt_sha256: "a".repeat(64),
+		result_text: resultText,
+		result_text_truncated: false,
+		result_text_sha256: "b".repeat(64),
+		completion_status: "final",
+		output_kind: "final_answer",
+		usable_for_synthesis: true,
+		created_at: "2026-06-06T00:00:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function writeTaskResultForServerTest(
+	root: string,
+	workflowId: string,
+	taskId: string,
+	resultText: string,
+	overrides: Record<string, unknown> = {},
+) {
+	const intent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId,
+		evidenceId: `task-result-${taskId}`,
+		record: taskResultRecordForServerTest(
+			workflowId,
+			taskId,
+			resultText,
+			overrides,
+		),
+	});
+	assert.equal(intent.ok, true, intent.errors.join("; "));
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+		intent.writeIntent as never,
+	]);
+	assert.equal(applied.ok, true, applied.errors.join("; "));
+}
+
+test("flowdesk_result registers only with status-live durable root and has compact description", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskStatusLiveOption]: false,
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(defaultHooks.tool?.[flowdeskResultToolName], undefined);
+
+	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskStatusLiveOption]: { enabled: true },
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(enabledWithoutRoot.tool?.[flowdeskResultToolName], undefined);
+
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-result-register-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const resultTool = hooks.tool?.[flowdeskResultToolName];
+		assert.ok(resultTool);
+		const description = String(resultTool.description ?? "");
+		assert.ok(description.length < 260);
+		assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+		assert.match(description, /Read-only/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_result returns a single task result in full without excerpt truncation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-result-single-"));
+	try {
+		const workflowId = "workflow-result-single";
+		const longResult = `first line\n${"x".repeat(900)}\nlast line`;
+		writeTaskResultForServerTest(root, workflowId, "task-result-single", longResult);
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const resultTool = hooks.tool?.[flowdeskResultToolName];
+		assert.ok(resultTool);
+		const result = JSON.parse(
+			toolOutput(await resultTool.execute({ workflowId }, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_result_collected");
+		assert.equal(result.taskId, "task-result-single");
+		assert.equal(result.resultText, longResult);
+		assert.equal(result.resultTextLength, longResult.length);
+		assert.equal(String(result.resultText).includes("…"), false);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.writeAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_result returns a selector for multiple task results without taskId", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-result-selector-"));
+	try {
+		const workflowId = "workflow-result-selector";
+		writeTaskResultForServerTest(root, workflowId, "task-result-one", "FULL ONE SHOULD NOT DUMP");
+		writeTaskResultForServerTest(root, workflowId, "task-result-two", "FULL TWO SHOULD NOT DUMP");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const resultTool = hooks.tool?.[flowdeskResultToolName];
+		assert.ok(resultTool);
+		const result = JSON.parse(
+			toolOutput(await resultTool.execute({ workflowId }, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_result_selector");
+		assert.equal(result.resultText, undefined);
+		assert.equal(JSON.stringify(result).includes("FULL ONE SHOULD NOT DUMP"), false);
+		assert.equal(JSON.stringify(result).includes("FULL TWO SHOULD NOT DUMP"), false);
+		const available = result.availableTaskResults as Array<Record<string, unknown>>;
+		assert.deepEqual(
+			available.map((entry) => entry.taskId).sort(),
+			["task-result-one", "task-result-two"],
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_result explicit taskId targets the correct result", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-result-target-"));
+	try {
+		const workflowId = "workflow-result-target";
+		writeTaskResultForServerTest(root, workflowId, "task-result-alpha", "alpha text");
+		writeTaskResultForServerTest(root, workflowId, "task-result-beta", "beta text");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const resultTool = hooks.tool?.[flowdeskResultToolName];
+		assert.ok(resultTool);
+		const result = JSON.parse(
+			toolOutput(
+				await resultTool.execute(
+					{ workflowId, taskId: "task-result-beta" },
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_result_collected");
+		assert.equal(result.taskId, "task-result-beta");
+		assert.equal(result.resultText, "beta text");
+		assert.equal(JSON.stringify(result).includes("alpha text"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_result safely ignores unknown approval and identity fields", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-result-unknown-fields-"));
+	try {
+		const workflowId = "workflow-result-unknown-fields";
+		writeTaskResultForServerTest(root, workflowId, "task-result-safe", "safe full result");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const resultTool = hooks.tool?.[flowdeskResultToolName];
+		assert.ok(resultTool);
+		const result = JSON.parse(
+			toolOutput(
+				await resultTool.execute(
+					{
+						workflowId,
+						taskId: "task-result-safe",
+						userApprovalRef: "approval-should-not-matter",
+						sessionRef: "ses-should-not-matter",
+						confirmationNonce: "nonce-should-not-matter",
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_result_collected");
+		assert.equal(result.resultText, "safe full result");
+		assert.equal(result.userApprovalRef, undefined);
+		assert.equal(result.sessionRef, undefined);
+		assert.equal(result.confirmationNonce, undefined);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.statusEvidenceObserved, true);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
