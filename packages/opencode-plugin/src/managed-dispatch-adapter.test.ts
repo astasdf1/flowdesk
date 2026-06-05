@@ -77,6 +77,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskPreSpikeDoctorToolName,
 	flowdeskProductionEnablementOption,
 } from "./server.js";
+import { persistTerminalEvidence } from "./terminal-evidence-writer.js";
 
 function toolOutput(value: string | { output: string }): string {
 	return typeof value === "string" ? value : value.output;
@@ -146,6 +147,22 @@ function dispatchIdempotencySnapshots(
 			(entry) =>
 				entry.record as unknown as FlowDeskDispatchIdempotencySnapshotV1,
 		);
+}
+
+function managedDispatchTerminalEvidencePath(rootDir: string, input: {
+	workflowId: string;
+	attemptId: string;
+	laneId: string;
+}): string {
+	return join(
+		rootDir,
+		".flowdesk",
+		"sessions",
+		input.workflowId,
+		"evidence",
+		"terminal-lifecycle",
+		`terminal-${input.workflowId}-${input.attemptId}-${input.laneId}.json`,
+	);
 }
 
 function dispatchableUsage(): FlowDeskUsageSnapshotV1 {
@@ -3137,6 +3154,15 @@ test("managed dispatch lane finalize observer terminalizes a lane from captured 
 		const lifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === "lane-managed-dispatch-finalize-1");
 		assert.ok(lifecycle, "terminal lane_lifecycle evidence should be written");
 		assert.equal((lifecycle.record as Record<string, unknown>).state, "incomplete");
+		const terminalEvidence = JSON.parse(readFileSync(managedDispatchTerminalEvidencePath(rootDir, {
+			workflowId: "workflow-123",
+			attemptId: "attempt-managed-dispatch-finalize-1",
+			laneId: "lane-managed-dispatch-finalize-1",
+		}), "utf8")) as Record<string, unknown>;
+		assert.equal(terminalEvidence.state, "complete");
+		assert.equal(terminalEvidence.terminal_sequence, 1);
+		assert.equal(terminalEvidence.task_id, "task-lane-managed-dispatch-finalize-1");
+		assert.equal(result.terminalEvidenceId, "terminal-workflow-123-attempt-managed-dispatch-finalize-1-lane-managed-dispatch-finalize-1");
 
 		// Idempotent: a second observation does not duplicate terminal evidence.
 		const again = await observeAndFinalizeManagedDispatchLaneV1({
@@ -3180,6 +3206,57 @@ test("managed dispatch lane finalize observer records no_output when no text is 
 		const lifecycle = reloaded.entries.find(e => e.evidenceClass === "lane_lifecycle" && (e.record as Record<string, unknown>).lane_id === "lane-managed-dispatch-finalize-empty");
 		assert.ok(lifecycle);
 		assert.equal((lifecycle.record as Record<string, unknown>).state, "no_output");
+		const terminalEvidence = JSON.parse(readFileSync(managedDispatchTerminalEvidencePath(rootDir, {
+			workflowId: "workflow-123",
+			attemptId: "attempt-managed-dispatch-finalize-empty",
+			laneId: "lane-managed-dispatch-finalize-empty",
+		}), "utf8")) as Record<string, unknown>;
+		assert.equal(terminalEvidence.state, "no_output");
+		assert.equal(terminalEvidence.terminal_sequence, 1);
+	});
+});
+
+test("managed dispatch lane finalize does not overwrite conflicting terminal evidence", async () => {
+	await withTempRoot(async (rootDir) => {
+		const laneId = "lane-managed-dispatch-finalize-conflict";
+		persistTerminalEvidence({
+			rootDir,
+			workflowId: "workflow-123",
+			attemptId: "attempt-managed-dispatch-finalize-conflict",
+			laneId,
+			taskId: `task-${laneId}`,
+			state: "no_output",
+			reason: "response_without_result_text",
+		});
+		const evidencePath = managedDispatchTerminalEvidencePath(rootDir, {
+			workflowId: "workflow-123",
+			attemptId: "attempt-managed-dispatch-finalize-conflict",
+			laneId,
+		});
+		const before = readFileSync(evidencePath, "utf8");
+		const client = {
+			session: {
+				messages: async () => ([{ role: "assistant", parts: [
+					{ type: "text", text: "Conflicting terminal text." },
+					{ type: "step-finish", reason: "stop" },
+				] }]),
+			},
+		} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
+
+		const result = await observeAndFinalizeManagedDispatchLaneV1({
+			client,
+			rootDir,
+			workflowId: "workflow-123",
+			laneId,
+			attemptId: "attempt-managed-dispatch-finalize-conflict",
+			childSessionId: "child-md-conflict",
+			agentRef: "agent-x",
+			providerQualifiedModelId: "openai/gpt-5.5",
+		});
+
+		assert.equal(result.status, "blocked_before_finalize");
+		assert.match(result.redactedBlockReason ?? "", /terminal evidence conflict; quarantine recommended/);
+		assert.equal(readFileSync(evidencePath, "utf8"), before);
 	});
 });
 

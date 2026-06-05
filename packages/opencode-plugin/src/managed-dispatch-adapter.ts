@@ -59,6 +59,11 @@ import {
 } from "@flowdesk/core";
 
 import { observeFlowDeskAgentTaskOutputV1 } from "./agent-task-output.js";
+import {
+	classifyDispatchTerminalState,
+	persistTerminalEvidence,
+	type PersistTerminalEvidenceResult,
+} from "./terminal-evidence-writer.js";
 
 export const flowdeskManagedDispatchBetaAdapterProfile =
 	"managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
@@ -455,6 +460,8 @@ export interface FlowDeskManagedDispatchBetaDispatchFailedResultV1 {
 	};
 	directory?: string;
 	redactedErrorCategory: "provider_api" | "runtime" | "unknown";
+	terminalEvidenceId?: string;
+	terminalEvidenceConflict?: boolean;
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1;
 	verification: FlowDeskManagedDispatchBetaVerificationStatusV1;
 }
@@ -4069,6 +4076,8 @@ export interface FlowDeskManagedDispatchLaneFinalizeResultV1 {
 	laneId: string;
 	taskResultEvidenceId?: string;
 	terminalLifecycleEvidenceId?: string;
+	terminalEvidenceId?: string;
+	terminalEvidenceConflict?: boolean;
 	finalizationReason?: string;
 	completionStatus?: "final" | "partial";
 	looksLikeRefusalOrError?: boolean;
@@ -4112,6 +4121,50 @@ function managedDispatchLaneHasTerminalTaskEvidence(input: {
 		if (entry.evidenceClass !== "task_result" && entry.evidenceClass !== "task_failed")
 			return false;
 		return (entry.record as Record<string, unknown>).lane_id === input.laneId;
+	});
+}
+
+function managedDispatchTerminalTaskId(laneId: string): string {
+	return laneId.startsWith("task-") ? laneId : `task-${laneId}`;
+}
+
+function persistManagedDispatchTerminalEvidence(input: {
+	rootDir: string | undefined;
+	workflowId: string | undefined;
+	attemptId: string | undefined;
+	laneId: string | undefined;
+	taskId?: string;
+	responseObserved: boolean;
+	resultText?: string;
+	errorCategory?: string;
+	timedOut?: boolean;
+}): PersistTerminalEvidenceResult | undefined {
+	if (
+		input.rootDir === undefined ||
+		input.workflowId === undefined ||
+		input.attemptId === undefined ||
+		input.laneId === undefined ||
+		input.rootDir.trim().length === 0 ||
+		input.workflowId.trim().length === 0 ||
+		input.attemptId.trim().length === 0 ||
+		input.laneId.trim().length === 0
+	) {
+		return undefined;
+	}
+	const terminal = classifyDispatchTerminalState({
+		responseObserved: input.responseObserved,
+		resultText: input.resultText,
+		errorCategory: input.errorCategory,
+		timedOut: input.timedOut === true,
+	});
+	return persistTerminalEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		attemptId: input.attemptId,
+		laneId: input.laneId,
+		taskId: input.taskId ?? managedDispatchTerminalTaskId(input.laneId),
+		state: terminal.state,
+		reason: terminal.reason,
 	});
 }
 
@@ -4162,7 +4215,7 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 	const observedAt = (input.now ? input.now() : new Date()).toISOString();
 	const messagesTimeoutMs = input.messagesTimeoutMs ?? 3_000;
 	const parentSessionRef = input.parentSessionRef ?? "ses-managed-dispatch";
-	const taskId = input.laneId.startsWith("task-") ? input.laneId : `task-${input.laneId}`;
+	const taskId = managedDispatchTerminalTaskId(input.laneId);
 
 	// Read the child session once (no nudge/abort). Use the sessionID shape that
 	// OpenCode 1.15.x accepts; the path fallback can surface literal {id} route
@@ -4262,6 +4315,17 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 			return blocked("task_result evidence write failed");
 		if (!reloadHas((entry) => entry.evidenceClass === "task_result" && entry.evidenceId === taskResultEvidenceId && entry.record.lane_id === input.laneId))
 			return blocked("task_result evidence reload verification failed");
+		const terminalEvidence = persistManagedDispatchTerminalEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			attemptId: input.attemptId,
+			laneId: input.laneId,
+			taskId,
+			responseObserved: true,
+			resultText: latestText,
+		});
+		if (terminalEvidence?.conflict === true)
+			return blocked(`terminal evidence conflict; quarantine recommended: ${terminalEvidence.evidenceId}`);
 		const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
 		if (!writeLifecycle("incomplete", `output-${taskResultEvidenceId}`, terminalLifecycleEvidenceId))
 			return blocked("terminal lane_lifecycle evidence write failed");
@@ -4274,6 +4338,10 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 			laneId: input.laneId,
 			taskResultEvidenceId,
 			terminalLifecycleEvidenceId,
+			...(terminalEvidence === undefined ? {} : {
+				terminalEvidenceId: terminalEvidence.evidenceId,
+				terminalEvidenceConflict: terminalEvidence.conflict ?? false,
+			}),
 			finalizationReason,
 			completionStatus,
 			looksLikeRefusalOrError: observed?.looksLikeRefusalOrError ?? false,
@@ -4283,6 +4351,16 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 
 	// No usable text observed — record a terminal no_output lifecycle so the lane
 	// stops projecting as running/stalled. No task_failed authority is implied.
+	const terminalEvidence = persistManagedDispatchTerminalEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		attemptId: input.attemptId,
+		laneId: input.laneId,
+		taskId,
+		responseObserved: raw !== null,
+	});
+	if (terminalEvidence?.conflict === true)
+		return blocked(`terminal evidence conflict; quarantine recommended: ${terminalEvidence.evidenceId}`);
 	const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
 	if (!writeLifecycle("no_output", undefined, terminalLifecycleEvidenceId))
 		return blocked("terminal no_output lane_lifecycle evidence write failed");
@@ -4294,6 +4372,10 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 		workflowId: input.workflowId,
 		laneId: input.laneId,
 		terminalLifecycleEvidenceId,
+		...(terminalEvidence === undefined ? {} : {
+			terminalEvidenceId: terminalEvidence.evidenceId,
+			terminalEvidenceConflict: terminalEvidence.conflict ?? false,
+		}),
 		authority: baseAuthority,
 	};
 }
@@ -4847,6 +4929,18 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			manifest: input.dispatchManifest,
 			reloadedEvidence: input.reloadedEvidence,
 		});
+		const redactedErrorCategory =
+			failureRecord.ok && failureRecord.reservationEvidenceReloaded
+				? "provider_api"
+				: "runtime";
+		const terminalEvidence = persistManagedDispatchTerminalEvidence({
+			rootDir: input.durableStateRootDir,
+			workflowId: input.dispatchManifest.workflow_id,
+			attemptId: input.dispatchManifest.attempt_id,
+			laneId: input.request.laneId,
+			errorCategory: redactedErrorCategory,
+			responseObserved: false,
+		});
 		return {
 			adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
 			status: "dispatch_failed",
@@ -4859,10 +4953,11 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			...(input.request.directory === undefined
 				? {}
 				: { directory: input.request.directory }),
-			redactedErrorCategory:
-				failureRecord.ok && failureRecord.reservationEvidenceReloaded
-					? "provider_api"
-					: "runtime",
+			redactedErrorCategory,
+			...(terminalEvidence === undefined ? {} : {
+				terminalEvidenceId: terminalEvidence.evidenceId,
+				terminalEvidenceConflict: terminalEvidence.conflict === true,
+			}),
 			authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 			verification: verificationFor(input.boundaryInput),
 		};
