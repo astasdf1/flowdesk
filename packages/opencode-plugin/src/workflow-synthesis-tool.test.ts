@@ -10,7 +10,7 @@ import {
 } from "@flowdesk/core";
 import { executeFlowDeskWorkflowSynthesisPreviewV1 } from "./workflow-synthesis-tool.js";
 
-function writeTaskResult(rootDir: string, workflowId: string): void {
+function writeTaskResult(rootDir: string, workflowId: string, resultText = "Summarized result for the completed task."): void {
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 		workflowId,
 		evidenceId: "task-result-preview-1",
@@ -22,7 +22,7 @@ function writeTaskResult(rootDir: string, workflowId: string): void {
 			agent_ref: "agent-test",
 			provider_qualified_model_id: "openai/gpt-5.5",
 			task_prompt_sha256: "a".repeat(64),
-			result_text: "Summarized result for the completed task.",
+			result_text: resultText,
 			result_text_truncated: false,
 			result_text_sha256: "b".repeat(64),
 			completion_status: "final",
@@ -50,6 +50,8 @@ test("workflow synthesis preview writes provider-free synthesis evidence", () =>
 		assert.equal(result.authority.runtimeExecution, false);
 		assert.equal(result.authority.actualLaneLaunch, false);
 		assert.match(result.summaryForUser, /Provider-free synthesis preview/);
+		assert.match(result.summaryForUser, /Summarized result for the completed task\./);
+		assert.equal(result.taskResultExcerpts?.[0]?.resultText, "Summarized result for the completed task.");
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
 		assert.equal(reloaded.ok, true);
 		assert.equal(reloaded.entries.filter((entry) => entry.evidenceClass === "workflow_synthesis_result").length, 1);
@@ -72,6 +74,40 @@ test("workflow synthesis preview writes provider-free synthesis evidence", () =>
 		const reloadedAfterSecond = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
 		assert.equal(reloadedAfterSecond.ok, true);
 		assert.equal(reloadedAfterSecond.entries.filter((entry) => entry.evidenceClass === "workflow_synthesis_result").length, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("workflow synthesis preview exposes bounded result_text excerpt with line breaks", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-synthesis-preview-lines-"));
+	try {
+		const workflowId = "workflow-synthesis-preview-lines-test";
+		writeTaskResult(rootDir, workflowId, "Line one\nLine two\n- bullet three");
+		const result = executeFlowDeskWorkflowSynthesisPreviewV1({ workflowId, rootDir });
+		assert.equal(result.status, "workflow_synthesis_completed");
+		assert.equal(result.taskResultExcerpts?.length, 1);
+		assert.equal(result.taskResultExcerpts?.[0]?.resultText, "Line one\nLine two\n- bullet three");
+		assert.equal(result.taskResultExcerpts?.[0]?.truncated, false);
+		assert.match(result.summaryForUser, /Line one\nLine two\n- bullet three/);
+		const second = executeFlowDeskWorkflowSynthesisPreviewV1({ workflowId, rootDir });
+		assert.equal(second.synthesisId, result.synthesisId);
+		assert.equal(second.taskResultExcerpts?.[0]?.resultText, "Line one\nLine two\n- bullet three");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("workflow synthesis preview redacts forbidden task_result excerpts", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-synthesis-preview-redact-"));
+	try {
+		const workflowId = "workflow-synthesis-preview-redact-test";
+		writeTaskResult(rootDir, workflowId, "provider payload should not be surfaced");
+		const result = executeFlowDeskWorkflowSynthesisPreviewV1({ workflowId, rootDir });
+		assert.equal(result.status, "workflow_synthesis_completed");
+		assert.deepEqual(result.taskResultExcerpts, []);
+		assert.doesNotMatch(result.summaryForUser, /provider payload/);
+		assert.match(result.summaryForUser, /\(redacted\)/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

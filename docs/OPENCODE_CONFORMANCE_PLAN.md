@@ -2,7 +2,9 @@
 
 ## Purpose
 
-FlowDesk must not enable real OpenCode dispatch or hard managed chat control based on assumptions. This plan defines the evidence required for a pinned OpenCode release or commit. Release 1 uses chat as the normal entry point and routes accepted requests into guarded command-backed FlowDesk workflows when mutation/throw behavior is proven, but it must not claim hard no-reply/cancel authority. FlowDesk also targets delegated workflow authoring so the main agent keeps only routing, compact summaries, Guard handoff, and safe next actions in context.
+FlowDesk must not enable real OpenCode dispatch or hard managed chat control based on assumptions. This plan defines plugin/SDK-observable evidence for a pinned OpenCode release or commit. Release 1 uses chat as the normal entry point and routes accepted requests into guarded command-backed FlowDesk workflows when mutation/throw behavior is proven, but it must not claim hard no-reply/cancel authority. FlowDesk also targets delegated workflow authoring so the main agent keeps only routing, compact summaries, Guard handoff, and safe next actions in context.
+
+FlowDesk conformance is bounded to plugin-verifiable behavior. Platform-internal execution facts are non-gating diagnostics.
 
 ## Status
 
@@ -16,7 +18,7 @@ Top-tier multi-perspective internal reviewer lanes are a planned Release 2.5 or 
 
 Release 1 local preview evidence was extended on 2026-05-29 with provider-free synthesis preview and durable-plan auto-continue preview. These preview helpers are conformance-safe because they read existing FlowDesk evidence only (`task_result` or `workflow_dispatch_plan` plus completed task ids), persist bounded local preview/status evidence where applicable, and keep provider calls, runtime execution, actual lane launch, fallback/reselection, TUI actions, hard chat control, and workspace writes disabled. They do not satisfy or replace later gates for actual delegated lane launch, managed dispatch, managed fallback, or hard chat cancellation.
 
-Source-surface inspection on 2026-05-21 found that the OpenCode SDK typings expose `session.create(parentID)`, `session.children`, agent/model session metadata, prompt/promptAsync `SubtaskPartInput`, SDK `noReply`, and SDK `session.abort`. It also found that `session.command` does not accept subtask parts in the inspected typings, no literal `subtask: true` runtime boolean was found, plugin chat hooks do not expose first-class hard no-reply/cancel return authority, and external auth plugin APIs must be sanitized because account/auth objects carry tokens. This is source-level API evidence only; runtime lane lifecycle, trusted echo, external auth policy binding, and hard chat suppression remain unproven.
+Source-surface inspection on 2026-05-21 found that the OpenCode SDK typings expose `session.create(parentID)`, `session.children`, agent/model session metadata, prompt/promptAsync `SubtaskPartInput`, SDK `noReply`, and SDK `session.abort`. It also found that `session.command` does not accept subtask parts in the inspected typings, no literal `subtask: true` runtime boolean was found, plugin chat hooks do not expose first-class hard no-reply/cancel return authority, and external auth plugin APIs must be sanitized because account/auth objects carry tokens. This is source-level API evidence only; runtime lane lifecycle, platform-internal echo diagnostics, external auth policy binding, and hard chat suppression remain unproven and non-gating unless exposed through plugin/SDK-observable evidence.
 
 ## Outputs
 
@@ -39,7 +41,7 @@ Minimum fields:
   "chat_intake_mode": "blocking|steering|observe_only|off",
   "command_alias_mode": "portable_only|colon_alias_supported",
   "dispatch_mode": "none|fake-runtime|guarded-dry-run|command-steering|real-opencode-dispatch",
-  "runtime_echo_mode": "none|trusted|untrusted|request_surface_only",
+  "runtime_echo_mode": "none|diagnostic_observed|untrusted|request_surface_only",
   "event_telemetry_mode": "none|partial|sufficient",
   "provider_health_mode": "none|diagnostic_only|dispatch_gate_ready",
   "fallback_reselection_mode": "disabled|diagnostic_only|guarded_real_dispatch_ready",
@@ -55,7 +57,7 @@ Minimum fields:
 
 The canonical schema for this artifact is `flowdesk.conformance_runtime_metadata.v1` / `FlowDeskConformanceRuntimeMetadataV1` in `docs/schemas/RELEASE_1_TOOL_CONTRACTS.md`. Persisted `redacted-evidence.jsonl` lines use `flowdesk.conformance_evidence_record.v1` / `FlowDeskConformanceEvidenceRecordV1`.
 
-The current compatibility artifact is an input to `/flowdesk-doctor`. It is local runtime metadata, not a persisted conformance evidence bundle and not a Guard approval by itself.
+The current compatibility artifact is an input to `/flowdesk-doctor`. It is local runtime metadata, not a persisted conformance evidence bundle and not a Guard approval by itself. Conformance completion records must carry `attestation_scope=plugin_observed_only`.
 
 Conformance run artifacts default to an isolated temporary directory. Persisted `.flowdesk/conformance/<run_id>` artifacts require explicit opt-in and may contain only redacted reports, compatibility artifacts, and evidence references. Raw prompts, transcripts, tool args/results, provider payloads, provider quota bodies, runtime echoes, stack traces, raw file contents, raw paths, branch names, issue or PR titles, repo or organization names, prompt-derived hashes, public unsalted identifiers, and stable cross-project identifiers are forbidden in persisted conformance artifacts unless a later schema explicitly marks a field safe.
 
@@ -66,7 +68,7 @@ Conformance run artifacts default to an isolated temporary directory. Persisted 
 3. `degraded_mode_warning`: allows safe read-only, planning, status, or fake-runtime paths with a user-visible warning.
 4. `informational`: records non-blocking context.
 
-Guard, audit durability, redaction, usage, provider health, policy, plugin schema compatibility, trusted runtime binding, trusted echo, and dispatch-critical conformance failures are `dispatch_blocking` for real dispatch. Chat-hook or chat-steering failures are `chat_mode_disable` unless they also affect command-backed safety. Release 1 provider/API/model outages are diagnostic, status, degraded, or fake-runtime signals only and must not trigger real automatic provider/model switching.
+Guard, audit durability, redaction, usage, provider health, policy, plugin schema compatibility, plugin-observed binding, and dispatch-critical plugin/SDK conformance failures are `dispatch_blocking` for real dispatch. Platform-internal runtime echo, telemetry correlation, lane conformance, usage-authority attestation, and OpenCode internal execution mode are non-gating diagnostics when observable. Chat-hook or chat-steering failures are `chat_mode_disable` unless they also affect command-backed safety. Release 1 provider/API/model outages are diagnostic, status, degraded, or fake-runtime signals only and must not trigger real automatic provider/model switching.
 
 ## Gate Resolution Queue
 
@@ -75,13 +77,13 @@ The remaining gates must be resolved in dependency order. A later gate cannot be
 1. **Release 1 handler readiness:** completed for command-backed handlers for doctor, plan, run, status, resume, retry, abort, usage, and export-debug. Handlers validate requests, write only through scoped non-dispatch paths, and return schema-valid redacted results without real dispatch authority.
 2. **Plugin schema evidence:** FDS-1 runtime-closed compatibility is the handler safety boundary. Provider-facing closedness remains a documented OpenCode 1.14.40 caveat, with FlowDesk-side runtime validation rejecting unknown properties before execution.
 3. **Production non-dispatch registration:** completed only for command-backed non-dispatch handlers after doctor, schema, Guard, audit, policy, redaction, disabled-mode, and conformance checks. This gate still rejects `real-opencode-dispatch`, provider calls, actual lane launch, automatic fallback/reselection, and hard chat cancellation.
-4. **Telemetry and runtime echo harness:** before real dispatch, prove correlated event/log/hook evidence for session id, message id, command/tool id, workflow id, attempt id, selected provider/model, tool schema hash, audit refs, and failure classes. Persist only redacted references and summaries.
-5. **Single-step managed dispatch beta:** enable one low-risk real dispatch step only when the plugin-verifiable dispatch bundle passes: configured authorization, trusted/requested binding observed through plugin/SDK surfaces, fresh usage/provider health, sanitized auth/provider policy, Guard/user approval, durable pre-dispatch audit, idempotency/reservation, configured verification, intended SDK dispatch path, redaction-safe observed lifecycle/result/status evidence, and quarantine-on-ambiguity. Platform-internal runtime echo, telemetry correlation, lane conformance, or usage-authority attestation remain skipped diagnostics unless OpenCode exposes a conformance-proven plugin-verifiable source.
+4. **Plugin/SDK observation surfaces:** before real dispatch, prove only plugin/SDK-observable behavior: plugin load, tool schema conversion and runtime validation, SDK dispatch adapter availability, session/message/lifecycle observation, failure-mode classification, durable evidence writes, and redacted status/debug refs. Observed runtime echo and telemetry correlation are optional non-gating diagnostics when OpenCode exposes them through plugin/SDK interfaces.
+5. **Single-step managed dispatch beta:** enable one low-risk real dispatch step only when the plugin-verifiable dispatch bundle passes: configured authorization, requested binding observed through plugin/SDK surfaces, fresh usage/provider health, sanitized auth/provider policy, Guard/user approval, durable pre-dispatch audit, idempotency/reservation, configured verification, intended SDK dispatch path, redaction-safe observed lifecycle/result/status evidence, and quarantine-on-ambiguity. Platform-internal runtime echo, telemetry correlation, lane conformance, usage-authority attestation, and OpenCode internal execution mode remain non-gating diagnostics only.
 6. **Managed chat and cancellation:** SDK-scoped controls are complete only for the first-class surfaces OpenCode exposes: `permission.ask` denial, coordinator-issued `session.abort`, and SDK prompt-body `noReply`, each behind explicit FlowDesk decisions. Hook-level `chat.message` hard suppression is separate; it may be promoted only if a future first-class hook boundary proves blocking/no-reply/cancellation with e2e evidence for no duplicate assistant reply, pending tool abort, lane cleanup, and audit state transitions. Until then, `chat.message` remains steering-only and the hook limitation is documented rather than treated as a blocker for the completed SDK-scoped slice.
 7. **Actual delegated lane launch:** promote lane launch only after managed dispatch also proves task ref capture, reference-kind separation, incomplete-result detection, timeout/correlation handling, redacted status/debug refs, and bounded retry behavior.
-8. **Dedicated top-tier multi-perspective reviewer lanes and arbitrary overrides:** promote only after actual delegated lane launch also proves internal `subtask: true` or injected SDK/client routing at the plugin boundary, explicit agent binding, concrete provider-qualified model ids, binding registry evidence, a same-day redacted exact-model availability cache, fresh auth/usage/quota evidence, fresh provider health, observed lifecycle/result/status evidence from plugin/SDK surfaces, plugin-verifiable telemetry refs, typed reviewer output schema, same-model multi-agent perspective separation, no silent fallback, and no `opencode run` production path. Registered highest-tier models drive the model set; abstract labels such as Claude Opus, GPT, or Gemini Pro are discovery seeds only, and missing unregistered providers do not block review by themselves. Reviewer lane platform conformance and platform-internal runtime echo remain skipped diagnostics unless separately proven by OpenCode.
-9. **Managed fallback/reselection:** keep automatic provider/model switching last. It requires every real-dispatch gate plus runtime compatibility, policy eligibility, fresh usage, fresh provider health, plugin-verifiable binding/observed echo/status, plugin-verifiable telemetry refs, durable pre-dispatch audit for the new binding, a new attempt id, and explicit Guard approval. No automatic fallback/reselection is enabled by this planning language.
-10. **Remote write connector profile/gateway gate:** allow GitHub, connector, storage, database, URL, raw-path, external ledger, or custom MCP/API writes only through validated `ConnectorProfile` records, connector recipe refs, skill/command/agent playbooks, and a generic connector gateway. Each connector profile must provide plugin-verifiable environment capability discovery, approved tool installation or activation when required, scoped auth refs, dry-run write plan, redaction/content hash binding, pre-write audit, idempotency, execution result classification, post-write remote-ref observation, and rollback/cleanup guidance. Any remote platform proof beyond those observable refs stays platform-dependent/un-attested. Missing tools produce install plans rather than automatic installation, and playbooks are guidance only until converted into typed profile, recipe, approval, audit, and evidence artifacts.
+8. **Dedicated top-tier multi-perspective reviewer lanes and arbitrary overrides:** promote only after actual delegated lane launch also proves SDK/client routing at the plugin boundary, explicit agent binding, concrete provider-qualified model ids, binding registry evidence, a same-day redacted exact-model availability cache, fresh auth/usage/quota evidence, fresh provider health, observed lifecycle/result/status evidence from plugin/SDK surfaces, typed reviewer output schema, same-model multi-agent perspective separation, no silent fallback, and no `opencode run` production path. Registered highest-tier models drive the model set; abstract labels such as Claude Opus, GPT, or Gemini Pro are discovery seeds only, and missing unregistered providers do not block review by themselves. Reviewer lane platform conformance and platform-internal runtime echo are non-gating diagnostics only.
+9. **Managed fallback/reselection:** keep automatic provider/model switching last. It requires every real-dispatch gate plus SDK-adapter compatibility, policy eligibility, fresh usage, fresh provider health, plugin-verifiable binding/status observations, durable pre-dispatch audit for the new binding, a new attempt id, and explicit Guard approval. Platform-internal telemetry and echo are diagnostic only. No automatic fallback/reselection is enabled by this planning language.
+10. **Remote write connector profile/gateway gate:** allow GitHub, connector, storage, database, URL, raw-path, external ledger, or custom MCP/API writes only through validated `ConnectorProfile` records, connector recipe refs, skill/command/agent playbooks, and a generic connector gateway. Each connector profile must provide plugin-verifiable environment capability discovery, approved tool installation or activation when required, scoped auth refs, dry-run write plan, redaction/content hash binding, pre-write audit, idempotency, execution result classification, post-write remote-ref observation, and rollback/cleanup guidance. Any remote platform proof beyond those observable refs stays non-gating diagnostic scope only. Missing tools produce install plans rather than automatic installation, and playbooks are guidance only until converted into typed profile, recipe, approval, audit, and evidence artifacts.
 
 Each queue item must produce a redacted conformance artifact, a doctor-consumable compatibility result, and tests proving both the pass path and fail-closed behavior before the next gate is promoted.
 
@@ -215,28 +217,29 @@ OpenCode 1.14.40 PoC result:
 2. `command.execute.before` throw prevents downstream chat dispatch in the tested path.
 3. These outcomes support `command-steering` but do not prove `real-opencode-dispatch`.
 
-### 5. Runtime Echo
+### 5. Plugin/SDK Runtime Observation Diagnostics
 
 Questions:
 
-1. Which OpenCode runtime surface proves actual agent id?
-2. Which OpenCode runtime surface proves actual model id?
-3. Which surface proves runtime variant or reasoning setting?
-4. Can runtime capability snapshot id or config hash be correlated?
-5. Can the evidence be captured without raw prompts, transcripts, or provider payloads?
+1. Which plugin/SDK surface reports requested agent/model binding, session/message ids, lifecycle state, result status, and failure class?
+2. Can the SDK dispatch adapter be invoked only after FlowDesk's plugin-verifiable bundle passes?
+3. Can observed runtime echo, telemetry correlation, lane conformance, usage-authority attestation, or platform execution mode be shown only as optional diagnostics?
+4. Can plugin-observed capability snapshot ids or config hashes be correlated without treating platform-internal facts as completion criteria?
+5. Can all evidence be captured without raw prompts, transcripts, or provider payloads?
 
 Pass criteria:
 
-1. Echo includes workflow id, step id, attempt id, correlation id, runtime agent id, runtime model id, provider-qualified FlowDesk model id, runtime variant when required, capability snapshot id, and command shape hash.
-2. Echo is not sourced only from model text.
-3. Missing evidence marks `execution_echo_untrusted`.
+1. Plugin/SDK-observed records include workflow id, step id, attempt id, correlation id, requested agent id, requested provider-qualified model id, observed session/message/lifecycle/result/status refs when exposed, capability snapshot id when available, and command shape hash.
+2. Completion is not sourced from model text or platform-internal claims.
+3. Completion records carry `attestation_scope=plugin_observed_only`.
+4. Observed runtime echo is optional diagnostic context only; missing platform-internal echo does not block completion when the plugin-verifiable bundle passes.
 
 Fail behavior:
 
 1. Artifacts are quarantined.
-2. Evaluation cannot count the attempt as success.
+2. Evaluation cannot count the attempt as success when the plugin-verifiable bundle is missing or ambiguous.
 
-OpenCode 1.14.40 PoC result: `chat.params` and `chat.headers` reached a fake OpenAI-compatible provider, including a conformance header. This is `request_surface_only` evidence, not trusted runtime echo for a real external provider.
+OpenCode 1.14.40 PoC result: `chat.params` and `chat.headers` reached a fake OpenAI-compatible provider, including a conformance header. This is `request_surface_only` diagnostic evidence, not a conformance completion criterion for platform-internal runtime truth.
 
 ### 5A. Provider Health and Managed Fallback
 
@@ -246,7 +249,7 @@ Questions:
 2. Can provider/API/model failures be classified without storing raw provider errors, provider payloads, credentials, prompts, transcripts, raw runtime echoes, raw logs, raw file paths, or stack traces?
 3. Can OpenCode provider-load failures, disabled providers, explicit provider/model settings, timeout/chunkTimeout settings, and model refresh state be diagnosed without treating them as fallback approval?
 4. Can event observations for session, message, tool, provider, error, timeout, or cancellation surfaces inform status while remaining observational only?
-5. Can future fallback/reselection gather plugin-verifiable fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, binding/observed echo/status, telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval while leaving platform-internal proof as skipped diagnostics?
+5. Can future fallback/reselection gather plugin-verifiable fresh provider-native usage, fresh provider health, SDK-adapter compatibility, policy eligibility, binding/status observations, durable pre-dispatch audit, a new attempt id, and explicit Guard approval while leaving platform-internal proof as non-gating diagnostics?
 6. Can OpenCode Go and z.ai diagnostics prove provider configuration, credential presence, model-list or static-catalog evidence, and failure classification without assuming quota APIs, scraping account consoles, or enabling fallback?
 
 Release 1 required mode:
@@ -294,7 +297,7 @@ Pass criteria for future Release 2+ managed fallback/reselection:
 
 1. `fallback_reselection_mode` is `guarded_real_dispatch_ready`.
 2. Fresh usage and fresh provider health are tied to the exact new provider/model family.
-3. Runtime compatibility, policy eligibility, plugin-verifiable binding/observed echo/status, telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval all pass; platform-internal proof remains skipped unless OpenCode makes it verifiable.
+3. SDK-adapter compatibility, policy eligibility, plugin-verifiable binding/status observations, durable pre-dispatch audit, a new attempt id, and explicit Guard approval all pass; platform-internal proof remains non-gating diagnostic scope only.
 4. Stale, unknown, refused, shared-limit-suspected, fallback-derived, model-generated, telemetry-ambiguous, policy-ineligible, runtime-incompatible, untrusted, unaudited, or Guard-rejected inputs block fallback.
 
 Fail behavior:
@@ -323,13 +326,13 @@ Questions:
 6. Are events correlated to stable session/message/tool identifiers?
 7. Are delays and lossiness within policy tolerance?
 
-Required mode for real dispatch:
+Diagnostic mode for real dispatch:
 
 ```text
-event_telemetry_mode = sufficient
+event_telemetry_mode = none|partial|sufficient
 ```
 
-Harness telemetry may be collected from fire-and-forget plugin `event` observations, awaited trigger hooks such as `tool.execute.before/after` and `command.execute.before`, and session/message/status bus events exposed by the pinned OpenCode version. Event observations provide situational awareness for status, provider health suspicion, and recovery hints only.
+Harness telemetry may be collected from fire-and-forget plugin `event` observations, awaited trigger hooks such as `tool.execute.before/after` and `command.execute.before`, and session/message/status bus events exposed by the pinned OpenCode version. Event observations provide situational awareness for status, provider health suspicion, and recovery hints only. Telemetry correlation is not a conformance completion requirement.
 
 Harness telemetry may be used for:
 
@@ -353,16 +356,16 @@ Harness telemetry must not be used for:
 
 Pass criteria:
 
-1. Minimum telemetry surfaces are available and correlated.
+1. Telemetry availability and correlation, when observable, are classified as diagnostics.
 2. Event-only `completed` cannot mark success.
 3. Event-derived checkpoint cannot resume without durable FlowDesk state and audit reference.
 4. Event-only provider failure observations cannot trigger provider/model fallback.
 
-OpenCode 1.14.40 PoC result: awaited command/chat/tool hooks are useful containment and coordination surfaces. Treat this as `partial` telemetry until correlated lifecycle, progress, tool, error, cancellation, and timeout evidence is proven for real dispatch.
+OpenCode 1.14.40 PoC result: awaited command/chat/tool hooks are useful containment and coordination surfaces. Treat this as `partial` diagnostic telemetry; correlated lifecycle, progress, tool, error, cancellation, and timeout observations are not conformance completion criteria.
 
 Fail behavior:
 
-1. Real dispatch is disabled.
+1. Diagnostic telemetry is marked unavailable or partial.
 2. Event-dependent recovery is disabled.
 3. Safe status, abort, and debug export remain available.
 
@@ -503,8 +506,8 @@ Questions:
 1. Can FlowDesk launch a reviewer lane through internal OpenCode `subtask: true` command binding or an injected SDK/client path without nested `opencode run`?
 2. Can the review request bind `agent: reviewer` plus every registered highest-tier available reviewer/model binding from the active registry and Policy Pack?
 3. Can each binding resolve to a concrete provider-qualified model id from the model binding registry, not an alias, lower-tier substitution, or provider-hidden gateway?
-4. Can arbitrary agent/model override requests be constrained by the same registry, Policy Pack, Guard evidence, usage, provider health, runtime echo, and telemetry gates?
-5. Can each reviewer lane persist redacted runtime echo, telemetry, usage evidence refs, provider health refs, binding refs, output schema status, and final typed review verdict?
+4. Can arbitrary agent/model override requests be constrained by the same registry, Policy Pack, Guard evidence, usage, provider health, plugin-observed binding/status evidence, and configured verification gates?
+5. Can each reviewer lane persist redacted plugin-observed lifecycle/result/status refs, usage evidence refs, provider health refs, binding refs, output schema status, and final typed review verdict?
 6. Can FlowDesk prove that reviewer lanes return typed critical review outputs only and do not approve dispatch, replace Guard, replace verification, or self-approve?
 7. Can unavailable registered highest-tier reviewer bindings be excluded or blocked with explicit inventory evidence without silent degradation to a lower model, different provider, or unapproved fallback?
 8. Can FlowDesk prove deterministic definitions for `registered`, `available`, `highest-tier`, reviewer perspective, same-model multi-agent assignment, maximum concurrency, cost budget, quota reserve, timeout, and retry budget?
@@ -513,12 +516,12 @@ Questions:
 Pass criteria:
 
 1. `mode_fields` may report `top_tier_multi_perspective_review_mode=conformance_ready` or `release_gate_ready` only when the review run uses every registered highest-tier available reviewer/model binding and preserves the required reviewer perspective set. Missing unregistered providers do not block this mode.
-2. Every reviewer lane has a concrete provider-qualified model id, runtime model id when different, canonical `reviewer` profile id, reviewer perspective id, dedicated binding label, auth evidence ref, usage/quota/reset evidence ref, Provider Health Snapshot ref, runtime echo evidence ref, telemetry ref, and output schema validation result.
+2. Every reviewer lane has a concrete provider-qualified model id, canonical `reviewer` profile id, reviewer perspective id, dedicated binding label, auth evidence ref, usage/quota/reset evidence ref, Provider Health Snapshot ref, plugin-observed lifecycle/result/status ref, and output schema validation result.
 3. The reviewer output schema includes findings, severity, evidence refs, uncertainty, required fixes, and verdict labels. The schema states that verdict labels are review outputs, not dispatch approval.
-4. Arbitrary agent/model override lanes reject unregistered bindings, alias model ids, stale retired ids, missing auth, stale usage, missing quota/reset evidence, provider health failure, runtime echo mismatch, telemetry loss, and Policy Pack denial.
+4. Arbitrary agent/model override lanes reject unregistered bindings, alias model ids, stale retired ids, missing auth, stale usage, missing quota/reset evidence, provider health failure, plugin-observed binding/status mismatch, and Policy Pack denial.
 5. Production orchestration evidence comes from internal OpenCode `subtask: true` lanes or injected SDK/client calls. `opencode run` evidence is accepted only for diagnostics, smoke tests, compatibility probes, or fake-runtime harnesses.
 6. No silent fallback occurs. A blocked reviewer lane returns a safe next action such as refresh usage, wait, reduce scope, choose human review where policy permits, retry with the same approved binding after fresh evidence, or stop.
-7. `Registered` means enrolled in the model binding registry and enabled by the active Policy Pack. `Available` means the same binding has fresh auth, usage/quota/reset, provider health, runtime compatibility, runtime echo, telemetry, and budget/reserve evidence for the run. `Highest-tier` means registry-marked highest review tier for the provider or model family after conformance proves concrete id and capability metadata.
+7. `Registered` means enrolled in the model binding registry and enabled by the active Policy Pack. `Available` means the same binding has fresh auth, usage/quota/reset, provider health, SDK-adapter compatibility, plugin-observed binding/status, and budget/reserve evidence for the run. `Highest-tier` means registry-marked highest review tier for the provider or model family after conformance proves concrete id and capability metadata.
 8. The registered highest-tier available model set drives model fan-out. If only one highest-tier model is registered and available, FlowDesk must still run multiple reviewer perspectives against that model with separate lane records. If maximum concurrency, cost budget, quota reserve, timeout, or retry budget cannot include every registered highest-tier binding and required perspective, the run blocks or asks for an explicit policy-compatible configuration change.
 9. A redacted reviewer binding inventory snapshot records registered, available, included, excluded, and blocked bindings, plus perspective assignments, highest-tier eligibility refs, availability refs, budget/concurrency decisions, and safe next actions.
 
@@ -618,17 +621,17 @@ Fail behavior:
 | Dispatch | command-steering without real dispatch | Yes | No | No |
 | Dispatch | real model/agent binding | No | Yes | Yes |
 | Echo | request-surface header/params plumbing | Yes | No | No |
-| Echo | plugin-verifiable runtime/lifecycle/result observation; platform-internal runtime echo as skipped diagnostic unless proven | Observed only | Observed plus skipped diagnostics unless OpenCode proves issuer | Observed plus skipped diagnostics unless OpenCode proves issuer |
+| Echo | plugin-verifiable runtime/lifecycle/result observation; platform-internal runtime echo is non-gating diagnostic scope only | Observed only | Observed plus non-gating diagnostics when observable | Observed plus non-gating diagnostics when observable |
 | Provider health | separate Provider Health Snapshot and failure classes | Yes | Yes | Yes |
 | Provider health | `/flowdesk-doctor`, `/flowdesk-usage`, and `/flowdesk-status` diagnostics surface | Yes | Yes | Yes |
 | Provider health | automatic provider/model fallback | No | No, unless future guarded fallback gate passes | No, unless future guarded fallback gate passes |
-| Telemetry | minimum telemetry surfaces | No | Yes | Yes |
+| Telemetry | optional plugin event/status diagnostics; not completion criteria | No | Diagnostic only | Diagnostic only |
 | Delegation | delegated authoring records and lane summaries; actual lane launch and task ref capture | Records/summaries in Release 1; actual launch conformance-gated for later release | Yes | Yes |
 | Delegation | lane status summary fields and failure classes | Yes | Yes | Yes |
 | Delegation | launch failure, timeout, abnormal exit, schema failure, and lost correlation detection | Best effort | Yes | Yes |
 | Delegation | reference-kind separation, aborted invocation handling, incomplete verdict detection, and bounded retry records | Yes | Yes | Yes |
 | Review lanes | every registered highest-tier available reviewer/model binding as canonical `reviewer` extensions, with same-model multi-agent perspective assignment when only one top model is registered | No, planned only | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
-| Review lanes | provider-qualified concrete model ids, fresh auth/usage/quota evidence, runtime echo, telemetry persistence, output schema, top-tier eligibility, perspective separation, and no silent fallback | No | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
+| Review lanes | provider-qualified concrete model ids, fresh auth/usage/quota evidence, plugin-observed lifecycle/result/status refs, output schema, top-tier eligibility, perspective separation, and no silent fallback | No | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
 | Overrides | arbitrary agent/model override constrained by binding registry and Guard evidence | No | Release 2.5 or Release 3 entry gate | Release 2.5 or Release 3 entry gate |
 | Delegation | clickable or openable redacted lane refs | No, unless proven | No, unless proven | No, unless proven |
 | Hook harness | `enforce` denies/rewrites/routes unsafe attempts and fails closed | Yes | Yes | Yes |
@@ -653,7 +656,7 @@ Federated registry rows marked `If enabled` are not prerequisites for real dispa
 | Hard chat cancellation | Unsupported `noReply`, `cancel`, and `stop` fields do not provide authority | `blocking` not proven |
 | Guard containment | Model-driven built-in `bash` calls can be denied with zero side effect in tested path | guard hook evidence for tested built-ins |
 | Hook harness | Tool, command, and chat hooks can be used as containment surfaces when conformance-proven | `enforce` candidate for tested paths |
-| Runtime echo | `chat.params` and `chat.headers` reached fake provider | `request_surface_only` |
+| Runtime echo | `chat.params` and `chat.headers` reached fake provider | optional diagnostic `request_surface_only` |
 | Provider health | no official plugin-level automatic cross-provider fallback evidence | `diagnostic_only` |
 | Custom plugin tools | FDS-1 minimum tools pass through runtime-closed validation; provider-facing `additionalProperties: false` is missing/null | compatible with runtime-closed validation; provider-facing closedness caveat |
 | Packaging/bootstrap | `npm pack --dry-run --json` passes for core and plugin packages; plugin exposes `flowdesk-install-release1`; packed files exclude tests and `.tsbuildinfo`; public `@flowdesk/core@0.1.0` and `@flowdesk/opencode-plugin@0.1.0` registry install smoke passed | public package/bin smoke pass |
@@ -664,11 +667,11 @@ Federated registry rows marked `If enabled` are not prerequisites for real dispa
 | Anthropic diagnostic provider smoke | Direct CLI diagnostics succeed for tested Sonnet/Opus ids; tested Haiku ids return provider 404 model-not-found; pure headless SDK mode skips the local external Anthropic auth/provider plugin and returns server `UnknownError`; non-pure headless SDK mode succeeds for Anthropic Sonnet | provider reachable; external plugin dependency must be policy/doctor-gated |
 | OpenCode model metadata | Verbose model listing exposes catalog metadata such as context/pricing/capabilities but no account quota/reset bucket | catalog evidence only; usage gate unsatisfied |
 | Provider usage source research and internal collector | OpenAI and Anthropic expose documented admin/rate-limit/header surfaces; Google Cloud exposes Cloud Quotas/Monitoring surfaces for supported services; DEX Conductor/OpenUsage collector patterns have been ported into FlowDesk core for Claude OAuth usage, Codex/OpenAI live usage, and Gemini Code Assist quota; this local shell has no provider/admin keys and OpenCode SDK responses do not forward provider rate-limit headers | collector logic unit-tested; live credentialed conformance gate unsatisfied |
-| Release 2 audit/gate smoke | FlowDesk-bound audit write intent can write a redacted audit record while authority flags remain false; missing usage evidence still blocks the managed-dispatch beta gate; follow-up smoke proves durable audit write before live OpenAI SDK prompt; gate now requires explicit auth profile, credential scope, account boundary, concrete non-alias model id, actual usage acquisition, quota evidence, reset time, and reset bucket in pinned usage-authority evidence | fail-closed gate evidence plus live-call audit ordering smoke |
-| Release 2 echo/telemetry smoke | SDK `session.prompt` response and `session.messages` expose provider/model, assistant message id, session correlation, part lifecycle, and message count; redacted evidence records validate against runtime observation and telemetry schemas | schema-level plugin/SDK observation path proven; platform-internal trusted echo/telemetry remains skipped diagnostic unless separately proven; production persistence still gated |
+| Release 2 audit/gate smoke | FlowDesk-bound audit write intent can write a redacted audit record while authority flags remain false; missing plugin-verifiable usage evidence still blocks the managed-dispatch beta gate; follow-up smoke proves durable audit write before live OpenAI SDK prompt; platform account-scope usage authority remains diagnostic unless plugin-verifiable | fail-closed plugin gate evidence plus live-call audit ordering smoke |
+| Release 2 echo/telemetry smoke | SDK `session.prompt` response and `session.messages` expose provider/model, assistant message id, session correlation, part lifecycle, and message count; redacted evidence records validate against runtime observation and telemetry schemas | schema-level plugin/SDK observation path proven; platform-internal trusted echo/telemetry is diagnostic only; production persistence still gated |
 | Top-tier multi-perspective internal review lanes | Fan-out to every registered highest-tier available reviewer/model lane is now normative planned capability, with same-model multi-agent perspective review when only one top model is registered, but no production internal subtask review evidence or release approval exists | planned only; not implemented or verified |
 
-Release 1 interpretation: the current product target is a General-Use MVP where chat is the normal entry point and accepted requests route into guarded command-backed workflows. Heavy workflow authoring should be represented through delegated records, fake-runtime lane summaries, command/status summaries, or degraded fallback records. Provider/API/model failures are surfaced through doctor, usage, status, retry guidance, and debug export, but Release 1 does not perform real automatic provider/model fallback. Actual OpenCode subtask/model/provider lane launch remains disabled until a later release gate proves the plugin-verifiable dispatch bundle: safe launch, schema, status, redacted observability, trusted/requested binding observed through plugin/SDK surfaces, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, idempotency/reservation, configured verification, intended SDK dispatch path, and observed lifecycle/result/status evidence. Hard managed chat control, real OpenCode dispatch, automatic provider/model fallback, trusted platform-internal real-provider echo, sufficient event telemetry, perfect clickable lane UI, and colon aliases remain gated; platform-internal proof gaps remain skipped diagnostics unless OpenCode exposes a conformance-proven plugin-verifiable source. Production registration is limited to Release 1 non-dispatch command-backed handlers.
+Release 1 interpretation: the current product target is a General-Use MVP where chat is the normal entry point and accepted requests route into guarded command-backed workflows. Heavy workflow authoring should be represented through delegated records, fake-runtime lane summaries, command/status summaries, or degraded fallback records. Provider/API/model failures are surfaced through doctor, usage, status, retry guidance, and debug export, but Release 1 does not perform real automatic provider/model fallback. Actual OpenCode subtask/model/provider lane launch remains disabled until a later release gate proves the plugin-verifiable dispatch bundle: safe launch, schema, status, redacted observability, requested binding observed through plugin/SDK surfaces, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, idempotency/reservation, configured verification, intended SDK dispatch path, and observed lifecycle/result/status evidence. Hard managed chat control, real OpenCode dispatch, automatic provider/model fallback, perfect clickable lane UI, and colon aliases remain gated; platform-internal execution facts remain non-gating diagnostics only. Production registration is limited to Release 1 non-dispatch command-backed handlers.
 
 Hook harness interpretation: stored artifacts and config use `hook_harness_mode: enforce|observe|off`. User-facing UI may accept `on`, but it must normalize to `enforce` before storage or audit. Release 1 normal managed UX requires `chat_intake_mode: steering` and `hook_harness_mode: enforce`. Hook `observe` and `off` are supported degraded modes, but they disable managed or privileged automation that depends on containment and must not be marketed as full managed automation.
 
@@ -687,6 +690,7 @@ Persisted `redacted-evidence.jsonl` lines use `flowdesk.conformance_evidence_rec
 7. `summary_label`: bounded redacted safe summary.
 8. `redaction_version`: redaction policy version.
 9. `source_refs`: bounded redacted source refs.
+10. `attestation_scope`: `plugin_observed_only`.
 
 Persisted evidence references and redacted logs must not contain raw prompts, transcripts, credentials, provider payloads, provider quota bodies, tool args/results, runtime echoes, stack traces, raw file contents, raw paths, branch names, issue or PR titles, repo or organization names, prompt-derived hashes, public unsalted identifiers, or stable cross-project identifiers unless explicitly classified safe by schema.
 
@@ -697,11 +701,11 @@ Persisted evidence references and redacted logs must not contain raw prompts, tr
 3. Hook `observe` or hook `off` are degraded fallback modes. They disable managed and privileged automation that depends on containment and leave only safe manual, setup, status, recovery, diagnostics, and fallback behavior.
 4. The UI alias `on` may be accepted only if it normalizes to stored `enforce`.
 5. Release 1 may not enable real dispatch.
-6. First real dispatch requires the plugin-verifiable dispatch bundle: binding, observed lifecycle/result/status evidence, telemetry refs, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, idempotency/reservation, configured verification, and intended SDK dispatch path. OpenCode-internal trusted echo/correlation/lane proof is skipped unless verifiable.
+6. First real dispatch requires the plugin-verifiable dispatch bundle: requested binding, observed lifecycle/result/status evidence, fresh usage, fresh provider health, Guard approval, durable pre-dispatch audit, idempotency/reservation, configured verification, and intended SDK dispatch path. OpenCode-internal trusted echo/correlation/lane proof and execution mode are non-gating diagnostics only.
 7. First managed provider/model fallback or reselection requires all real-dispatch gates plus runtime compatibility, policy eligibility, a new attempt id, a durable pre-dispatch audit for the new binding, and explicit Guard approval; automatic fallback remains disabled until this separate gate is promoted.
 8. Hard managed chat control requires blocking chat intake plus all real-dispatch gates for privileged execution.
 9. Conformance regressions disable the dependent feature until re-verified.
 10. Release 1 must not promise clickable or openable lane references unless `lane_observability_mode` is `openable_refs` for the pinned OpenCode version.
 11. If lane launch, schema conversion, timeout, abnormal completion, reference-kind separation, final verdict presence, or event correlation cannot be observed safely, dependent delegated authoring must degrade to command-backed planning, status, abort, retry planning, direct verification, or redacted debug export.
-12. Nested or parallel-launched `opencode run` subprocesses may support provider smoke tests, diagnostics, compatibility probes, or fake-runtime harnesses only. They must not satisfy release gates for delegated authoring lanes, review fan-out, real dispatch, trusted binding, runtime echo, lane observability, or cancellation.
+12. Nested or parallel-launched `opencode run` subprocesses may support provider smoke tests, diagnostics, compatibility probes, or fake-runtime harnesses only. They must not satisfy release gates for delegated authoring lanes, review fan-out, real dispatch, requested binding, plugin-observed lifecycle/result/status evidence, lane observability, or cancellation.
 13. Provider/API/model outages in Release 1 must degrade to diagnostics, status, fake-runtime behavior, safe retry planning, or user-facing remediation. They must not trigger real provider/model switching.

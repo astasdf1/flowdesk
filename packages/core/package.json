@@ -41,6 +41,10 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run test:functional",
+    "test:functional": "npm run build && node ../../scripts/run-tests.mjs --mode functional --package core",
+    "test:slow": "npm run build && node ../../scripts/run-tests.mjs --mode slow --package core",
+    "test:integration": "npm run build && node ../../scripts/run-tests.mjs --mode integration --package core",
+    "test:full": "npm run build && node ../../scripts/run-tests.mjs --mode full --package core"
   }
 }

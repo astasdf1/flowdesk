@@ -9,14 +9,20 @@ permission:
   list: allow
   edit: deny
   bash:
-    "*": ask
+    "*": deny
     "head *": allow
     "grep *": allow
     "echo *": allow
-    "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
+    "git status": allow
+    "git status --short": allow
+    "git status *": allow
+    "git diff": allow
+    "git diff --check": allow
+    "git diff *": allow
+    "git log": allow
+    "git log *": allow
+    "git show": allow
+    "git show *": allow
     "git branch --show-current": allow
     "git remote -v": allow
     "git add*": deny
@@ -64,7 +70,7 @@ Do not use when:
 
 Release 1 constraints:
 - Edit permission is denied. Provide designs, pseudocode, invariants, risks, and test strategy only.
-- Bash has an explicit safe read-only allowlist, asks for all other commands, and denies mutating git commands.
+- Bash has an explicit safe read-only allowlist, denies all other commands, and has no ask rules.
 - Do not claim dispatch approval, fallback approval, release approval, hard chat control, or runtime execution authority.
 
 Output contract:

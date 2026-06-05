@@ -9,7 +9,7 @@ permission:
   list: allow
   edit: deny
   bash:
-    "*": ask
+    "*": deny
     "head *": allow
     "grep *": allow
     "echo *": allow

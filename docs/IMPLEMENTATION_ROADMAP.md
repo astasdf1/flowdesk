@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This roadmap turns `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md` into an implementation sequence. It is intentionally conservative: Release 1 proves the safety harness through chat-routed command-backed workflows, guarded dry-run, fake runtime, provider health diagnostics, audit, abnormal-use guidance, and conformance before enabling real OpenCode dispatch, automatic provider/model fallback, or hard chat cancellation authority. For managed dispatch, completion is judged at the FlowDesk plugin boundary: plugin-verifiable evidence must be real and durable, while OpenCode platform-internal proof gaps remain skipped diagnostics unless OpenCode exposes a conformance-proven verification surface.
+This roadmap turns `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md` into an implementation sequence. It is intentionally conservative: Release 1 proves the safety harness through chat-routed command-backed workflows, guarded dry-run, fake runtime, provider health diagnostics, audit, abnormal-use guidance, and Plugin/SDK compatibility before enabling real OpenCode dispatch, automatic provider/model fallback, or hard chat cancellation authority. For managed dispatch, completion is judged at the FlowDesk plugin boundary: plugin-verifiable evidence must be real and durable, while OpenCode platform-internal facts remain non-gating diagnostics rather than gate, blocker, or completion criteria.
 
 ## Release Tracks
 
@@ -36,7 +36,7 @@ Included:
 6. Guarded dry-run.
 7. Fake-runtime dispatch.
 8. Redaction-first audit.
-9. Conformance report bounded to OpenCode 1.14.40 evidence until newer evidence exists.
+9. Plugin/SDK compatibility report bounded to OpenCode 1.14.40 evidence until newer evidence exists.
 10. Fail-closed usage/config/policy behavior.
 11. Provider Health Snapshot diagnostics for auth, provider, API, model, timeout, OpenCode provider-load, and ambiguous telemetry failures.
 12. Hook harness `enforce`, `observe`, and `off` modes.
@@ -67,7 +67,7 @@ The current progress estimate lives in `PROGRESS_SNAPSHOT.md`. Update that file 
 
 ### Release 2: Managed Dispatch Beta
 
-Release 2 enables managed real dispatch for low-risk workflows after the plugin-satisfiable dispatch bundle is complete: configured authorization, fresh usage/provider health, sanitized auth capture, external auth/provider policy, configured verification, consumed Guard/user approval, durable pre-dispatch audit, dispatch idempotency/reservation, intended SDK dispatch path, and redaction-safe observed lifecycle/result/status evidence. OpenCode platform-dependent proof gaps such as trusted runtime echo issuer, trusted telemetry correlation, lane conformance, and usage authority attestation stay visible as skipped diagnostics rather than FlowDesk-fabricated evidence. Managed fallback or reselection is still optional and requires a new attempt id, runtime compatibility, policy eligibility, fresh usage, fresh provider health, durable pre-dispatch audit, explicit Guard approval for the new binding, and any separately proven platform evidence available at that time.
+Release 2 enables managed real dispatch for low-risk workflows after the 12-item plugin-verifiable dispatch bundle is complete: configured authorization; concrete provider/model/agent binding plus policy eligibility; fresh plugin-verifiable usage/provider health; sanitized auth capture; external auth/provider policy result; configured verification / SDK compatibility result; consumed Guard/user approval bound to the exact request; durable pre-dispatch audit with redaction validation; dispatch idempotency/reservation; intended injected SDK dispatch path plus adapter capability; observed lifecycle/result/status evidence with terminal semantics; and durable evidence reload plus cross-reference validation. FlowDesk completion records carry `attestation_scope=plugin_observed_only`. Platform-internal execution facts that FlowDesk cannot verify are non-gating diagnostics, not completion criteria. Managed fallback or reselection is still optional and requires a new attempt id, runtime compatibility through the SDK adapter, policy eligibility, fresh plugin-verifiable usage/provider health, durable pre-dispatch audit, and explicit Guard approval for the new binding.
 
 ### Release 2.5: Top-Tier Multi-Perspective Review Lane Entry Gate
 
@@ -112,13 +112,13 @@ Tasks:
 2. Implement Guard request/response types.
 3. Implement Usage Availability Snapshot, Provider Health Snapshot, and runtime capability artifact types.
 4. Implement exact Release 1 TypeScript interfaces and exported JSON Schema artifacts from `docs/schemas/RELEASE_1_TOOL_CONTRACTS.md` before production tool registration work starts.
-5. Implement `GuardApprovedDispatch` and runtime echo types.
+5. Implement `GuardApprovedDispatch` and optional diagnostic runtime echo types.
 6. Implement audit event types.
 7. Implement normative workflow taxonomy types with separate axes for category, difficulty drivers, coupling, algorithmic hardness, architecture hardness, migration/state hardness, domain uncertainty, verification hardness, operational risk, and policy/professional boundary.
 8. Implement proposal and score event schemas without using scores as authority.
 9. Implement canonical agent profiles with `reviewer` as the only canonical review id, using the Agent Profile Authoring Standard in the implementation spec. Add planned binding metadata for every registered highest-tier reviewer/model lane and reviewer perspective as `reviewer` extensions, not replacement canonical ids.
 10. Add audited `critic -> reviewer` migration rule for legacy imports.
-11. Define safety terms for Guard, Hook Containment, Audit, Echo, and Conformance.
+11. Define safety terms for Guard, Hook Containment, Audit, optional diagnostic runtime echo, and Plugin/SDK Compatibility.
 12. Define `.flowdesk/workflows` as authoritative state and `.flowdesk/sessions` as redacted session/audit/artifact organization.
 13. Define the Delegation Runtime Contract with policy-controlled lane limits, main-agent minimal routing, timeouts, verification, lane status summaries, invocation failure classes, reference-kind separation, bounded retry disposition, incomplete-result handling, and best-effort cancellation records.
 14. Define a lane heartbeat and stall detection contract for FlowDesk-owned lanes (reviewer lanes, runtime lane launches, provider acquisition lanes, managed-dispatch attempts, fallback regate plans). Heartbeats must produce a durable typed record at most every 2 minutes for active lanes, the stall projection must classify lanes as `progressing_normal`, `progressing_late`, or `stalled` based on `seconds_since_last_signal` over a 5-minute threshold, and stall projection results must be surfaced through `flowdesk_status_live`, doctor, and debug exports without claiming auto-retry, auto-abort, auto-fallback, or hard chat cancel authority.
@@ -178,7 +178,7 @@ Tasks:
 3. Generate fixtures for every Release 1 schema id and fixture prefix in `docs/schemas/RELEASE_1_TOOL_CONTRACTS.md`.
 4. Implement plugin tools: `flowdesk_doctor`, `flowdesk_plan`, `flowdesk_run`, `flowdesk_status`, `flowdesk_resume`, `flowdesk_retry`, `flowdesk_abort`, `flowdesk_usage`, and `flowdesk_export_debug` first.
 5. Generate portable command files: `/flowdesk-doctor`, `/flowdesk-plan`, `/flowdesk-run`, `/flowdesk-status`, `/flowdesk-resume`, `/flowdesk-retry`, `/flowdesk-abort`, `/flowdesk-usage`, `/flowdesk-export-debug`.
-6. Add desired alias generation only behind conformance.
+6. Add desired alias generation only behind Plugin/SDK compatibility evidence.
 7. Implement command-driven guarded dry-run.
 8. Implement fake-runtime dispatch.
 9. Implement status and recovery state display, including lane summaries, Provider Health Snapshot summaries, and safe debug references.
@@ -200,19 +200,19 @@ Exit criteria:
 8. Hook harness off mode disables managed and privileged automation and leaves safe manual fallback only.
 9. Lane failure classes are represented in workflow state and audit when possible: failed launch, missing tool, schema conversion failure, timeout, lost correlation, abnormal exit, invocation failure, incomplete result, reference-kind mismatch, retry limit reached, and unproven cancellation.
 10. Taxonomy, proposal, and score event schemas may be emitted in fake-runtime or guarded dry-run paths, but ranking cannot approve work and real dispatch remains disabled.
-11. `/flowdesk-doctor` blocks managed dispatch for Guard, audit, redaction, usage, provider health, policy, plugin schema, or dispatch-critical conformance failures, but may disable only chat-routed mode when the failure is chat-specific and command fallback remains safe.
+11. `/flowdesk-doctor` blocks managed dispatch for Guard, audit, redaction, usage, provider health, policy, plugin schema, or dispatch-critical Plugin/SDK compatibility failures, but may disable only chat-routed mode when the failure is chat-specific and command fallback remains safe.
 12. Release 1 provider/API/model failures are diagnostic, status, degraded-mode, or fake-runtime outcomes only and never trigger real automatic provider/model switching.
 13. Actual delegated lane launch is not a Release 1 exit criterion; Release 1 must show the degraded status/fallback state when lane launch or observability is unavailable.
 14. Installer/bootstrap schema tests cover `bootstrap-install-plan`, `bootstrap-backup-manifest`, `profile-mutation-summary`, `omo-cleanup-summary`, `command-generation-summary`, `config-scaffold-summary`, `bootstrap-rollback-plan`, `bootstrap-rollback-result`, `bootstrap-report`, and `doctor-handoff` fixture prefixes before production installer mutation is enabled.
 15. Installer failure tests prove backup-first ordering, selected-profile-only mutation, provider-auth preservation, typed-confirmation binding, rollback/partial-restore reporting, static command-template validation, doctor handoff, bootstrap authority closure after doctor pass, and redacted reports with no raw config/profile content.
-16. Doctor/status/debug/audit/conformance artifact tests cover doctor report, doctor section result, status summary, debug export manifest, debug section summary, audit event, audit record, audit ref summary, usage snapshot, provider health snapshot, conformance runtime metadata, and conformance evidence record fixture prefixes.
-17. Artifact tests prove redaction, unknown-property rejection, retention/deletion state, audit-event to audit-record lifecycle, debug-section omission/blocking, conformance evidence redaction, usage/provider-health separation, and non-authority for dispatch, fallback, hard cancellation, or Guard replacement.
+16. Doctor/status/debug/audit/compatibility artifact tests cover doctor report, doctor section result, status summary, debug export manifest, debug section summary, audit event, audit record, audit ref summary, usage snapshot, provider health snapshot, compatibility runtime metadata, and compatibility evidence record fixture prefixes.
+17. Artifact tests prove redaction, unknown-property rejection, retention/deletion state, audit-event to audit-record lifecycle, debug-section omission/blocking, compatibility evidence redaction, usage/provider-health separation, and non-authority for dispatch, fallback, hard cancellation, or Guard replacement.
 18. Chat routing does not use broad invisible prefix injection. `general_chat` preserves the normal chat path, `flowdesk_suggest` produces transparent user-visible guidance or a FlowDesk card, `flowdesk_manage` requires explicit/high-confidence FlowDesk intent, and `unsafe_later_gate` never suggests `/flowdesk-run` or any later-gate authority.
 19. Any natural-language execution request reaches a confirmation-required or plan-ready state before fake-runtime or guarded dry-run evaluation. Confirmation state must be one-shot, scoped, time-bound, and redacted.
 
-## Phase 4: OpenCode Conformance
+## Phase 4: OpenCode Plugin/SDK Compatibility
 
-Goal: replace assumptions with evidence for a pinned OpenCode version.
+Goal: replace assumptions with plugin-observable compatibility evidence for a pinned OpenCode version. Scope is limited to plugin load under supported versions, tool schema registration, command-backed tool behavior, SDK dispatch adapter validation, session/message/lifecycle observation through exposed APIs, failure mode fail-closed behavior, and durable evidence write/reload validation. Phase 4 does not require or claim trusted runtime execution truth, platform telemetry truth, cryptographic attestation, lane conformance, or account-scope usage authority attestation.
 
 Tasks:
 
@@ -220,26 +220,26 @@ Tasks:
 2. Record package loading behavior for npm and local/file plugins.
 3. Verify `engines.opencode` enforcement for npm and independent doctor checks for local/file plugins.
 4. Test command names and `/flowdesk:*` alias feasibility.
-5. Test `chat.message` steering, blocking, and observe-only behavior.
-6. Test command-level `agent`, `model`, and `subtask` routing.
-7. Test real runtime model/agent binding feasibility.
-8. Test runtime echo evidence source.
-9. Test capability-discovered harness telemetry surfaces for lifecycle, progress, tool activity, permission/shell/command events, errors, cancellation, and timeout.
-10. Test subagent lane launch, task reference capture, reference-kind separation, status correlation, lane timeout, abnormal exit detection, missing tool detection, schema conversion failure detection, invocation failure classification, incomplete-result classification, bounded retry behavior, and status or debug reference presentation.
+5. Test `chat.message` steering, blocking, and observe-only behavior through exposed plugin APIs.
+6. Test command-backed tool behavior and command-level `agent`, `model`, and `subtask` routing when exposed to plugins.
+7. Validate SDK dispatch adapter capability for concrete provider/model/agent binding requests and fail-closed behavior when adapter capability is absent or version-incompatible.
+8. Record runtime echo only as an optional non-gating diagnostic surface when observable.
+9. Test plugin/SDK-observable lifecycle, progress, tool activity, permission/shell/command event, error, cancellation, and timeout surfaces as diagnostics and status inputs, not trusted platform telemetry.
+10. Test subagent lane launch through exposed plugin/SDK surfaces, task reference capture, reference-kind separation, status correlation, lane timeout, abnormal exit detection, missing tool detection, schema conversion failure detection, invocation failure classification, incomplete-result classification, bounded retry behavior, and status or debug reference presentation.
 11. Test custom plugin tool schema conversion for every registered tool because the OpenCode 1.14.40 PoC found a schema conversion crash before provider dispatch. This task is a Phase 3 precondition for production tool registration and remains in Phase 4 for full pinned-version evidence reporting.
-12. Record `opencode run` behavior as a diagnostic/smoke-test surface only. Conformance must not count nested CLI subprocess fan-out as proof of delegated lane execution, parallel multi-model orchestration, top-tier multi-perspective review, trusted model/agent binding, lane observability, cancellation, or runtime echo.
+12. Record `opencode run` behavior as a diagnostic/smoke-test surface only. Compatibility evidence must not count nested CLI subprocess fan-out as proof of delegated lane execution, parallel multi-model orchestration, top-tier multi-perspective review, trusted model/agent binding, lane observability, cancellation, or runtime echo.
 13. Test Provider Health Snapshot modes and provider/API/model failure classes, including auth missing/expired, provider unavailable, rate limited, model unavailable, transport timeout, provider error, OpenCode provider-load failure, and telemetry ambiguous.
 14. Test OpenCode Go and z.ai diagnostic evidence sources, including documented provider setup, auth presence, model-list or static-catalog evidence, base URL mode, quota/usage availability or lack of official API evidence, and error-code mapping without console scraping.
 15. Test OpenUsage-style source labeling and reject browser cookie extraction, HAR capture, console scraping, undocumented quota endpoints, and local-history-only data as account-wide quota truth.
 16. Record official evidence that plugin event hooks are observational, `chat.params` and `chat.headers` are pre-request, provider timeout/chunkTimeout and explicit provider/model selection exist, and no official plugin-level automatic cross-provider fallback evidence is present.
-17. Test internal agent/model lane routing through OpenCode `subtask: true` command bindings or injected SDK/client calls with explicit `agent` and concrete provider-qualified `model` binding. Include arbitrary override requests constrained by the model binding registry, Guard evidence, runtime echo, telemetry persistence, and no silent fallback.
-18. Test planned top-tier multi-perspective reviewer lanes for every registered highest-tier available reviewer/model binding. When only one highest-tier model is registered, test that multiple reviewer agents or perspective bindings can share that model without losing lane separation. Each lane must resolve through the canonical `reviewer` profile, return a typed critical review output, and fail closed on missing auth, stale usage, missing quota/reset evidence, missing runtime echo, missing telemetry, lower-tier substitution, or unavailable concrete model id.
+17. Test internal agent/model lane routing through OpenCode `subtask: true` command bindings or injected SDK/client calls with explicit `agent` and concrete provider-qualified `model` binding. Include arbitrary override requests constrained by the model binding registry, Guard evidence, SDK adapter capability, plugin-observable lifecycle/result/status evidence, and no silent fallback.
+18. Test planned top-tier multi-perspective reviewer lanes for every registered highest-tier available reviewer/model binding. When only one highest-tier model is registered, test that multiple reviewer agents or perspective bindings can share that model without losing lane separation. Each lane must resolve through the canonical `reviewer` profile, return a typed critical review output, and fail closed on missing auth, stale usage, missing quota/reset evidence, missing SDK adapter capability, missing plugin-observable lifecycle/result/status evidence, lower-tier substitution, or unavailable concrete model id. Runtime echo and platform telemetry remain optional non-gating diagnostics.
 
 Exit criteria:
 
-1. `docs/OPENCODE_CONFORMANCE_PLAN.md` has a completed evidence table for the pinned version.
-2. Conformance artifact records `blocking`, `steering`, `observe_only`, or `off` for chat intake.
-3. Real dispatch remains disabled unless the plugin-verifiable dispatch bundle passes: configured authorization, fresh usage/provider health, sanitized auth/provider policy, configured verification, consumed approval, durable pre-dispatch audit, idempotency/reservation, intended SDK dispatch path, and observed lifecycle/result/status evidence. OpenCode platform-internal facts such as trusted runtime echo issuer, trusted telemetry correlation, lane conformance, and usage authority attestation remain observed/un-attested or skipped diagnostics unless OpenCode exposes a conformance-proven plugin-verifiable source.
+1. `docs/OPENCODE_CONFORMANCE_PLAN.md` has a completed Plugin/SDK compatibility evidence table for the pinned version.
+2. Compatibility artifact records `blocking`, `steering`, `observe_only`, or `off` for chat intake.
+3. Real dispatch remains disabled unless the 12-item plugin-verifiable dispatch bundle passes: configured authorization; concrete provider/model/agent binding plus policy eligibility; fresh plugin-verifiable usage/provider health; sanitized auth capture; external auth/provider policy result; configured verification / SDK compatibility result; consumed Guard/user approval bound to the exact request; durable pre-dispatch audit with redaction validation; dispatch idempotency/reservation; intended injected SDK dispatch path plus adapter capability; observed lifecycle/result/status evidence with terminal semantics; and durable evidence reload plus cross-reference validation. Platform-internal execution facts remain non-gating diagnostics and are never gate, blocker, or completion criteria.
 4. Managed fallback/reselection remains disabled unless all future fallback gates pass with a new attempt id and explicit Guard approval.
 
 Gate resolution order:
@@ -247,12 +247,12 @@ Gate resolution order:
 1. Finish Release 1 command-backed product handlers while production OpenCode registration stays disabled. Handlers may write only through existing non-dispatch permissions and must preserve guarded dry-run, fake-runtime, status, recovery, usage, and debug-export boundaries.
 2. Complete provider-facing schema evidence for the plugin tool path. The current FDS-1 runtime-closed compatibility pass is sufficient for handler safety, but production registration still needs pinned evidence for OpenCode registry conversion, provider/model transform output, and any FlowDesk-side schema hardening required to preserve the runtime-closed boundary.
 3. Promote production OpenCode registration only for non-dispatch command-backed handlers after doctor, schema, Guard, audit, policy, redaction, and disabled-mode checks pass. This gate must not enable real dispatch, actual lane launch, automatic fallback/reselection, or hard chat cancellation.
-4. Add the telemetry and runtime-echo conformance harness before any real dispatch. The harness must correlate workflow id, attempt id, command/tool id, model/provider binding, tool schema hash, event refs, and audit refs without persisting raw prompts, transcripts, provider payloads, or runtime echo bodies.
-5. Promote a single low-risk managed-dispatch beta step only after the plugin-verifiable dispatch bundle passes: trusted/requested binding as observed through plugin/SDK surfaces, fresh usage/provider health, sanitized auth capture, external auth/provider policy, Guard/user approval, durable pre-dispatch audit, idempotency/reservation, configured verification, intended SDK dispatch path, and redaction-safe observed lifecycle/result/status evidence. Platform-internal runtime echo issuer, telemetry correlation, lane conformance, or usage-authority attestation that the plugin cannot verify stay skipped diagnostics, not completion criteria.
+4. Add the SDK adapter capability and version compatibility check before any real dispatch. The check must validate the intended injected SDK dispatch path, adapter capability, concrete provider/model/agent binding shape, schema hash handling, durable evidence write/reload, and fail-closed behavior without persisting raw prompts, transcripts, provider payloads, or runtime echo bodies.
+5. Promote a single low-risk managed-dispatch beta step only after the 12-item plugin-verifiable dispatch bundle passes: configured authorization; concrete provider/model/agent binding plus policy eligibility; fresh plugin-verifiable usage/provider health; sanitized auth capture; external auth/provider policy result; configured verification / SDK compatibility result; consumed Guard/user approval bound to the exact request; durable pre-dispatch audit with redaction validation; dispatch idempotency/reservation; intended injected SDK dispatch path plus adapter capability; observed lifecycle/result/status evidence with terminal semantics; and durable evidence reload plus cross-reference validation. Platform-internal runtime echo issuer, telemetry correlation, lane conformance, or usage-authority attestation that the plugin cannot verify are non-gating diagnostics, not completion criteria.
 6. Prove hard managed chat/no-reply/cancellation separately. Until e2e evidence proves no duplicate assistant reply, pending-tool abort, lane cleanup, and audit transitions, abort remains best-effort and chat remains steering/command-backed.
 7. Promote actual delegated lane launch only after the managed-dispatch gate also proves task ref capture, reference-kind separation, incomplete-result detection, timeout/correlation handling, redacted status/debug refs, and bounded retry behavior for the pinned OpenCode surface.
-8. Promote dedicated top-tier multi-perspective reviewer lanes only after actual delegated lane launch also proves provider-qualified concrete model ids, fresh auth/usage/quota evidence, plugin-verifiable lifecycle/result/status observation, telemetry persistence from exposed plugin/SDK surfaces, reviewer output schema validation, registered highest-tier binding selection, same-model multi-agent perspective assignment, and no silent lower-tier substitution. Platform-internal echo or telemetry claims remain skipped diagnostics unless separately proven.
-9. Keep automatic provider/model fallback or reselection last. It requires all real-dispatch gates plus runtime compatibility, policy eligibility, a new attempt id, fresh usage, fresh provider health, durable audit for the new binding, and explicit Guard approval.
+8. Promote dedicated top-tier multi-perspective reviewer lanes only after actual delegated lane launch also proves provider-qualified concrete model ids, fresh auth/usage/quota evidence, plugin-verifiable lifecycle/result/status observation, SDK adapter capability, reviewer output schema validation, registered highest-tier binding selection, same-model multi-agent perspective assignment, durable evidence reload/cross-reference validation, and no silent lower-tier substitution. Platform-internal echo or telemetry claims remain non-gating diagnostics.
+9. Keep automatic provider/model fallback or reselection last. It requires all real-dispatch gates plus SDK adapter runtime compatibility, policy eligibility, a new attempt id, fresh plugin-verifiable usage/provider health, durable audit for the new binding, and explicit Guard approval.
 
 ## Phase 5: Managed Dispatch Beta Gate
 
@@ -260,22 +260,22 @@ Goal: enable low-risk managed real dispatch safely.
 
 Tasks:
 
-1. Implement real `GuardApprovedDispatch` runtime path only after production non-dispatch registration and telemetry/echo conformance are already passing.
-2. Require trusted model/agent binding evidence.
-3. Record runtime echo returned through exposed plugin/SDK surfaces as observed/un-attested evidence unless OpenCode supplies a conformance-proven trusted issuer.
-4. Require plugin-verifiable telemetry references and stable correlation ids; platform-internal telemetry correlation that FlowDesk cannot verify remains a skipped diagnostic.
+1. Implement real `GuardApprovedDispatch` runtime path only after production non-dispatch registration, SDK adapter capability, version compatibility, durable evidence write/reload validation, and fail-closed behavior are already passing.
+2. Require concrete provider/model/agent binding evidence plus policy eligibility.
+3. Record runtime echo returned through exposed plugin/SDK surfaces only as an optional non-gating diagnostic.
+4. Record plugin/SDK-observable lifecycle/result/status references and stable correlation ids; platform-internal telemetry correlation that FlowDesk cannot verify remains a non-gating diagnostic.
 5. Require fresh provider-native usage and fresh Provider Health Snapshot.
 6. Require durable pre-dispatch audit.
 7. Run configured verification.
-8. Quarantine artifacts on missing plugin-verifiable evidence, failed verification, provider health failure, event ambiguity, missing observed lifecycle/result/status evidence, or mismatched binding; classify un-attestable OpenCode platform proof as skipped diagnostics rather than fabricated evidence.
+8. Quarantine artifacts on missing plugin-verifiable evidence, failed verification, provider health failure, event ambiguity, missing observed lifecycle/result/status evidence, or mismatched binding; classify un-attestable OpenCode platform proof as non-gating diagnostics rather than fabricated evidence.
 
 Exit criteria:
 
 1. One low-risk managed step can execute in OpenCode.
 2. Event-only completion cannot mark success.
 3. Event-derived checkpoints cannot resume without durable FlowDesk state and audit references.
-4. Missing plugin-visible echo/status or required plugin-verifiable telemetry quarantines results; missing platform-internal attestation is reported separately as an OpenCode-dependent skipped diagnostic.
-5. Any managed fallback/reselection uses a new attempt id and requires fresh usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed lifecycle/result/status evidence, plugin-verifiable telemetry refs, durable pre-dispatch audit, and explicit Guard approval. Automatic fallback/reselection remains disabled by default.
+4. Missing plugin-observable lifecycle/result/status evidence with terminal semantics quarantines results; missing platform-internal attestation is reported separately as a non-gating diagnostic.
+5. Any managed fallback/reselection uses a new attempt id and requires fresh plugin-verifiable usage/provider health, SDK adapter runtime compatibility, policy eligibility, concrete provider/model/agent binding with policy eligibility, observed lifecycle/result/status evidence with terminal semantics, durable evidence reload/cross-reference validation, durable pre-dispatch audit, and explicit Guard approval. Automatic fallback/reselection remains disabled by default.
 
 ## Phase 6: Managed Chat and Recovery
 
@@ -283,7 +283,7 @@ Goal: improve the chat-routed user experience without relying on unsupported har
 
 Tasks:
 
-1. Enable `chat_intake_mode: blocking` only when conformance proves it; otherwise keep Release 1 steering limited to transparent command-backed routing.
+1. Enable `chat_intake_mode: blocking` only when Plugin/SDK compatibility evidence proves it; otherwise keep Release 1 steering limited to transparent command-backed routing.
 2. Implement the internal intent detector outcomes `general_chat`, `flowdesk_suggest`, `flowdesk_manage`, and `unsafe_later_gate`, mapped onto schema-compatible user-facing route decisions.
 3. Implement non-intrusive FlowDesk card or guidance copy for `flowdesk_suggest`, including why FlowDesk is suggesting a workflow, what it will do, what it will not do, and the fact that execution requires confirmation.
 4. Implement `fast_chat`, `managed_plan`, `clarify`, and `blocked` outcomes without exposing internal routing labels as product language.
@@ -292,7 +292,7 @@ Tasks:
 7. Implement pending-intent confirmation state with TTL, source summary/ref binding, one-shot consumption, cancellation/clear behavior, and non-dispatch adapter mode.
 8. Implement natural-language retry/resume/abort/status affordances.
 9. Design and implement a FlowDesk-owned todo continuation supervisor for workflow task records. It may detect incomplete FlowDesk task records after a turn and propose or perform continuation only through durable workflow/checkpoint state, explicit completion contracts, and the existing `/flowdesk-status`, `/flowdesk-resume`, `/flowdesk-retry`, and `/flowdesk-abort` recovery surfaces.
-10. Gate automatic continuation behind conformance that proves a safe post-turn or pre-turn control surface. Until that proof exists, the supervisor may only show transparent visible guidance or command-backed safe next actions; it must not inject hidden system directives, rely on raw OpenCode/OMO todo state, or claim hard no-reply/cancel authority.
+10. Gate automatic continuation behind Plugin/SDK compatibility evidence that proves a safe post-turn or pre-turn control surface. Until that proof exists, the supervisor may only show transparent visible guidance or command-backed safe next actions; it must not inject hidden system directives, rely on raw OpenCode/OMO todo state, or claim hard no-reply/cancel authority.
 11. Require continuation attempts to preserve lane reference-kind separation, bounded retry budgets, idempotent attempt ids, redacted audit refs, user/Guard approval where scope or privilege changes, and fail-closed handling for no-output lanes, missing verdicts, aborted tool calls, stale checkpoints, or telemetry ambiguity.
 
 Exit criteria:
@@ -314,9 +314,9 @@ Tasks:
 
 1. Implement the model binding registry rules for dedicated reviewer bindings under the canonical `reviewer` profile for every registered highest-tier reviewer/model lane. Seed discovery from abstract families such as Claude Opus, GPT frontier, or Gemini Pro when useful, but bind only exact provider-qualified model ids observed in the current environment.
 2. Implement the arbitrary agent/model override request shape with explicit agent id, concrete provider-qualified model id, registry binding ref, Guard evidence refs, and no silent fallback.
-3. Implement internal lane launch only through OpenCode `subtask: true` command bindings or the injected SDK/client path after conformance proves the chosen surface. Do not use `opencode run` for production orchestration.
+3. Implement internal lane launch only through OpenCode `subtask: true` command bindings or the injected SDK/client path after Plugin/SDK compatibility evidence proves the chosen surface. Do not use `opencode run` for production orchestration.
 4. Implement typed critical review output schemas for reviewer lanes, including findings, severity, evidence refs, uncertainty, required fixes, and verdict labels.
-5. Require fresh auth, usage, quota/reset, Provider Health Snapshot, runtime compatibility, runtime echo, telemetry persistence, and output schema validation for each reviewer lane.
+5. Require fresh auth, usage, quota/reset, Provider Health Snapshot, SDK adapter runtime compatibility, plugin-observable lifecycle/result/status evidence with terminal semantics, durable evidence reload/cross-reference validation, and output schema validation for each reviewer lane. Runtime echo and platform telemetry are optional non-gating diagnostics.
 6. Add status, audit, and debug summaries that persist only redacted reviewer lane evidence.
 7. Implement explicit `registered`, `available`, and `highest-tier` predicates in the binding registry and Policy Pack, including provider/model-family promotion criteria and lower-tier substitution rejection.
 8. Implement reviewer perspective bindings such as policy/security, architecture, and verification/implementation, and prove they can share one concrete highest-tier model when only one such model is registered.
@@ -327,11 +327,11 @@ Tasks:
 Exit criteria:
 
 1. A review plan can request all registered highest-tier available reviewer/model lanes as `reviewer` bindings with concrete provider-qualified model ids from the current daily model-availability cache, and can assign multiple reviewer perspectives to the same model when only one highest-tier model is registered.
-2. Missing auth, stale or unknown usage, missing quota/reset evidence, unavailable model id, provider health failure, runtime echo mismatch, telemetry loss, lower-tier substitution, or output schema failure blocks the affected lane and reports a safe next action.
+2. Missing auth, stale or unknown usage, missing quota/reset evidence, unavailable model id, provider health failure, missing SDK adapter capability, missing plugin-observable lifecycle/result/status evidence, lower-tier substitution, or output schema failure blocks the affected lane and reports a safe next action. Runtime echo mismatch and telemetry loss are reported only as non-gating diagnostics.
 3. Review lanes return typed critical review outputs only. They do not approve dispatch, replace Guard, replace configured verification, or self-approve.
 4. No `opencode run` invocation is part of the production lane path.
-5. The feature is opt-in or later-gate only until all conformance and release approvals pass.
-6. Conformance proves that registered highest-tier unavailable bindings are excluded or blocked with explicit inventory evidence, same-model multi-agent review preserves perspective separation, and fan-out never silently shrinks because of budget, quota, timeout, retry, or concurrency pressure.
+5. The feature is opt-in or later-gate only until all Plugin/SDK compatibility and release approvals pass.
+6. Plugin/SDK compatibility evidence proves that registered highest-tier unavailable bindings are excluded or blocked with explicit inventory evidence, same-model multi-agent review preserves perspective separation, and fan-out never silently shrinks because of budget, quota, timeout, retry, or concurrency pressure.
 
 ## Phase 7: Operational Intelligence
 
@@ -351,7 +351,7 @@ Tasks:
 10. Implement local JSONL proposal and score ledgers plus derived snapshots.
 11. Implement optional GitHub private repo JSONL score ledger support for low-volume redacted events with raw partitions, sealed immutable partitions, mandatory RFC 8785 canonical event hash chains, partition genesis hashes, manifest records, trusted chain heads, rotation, retention, archive paths, conflict handling, deterministic duplicate and event-id conflict handling, least-privilege GitHub workflow permissions, and migration triggers.
 12. Implement GitHub ledger rollup and compaction from sealed partitions only into normalized aggregate snapshots, including sample count, effective sample count, weighted means, confidence buckets or intervals, rates, percentiles, decay-adjusted means, last observation time, scorer concentration, and negative-signal counters. Active raw partitions may produce only local non-reusable preview calculations.
-13. Implement tests that prove rollups never rank by cumulative raw sums and never approve dispatch, change eligibility, bypass Guard, reduce verification, skip approval, or override usage and conformance.
+13. Implement tests that prove rollups never rank by cumulative raw sums and never approve dispatch, change eligibility, bypass Guard, reduce verification, skip approval, or override usage and Plugin/SDK compatibility.
 14. Implement temporary GitHub Actions artifact export and sanitized GitHub Pages aggregate summaries.
 15. Implement external managed database writer/readers through GitHub Actions OIDC or another approved workload identity path for scale, including migration manifest, final GitHub chain head, ingestion watermark, source precedence, cutover, and idempotent replay checks.
 16. Ensure evaluation snapshots are ignored or fail closed when stale, malformed, hand-edited, external, below threshold, or outside the matching task signature.
@@ -364,7 +364,7 @@ Exit criteria:
 
 1. Evaluation can rank only already-eligible candidates.
 2. Evaluation never authorizes dispatch.
-3. Workflow optimization cannot override Guard, policy, usage, runtime compatibility, conformance, or human approval.
+3. Workflow optimization cannot override Guard, policy, usage, runtime compatibility, Plugin/SDK compatibility, or human approval.
 4. Accumulated scores are loaded only when the threshold gate passes; below-threshold scores are ignored and current-task planning is used.
 5. Score snapshots use normalized aggregates and never raw cumulative sums for ranking.
 6. Multi-model proposal fan-out is impossible when usage or provider health is stale, unknown, shared-limit-suspected, refused, fallback-derived, over budget, over cadence limits, in cooldown, lacking novelty, or missing explicit opt-in.
@@ -395,7 +395,7 @@ Exit criteria:
 1. Sharing is off by default and cannot be enabled by silence, preselection, config import, environment default, or model-generated approval.
 2. Shared payload tests prove no raw prompts, transcripts, repo names, organization names, file paths, branch names, issue or PR titles, tool args/results, provider payloads, runtime echoes, stack traces, raw file contents, secrets, credentials, stable ids, public unsalted hashes, or prompt-derived hashes are uploaded.
 3. Community snapshots influence only ranking among already-eligible candidates after the normal score reuse threshold gate and registry-specific trust gates pass.
-4. Community snapshots cannot approve dispatch, change eligibility, bypass Guard, reduce verification, skip approval, override usage, override conformance, or override local Policy Pack rules.
+4. Community snapshots cannot approve dispatch, change eligibility, bypass Guard, reduce verification, skip approval, override usage, override Plugin/SDK compatibility, or override local Policy Pack rules.
 5. Registry poisoning tests prove low-sample, concentrated, anomalous, malformed, stale, unknown-version, or provenance-missing submissions are quarantined or ignored.
 6. Self-hosted and central registry modes use the same schema and safety gates.
 
@@ -407,7 +407,7 @@ Every phase must include:
 2. Unit tests for success and fail-closed paths.
 3. Redaction tests when audit/debug output changes.
 4. Fixture tests for policy/config changes.
-5. Conformance tests before enabling OpenCode-dependent behavior.
+5. Plugin/SDK compatibility tests before enabling OpenCode-dependent behavior.
 
 ## Stop Conditions
 
@@ -415,7 +415,7 @@ Stop implementation and revise the spec if:
 
 1. OpenCode cannot provide a safe path for real dispatch evidence.
 2. Chat blocking cannot be implemented without unsafe prompt mutation.
-3. Event telemetry is too lossy for safe recovery or quarantine.
+3. Plugin/SDK-observable event/status evidence is too lossy for safe recovery or quarantine.
 4. Provider-native usage or provider health cannot be checked without unsafe credential, raw provider error, provider payload, log, path, stack trace, or transcript persistence.
 5. Any feature requires OMO runtime compatibility.
-6. FlowDesk value depends on broad invisible prompt/prefix injection rather than explicit commands, transparent suggestions, or conformance-proven blocking chat intake.
+6. FlowDesk value depends on broad invisible prompt/prefix injection rather than explicit commands, transparent suggestions, or Plugin/SDK-compatibility-proven blocking chat intake.

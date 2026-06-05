@@ -181,6 +181,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestWorkflowSynthesisTasksSummarized?: number;
 	latestWorkflowSynthesisConflictDetected?: boolean;
 	latestWorkflowSynthesisSummaryPreview?: string;
+	latestTaskResultExcerpts?: readonly FlowDeskStatusLiveTaskResultExcerptV1[];
 	latestWorkflowDispatchPlanRevisionId?: string;
 	latestWorkflowDispatchPlanTaskCount?: number;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
@@ -204,6 +205,14 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 		nextActionKind?: "synthesis" | "collect_result" | "repair_summary" | "salvage_or_verify" | "retry_or_debug";
 		nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
 	};
+}
+
+export interface FlowDeskStatusLiveTaskResultExcerptV1 {
+	taskId: string;
+	laneId?: string;
+	resultText: string;
+	truncated: boolean;
+	sourceResultTextTruncated?: boolean;
 }
 
 export interface FlowDeskStatusLiveLaneProgressCardV1 {
@@ -396,12 +405,33 @@ function getPositiveIntegerField(
 }
 
 const FORBIDDEN_SYNTHESIS_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch|fallback|reselect/i;
+const TASK_RESULT_EXCERPT_MARKERS = FORBIDDEN_SYNTHESIS_SUMMARY_MARKERS;
+const STATUS_TASK_RESULT_EXCERPT_MAX_CHARS = 1_200;
+const STATUS_TASK_RESULT_SUMMARY_MAX_CHARS = 360;
 
 function synthesisSummaryPreview(value: string | undefined): string | undefined {
 	if (value === undefined) return undefined;
 	const compact = value.replace(/\s+/g, " ").trim();
 	if (compact.length === 0 || FORBIDDEN_SYNTHESIS_SUMMARY_MARKERS.test(compact)) return undefined;
 	return compact.length > 160 ? `${compact.slice(0, 159)}…` : compact;
+}
+
+function taskResultExcerptFromRecord(
+	record: Record<string, unknown>,
+	fallbackTaskId: string,
+	maxChars = STATUS_TASK_RESULT_EXCERPT_MAX_CHARS,
+): FlowDeskStatusLiveTaskResultExcerptV1 | undefined {
+	const rawText = typeof record.result_text === "string" ? record.result_text.replace(/\r\n?/g, "\n").trim() : "";
+	if (!rawText || TASK_RESULT_EXCERPT_MARKERS.test(rawText)) return undefined;
+	const truncated = rawText.length > maxChars;
+	const laneId = getStringField(record, "lane_id");
+	return {
+		taskId: getStringField(record, "task_id") ?? fallbackTaskId,
+		...(laneId === undefined ? {} : { laneId }),
+		resultText: truncated ? `${rawText.slice(0, Math.max(0, maxChars - 1))}…` : rawText,
+		truncated,
+		...(typeof record.result_text_truncated === "boolean" ? { sourceResultTextTruncated: record.result_text_truncated } : {}),
+	};
 }
 
 const DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 90_000;
@@ -679,6 +709,7 @@ function summarizeWorkflow(
 	let workflowSynthesisTasksSummarized: number | undefined;
 	let workflowSynthesisConflictDetected: boolean | undefined;
 	let workflowSynthesisSummaryPreview: string | undefined;
+	let latestTaskResultExcerpts: FlowDeskStatusLiveTaskResultExcerptV1[] | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
 	const toolRunOverdueLaneIds = new Set<string>();
@@ -773,6 +804,13 @@ function summarizeWorkflow(
 				workflowSynthesisSummaryPreview = synthesisSummaryPreview(getStringField(last.record, "synthesis_summary"));
 			}
 		}
+		if (evidenceClass === "task_result") {
+			const excerpts = classEntries
+				.slice(-maxRecent)
+				.map((entry) => taskResultExcerptFromRecord(entry.record, entry.evidenceId))
+				.filter((excerpt): excerpt is FlowDeskStatusLiveTaskResultExcerptV1 => excerpt !== undefined);
+			if (excerpts.length > 0) latestTaskResultExcerpts = excerpts;
+		}
 		if (evidenceClass === "workflow_dispatch_plan") {
 			const last = classEntries[classEntries.length - 1];
 			if (last !== undefined) {
@@ -858,6 +896,9 @@ function summarizeWorkflow(
 			: {}),
 		...(workflowSynthesisSummaryPreview !== undefined
 			? { latestWorkflowSynthesisSummaryPreview: workflowSynthesisSummaryPreview }
+			: {}),
+		...(latestTaskResultExcerpts !== undefined
+			? { latestTaskResultExcerpts }
 			: {}),
 		...(workflowDispatchPlanRevisionId !== undefined
 			? {
@@ -1593,7 +1634,12 @@ function buildStatusLiveSummaryForUser(input: {
 			.map((diagnostic) => `${diagnostic.laneId}:child=${compactDiagnosticRef(diagnostic.childSessionId)}/part=${diagnostic.lastPartKind ?? "unknown"}/text=${diagnostic.finalTextPresent === true ? "yes" : "no"}/step_finish=${diagnostic.stepFinishPresent === true ? "yes" : "no"}/tool=${compactDiagnosticRef(diagnostic.runningToolCallId)}/${diagnostic.runningToolStatus ?? "none"}/next=${diagnostic.recommendedNextAction ?? "/flowdesk-export-debug"}`)
 			.join("; ");
 		const captureDiagText = captureDiagPreview.length > 0 ? `, capture_diag=${captureDiagPreview}` : "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}`;
+		const taskResultPreview = (workflow.latestTaskResultExcerpts ?? [])
+			.slice(0, 1)
+			.map((excerpt) => `${excerpt.taskId}${excerpt.truncated || excerpt.sourceResultTextTruncated ? " (truncated)" : ""}:\n${excerpt.resultText.length > STATUS_TASK_RESULT_SUMMARY_MAX_CHARS ? `${excerpt.resultText.slice(0, STATUS_TASK_RESULT_SUMMARY_MAX_CHARS - 1)}…` : excerpt.resultText}`)
+			.join("\n");
+		const taskResultText = taskResultPreview.length > 0 ? `\n  task_result_excerpt:\n${taskResultPreview}` : "";
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${taskResultText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

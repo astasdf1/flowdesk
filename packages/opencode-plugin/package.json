@@ -59,7 +59,11 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run test:functional",
+    "test:functional": "npm run build && node ../../scripts/run-tests.mjs --mode functional --package opencode-plugin",
+    "test:slow": "npm run build && node ../../scripts/run-tests.mjs --mode slow --package opencode-plugin",
+    "test:integration": "npm run build && node ../../scripts/run-tests.mjs --mode integration --package opencode-plugin",
+    "test:full": "npm run build && node ../../scripts/run-tests.mjs --mode full --package opencode-plugin"
   },
   "dependencies": {
     "@flowdesk/core": "^0.2.0"

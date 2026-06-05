@@ -9,7 +9,7 @@ permission:
   list: allow
   edit: deny
   bash:
-    "*": ask
+    "*": deny
     "head *": allow
     "grep *": allow
     "echo *": allow
@@ -37,7 +37,7 @@ permission:
     "git switch*": deny
     "git tag*": deny
     "gh pr merge*": deny
-  webfetch: ask
+  webfetch: allow
   external_directory:
     "*": allow
 ---

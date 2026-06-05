@@ -25,6 +25,31 @@ function clamp(text: string, max: number): string {
 }
 
 const FORBIDDEN_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch|fallback|reselect/i;
+const TASK_RESULT_EXCERPT_MAX_CHARS = 1_800;
+const TASK_RESULT_SUMMARY_EXCERPT_MAX_CHARS = 900;
+
+export interface FlowDeskWorkflowSynthesisTaskResultExcerptV1 {
+	taskId: string;
+	laneId?: string;
+	resultText: string;
+	truncated: boolean;
+	sourceResultTextTruncated?: boolean;
+}
+
+function safeTaskResultExcerpt(record: Record<string, unknown>, fallbackTaskId: string, maxChars: number): FlowDeskWorkflowSynthesisTaskResultExcerptV1 | undefined {
+	const rawText = typeof record.result_text === "string" ? record.result_text.replace(/\r\n?/g, "\n").trim() : "";
+	if (!rawText || FORBIDDEN_MARKERS.test(rawText)) return undefined;
+	const truncated = rawText.length > maxChars;
+	const taskId = typeof record.task_id === "string" ? record.task_id : fallbackTaskId;
+	const laneId = typeof record.lane_id === "string" ? record.lane_id : undefined;
+	return {
+		taskId,
+		...(laneId === undefined ? {} : { laneId }),
+		resultText: truncated ? `${rawText.slice(0, Math.max(0, maxChars - 1))}…` : rawText,
+		truncated,
+		...(typeof record.result_text_truncated === "boolean" ? { sourceResultTextTruncated: record.result_text_truncated } : {}),
+	};
+}
 
 export interface FlowDeskWorkflowSynthesisToolResultV1 {
 	status: "workflow_synthesis_completed" | "workflow_synthesis_incomplete" | "blocked_before_synthesis";
@@ -32,6 +57,7 @@ export interface FlowDeskWorkflowSynthesisToolResultV1 {
 	synthesisId?: string;
 	tasksSummarized?: number;
 	conflictDetected?: boolean;
+	taskResultExcerpts?: readonly FlowDeskWorkflowSynthesisTaskResultExcerptV1[];
 	redactedBlockReason?: string;
 	summaryForUser: string;
 	safeNextActions: readonly string[];
@@ -53,7 +79,7 @@ function blocked(reason: string, workflowId?: string): FlowDeskWorkflowSynthesis
 function collectTaskResultSummaries(input: {
 	workflowId: string;
 	rootDir: string;
-}): { ok: true; summaries: Array<{ taskId: string; status: string; text: string }>; conflictDetected: boolean } | { ok: false; result: FlowDeskWorkflowSynthesisToolResultV1 } {
+}): { ok: true; summaries: Array<{ taskId: string; status: string; text: string }>; excerpts: FlowDeskWorkflowSynthesisTaskResultExcerptV1[]; conflictDetected: boolean } | { ok: false; result: FlowDeskWorkflowSynthesisToolResultV1 } {
 	const reload = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
 	if (!reload.ok) return { ok: false, result: blocked("session evidence reload failed", input.workflowId) };
 
@@ -61,6 +87,7 @@ function collectTaskResultSummaries(input: {
 	if (taskResultEntries.length === 0) return { ok: false, result: blocked("no task_result evidence found – run scheduler first", input.workflowId) };
 
 	const summaries: Array<{ taskId: string; status: string; text: string }> = [];
+	const excerpts: FlowDeskWorkflowSynthesisTaskResultExcerptV1[] = [];
 	let conflictDetected = false;
 	const conflictKeywords = /conflict|contradict|blocked|failed|changes_required|invalid|error/i;
 	for (const entry of taskResultEntries.slice(0, 10)) {
@@ -71,14 +98,17 @@ function collectTaskResultSummaries(input: {
 		const status = "completed";
 		if (conflictKeywords.test(redacted)) conflictDetected = true;
 		summaries.push({ taskId, status, text: redacted });
+		const excerpt = safeTaskResultExcerpt(record, taskId, TASK_RESULT_EXCERPT_MAX_CHARS);
+		if (excerpt !== undefined) excerpts.push(excerpt);
 	}
-	return { ok: true, summaries, conflictDetected };
+	return { ok: true, summaries, excerpts, conflictDetected };
 }
 
 function writeWorkflowSynthesisResult(input: {
 	workflowId: string;
 	rootDir: string;
 	summaries: Array<{ taskId: string; status: string; text: string }>;
+	excerpts: readonly FlowDeskWorkflowSynthesisTaskResultExcerptV1[];
 	conflictDetected: boolean;
 	synthesisSummary: string;
 }): FlowDeskWorkflowSynthesisToolResultV1 {
@@ -114,6 +144,7 @@ function writeWorkflowSynthesisResult(input: {
 		synthesisId,
 		tasksSummarized: input.summaries.length,
 		conflictDetected: input.conflictDetected,
+		taskResultExcerpts: input.excerpts,
 		summaryForUser: input.synthesisSummary,
 		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
 		authority: SAFE_AUTHORITY,
@@ -126,6 +157,11 @@ function existingWorkflowSynthesisResult(input: {
 }): FlowDeskWorkflowSynthesisToolResultV1 | undefined {
 	const reload = reloadFlowDeskSessionEvidenceV1({ workflowId: input.workflowId, rootDir: input.rootDir });
 	if (!reload.ok) return undefined;
+	const excerpts = reload.entries
+		.filter((entry) => entry.evidenceClass === "task_result")
+		.slice(-10)
+		.map((entry) => safeTaskResultExcerpt(entry.record, entry.evidenceId, TASK_RESULT_EXCERPT_MAX_CHARS))
+		.filter((excerpt): excerpt is FlowDeskWorkflowSynthesisTaskResultExcerptV1 => excerpt !== undefined);
 	const existing = reload.entries.find((entry) => entry.evidenceClass === "workflow_synthesis_result");
 	if (!existing) return undefined;
 	const record = existing.record as Record<string, unknown>;
@@ -140,6 +176,7 @@ function existingWorkflowSynthesisResult(input: {
 		synthesisId,
 		tasksSummarized: typeof record.tasks_summarized === "number" ? record.tasks_summarized : 0,
 		conflictDetected: record.conflict_detected === true,
+		taskResultExcerpts: excerpts,
 		summaryForUser: typeof record.synthesis_summary === "string" ? record.synthesis_summary : "Existing synthesis preview.",
 		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
 		authority: SAFE_AUTHORITY,
@@ -156,17 +193,18 @@ export function executeFlowDeskWorkflowSynthesisPreviewV1(input: {
 	if (existing) return existing;
 	const collected = collectTaskResultSummaries({ workflowId: input.workflowId, rootDir: input.rootDir });
 	if (!collected.ok) return collected.result;
-	const previewText = collected.summaries
-		.map(s => `${s.taskId}: ${s.text}`)
-		.join("; ");
+	const previewText = collected.excerpts.length > 0
+		? collected.excerpts.map(s => `${s.taskId}:\n${clamp(s.resultText, TASK_RESULT_SUMMARY_EXCERPT_MAX_CHARS)}`).join("\n\n")
+		: collected.summaries.map(s => `${s.taskId}: ${s.text}`).join("; ");
 	const synthesisSummary = clamp(
-		`Provider-free synthesis preview for ${collected.summaries.length} task result(s). ${previewText}`,
+		`Provider-free synthesis preview for ${collected.summaries.length} task result(s). Result excerpt(s):\n${previewText}`,
 		650,
 	);
 	return writeWorkflowSynthesisResult({
 		workflowId: input.workflowId,
 		rootDir: input.rootDir,
 		summaries: collected.summaries,
+		excerpts: collected.excerpts,
 		conflictDetected: collected.conflictDetected,
 		synthesisSummary,
 	});
@@ -232,6 +270,7 @@ export async function executeFlowDeskWorkflowSynthesisToolV1(input: {
 		workflowId: input.workflowId,
 		rootDir: input.rootDir,
 		summaries,
+		excerpts: collected.excerpts,
 		conflictDetected,
 		synthesisSummary,
 	});

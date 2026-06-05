@@ -30,7 +30,7 @@ Allowed Release 1 scope:
 3. Release 1 minimum command surface: `/flowdesk-doctor`, `/flowdesk-plan`, `/flowdesk-run`, `/flowdesk-status`, `/flowdesk-resume`, `/flowdesk-retry`, `/flowdesk-abort`, `/flowdesk-usage`, and `/flowdesk-export-debug`.
 4. Hook harness modes that can enforce, observe, or turn off managed automation while preserving safe fallback behavior.
 5. Redacted audit, lane summaries, and debug export.
-6. OpenCode conformance reporting bounded to OpenCode 1.14.40 evidence until newer conformance exists.
+6. Plugin/SDK compatibility conformance reporting for supported OpenCode versions.
 7. User manual coverage for abnormal use and safe alternatives.
 8. Provider Health Snapshot diagnostics separate from Usage Availability Snapshot display and fail-closed behavior.
 
@@ -68,8 +68,8 @@ Use background docs only for historical context, research rationale, or migratio
 2. No nested `opencode run` for normal plugin-managed workflows.
 3. Mandatory FlowDesk-owned lane boundary (Product Architecture): The FlowDesk plugin and its primary coordinator (flowdesk-main) must not use raw OpenCode subagent/session paths (the `task` tool) for managed workflows. All delegated FlowDesk work must run through FlowDesk-owned tools (e.g., `flowdesk_agent_task_run`). Note: This rule applies ONLY to the FlowDesk product runtime and its coordinator. Developer agents working on this repository ARE allowed to use normal `task` subagents for parallel development work (compiling, tests, searching).
 4. No privileged action without FlowDesk Guard approval or a specific Guard-approved non-dispatch permission.
-5. No default managed dispatch until the FlowDesk plugin-satisfiable gate has real evidence for configured authorization, fresh usage/provider-health, policy/auth sanitization, configured verification, consumed Guard/user approval, durable pre-dispatch audit, idempotency/reservation, and the intended SDK dispatch path. OpenCode platform-internal proof gaps that FlowDesk cannot self-attest (trusted runtime echo issuer, trusted telemetry correlation, lane conformance, or usage authority attestation) remain visible as skipped diagnostics, not fabricated plugin evidence.
-6. No managed provider/model fallback or reselection until a later gate proves fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, trusted binding/echo, sufficient telemetry, durable pre-dispatch audit, a new attempt id, and explicit Guard approval.
+5. No default managed dispatch until the FlowDesk plugin-satisfiable gate has real evidence for configured authorization, fresh usage/provider-health, policy/auth sanitization, configured verification, consumed Guard/user approval, durable pre-dispatch audit, idempotency/reservation, and the intended SDK dispatch path. OpenCode platform-internal facts (runtime execution mode, internal telemetry, lane conformance, account-scope usage authority) are outside the plugin verification boundary and are not completion criteria. FlowDesk surfaces them as non-gating diagnostics when observable.
+6. No managed provider/model fallback or reselection until a later gate proves fresh provider-native usage, fresh provider health, runtime compatibility through SDK adapter capability, policy eligibility, durable pre-dispatch audit, a new attempt id, and explicit Guard approval for the new binding.
 7. No claim of hard chat cancellation or no-reply authority until a first-class OpenCode boundary is proven; Release 1 chat UX must route into command-backed workflows.
 8. Hook harness enforcement may deny, rewrite, or route unsafe attempts, but it never approves dispatch and off mode never bypasses Guard.
 9. Event telemetry supports harness coordination but is not Guard authority, dispatch authorization, durable audit completion, or sole runtime echo evidence.

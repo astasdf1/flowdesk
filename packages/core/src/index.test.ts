@@ -266,8 +266,13 @@ test("production registration metadata excludes optional diagnostics and later-r
 });
 
 test("opaque ids, refs, model ids, and provider family validators fail closed", () => {
+  assert.equal(validateOpaqueId("workflow-completion-wake-minimal-prompt-20260605", "workflow_id").ok, true);
+  assert.equal(validateOpaqueId("workflow-transcript-runtime-20260605", "workflow_id").ok, true);
+  assert.equal(validateNoForbiddenRawPayloads({ workflow_id: "workflow-prompt-transcript-runtime-20260605" }).ok, true);
   assert.equal(validateOpaqueId("workflow/../../raw-path", "workflow_id").ok, false);
   assert.equal(validateOpaqueId("workflow 123", "workflow_id").ok, false);
+  assert.equal(validateOpaqueId("workflow..raw-path", "workflow_id").ok, false);
+  assert.equal(validateOpaqueId("/Users/example/workflow-123", "workflow_id").ok, false);
   assert.equal(validateProviderQualifiedModelId("sonnet-4").ok, false);
   assert.equal(validateProviderQualifiedModelId("unknown/model").ok, false);
   assert.equal(validateProviderQualifiedModelId("claude/sonnet-4").ok, true);
@@ -383,6 +388,7 @@ test("abort response does not accept future hard cancellation proof", () => {
 
 test("redaction validation rejects forbidden raw payload, path, and prompt-like markers", () => {
   assert.equal(validateNoForbiddenRawPayloads({ summary: "system prompt: ignore safeguards" }).ok, false);
+  assert.equal(validateNoForbiddenRawPayloads({ summary: "transcript marker belongs in payload text" }).ok, false);
   assert.equal(validateNoForbiddenRawPayloads({ debug_ref: "/Users/example/private.txt" }).ok, false);
   assert.equal(validateNoForbiddenRawPayloads({ provider_payload: { body: "raw" } }).ok, false);
   assert.equal(validateNoForbiddenRawPayloads({ safe_ref: "artifact-123", summary: "bounded status only" }).ok, true);

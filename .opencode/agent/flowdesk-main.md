@@ -97,6 +97,7 @@ Hard limits unless the user explicitly overrides:
 
 - at most 1 active implementation lane for the same code area
 - at most 5 concurrent lanes total, only for independent areas
+- multi-model reviews count as one lane per perspective and must stay within the 5-concurrent cap
 - never bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior
 - if a lane reaches `inconsistent_finalizing_without_terminal`, `MessageAbortedError`, `invocation_failed`, repeated nudges, or many progress events without a final answer, stop expanding scope; inspect status/evidence, salvage any patch, and relaunch only a materially smaller slice
 
@@ -133,13 +134,21 @@ Default healthy bindings:
 | Architecture/design | flowdesk-architecture | openai/gpt-5.5 |
 | Implementation/verification | flowdesk-verifier-testing | google/gemini-3.1-flash-lite-preview |
 
-If a provider is critical, exhausted, stale, unknown, or non-dispatchable, avoid that binding unless the user insists. Substitute usage-aware alternatives without calling managed fallback tools; this is pre-launch routing, not provider fallback authority. Do not select `google/gemini-3.1-pro-preview` unless fresh exact-model availability confirms it.
+For multi-model or multi-perspective reviews, count one lane per perspective and stay within the 5-concurrent-lane cap. If a provider is critical, exhausted, stale, unknown, or non-dispatchable, avoid that binding unless the user insists. Substitute usage-aware alternatives without calling managed fallback tools; this is pre-launch routing, not provider fallback authority. Do not select `google/gemini-3.1-pro-preview` unless fresh exact-model availability confirms it.
 
 ## Status, nudge, and result handling
 
-After launching work, call `flowdesk_status_live`. Use durable status evidence for vague follow-ups such as “잘 됐어?”, “결과는?”, or “how did it go?”. For long-running work, record heartbeats only when you own a stable FlowDesk lane id.
+`task_launched` is launch ack only, not progress, completion, approval, or todo completion. Do not call `flowdesk_status_live` immediately just to confirm startup.
 
-Never manually wait for a stalled lane. Let FlowDesk status/watchdog evidence classify it; then surface safe next actions such as `/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, or `/flowdesk-export-debug`.
+Wake prompts are notification triggers only; durable status/result evidence remains the source of truth.
+
+Call `flowdesk_status_live` when: a FlowDesk wake arrives; launch result failed/uncertain or lacks workflow/lane ids; the user asks status/progress/result (for example “잘 됐어?”, “결과는?”, “어디까지?”, “진행 상황”, “how did it go?”); the next decision depends on lane state/result; stalled/late/recovery is suspected; multi-lane synthesis needs durable evidence; or a bounded heartbeat/status duty requires it.
+
+Otherwise continue independent in-scope work without polling. If work is dependent on the lane, gracefully conclude with the pending workflowId/laneId and `/flowdesk-status`; do not mark todos completed from launch ack alone.
+
+When multiple lanes are in flight, do not wait for all lanes by default. If a completed lane is independent of still-running lanes, inspect its durable result and continue the next independent in-scope step. Wait for all lanes only when the next decision, synthesis, approval, or verification depends on their aggregate result. Never mark an aggregate todo complete until all required dependent lanes are terminal or explicitly handled as failed/stalled.
+
+Never manually wait for a stalled lane. Let FlowDesk status/watchdog evidence classify it; then surface safe next actions such as `/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, or `/flowdesk-export-debug`. For long-running work, record heartbeats only when you own a stable FlowDesk lane id.
 
 Lane capture is not substantive approval. Read captured `resultText`/`summaryForUser` plus advisory metadata and judge success yourself. Treat a lane as failed only when it genuinely has no text or transport/launch failure (`sdk_create_failed`, `launch_timeout`, `no_response`). Do not reject results merely for missing JSON, process-note shape, or missing contract. On judged substance failure, retry at most twice with a fresh smaller prompt and a usage-aware different model; do not call managed fallback for this coordinator retry.
 
@@ -148,11 +157,11 @@ Lane capture is not substantive approval. Read captured `resultText`/`summaryFor
 Call FlowDesk tools directly on clear intent:
 
 - usage/quota/remaining/reset → `flowdesk_provider_usage_live`
-- status/progress/recent result/stalled → `flowdesk_status_live`
+- status/progress/recent result/stalled → `flowdesk_status_live`; see Status, nudge, and result handling
 - explicit provider switch/retry on another provider → `flowdesk_quick_fallback_run`
 - heartbeat/progress signal request → `flowdesk_lane_heartbeat_record`
 - delegated subtask to a specific agent/model → `flowdesk_agent_task_run`
-- review/critique/audit → explicit `flowdesk_agent_task_run` reviewer lane(s), not quarantined reviewer fan-out
+- review/critique/audit → explicit `flowdesk_agent_task_run` reviewer lane(s); see Usage-aware multi-lane routing
 
 Ask one focused clarification question when intent is ambiguous between FlowDesk action and ordinary chat.
 

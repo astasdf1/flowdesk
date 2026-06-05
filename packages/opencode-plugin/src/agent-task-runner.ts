@@ -232,6 +232,17 @@ async function extractAssistantTextFromResponse(
 	const method = messages as (options: unknown) => unknown | Promise<unknown>;
 
 	/**
+	 * SDK shape memoization: the structured `{ path: { id } }` shape fails on
+	 * OpenCode 1.15.x with a `%7Bid%7D` URL-encoding error. Retrying that shape
+	 * on every poll cycle adds ~3s of wasted error/timeout per cycle, which
+	 * shifts the quiet-period/nudge timing and can cause premature no_response.
+	 * After one structured failure, all subsequent calls use the flat
+	 * `{ sessionID }` shape only. If the structured shape succeeds on the first
+	 * call, it is kept for the rest of the capture loop.
+	 */
+	let useStructuredShape: boolean | undefined; // undefined = not yet tested
+
+	/**
 	 * Call session.messages with a ceiling timeout so we can check inactivity periodically.
 	 * This handles both snapshot APIs (return immediately) and long-poll APIs
 	 * (block until LLM produces output). With the timeout, a long-poll call that
@@ -240,10 +251,26 @@ async function extractAssistantTextFromResponse(
 	 */
 	const callMessages = (): Promise<unknown | null> => {
 		const messagePromise = (async () => {
-			try {
-				const structured = await method.call(client.session, { path: { id: childSessionId } });
-				if (!isSdkErrorResponse(structured)) return structured;
-			} catch { /* fall through to the flat OpenCode 1.x shape */ }
+			// First call: probe the structured shape and memoize the result.
+			if (useStructuredShape === undefined) {
+				try {
+					const structured = await method.call(client.session, { path: { id: childSessionId } });
+					if (!isSdkErrorResponse(structured)) {
+						useStructuredShape = true;
+						return structured;
+					}
+				} catch { /* structured shape unavailable */ }
+				useStructuredShape = false;
+				return method.call(client.session, { sessionID: childSessionId });
+			}
+			// Subsequent calls: use whichever shape succeeded.
+			if (useStructuredShape) {
+				try {
+					const structured = await method.call(client.session, { path: { id: childSessionId } });
+					if (!isSdkErrorResponse(structured)) return structured;
+				} catch { /* structured shape broke mid-loop; fall back permanently */ }
+				useStructuredShape = false;
+			}
 			return method.call(client.session, { sessionID: childSessionId });
 		})();
 		// Only race against timeout when the API might block (MESSAGES_TIMEOUT_MS > 0)

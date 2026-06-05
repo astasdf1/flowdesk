@@ -1643,6 +1643,16 @@ function monitorSdkErrorResponse(value: unknown): boolean {
 	return record?.error !== undefined || data?.error !== undefined;
 }
 
+/**
+ * SDK shape memoization for the watchdog `session.messages` path. The structured
+ * `{ path: { id } }` shape fails on OpenCode 1.15.x with a `%7Bid%7D`
+ * URL-encoding error. Retrying that shape on every watchdog poll cycle adds
+ * wasted error/timeout per cycle. After one structured failure per client
+ * instance, all subsequent calls for that client use the flat `{ sessionID }`
+ * shape only. A WeakMap is used so the memo does not pin the client reference.
+ */
+const monitorSessionShapeCache = new WeakMap<object, boolean | undefined>();
+
 async function readAsyncMonitorChildSessionMessages(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
@@ -1651,11 +1661,29 @@ async function readAsyncMonitorChildSessionMessages(
 	const messages = client.session.messages;
 	if (typeof messages !== "function") return null;
 	const method = messages as (options: unknown) => unknown | Promise<unknown>;
+	const sessionObj = client.session as object;
+	let useStructured = monitorSessionShapeCache.get(sessionObj);
 	const readMessages = (async (): Promise<unknown> => {
-		try {
-			const structured = await method.call(client.session, { path: { id: childSessionId } });
-			if (!monitorSdkErrorResponse(structured)) return structured;
-		} catch { /* fall through to legacy flat OpenCode 1.x shape */ }
+		// First call: probe the structured shape and memoize the result.
+		if (useStructured === undefined) {
+			try {
+				const structured = await method.call(client.session, { path: { id: childSessionId } });
+				if (!monitorSdkErrorResponse(structured)) {
+					monitorSessionShapeCache.set(sessionObj, true);
+					return structured;
+				}
+			} catch { /* structured shape unavailable */ }
+			monitorSessionShapeCache.set(sessionObj, false);
+			return method.call(client.session, { sessionID: childSessionId });
+		}
+		// Subsequent calls: use whichever shape succeeded.
+		if (useStructured) {
+			try {
+				const structured = await method.call(client.session, { path: { id: childSessionId } });
+				if (!monitorSdkErrorResponse(structured)) return structured;
+			} catch { /* structured shape broke mid-session; fall back permanently */ }
+			monitorSessionShapeCache.set(sessionObj, false);
+		}
 		return method.call(client.session, { sessionID: childSessionId });
 	})();
 	if (messagesTimeoutMs <= 0) return readMessages;
@@ -1663,6 +1691,12 @@ async function readAsyncMonitorChildSessionMessages(
 		readMessages,
 		new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
 	]);
+}
+
+/** @internal Reset the session shape cache for testing */
+export function _resetMonitorSessionShapeCacheForTest(): void {
+	// WeakMap has no clear(); tests recreate clients anyway.
+	// Provided for explicit documentation/contract only.
 }
 
 async function pollChildSessionOutput(

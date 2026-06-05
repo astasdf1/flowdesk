@@ -10,7 +10,11 @@
   "scripts": {
     "build": "tsc -b packages/core packages/opencode-plugin",
     "typecheck": "tsc -b packages/core packages/opencode-plugin --pretty false",
-    "test": "npm run build && node --test packages/*/dist/**/*.test.js",
+    "test": "npm run test:functional",
+    "test:functional": "npm run build && node scripts/run-tests.mjs --mode functional",
+    "test:slow": "npm run build && node scripts/run-tests.mjs --mode slow",
+    "test:integration": "npm run build && node scripts/run-tests.mjs --mode integration",
+    "test:full": "npm run build && node scripts/run-tests.mjs --mode full",
     "models:list": "opencode models",
     "models:refresh": "node scripts/refresh-opencode-model-availability.mjs",
     "models:working": "node scripts/export-working-models.mjs"

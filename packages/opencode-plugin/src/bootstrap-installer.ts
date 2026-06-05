@@ -493,6 +493,20 @@ const flowDeskReadOnlyGitCapableSubagentNames = new Set([
 	"flowdesk-verifier-testing",
 ]);
 
+const flowDeskReleasePackageVerificationCommandAllows = [
+	"git diff --check",
+	"git status --short",
+	"npm ls --workspace @flowdesk/core",
+	"npm ls --workspace @flowdesk/opencode-plugin",
+	"npm ls @opencode-ai/plugin @opentui/core @flowdesk/core --workspace @flowdesk/opencode-plugin",
+	"npm pack --dry-run --json --workspace @flowdesk/core",
+	"npm pack --dry-run --json --workspace @flowdesk/opencode-plugin",
+	"opencode --version",
+	"npm run build --workspace @flowdesk/core",
+	"npm run build --workspace @flowdesk/opencode-plugin",
+	"node --test packages/opencode-plugin/dist/bootstrap-installer.test.js packages/opencode-plugin/dist/project-agent-profiles.test.js",
+] as const;
+
 const flowDeskMutatingGitCommandDenials = [
 	"git add*",
 	"git am*",
@@ -519,6 +533,16 @@ const flowDeskMutatingGitCommandDenials = [
 	"git tag*",
 	"gh pr merge*",
 ];
+
+const flowDeskReleasePackageVerificationCommandDenials = [
+	"npm publish*",
+	"npm install*",
+	"npm update*",
+	"npm add*",
+	"npm ci*",
+	"rm*",
+	...flowDeskMutatingGitCommandDenials,
+] as const;
 
 const flowDeskDangerousGitCommandDenials = [
 	"git am*",
@@ -559,40 +583,128 @@ const flowDeskSubagentProfiles = [
 	["flowdesk-algorithm-architect", "Use when FlowDesk needs complex algorithm, data-structure, state-machine, scheduler, optimization, or formal design analysis before implementation.", "algorithm architect", "Design complex algorithms, data structures, state machines, schedulers, optimization strategies, and correctness constraints before implementation.", "openai/gpt-5.5"],
 	["flowdesk-oracle-decision", "Use when FlowDesk reviewer, architecture, implementation, or verification lanes disagree and need a recommendation.", "oracle decision", "Synthesize disagreements into a recommendation with assumptions, confidence, and residual risks.", "openai/gpt-5.5"],
 	["flowdesk-verifier-testing", "Use when FlowDesk tests, reproduction steps, validation commands, or verification evidence need analysis.", "verifier and testing", "Design verification plans, run or analyze bounded test/build evidence when allowed, and identify remaining gaps.", "openai/gpt-5.5"],
+	["flowdesk-release-package-verifier", "Use when FlowDesk release/package verification needs npm pack, package diff, workspace version, or package metadata checks.", "release package verifier", "Run or analyze narrow release/package verification evidence including npm pack dry-runs, package metadata, git whitespace diff checks, and version checks.", "openai/gpt-5.5"],
 	["flowdesk-security-policy", "Use when FlowDesk permissions, redaction, auth, provider use, safety gates, or threat-model policy need review.", "security policy", "Review permissions, redaction, auth, provider use, safety gates, and threat-model policy.", "anthropic/claude-opus-4-7"],
 	["flowdesk-performance", "Use when FlowDesk latency, quota, memory, fan-out cost, or bottleneck behavior needs analysis.", "performance", "Analyze latency, quota, memory, fan-out cost, and bottleneck behavior without editing files.", "openai/gpt-5.5"],
 	["flowdesk-migration-refactor", "Use when FlowDesk schema migration, module split, rename, cleanup, or refactor sequencing needs implementation or a plan.", "migration refactor", "Implement bounded schema migration, module split, rename, cleanup, or refactor sequencing changes.", "openai/gpt-5.5"],
 ] as const;
 
+/**
+ * Background subagent bash policy: NO `ask` rules — only `allow` and `deny`.
+ *
+ * `ask` causes permanent stall in background child sessions because the
+ * permission UI is unreachable. Instead we use explicit allow-lists per role
+	 * tier with `"*": deny` first so later explicit allow rules win under
+	 * OpenCode's last-match-wins permission evaluation.
+ *
+ * Tier 1 — advisory-readonly: safe inspection commands only.
+ * Tier 2 — implementation: Tier 1 + build/test/verification commands.
+ * Tier 3 — git-master: broad allow + dangerous git deny (existing policy).
+ */
 function flowDeskBashPermissionLines(agentName: string, indent = "  "): string {
-	const lines = [`${indent}bash:`, `${indent}  "*": ${agentName === "flowdesk-git-master" ? "allow" : "ask"}`];
+	// Tier 3: git-master keeps existing broad policy
+	if (agentName === "flowdesk-git-master") {
+		const lines = [`${indent}bash:`, `${indent}  "*": allow`];
+		for (const command of flowDeskDangerousGitCommandDenials) lines.push(`${indent}  "${command}": deny`);
+		return lines.join("\n");
+	}
+
+	if (agentName === "flowdesk-release-package-verifier") {
+		const lines = [`${indent}bash:`, `${indent}  "*": deny`];
+		for (const command of flowDeskReleasePackageVerificationCommandAllows) lines.push(`${indent}  "${command}": allow`);
+		for (const command of flowDeskReleasePackageVerificationCommandDenials) lines.push(`${indent}  "${command}": deny`);
+		return lines.join("\n");
+	}
+
+	// Tier 1 — safe inspection commands (all non-git-master subagents get these).
+	// OpenCode permission rules are last-match-wins, so the catch-all deny must
+	// appear before explicit allow rules.
+	const lines = [`${indent}bash:`, `${indent}  "*": deny`];
 	lines.push(
 		`${indent}  "head *": allow`,
+		`${indent}  "tail *": allow`,
+		`${indent}  "cat *": allow`,
+		`${indent}  "less *": allow`,
 		`${indent}  "grep *": allow`,
+		`${indent}  "rg *": allow`,
+		`${indent}  "find *": allow`,
+		`${indent}  "ls *": allow`,
+		`${indent}  "ls": allow`,
+		`${indent}  "pwd": allow`,
+		`${indent}  "wc *": allow`,
+		`${indent}  "file *": allow`,
+		`${indent}  "which *": allow`,
 		`${indent}  "echo *": allow`,
+		`${indent}  "sort *": allow`,
+		`${indent}  "uniq *": allow`,
+		`${indent}  "diff *": allow`,
+		`${indent}  "sed *": allow`,
+		`${indent}  "awk *": allow`,
+		`${indent}  "cut *": allow`,
+		`${indent}  "tr *": allow`,
+		`${indent}  "jq *": allow`,
+		`${indent}  "python3 -c *": allow`,
+		`${indent}  "node -e *": allow`,
+		`${indent}  "basename *": allow`,
+		`${indent}  "dirname *": allow`,
+		`${indent}  "realpath *": allow`,
+		`${indent}  "stat *": allow`,
+		`${indent}  "date*": allow`,
+		`${indent}  "sleep *": allow`,
 	);
+
+	// Git read-only commands
 	if (flowDeskReadOnlyGitCapableSubagentNames.has(agentName)) {
 		lines.push(
-			`${indent}  "git status*": allow`,
-			`${indent}  "git diff*": allow`,
-			`${indent}  "git log*": allow`,
-			`${indent}  "git show*": allow`,
+			`${indent}  "git status": allow`,
+			`${indent}  "git status --short": allow`,
+			`${indent}  "git status *": allow`,
+			`${indent}  "git diff": allow`,
+			`${indent}  "git diff --check": allow`,
+			`${indent}  "git diff *": allow`,
+			`${indent}  "git log": allow`,
+			`${indent}  "git log *": allow`,
+			`${indent}  "git show": allow`,
+			`${indent}  "git show *": allow`,
 			`${indent}  "git branch --show-current": allow`,
+			`${indent}  "git branch -a": allow`,
 			`${indent}  "git remote -v": allow`,
+			`${indent}  "git rev-parse": allow`,
+			`${indent}  "git rev-parse *": allow`,
+			`${indent}  "git ls-files": allow`,
+			`${indent}  "git ls-files *": allow`,
 		);
 	}
+
+	// Tier 2 — build/test/verification commands
 	if (flowDeskBuildTestCapableSubagentNames.has(agentName)) {
 		lines.push(
-			`${indent}  "npm run build*": allow`,
-			`${indent}  "npm run typecheck*": allow`,
-			`${indent}  "npm run test*": allow`,
-			`${indent}  "node --test*": allow`,
+			`${indent}  "npm run build": allow`,
+			`${indent}  "npm run build --workspace @flowdesk/opencode-plugin": allow`,
+			`${indent}  "npm run build *": allow`,
+			`${indent}  "npm run typecheck": allow`,
+			`${indent}  "npm run typecheck *": allow`,
+			`${indent}  "npm run test": allow`,
+			`${indent}  "npm run test *": allow`,
+			`${indent}  "npm test": allow`,
+			`${indent}  "npm test *": allow`,
+			`${indent}  "node scripts/run-tests.mjs": allow`,
+			`${indent}  "node scripts/run-tests.mjs --mode functional --package core": allow`,
+			`${indent}  "node scripts/run-tests.mjs *": allow`,
+			`${indent}  "node ../../scripts/run-tests.mjs": allow`,
+			`${indent}  "node ../../scripts/run-tests.mjs *": allow`,
+			`${indent}  "node --test": allow`,
+			`${indent}  "node --test packages/opencode-plugin/dist/bootstrap-installer.test.js packages/opencode-plugin/dist/project-agent-profiles.test.js": allow`,
+			`${indent}  "node --test *": allow`,
+			`${indent}  "npx tsc": allow`,
+			`${indent}  "npx tsc *": allow`,
+			`${indent}  "npm ls": allow`,
+			`${indent}  "npm ls *": allow`,
+			`${indent}  "npm run lint": allow`,
+			`${indent}  "npm run lint *": allow`,
 		);
 	}
-	const deniedGitCommands = agentName === "flowdesk-git-master"
-		? flowDeskDangerousGitCommandDenials
-		: flowDeskMutatingGitCommandDenials;
-	for (const command of deniedGitCommands) lines.push(`${indent}  "${command}": deny`);
+
 	return lines.join("\n");
 }
 
@@ -604,9 +716,10 @@ function flowDeskMainBashPermissionLines(indent = "  "): string {
 
 function flowDeskSubagentMarkdown([agentName, description, roleLabel, roleSummary, model]: (typeof flowDeskSubagentProfiles)[number]): string {
 	const editPermission = flowDeskWriteCapableSubagentNames.has(agentName) ? "allow" : "deny";
+	const webfetchPermissionLine = agentName === "flowdesk-explorer-researcher" ? "  webfetch: allow\n" : "";
 	const gitPolicyLine = agentName === "flowdesk-git-master"
 		? "Bash allows ordinary git staging, commit, and non-force push when explicitly requested, while denying destructive rollback, force-push, and history-rewrite commands."
-		: "Bash has an explicit command allowlist, asks for all other commands, and denies mutating git commands.";
+		: "Bash has an explicit safe-command allowlist with everything else denied; no ask rules exist because background subagent sessions cannot show permission UI.";
 	return `---
 description: ${description}
 mode: subagent
@@ -618,6 +731,7 @@ permission:
   list: allow
   edit: ${editPermission}
 ${flowDeskBashPermissionLines(agentName)}
+${webfetchPermissionLine}
   external_directory:
     "*": allow
 ---
@@ -746,6 +860,7 @@ Hard limits unless the user explicitly overrides:
 
 - at most 1 active implementation lane for the same code area
 - at most 5 concurrent lanes total, only for independent areas
+- multi-model reviews count as one lane per perspective and must stay within the 5-concurrent cap
 - never bundle more than one authority-sensitive change per lane, especially dispatch, fallback, write/apply, hard-chat, provider-call, or watchdog behavior
 - if a lane reaches \`inconsistent_finalizing_without_terminal\`, \`MessageAbortedError\`, \`invocation_failed\`, repeated nudges, or many progress events without a final answer, stop expanding scope; inspect status/evidence, salvage any patch, and relaunch only a materially smaller slice
 
@@ -782,13 +897,21 @@ Default healthy bindings:
 | Architecture/design | flowdesk-architecture | openai/gpt-5.5 |
 | Implementation/verification | flowdesk-verifier-testing | google/gemini-3.1-flash-lite-preview |
 
-If a provider is critical, exhausted, stale, unknown, or non-dispatchable, avoid that binding unless the user insists. Substitute usage-aware alternatives without calling managed fallback tools; this is pre-launch routing, not provider fallback authority. Do not select \`google/gemini-3.1-pro-preview\` unless fresh exact-model availability confirms it.
+For multi-model or multi-perspective reviews, count one lane per perspective and stay within the 5-concurrent-lane cap. If a provider is critical, exhausted, stale, unknown, or non-dispatchable, avoid that binding unless the user insists. Substitute usage-aware alternatives without calling managed fallback tools; this is pre-launch routing, not provider fallback authority. Do not select \`google/gemini-3.1-pro-preview\` unless fresh exact-model availability confirms it.
 
 ## Status, nudge, and result handling
 
-After launching work, call \`flowdesk_status_live\`. Use durable status evidence for vague follow-ups such as “잘 됐어?”, “결과는?”, or “how did it go?”. For long-running work, record heartbeats only when you own a stable FlowDesk lane id.
+\`task_launched\` is launch ack only, not progress, completion, approval, or todo completion. Do not call \`flowdesk_status_live\` immediately just to confirm startup.
 
-Never manually wait for a stalled lane. Let FlowDesk status/watchdog evidence classify it; then surface safe next actions such as /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, or /flowdesk-export-debug.
+Wake prompts are notification triggers only; durable status/result evidence remains the source of truth.
+
+Call \`flowdesk_status_live\` when: a FlowDesk wake arrives; launch result failed/uncertain or lacks workflow/lane ids; the user asks status/progress/result (for example “잘 됐어?”, “결과는?”, “어디까지?”, “진행 상황”, “how did it go?”); the next decision depends on lane state/result; stalled/late/recovery is suspected; multi-lane synthesis needs durable evidence; or a bounded heartbeat/status duty requires it.
+
+Otherwise continue independent in-scope work without polling. If work is dependent on the lane, gracefully conclude with the pending workflowId/laneId and \`/flowdesk-status\`; do not mark todos completed from launch ack alone.
+
+When multiple lanes are in flight, do not wait for all lanes by default. If a completed lane is independent of still-running lanes, inspect its durable result and continue the next independent in-scope step. Wait for all lanes only when the next decision, synthesis, approval, or verification depends on their aggregate result. Never mark an aggregate todo complete until all required dependent lanes are terminal or explicitly handled as failed/stalled.
+
+Never manually wait for a stalled lane. Let FlowDesk status/watchdog evidence classify it; then surface safe next actions such as /flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, or /flowdesk-export-debug. For long-running work, record heartbeats only when you own a stable FlowDesk lane id.
 
 Lane capture is not substantive approval. Read captured \`resultText\`/\`summaryForUser\` plus advisory metadata and judge success yourself. Treat a lane as failed only when it genuinely has no text or transport/launch failure (\`sdk_create_failed\`, \`launch_timeout\`, \`no_response\`). Do not reject results merely for missing JSON, process-note shape, or missing contract. On judged substance failure, retry at most twice with a fresh smaller prompt and a usage-aware different model; do not call managed fallback for this coordinator retry.
 
@@ -797,11 +920,11 @@ Lane capture is not substantive approval. Read captured \`resultText\`/\`summary
 Call FlowDesk tools directly on clear intent:
 
 - usage/quota/remaining/reset → \`flowdesk_provider_usage_live\`
-- status/progress/recent result/stalled → \`flowdesk_status_live\`
+- status/progress/recent result/stalled → \`flowdesk_status_live\`; see Status, nudge, and result handling
 - explicit provider switch/retry on another provider → \`flowdesk_quick_fallback_run\`
 - heartbeat/progress signal request → \`flowdesk_lane_heartbeat_record\`
 - delegated subtask to a specific agent/model → \`flowdesk_agent_task_run\`
-- review/critique/audit → explicit \`flowdesk_agent_task_run\` reviewer lane(s), not quarantined reviewer fan-out
+- review/critique/audit → explicit \`flowdesk_agent_task_run\` reviewer lane(s); see Usage-aware multi-lane routing
 
 Ask one focused clarification question when intent is ambiguous between FlowDesk action and ordinary chat.
 
@@ -842,6 +965,53 @@ function flowDeskPluginServerFileUrl(profileRootDir: string): string {
 }
 
 function flowDeskPluginDefaultOptions(durableStateRootDir: string): Record<string, unknown> {
+	const providerAcquisitionAllowedModelIds = [
+		"anthropic/claude-opus-4-7",
+		"claude/claude-opus-4-7",
+		"anthropic/claude-opus-4-8",
+		"claude/claude-opus-4-8",
+		"anthropic/claude-opus-4-6",
+		"claude/claude-opus-4-6",
+		"anthropic/claude-opus-4-5",
+		"claude/claude-opus-4-5",
+		"anthropic/claude-opus-4-1",
+		"claude/claude-opus-4-1",
+		"anthropic/claude-opus-4-0",
+		"claude/claude-opus-4-0",
+		"anthropic/claude-sonnet-4-6",
+		"claude/claude-sonnet-4-6",
+		"anthropic/claude-sonnet-4-5",
+		"claude/claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-0",
+		"claude/claude-sonnet-4-0",
+		"anthropic/claude-haiku-4-5",
+		"claude/claude-haiku-4-5",
+		"openai/gpt-5.5",
+		"openai/gpt-5.5-fast",
+		"openai/gpt-5.4",
+		"openai/gpt-5.4-fast",
+		"openai/gpt-5.4-mini",
+		"openai/gpt-5.4-mini-fast",
+		"openai/gpt-5.3-codex",
+		"openai/gpt-5.3-codex-spark",
+		"openai/gpt-5.2",
+		"google/gemini-2.5-flash",
+		"gemini/gemini-2.5-flash",
+		"google/gemini-2.5-flash-lite",
+		"gemini/gemini-2.5-flash-lite",
+		"google/gemini-2.5-pro",
+		"gemini/gemini-2.5-pro",
+		"google/gemini-3-flash-preview",
+		"gemini/gemini-3-flash-preview",
+		"google/gemini-3-pro-preview",
+		"gemini/gemini-3-pro-preview",
+		"google/gemini-3.1-flash-lite",
+		"gemini/gemini-3.1-flash-lite",
+		"google/gemini-3.1-flash-lite-preview",
+		"gemini/gemini-3.1-flash-lite-preview",
+		"google/gemini-3.1-pro-preview",
+		"gemini/gemini-3.1-pro-preview",
+	];
 	return {
 		durableStateRoot: durableStateRootDir,
 		statusLive: { enabled: true, maxWorkflows: 10 },
@@ -856,6 +1026,17 @@ function flowDeskPluginDefaultOptions(durableStateRootDir: string): Record<strin
 		},
 		reviewerFanoutDiagnostics: { enabled: true },
 		agentTaskRun: { enabled: true },
+		exactModelProviderAcquisitionLiveTest: {
+			enabled: true,
+			durableStateRoot: durableStateRootDir,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				agent: "flowdesk-verifier-testing",
+				allowedProviderQualifiedModelIds: providerAcquisitionAllowedModelIds,
+			},
+		},
+		runtimeReviewerExecution: { enabled: true },
 		workflowDispatchPlanTool: { enabled: true },
 		workflowDispatch: { enabled: true, devBetaActualLaneLaunch: true },
 		autoContinueExecution: { enabled: true, devBetaActualLaneLaunch: true },

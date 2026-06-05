@@ -86,6 +86,80 @@ test("status live reports durable workflow dispatch planning evidence", async ()
 	}
 });
 
+test("status live exposes terminal task_result excerpt with preserved line breaks", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-task-result-excerpt-"));
+	try {
+		const workflowId = "workflow-status-task-result-excerpt";
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-status-excerpt", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-status-result-excerpt",
+			task_id: "task-status-result-excerpt",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "Finding A\nFinding B\n- preserve bullets",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			missing_contract: false,
+			created_at: "2026-05-27T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:01:00.000Z"),
+		});
+
+		const excerpt = result.workflows[0].latestTaskResultExcerpts?.[0];
+		assert.equal(excerpt?.taskId, "task-status-result-excerpt");
+		assert.equal(excerpt?.laneId, "lane-status-result-excerpt");
+		assert.equal(excerpt?.resultText, "Finding A\nFinding B\n- preserve bullets");
+		assert.equal(excerpt?.truncated, false);
+		assert.match(result.summaryForUser ?? "", /task_result_excerpt:\n/);
+		assert.match(result.summaryForUser ?? "", /Finding A\nFinding B\n- preserve bullets/);
+		assert.equal(result.authority.providerCall, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live omits forbidden task_result excerpts", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-task-result-redact-"));
+	try {
+		const workflowId = "workflow-status-task-result-redact";
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-status-redact", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-status-result-redact",
+			task_id: "task-status-result-redact",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "raw token must not surface",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			created_at: "2026-05-27T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:01:00.000Z"),
+		});
+
+		assert.equal(result.workflows[0].latestTaskResultExcerpts, undefined);
+		assert.doesNotMatch(result.summaryForUser ?? "", /raw token/);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("status live does not show progress observed after terminal lifecycle", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-terminal-progress-"));
 	try {

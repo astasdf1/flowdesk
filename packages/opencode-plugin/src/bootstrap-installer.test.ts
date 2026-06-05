@@ -20,6 +20,7 @@ const installedAgentProfiles = [
   "flowdesk-algorithm-architect",
   "flowdesk-oracle-decision",
   "flowdesk-verifier-testing",
+  "flowdesk-release-package-verifier",
   "flowdesk-security-policy",
   "flowdesk-performance",
   "flowdesk-migration-refactor",
@@ -40,6 +41,10 @@ const installedBuildTestCapableProfiles = new Set<string>([
   "flowdesk-migration-refactor",
   "flowdesk-performance",
   "flowdesk-verifier-testing",
+]);
+
+const installedReleasePackageVerifierProfiles = new Set<string>([
+  "flowdesk-release-package-verifier",
 ]);
 
 const installedReadOnlyGitCapableProfiles = new Set<string>([
@@ -135,7 +140,7 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 
 		assert.equal(result.ok, true);
 		assert.equal(result.commandFilesWritten, 9);
-		assert.equal(result.agentProfileFilesWritten, 15);
+		assert.equal(result.agentProfileFilesWritten, 16);
 		assert.equal(result.profileConfigUpdated, true);
 		assert.equal(result.aliasFilesWritten, 0);
 		assert.equal(result.bootstrapArtifactsWritten, 4);
@@ -174,6 +179,22 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /read-only root-cause slice/);
 		assert.match(mainAgent, /progress events without a final answer/);
 		assert.match(mainAgent, /inconsistent_finalizing_without_terminal/);
+		assert.match(mainAgent, /task_launched.*launch ack only/s);
+		assert.match(mainAgent, /not progress, completion, approval, or todo completion/);
+		assert.match(mainAgent, /Do not call `flowdesk_status_live` immediately just to confirm startup/);
+		assert.match(mainAgent, /Wake prompts are notification triggers only/);
+		assert.match(mainAgent, /durable status\/result evidence remains the source of truth/);
+		assert.match(mainAgent, /Call `flowdesk_status_live` when:.*FlowDesk wake arrives.*launch result failed\/uncertain.*잘 됐어.*결과는.*어디까지.*진행 상황.*how did it go/s);
+		assert.match(mainAgent, /multi-lane synthesis needs durable evidence/);
+		assert.match(mainAgent, /When multiple lanes are in flight, do not wait for all lanes by default/);
+		assert.match(mainAgent, /completed lane is independent of still-running lanes/);
+		assert.match(mainAgent, /next decision, synthesis, approval, or verification depends on their aggregate result/);
+		assert.match(mainAgent, /Never mark an aggregate todo complete until all required dependent lanes are terminal/);
+		assert.match(mainAgent, /one lane per perspective and stay within the 5-concurrent-lane cap/);
+		assert.match(mainAgent, /status\/progress\/recent result\/stalled → `flowdesk_status_live`; see Status, nudge, and result handling/);
+		assert.match(mainAgent, /do not mark todos completed from launch ack alone/);
+		assert.doesNotMatch(mainAgent, /After launching work, call `flowdesk_status_live`/);
+		assert.doesNotMatch(mainAgent, /not quarantined reviewer fan-out/);
 		assert.match(mainAgent, /Auto-invocation rules/);
 		assert.match(mainAgent, /Todo and safety discipline/);
 		assert.doesNotMatch(mainAgent, /Completion continuation policy/);
@@ -189,47 +210,117 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 			assert.match(agent, /^  grep: allow$/m, `${profile} grep permission`);
 			assert.match(agent, /^  list: allow$/m, `${profile} list permission`);
 			if (profile === "flowdesk-main" || profile === "flowdesk-git-master") assert.match(agent, /^  bash:\n    "\*": allow$/m, `${profile} bash default`);
-			else assert.match(agent, /^  bash:\n    "\*": ask$/m, `${profile} bash default`);
-			if (profile !== "flowdesk-main") {
-				assert.match(agent, /^    "head \*": allow$/m, `${profile} head utility allow`);
-				assert.match(agent, /^    "grep \*": allow$/m, `${profile} grep utility allow`);
-				assert.match(agent, /^    "echo \*": allow$/m, `${profile} echo utility allow`);
+			else {
+				// Background subagents must never have `ask` permission rules (causes permanent stall).
+				// They use explicit allow-lists with `"*": deny` first because OpenCode is last-match-wins.
+				const frontmatter = agent.split("---")[1] ?? "";
+				assert.doesNotMatch(frontmatter, /: ask$/m, `${profile} must not have any ask permission rules in frontmatter`);
+				assert.match(agent, /^  bash:\n    "\*": deny$/m, `${profile} bash catch-all deny must come first`);
+			}
+			if (profile !== "flowdesk-main" && profile !== "flowdesk-git-master") {
+				// Allow-list profiles have explicit safe-command entries
+				if (!installedReleasePackageVerifierProfiles.has(profile)) {
+					assert.match(agent, /^    "head \*": allow$/m, `${profile} head utility allow`);
+					assert.match(agent, /^    "grep \*": allow$/m, `${profile} grep utility allow`);
+					assert.match(agent, /^    "echo \*": allow$/m, `${profile} echo utility allow`);
+				}
+				if (profile === "flowdesk-explorer-researcher") assert.match(agent, /^  webfetch: allow$/m, `${profile} webfetch research allow`);
+				else assert.doesNotMatch(agent, /^  webfetch: ask$/m, `${profile} must not use webfetch ask`);
 			}
 			if (profile === "flowdesk-main" || profile === "flowdesk-git-master") {
+				// Broad allow profiles use explicit dangerous-git denials
 				assert.doesNotMatch(agent, /^    "git commit\*": deny$/m, `${profile} allows ordinary git commit`);
 				assert.doesNotMatch(agent, /^    "git push\*": deny$/m, `${profile} allows ordinary git push`);
 				assert.match(agent, /^    "git commit --amend\*": deny$/m, `${profile} denies commit amend`);
 				assert.match(agent, /^    "git push --force\*": deny$/m, `${profile} denies force push`);
+				const broadAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"*": allow');
+				const amendDenyIndex = agent.split("\n").findIndex((line) => line.trim() === '"git commit --amend*": deny');
+				assert.ok(amendDenyIndex > broadAllowIndex, `${profile} dangerous denies must come after broad allow`);
 			} else {
-				assert.match(agent, /^    "git commit\*": deny$/m, `${profile} denies git commit`);
-				assert.match(agent, /^    "git push\*": deny$/m, `${profile} denies git push`);
+				// Allow-list + "*": deny profiles don't need individual git denials —
+				// any command not in the allow-list is already denied by the catch-all.
+				// Verify git mutating commands are NOT in the allow-list.
+				assert.doesNotMatch(agent, /"git commit\*": allow/m, `${profile} must not allow git commit`);
+				assert.doesNotMatch(agent, /"git push\*": allow/m, `${profile} must not allow git push`);
+				assert.doesNotMatch(agent, /"git reset\*": allow/m, `${profile} must not allow git reset`);
 			}
 			if (profile === "flowdesk-main") assert.match(agent, /^  edit: allow$/m, `${profile} edit allow`);
 			else if (installedWriteCapableProfiles.has(profile)) assert.match(agent, /^  edit: allow$/m, `${profile} edit allow`);
 			else assert.match(agent, /^  edit: deny$/m, `${profile} edit deny`);
-			if (installedReadOnlyGitCapableProfiles.has(profile)) assert.match(agent, /^    "git status\*": allow$/m, `${profile} read-only git allow`);
-			else assert.doesNotMatch(agent, /^    "git status\*": allow$/m, `${profile} no explicit git status allow`);
-			if (installedBuildTestCapableProfiles.has(profile)) assert.match(agent, /^    "npm run test\*": allow$/m, `${profile} test allow`);
-			else assert.doesNotMatch(agent, /^    "npm run test\*": allow$/m, `${profile} no explicit test allow`);
+			// Allow-list profiles (not main/git-master) have explicit git read-only entries
+			if (profile !== "flowdesk-main" && profile !== "flowdesk-git-master") {
+				const catchAllIndex = agent.split("\n").findIndex((line) => line.trim() === '"*": deny');
+				const headAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"head *": allow');
+				assert.ok(catchAllIndex >= 0, `${profile} catch-all deny must exist`);
+				if (!installedReleasePackageVerifierProfiles.has(profile)) assert.ok(headAllowIndex > catchAllIndex, `${profile} allow rules must come after catch-all deny`);
+				if (installedReadOnlyGitCapableProfiles.has(profile)) {
+					assert.match(agent, /^    "git status": allow$/m, `${profile} exact read-only git allow`);
+					assert.match(agent, /^    "git status --short": allow$/m, `${profile} exact git status short allow`);
+					assert.match(agent, /^    "git status \*": allow$/m, `${profile} read-only git args allow`);
+					const gitStatusAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"git status": allow');
+					assert.ok(gitStatusAllowIndex > catchAllIndex, `${profile} git status allow must come after catch-all deny`);
+					const gitStatusShortAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"git status --short": allow');
+					assert.ok(gitStatusShortAllowIndex > catchAllIndex, `${profile} git status --short allow must come after catch-all deny`);
+					assert.match(agent, /^    "git diff --check": allow$/m, `${profile} exact git diff check allow`);
+					const gitDiffCheckAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"git diff --check": allow');
+					assert.ok(gitDiffCheckAllowIndex > catchAllIndex, `${profile} git diff --check allow must come after catch-all deny`);
+				} else assert.doesNotMatch(agent, /^    "git status(?: \*)?": allow$/m, `${profile} no explicit git status allow`);
+				if (installedBuildTestCapableProfiles.has(profile)) {
+					assert.match(agent, /^    "npm run build --workspace @flowdesk\/opencode-plugin": allow$/m, `${profile} exact workspace build allow`);
+					assert.match(agent, /^    "npm run test \*": allow$/m, `${profile} test args allow`);
+					assert.match(agent, /^    "node scripts\/run-tests\.mjs": allow$/m, `${profile} exact root test-runner allow`);
+					assert.match(agent, /^    "node scripts\/run-tests\.mjs --mode functional --package core": allow$/m, `${profile} exact focused functional test-runner allow`);
+					assert.match(agent, /^    "node scripts\/run-tests\.mjs \*": allow$/m, `${profile} root test-runner args allow`);
+					assert.match(agent, /^    "node \.\.\/\.\.\/scripts\/run-tests\.mjs": allow$/m, `${profile} exact workspace test-runner allow`);
+					assert.match(agent, /^    "node \.\.\/\.\.\/scripts\/run-tests\.mjs \*": allow$/m, `${profile} workspace test-runner args allow`);
+					assert.match(agent, /^    "node --test packages\/opencode-plugin\/dist\/bootstrap-installer\.test\.js packages\/opencode-plugin\/dist\/project-agent-profiles\.test\.js": allow$/m, `${profile} exact focused node test allow`);
+					const focusedNodeTestAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"node --test packages/opencode-plugin/dist/bootstrap-installer.test.js packages/opencode-plugin/dist/project-agent-profiles.test.js": allow');
+					assert.ok(focusedNodeTestAllowIndex > catchAllIndex, `${profile} focused node test allow must come after catch-all deny`);
+					const smokeAllowIndex = agent.split("\n").findIndex((line) => line.trim() === '"node scripts/run-tests.mjs": allow');
+					assert.ok(smokeAllowIndex > catchAllIndex, `${profile} smoke target allow must come after catch-all deny`);
+				}
+				if (installedReleasePackageVerifierProfiles.has(profile)) {
+					assert.match(agent, /^    "git diff --check": allow$/m, `${profile} exact git diff check allow`);
+					assert.match(agent, /^    "git status --short": allow$/m, `${profile} exact git status short allow`);
+					assert.match(agent, /^    "npm ls --workspace @flowdesk\/core": allow$/m, `${profile} core npm ls allow`);
+					assert.match(agent, /^    "npm ls --workspace @flowdesk\/opencode-plugin": allow$/m, `${profile} plugin npm ls allow`);
+					assert.match(agent, /^    "npm ls @opencode-ai\/plugin @opentui\/core @flowdesk\/core --workspace @flowdesk\/opencode-plugin": allow$/m, `${profile} exact release dependency tuple npm ls allow`);
+					assert.match(agent, /^    "npm pack --dry-run --json --workspace @flowdesk\/core": allow$/m, `${profile} core npm pack dry-run allow`);
+					assert.match(agent, /^    "npm pack --dry-run --json --workspace @flowdesk\/opencode-plugin": allow$/m, `${profile} plugin npm pack dry-run allow`);
+					assert.match(agent, /^    "opencode --version": allow$/m, `${profile} opencode version allow`);
+					assert.match(agent, /^    "npm publish\*": deny$/m, `${profile} npm publish deny`);
+					assert.match(agent, /^    "npm install\*": deny$/m, `${profile} npm install deny`);
+					assert.match(agent, /^    "rm\*": deny$/m, `${profile} rm deny`);
+					assert.ok(agent.split("\n").findIndex((line) => line.trim() === '"git diff --check": allow') > catchAllIndex, `${profile} pack allow rules must come after catch-all deny`);
+					assert.ok(agent.split("\n").findIndex((line) => line.trim() === '"npm publish*": deny') > agent.split("\n").findIndex((line) => line.trim() === '"npm pack --dry-run --json --workspace @flowdesk/opencode-plugin": allow'), `${profile} publish deny must come after pack allows for last-match-wins safety`);
+				}
+				if (!installedBuildTestCapableProfiles.has(profile) && !installedReleasePackageVerifierProfiles.has(profile)) assert.doesNotMatch(agent, /^    "npm run test(?: \*)?": allow$/m, `${profile} no explicit test allow`);
+			}
 		}
+		// git-master: broad allow + dangerous git deny (Tier 3)
 		const gitMasterAgent = readFileSync(join(profileRoot, "agent", "flowdesk-git-master.md"), "utf8");
 		assert.match(gitMasterAgent, /mode: subagent/);
 		assert.match(gitMasterAgent, /edit: deny/);
-		assert.match(gitMasterAgent, /"git status\*": allow/);
-		assert.match(gitMasterAgent, /"git diff\*": allow/);
+		assert.match(gitMasterAgent, /"\*": allow/);
 		assert.doesNotMatch(gitMasterAgent, /"git commit\*": deny/);
 		assert.doesNotMatch(gitMasterAgent, /"git push\*": deny/);
 		assert.match(gitMasterAgent, /"git commit --amend\*": deny/);
 		assert.match(gitMasterAgent, /"git push --force\*": deny/);
+		// algorithm-architect: allow-list + "*": deny (Tier 1)
 		const algorithmArchitectAgent = readFileSync(join(profileRoot, "agent", "flowdesk-algorithm-architect.md"), "utf8");
 		assert.match(algorithmArchitectAgent, /mode: subagent/);
 		assert.match(algorithmArchitectAgent, /edit: deny/);
-		assert.match(algorithmArchitectAgent, /"git status\*": allow/);
-		assert.match(algorithmArchitectAgent, /"git diff\*": allow/);
-		assert.match(algorithmArchitectAgent, /"git commit\*": deny/);
+		assert.match(algorithmArchitectAgent, /"git status": allow/);
+		assert.match(algorithmArchitectAgent, /"git status \*": allow/);
+		assert.match(algorithmArchitectAgent, /"git diff": allow/);
+		assert.match(algorithmArchitectAgent, /"git diff \*": allow/);
+		assert.match(algorithmArchitectAgent, /"\*": deny/);
+		assert.doesNotMatch(algorithmArchitectAgent, /"git commit\*": allow/);
 		const verifierAgent = readFileSync(join(profileRoot, "agent", "flowdesk-verifier-testing.md"), "utf8");
-		assert.match(verifierAgent, /"npm run build\*": allow/);
-		assert.match(verifierAgent, /"node --test\*": allow/);
+		assert.match(verifierAgent, /"npm run build": allow/);
+		assert.match(verifierAgent, /"npm run build \*": allow/);
+		assert.match(verifierAgent, /"node --test": allow/);
+		assert.match(verifierAgent, /"node --test \*": allow/);
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");
@@ -248,6 +339,63 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		});
 		assert.deepEqual(flowdeskPlugin[1].reviewerFanoutDiagnostics, { enabled: true });
 		assert.deepEqual(flowdeskPlugin[1].agentTaskRun, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].exactModelProviderAcquisitionLiveTest, {
+			enabled: true,
+			durableStateRoot: durableRoot,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				agent: "flowdesk-verifier-testing",
+				allowedProviderQualifiedModelIds: [
+					"anthropic/claude-opus-4-7",
+					"claude/claude-opus-4-7",
+					"anthropic/claude-opus-4-8",
+					"claude/claude-opus-4-8",
+					"anthropic/claude-opus-4-6",
+					"claude/claude-opus-4-6",
+					"anthropic/claude-opus-4-5",
+					"claude/claude-opus-4-5",
+					"anthropic/claude-opus-4-1",
+					"claude/claude-opus-4-1",
+					"anthropic/claude-opus-4-0",
+					"claude/claude-opus-4-0",
+					"anthropic/claude-sonnet-4-6",
+					"claude/claude-sonnet-4-6",
+					"anthropic/claude-sonnet-4-5",
+					"claude/claude-sonnet-4-5",
+					"anthropic/claude-sonnet-4-0",
+					"claude/claude-sonnet-4-0",
+					"anthropic/claude-haiku-4-5",
+					"claude/claude-haiku-4-5",
+					"openai/gpt-5.5",
+					"openai/gpt-5.5-fast",
+					"openai/gpt-5.4",
+					"openai/gpt-5.4-fast",
+					"openai/gpt-5.4-mini",
+					"openai/gpt-5.4-mini-fast",
+					"openai/gpt-5.3-codex",
+					"openai/gpt-5.3-codex-spark",
+					"openai/gpt-5.2",
+					"google/gemini-2.5-flash",
+					"gemini/gemini-2.5-flash",
+					"google/gemini-2.5-flash-lite",
+					"gemini/gemini-2.5-flash-lite",
+					"google/gemini-2.5-pro",
+					"gemini/gemini-2.5-pro",
+					"google/gemini-3-flash-preview",
+					"gemini/gemini-3-flash-preview",
+					"google/gemini-3-pro-preview",
+					"gemini/gemini-3-pro-preview",
+					"google/gemini-3.1-flash-lite",
+					"gemini/gemini-3.1-flash-lite",
+					"google/gemini-3.1-flash-lite-preview",
+					"gemini/gemini-3.1-flash-lite-preview",
+					"google/gemini-3.1-pro-preview",
+					"gemini/gemini-3.1-pro-preview",
+				],
+			},
+		});
+		assert.deepEqual(flowdeskPlugin[1].runtimeReviewerExecution, { enabled: true });
 		assert.deepEqual(flowdeskPlugin[1].workflowDispatchPlanTool, { enabled: true });
 		assert.deepEqual(flowdeskPlugin[1].workflowDispatch, { enabled: true, devBetaActualLaneLaunch: true });
 		assert.deepEqual(flowdeskPlugin[1].autoContinueExecution, { enabled: true, devBetaActualLaneLaunch: true });
@@ -356,6 +504,63 @@ test("Release 1 bootstrap installer preserves existing plugin entries and fills 
 			defaultToProvider: "openai/gpt-5.5",
 		});
 		assert.deepEqual(flowdeskPlugin[1].agentTaskRun, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].exactModelProviderAcquisitionLiveTest, {
+			enabled: true,
+			durableStateRoot: durableRoot,
+			promptBackedCheck: {
+				enabled: true,
+				allowProviderCall: true,
+				agent: "flowdesk-verifier-testing",
+				allowedProviderQualifiedModelIds: [
+					"anthropic/claude-opus-4-7",
+					"claude/claude-opus-4-7",
+					"anthropic/claude-opus-4-8",
+					"claude/claude-opus-4-8",
+					"anthropic/claude-opus-4-6",
+					"claude/claude-opus-4-6",
+					"anthropic/claude-opus-4-5",
+					"claude/claude-opus-4-5",
+					"anthropic/claude-opus-4-1",
+					"claude/claude-opus-4-1",
+					"anthropic/claude-opus-4-0",
+					"claude/claude-opus-4-0",
+					"anthropic/claude-sonnet-4-6",
+					"claude/claude-sonnet-4-6",
+					"anthropic/claude-sonnet-4-5",
+					"claude/claude-sonnet-4-5",
+					"anthropic/claude-sonnet-4-0",
+					"claude/claude-sonnet-4-0",
+					"anthropic/claude-haiku-4-5",
+					"claude/claude-haiku-4-5",
+					"openai/gpt-5.5",
+					"openai/gpt-5.5-fast",
+					"openai/gpt-5.4",
+					"openai/gpt-5.4-fast",
+					"openai/gpt-5.4-mini",
+					"openai/gpt-5.4-mini-fast",
+					"openai/gpt-5.3-codex",
+					"openai/gpt-5.3-codex-spark",
+					"openai/gpt-5.2",
+					"google/gemini-2.5-flash",
+					"gemini/gemini-2.5-flash",
+					"google/gemini-2.5-flash-lite",
+					"gemini/gemini-2.5-flash-lite",
+					"google/gemini-2.5-pro",
+					"gemini/gemini-2.5-pro",
+					"google/gemini-3-flash-preview",
+					"gemini/gemini-3-flash-preview",
+					"google/gemini-3-pro-preview",
+					"gemini/gemini-3-pro-preview",
+					"google/gemini-3.1-flash-lite",
+					"gemini/gemini-3.1-flash-lite",
+					"google/gemini-3.1-flash-lite-preview",
+					"gemini/gemini-3.1-flash-lite-preview",
+					"google/gemini-3.1-pro-preview",
+					"gemini/gemini-3.1-pro-preview",
+				],
+			},
+		});
+		assert.deepEqual(flowdeskPlugin[1].runtimeReviewerExecution, { enabled: true });
 		assert.deepEqual(flowdeskPlugin[1].workflowDispatch, { enabled: true, devBetaActualLaneLaunch: true });
 		assert.deepEqual(flowdeskPlugin[1].controlledWriteApply, { enabled: true, devBetaControlledWriteApply: true });
 	} finally {

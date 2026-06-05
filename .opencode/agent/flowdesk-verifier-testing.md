@@ -9,20 +9,45 @@ permission:
   list: allow
   edit: deny
   bash:
-    "*": ask
+    "*": deny
     "head *": allow
     "grep *": allow
     "echo *": allow
-    "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
+    "git status": allow
+    "git status --short": allow
+    "git status *": allow
+    "git diff": allow
+    "git diff --check": allow
+    "git diff *": allow
+    "git log": allow
+    "git log *": allow
+    "git show": allow
+    "git show *": allow
     "git branch --show-current": allow
     "git remote -v": allow
-    "npm run build*": allow
-    "npm run typecheck*": allow
-    "npm run test*": allow
-    "node --test*": allow
+    "npm run build": allow
+    "npm run build --workspace @flowdesk/opencode-plugin": allow
+    "npm run build *": allow
+    "npm run typecheck": allow
+    "npm run typecheck *": allow
+    "npm run test": allow
+    "npm run test *": allow
+    "npm test": allow
+    "npm test *": allow
+    "node scripts/run-tests.mjs": allow
+    "node scripts/run-tests.mjs --mode functional --package core": allow
+    "node scripts/run-tests.mjs *": allow
+    "node ../../scripts/run-tests.mjs": allow
+    "node ../../scripts/run-tests.mjs *": allow
+    "node --test": allow
+    "node --test packages/opencode-plugin/dist/bootstrap-installer.test.js packages/opencode-plugin/dist/project-agent-profiles.test.js": allow
+    "node --test *": allow
+    "npx tsc": allow
+    "npx tsc *": allow
+    "npm ls": allow
+    "npm ls *": allow
+    "npm run lint": allow
+    "npm run lint *": allow
     "git add*": deny
     "git am*": deny
     "git apply*": deny

@@ -196,7 +196,7 @@ export function validateOpaqueId(value: unknown, label = "opaque id"): Validatio
   if (value.length < 3 || value.length > 128) return invalid(`${label} length is outside 3..128`);
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value)) return invalid(`${label} is not schema-safe`);
   if (/[/\s]/.test(value) || value.includes("..")) return invalid(`${label} must not contain paths, spaces, or traversal`);
-  return validateNoForbiddenRawPayloads(value, label);
+  return valid();
 }
 
 export function validateOpaqueRef(value: unknown, label = "opaque ref"): ValidationResult {
@@ -228,7 +228,9 @@ export function validateProviderQualifiedModelId(value: unknown): ValidationResu
 
 export function validateNoForbiddenRawPayloads(value: unknown, label = "payload"): ValidationResult {
   const errors: string[] = [];
-    const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "credential_scope_ref", "raw_auth_object_persisted", "raw_path_write_attempted", "rawpathwriteattempted", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref", "token_material_persisted"]);
+  const schemaSafeKeysWithForbiddenTerms = new Set(["credential_preservation_check", "credential_scope_ref", "raw_auth_object_persisted", "raw_path_write_attempted", "rawpathwriteattempted", "runtime_echo_mode", "runtime_echo_validation", "runtime_echo_ref", "token_material_persisted"]);
+  const isSchemaSafeOpaqueIdentifier = (current: unknown): boolean => validateOpaqueId(current).ok;
+  const isOpaqueIdentifierField = (key: string): boolean => /(?:^|_)(?:id|ref)$/.test(key.toLowerCase());
   const visit = (current: unknown, path: string): void => {
     if (typeof current === "string") {
       const lower = current.toLowerCase();
@@ -253,6 +255,7 @@ export function validateNoForbiddenRawPayloads(value: unknown, label = "payload"
       for (const [key, nested] of Object.entries(current)) {
         const normalizedKey = key.toLowerCase();
         if (!schemaSafeKeysWithForbiddenTerms.has(normalizedKey) && FORBIDDEN_RAW_PAYLOAD_MARKERS.some((marker) => normalizedKey.includes(marker))) errors.push(`${path}.${key} is a forbidden raw payload field`);
+        if (isOpaqueIdentifierField(key) && isSchemaSafeOpaqueIdentifier(nested)) continue;
         visit(nested, `${path}.${key}`);
       }
     }

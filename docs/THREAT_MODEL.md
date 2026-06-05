@@ -9,7 +9,7 @@ This document identifies the main safety, privacy, supply-chain, and orchestrati
 1. Prevent unsafe or unauthorized dispatch.
 2. Prevent prompt, credential, quota, transcript, file-content, and tool-payload leakage.
 3. Preserve provider/model identity for Guard and audit.
-4. Fail closed on stale usage, unknown runtime capability, malformed config, missing audit, or untrusted echo.
+4. Fail closed on stale usage, unknown plugin-observed runtime capability, malformed config, missing audit, or ambiguous plugin-side completion evidence.
 5. Keep OMO out of the runtime.
 6. Treat event telemetry as harness coordination, not authority.
 7. Use the hook harness to prevent agent deviation without making it an approval authority.
@@ -35,7 +35,7 @@ This document identifies the main safety, privacy, supply-chain, and orchestrati
 | Policy Pack | Partially | Valid only after schema, source, and boundary checks |
 | Usage snapshot | Partially | Valid only within TTL and with provider-native evidence |
 | Provider Health Snapshot | Partially | Valid only within TTL, separate from usage, and limited to redacted availability/failure classes |
-| Runtime echo | Partially | Trusted only when matched to approved binding and source |
+| Runtime echo | Diagnostic only | Platform-internal runtime echo is not FlowDesk completion evidence; plugin-observed lifecycle/result/status records remain bounded to `attestation_scope=plugin_observed_only` |
 | Audit store | Partially | Trusted only through redaction-first writer and durable writes |
 | Reference packs | Partially | Valid only with provenance, freshness, and source metadata |
 | Optional MCP connectors | No by default | Require Policy Pack opt-in and provenance checks |
@@ -63,6 +63,18 @@ The following are privileged unless explicitly classified `safe_read_only`:
 Privileged operations require a current `GuardApprovedDispatch` or a specific Guard-approved non-dispatch permission. Bootstrap installer actions are allowed only under the narrow bootstrap authority model.
 
 ## Threats and Mitigations
+
+### ADR: Plugin Boundary Scope
+
+Threats:
+
+1. **Trusted laundering**: Plugin completion evidence could be misread as platform execution truth. Mitigation: `attestation_scope=plugin_observed_only` on all completion records.
+2. **Host version drift**: OpenCode upgrade changes lane semantics without FlowDesk detection. Mitigation: plugin-verifiable host version pin and SDK shape validation.
+3. **Approval replay**: Old approval reused against new attempt. Mitigation: approval must be fresh, single-use, and bound to exact attempt id.
+4. **Cross-attempt binding**: Result from one attempt attributed to another. Mitigation: result-to-attempt correlation through idempotency reservation.
+5. **Audit redaction gap**: Durable audit records contain unredacted data. Mitigation: redaction validation on all persisted evidence.
+
+Platform-internal evidence such as trusted runtime echo, telemetry correlation, lane conformance, usage authority attestation, and OpenCode execution mode is non-gating diagnostic scope only. FlowDesk completion is based on plugin-verifiable evidence: what it requested, what it persisted, and what OpenCode returned through SDK/plugin interfaces.
 
 ### T1: Unguarded Dispatch
 
@@ -155,7 +167,7 @@ Mitigations:
 2. Require observed lifecycle/result/status evidence from the intended SDK path when the path depends on a real OpenCode lane.
 3. Run configured verification when required.
 4. Require durable outcome audit.
-5. Treat platform-internal runtime echo issuer, telemetry correlation, lane conformance, and usage-authority attestation as observed/un-attested or skipped diagnostics unless OpenCode exposes a conformance-proven plugin-verifiable source.
+5. Treat platform-internal runtime echo issuer, telemetry correlation, lane conformance, and usage-authority attestation as non-gating diagnostic scope only; they are not required for completion.
 6. Quarantine artifacts on ambiguity.
 
 Stop condition: event-only completion can promote artifacts or count as success.
@@ -210,7 +222,7 @@ Mitigations:
 1. Provider-qualified model ids are required.
 2. Provider-native usage snapshots are required. For OpenCode Go and z.ai, missing official machine-readable quota or reset evidence must produce `unknown` usage instead of guessed availability.
 3. Unknown, stale, refused, shared-limit, or fallback usage is non-dispatchable.
-4. Runtime echo must match approved provider/model.
+4. Plugin-observed binding/status evidence must match the approved provider/model request.
 5. Model-generated usage claims are ignored.
 6. Usage collectors label data provenance: provider API truth, local observed history, completed-response accounting, diagnostic probe, console-derived data, or inferred estimate. Only provider-authoritative sources may satisfy future real-dispatch usage gates.
 
@@ -225,7 +237,7 @@ Mitigations:
 1. Keep Provider Health Snapshots separate from Usage Availability Snapshots.
 2. Classify provider/API/model failures as `auth_missing`, `auth_expired`, `provider_unavailable`, `rate_limited`, `model_unavailable`, `transport_timeout`, `provider_error`, `opencode_provider_load_failure`, or `telemetry_ambiguous`.
 3. In Release 1, treat these failures as diagnostic, status, degraded-mode, or fake-runtime signals only. Do not perform real automatic provider/model switching.
-4. Future managed fallback/reselection requires fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding and observed echo/status, plugin-verifiable telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval. Platform-internal fallback proof that FlowDesk cannot verify remains a skipped diagnostic, not an authority source.
+4. Future managed fallback/reselection requires fresh provider-native usage, fresh provider health, SDK-adapter compatibility, policy eligibility, plugin-verifiable binding/status observations, durable pre-dispatch audit, a new attempt id, and explicit Guard approval. Platform-internal fallback proof that FlowDesk cannot verify remains a non-gating diagnostic, not an authority source.
 5. Block fallback on stale, unknown, refused, shared-limit-suspected, fallback-derived, model-generated, telemetry-ambiguous, policy-ineligible, runtime-incompatible, untrusted, unaudited, or Guard-rejected inputs.
 6. Never persist raw provider errors, provider payloads, credentials, prompts, transcripts, raw runtime echoes, raw logs, raw file paths, or stack traces in health, audit, debug, conformance, or status records.
 7. Treat plugin event observations as situational awareness only. They cannot approve dispatch, fallback, durable audit, or runtime echo.
@@ -495,7 +507,7 @@ Release 1 and later gated releases must include tests for the features they expo
 5. Unknown provider/model identity blocks dispatch.
 6. Provider Health Snapshot tests keep health separate from usage and classify auth missing/expired, provider unavailable, rate limited, model unavailable, transport timeout, provider error, OpenCode provider-load failure, and telemetry ambiguous states.
 7. Release 1 outage tests prove provider/API/model failures degrade to doctor, usage, status, fake-runtime, retry planning, or debug export and never perform real provider/model switching.
-8. Future fallback tests prove reselection blocks without fresh provider-native usage, fresh provider health, runtime compatibility, policy eligibility, plugin-verifiable binding/observed echo/status, telemetry refs, durable pre-dispatch audit, a new attempt id, and explicit Guard approval. Platform-internal fallback proof remains skipped unless OpenCode exposes it through a verifiable boundary.
+8. Future fallback tests prove reselection blocks without fresh provider-native usage, fresh provider health, SDK-adapter compatibility, policy eligibility, plugin-verifiable binding/status observations, durable pre-dispatch audit, a new attempt id, and explicit Guard approval. Platform-internal fallback proof remains non-gating diagnostic scope only.
 9. Redaction tests prove provider health, fallback, conformance, audit, and debug records exclude raw provider errors, provider payloads, credentials, prompts, transcripts, raw runtime echoes, raw logs, raw file paths, and stack traces.
 10. Missing pre-dispatch audit blocks real dispatch.
 11. Audit rejection blocks or quarantines the triggering operation.

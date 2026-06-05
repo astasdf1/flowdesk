@@ -48,6 +48,8 @@ export function eventIsFinalizationRelevant(type: string | undefined, progressLa
 	// is ambient churn that must NOT trigger wake prompts — this was the burst cause.
 	if (type === "session.idle" || type === "session.error") return true;
 	if (type === "message.part.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task tool error")) return true;
+	if (type === "message.part.updated" && progressLabel === "agent task terminal step event observed") return true;
+	if (type === "message.updated" && typeof progressLabel === "string" && progressLabel.startsWith("agent task turn completed")) return true;
 	return false;
 }
 

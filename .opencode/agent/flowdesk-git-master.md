@@ -13,10 +13,16 @@ permission:
     "head *": allow
     "grep *": allow
     "echo *": allow
-    "git status*": allow
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
+    "git status": allow
+    "git status --short": allow
+    "git status *": allow
+    "git diff": allow
+    "git diff --check": allow
+    "git diff *": allow
+    "git log": allow
+    "git log *": allow
+    "git show": allow
+    "git show *": allow
     "git branch --show-current": allow
     "git remote -v": allow
     "git am*": deny

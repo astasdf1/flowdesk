@@ -509,6 +509,14 @@ function bucketQuotaHealth(
 	return remainingFraction - timeRemainingFraction;
 }
 
+function bucketTriggersDisplayPriority(
+	bucket: FlowDeskTuiUsageProviderBucketV1 | undefined,
+	thresholdPercent: number,
+): boolean {
+	const remainingPercent = bucket?.remainingPercent;
+	return typeof remainingPercent === "number" && Number.isFinite(remainingPercent) && remainingPercent < thresholdPercent;
+}
+
 /** Pick the bucket with the lower period-normalized quota health; display stays unchanged. */
 function lowerBucket(
 	fiveHour: FlowDeskTuiUsageProviderBucketV1 | undefined,
@@ -517,6 +525,13 @@ function lowerBucket(
 ): { bucket: FlowDeskTuiUsageProviderBucketV1 | undefined; label: string } {
 	const fiveHourPct = fiveHour?.remainingPercent ?? null;
 	const weeklyPct = weekly?.remainingPercent ?? null;
+	const fiveHourPriority = bucketTriggersDisplayPriority(fiveHour, 20);
+	const weeklyPriority = bucketTriggersDisplayPriority(weekly, 5);
+	if (fiveHourPriority && weeklyPriority && fiveHourPct !== null && weeklyPct !== null) {
+		return weeklyPct < fiveHourPct ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
+	}
+	if (fiveHourPriority) return { bucket: fiveHour, label: "5h" };
+	if (weeklyPriority) return { bucket: weekly, label: "1w" };
 	const fiveHourHealth = bucketQuotaHealth(fiveHour, "5h", nowMs);
 	const weeklyHealth = bucketQuotaHealth(weekly, "1w", nowMs);
 	if (fiveHourHealth !== undefined && weeklyHealth !== undefined && fiveHourHealth !== weeklyHealth) {

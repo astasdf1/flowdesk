@@ -203,7 +203,7 @@ In Release 1, the `Write Access` column describes future permission intent only.
 
 ### 5.1 Classification → Agent
 
-Release 1 interpretation: classification maps user intent to command-backed planning records and fake-runtime/degraded lane summaries. The mapping below becomes real subagent dispatch only after a later gate satisfies the plugin-verifiable bundle: model/agent binding, observed runtime echo/status, telemetry refs, fresh usage/health evidence where required, durable pre-dispatch audit, and Guard approval. OpenCode platform-internal lane/echo/telemetry attestation remains a skipped diagnostic unless the plugin can verify it through a conformance-proven surface.
+Release 1 interpretation: classification maps user intent to command-backed planning records and fake-runtime/degraded lane summaries. The mapping below becomes real subagent dispatch only after a later gate satisfies the plugin-verifiable bundle: concrete provider/model/agent binding and policy eligibility, SDK adapter capability, observed lifecycle/result/status evidence, fresh usage/health evidence where required, durable pre-dispatch audit with redaction validation, idempotency/reservation, durable evidence reload/cross-reference validation, and Guard approval. OpenCode platform-internal lane/echo/telemetry attestation is non-gating diagnostic scope only unless a future OpenCode interface makes it plugin-verifiable and a later ADR explicitly promotes it.
 
 | Classification | Primary Agent | Companion Agents |
 |---|---|---|

@@ -8,7 +8,6 @@ import {
 } from "./tui-usage-snapshot.js";
 import {
 	formatFlowDeskTuiAutoNextReadyCompactLines,
-	formatFlowDeskTuiCompletionWakeNoticeCompactLines,
 	formatFlowDeskTuiSubtaskActivityCompactLines,
 	loadFlowDeskTuiAutoNextReadyViewV1,
 	loadFlowDeskTuiCompletionWakeNoticeViewV1,
@@ -17,6 +16,7 @@ import {
 	type FlowDeskTuiCompletionWakeNoticeViewV1,
 	type FlowDeskTuiSubtaskActivityViewV1,
 } from "./tui-subtask-activity.js";
+import { formatFlowDeskTuiSidebarCompactLines } from "./tui-sidebar-format.js";
 
 interface FlowDeskTuiPluginOptionsV1 {
 	durableStateRootDir?: string;
@@ -132,13 +132,6 @@ function textLine(value: string | (() => string)): JSX.Element {
 	return node as unknown as JSX.Element;
 }
 
-function box(children: readonly JSX.Element[], props: Record<string, unknown> = {}): JSX.Element {
-	const node = createElement("box");
-	for (const [key, value] of Object.entries(props)) setProp(node, key, value);
-	for (const child of children) insert(node, child);
-	return node as unknown as JSX.Element;
-}
-
 function formatObservedAt(iso: string): string {
 	const ms = Date.parse(iso);
 	if (!Number.isFinite(ms)) return "updated ?";
@@ -157,6 +150,13 @@ function currentRouteSessionRef(api: Parameters<TuiPlugin>[0]): string | undefin
 		: undefined;
 }
 
+function dynamicTextLineBox(lines: () => readonly string[], props: Record<string, unknown> = {}): JSX.Element {
+	const node = createElement("box");
+	for (const [key, value] of Object.entries(props)) setProp(node, key, value);
+	insert(node, () => lines().map((line) => textLine(line)));
+	return node as unknown as JSX.Element;
+}
+
 function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActivityState, currentSessionRef: () => string | undefined): JSX.Element {
 	const usageLines = createMemo(() => formatFlowDeskTuiUsageSnapshotCompactLines(usageState.view()));
 	const observedLine = createMemo(() => formatObservedAt(usageState.view().observedAt));
@@ -168,42 +168,21 @@ function usageSidebar(usageState: UsageSnapshotState, subtaskState: SubtaskActiv
 			: "cache readable";
 	});
 	const autoNextLines = createMemo(() => formatFlowDeskTuiAutoNextReadyCompactLines(subtaskState.autoNextView(currentSessionRef())));
-	const wakeNoticeLines = createMemo(() => formatFlowDeskTuiCompletionWakeNoticeCompactLines(subtaskState.wakeNoticeView(currentSessionRef())));
-	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view(currentSessionRef())));
-	// Build all lines dynamically so empty sections don't leave blank gaps
+	const wakeNoticeView = createMemo(() => subtaskState.wakeNoticeView(currentSessionRef()));
+	const subtaskLines = createMemo(() => formatFlowDeskTuiSubtaskActivityCompactLines(subtaskState.view(currentSessionRef()), 5));
 	const allLines = createMemo(() => {
-		const lines: (string | (() => string))[] = [];
-		// Usage lines (variable count)
-		for (const line of usageLines()) lines.push(line);
-		lines.push(observedLine());
-		lines.push(statusLine());
-		const wnl = wakeNoticeLines();
-		if (wnl.length > 0) {
-			lines.push("");
-			for (const line of wnl) lines.push(line);
-		}
-		// Auto-next lines (only if non-empty)
-		const anl = autoNextLines();
-		if (anl.length > 0) {
-			lines.push("");
-			for (const line of anl) lines.push(line);
-		}
-		// Subtask lines (only if non-empty)
-		const stl = subtaskLines();
-		if (stl.length > 0) {
-			lines.push("");
-			for (const line of stl) lines.push(line);
-		}
-		return lines;
+		// Keep the completion-wake consumer active for main-session wake handling,
+		// but do not render those notices in sidebar_content.
+		wakeNoticeView();
+		return formatFlowDeskTuiSidebarCompactLines({
+			usageLines: usageLines(),
+			observedLine: observedLine(),
+			statusLine: statusLine(),
+			autoNextLines: autoNextLines(),
+			subtaskLines: subtaskLines(),
+		});
 	});
-	// Max slots: usage(7) + observed(1) + status(1) + sep(1) + autoNext(3) + sep(1) + subtask(6) = 20
-	return box(
-		Array.from({ length: 20 }, (_, index) => textLine(() => {
-			const lines = allLines();
-			return index < lines.length ? (typeof lines[index] === "function" ? (lines[index] as () => string)() : lines[index] as string) : "";
-		})),
-		{ flexShrink: 0, paddingTop: 1, paddingBottom: 1 },
-	);
+	return dynamicTextLineBox(allLines, { flexShrink: 0 });
 }
 
 function usageBadge(state: UsageSnapshotState): JSX.Element {
