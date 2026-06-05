@@ -35,6 +35,7 @@ import {
 	reloadFlowDeskSessionEvidenceV1,
 	type SafeNextAction,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
+	validateConformanceRuntimeMetadataV1,
 	validateProjectConfigV1,
 	validateRunRequestV1,
 } from "@flowdesk/core";
@@ -350,13 +351,32 @@ export interface FlowDeskChatHookAuthorityObservationInputV1 {
 }
 
 const flowdeskChatSuggestionDuplicateWindowMs = 10_000;
+const flowdeskChatSuggestionDismissWindowMs = 5 * 60_000;
+
+type FlowDeskEffectiveChatIntakeModeV1 = "blocking" | "steering";
+
+interface FlowDeskChatIntakeModeGateV1 {
+	requestedMode?: string;
+	effectiveMode: FlowDeskEffectiveChatIntakeModeV1;
+	diagnostic?: string;
+	conformanceRef?: string;
+	conformanceReadable: boolean;
+	blockingSafe: boolean;
+	realOpenCodeDispatch: false;
+	actualLaneLaunch: false;
+	providerCall: false;
+	runtimeExecution: false;
+	fallbackAuthority: false;
+	hardCancelOrNoReplyAuthority: false;
+}
 
 interface FlowDeskChatSuggestionPreferenceRecordV1 {
 	schema_version: "flowdesk.chat_suggestion_preference.v1";
 	preference_ref: string;
 	session_ref: string;
+	preference_action: "dedupe" | "dismiss";
 	route_decision: string;
-	safe_next_action: SafeNextAction;
+	safe_next_action?: SafeNextAction;
 	recorded_at: string;
 	expires_at: string;
 	realOpenCodeDispatch: false;
@@ -365,6 +385,20 @@ interface FlowDeskChatSuggestionPreferenceRecordV1 {
 	runtimeExecution: false;
 	fallbackAuthority: false;
 	hardCancelOrNoReplyAuthority: false;
+}
+
+function chatSuggestionDismissKey(sessionRef: string | undefined): string {
+	return [safeToken(sessionRef, "chat-session"), "dismiss-suggestions"].join("|");
+}
+
+function looksLikeSuggestionDismissal(text: string): boolean {
+	return /그냥\s*해줘|무시해|괜찮아|dismiss|ignore\s+flowdesk|skip/i.test(text);
+}
+
+function looksLikeExplicitFlowDeskRequest(text: string): boolean {
+	return /\/flowdesk-|flowdesk\s+(status|plan|run|doctor|usage|resume|retry|abort|export)/i.test(
+		text,
+	);
 }
 
 const disabledAuthority = {
@@ -499,22 +533,33 @@ function writeDurableSuggestionPreference(
 	rootDir: string | undefined,
 	duplicateKey: string,
 	request: FlowDeskChatIntakeRequestV1,
-	response: ReturnType<typeof evaluateFlowDeskChatIntakeV1>["response"],
+	response:
+		| ReturnType<typeof evaluateFlowDeskChatIntakeV1>["response"]
+		| undefined,
 	recordedAtMs: number,
+	preferenceAction: FlowDeskChatSuggestionPreferenceRecordV1["preference_action"] = "dedupe",
 ): void {
 	const filePath = durableSuggestionPreferencePath(rootDir, duplicateKey);
 	if (filePath === undefined) return;
 	try {
+		const expiresInMs =
+			preferenceAction === "dismiss"
+				? flowdeskChatSuggestionDismissWindowMs
+				: flowdeskChatSuggestionDuplicateWindowMs;
 		const record: FlowDeskChatSuggestionPreferenceRecordV1 = {
 			schema_version: "flowdesk.chat_suggestion_preference.v1",
 			preference_ref: `chat-suggestion-${hashText(duplicateKey)}`,
 			session_ref: safeToken(request.session_ref, "session-redacted"),
-			route_decision: safeToken(response.route_decision, "route-redacted"),
-			safe_next_action: response.safe_next_actions[0] ?? "/flowdesk-status",
+			preference_action: preferenceAction,
+			route_decision: safeToken(
+				response?.route_decision,
+				preferenceAction === "dismiss" ? "dismiss" : "route-redacted",
+			),
+			...(response?.safe_next_actions[0] === undefined
+				? {}
+				: { safe_next_action: response.safe_next_actions[0] }),
 			recorded_at: new Date(recordedAtMs).toISOString(),
-			expires_at: new Date(
-				recordedAtMs + flowdeskChatSuggestionDuplicateWindowMs,
-			).toISOString(),
+			expires_at: new Date(recordedAtMs + expiresInMs).toISOString(),
 			realOpenCodeDispatch: false,
 			actualLaneLaunch: false,
 			providerCall: false,
@@ -676,7 +721,7 @@ function routedToolRequest(
 				"attempt-chat-routed",
 			),
 			retry_reason:
-				"FlowDesk chat intake requested a non-dispatch retry diagnostic.",
+				"FlowDesk chat intake requested a command-backed retry diagnostic.",
 		};
 	}
 	if (toolName === "flowdesk_abort") {
@@ -709,10 +754,11 @@ function routedToolRequest(
 function evaluateNaturalLanguageRouting(
 	request: FlowDeskChatIntakeRequestV1,
 	session: FlowDeskLocalNonDispatchAdapterSessionV1,
+	chatIntakeMode: FlowDeskEffectiveChatIntakeModeV1 = "steering",
 ) {
 	const evaluation = evaluateFlowDeskChatIntakeV1({
 		request,
-		chatIntakeMode: "steering",
+		chatIntakeMode,
 		hookHarnessMode: "enforce",
 		planningDocumentAvailable: hasFlowDeskLocalPlanningEvidenceV1(
 			session,
@@ -793,10 +839,11 @@ function clockMs(clock: FlowDeskLocalClockV1): number {
 function previewNaturalLanguageRouting(
 	request: FlowDeskChatIntakeRequestV1,
 	session: FlowDeskLocalNonDispatchAdapterSessionV1,
+	chatIntakeMode: FlowDeskEffectiveChatIntakeModeV1 = "steering",
 ) {
 	const evaluation = evaluateFlowDeskChatIntakeV1({
 		request,
-		chatIntakeMode: "steering",
+		chatIntakeMode,
 		hookHarnessMode: "enforce",
 		planningDocumentAvailable: hasFlowDeskLocalPlanningEvidenceV1(
 			session,
@@ -974,7 +1021,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 			return [
 				stub.toolName,
 				tool({
-					description: `FlowDesk local non-dispatch command adapter for ${stub.toolName}; no provider call, real dispatch, or lane launch.`,
+				description: `FlowDesk command-backed local tool for ${stub.toolName}; no provider call, real dispatch, or task launch.`,
 					args,
 					async execute(request) {
 						const record: Record<string, unknown> = isRecord(request)
@@ -1002,6 +1049,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 export function createFlowDeskNaturalLanguageRoutingTools(
 	now = new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
+	chatIntakeGate: FlowDeskChatIntakeModeGateV1 = defaultChatIntakeModeGate(),
 ): Record<string, FlowDeskOpenCodeTool> {
 	const artifact = getRelease1SchemaArtifact("flowdesk.chat_intake.request.v1");
 	if (artifact === undefined)
@@ -1022,13 +1070,14 @@ export function createFlowDeskNaturalLanguageRoutingTools(
 	return {
 		[flowdeskChatIntakeToolName]: tool({
 			description:
-				"FlowDesk natural-language chat intake steering; command-backed only, with no provider call, real dispatch, lane launch, fallback, or hard chat control.",
+				"FlowDesk natural-language chat intake steering; command-backed only, with no provider call, real dispatch, task launch, fallback, or hard chat control.",
 			args,
 			async execute(request) {
 				return JSON.stringify(
-					evaluateNaturalLanguageRouting(
+						evaluateNaturalLanguageRouting(
 						request as unknown as FlowDeskChatIntakeRequestV1,
 						session,
+						chatIntakeGate.effectiveMode,
 					),
 				);
 			},
@@ -1992,6 +2041,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 	stallAlert?: FlowDeskChatMessageStallAlertOptionsV1,
 	durableSuggestionRoot?: string,
 	providerUsageLiveConfig?: FlowDeskProviderUsageLiveConfigV1,
+	chatIntakeGate: FlowDeskChatIntakeModeGateV1 = defaultChatIntakeModeGate(),
 ) {
 	const recentSuggestionCards = new Map<string, number>();
 	const recentStallAlerts = new Map<string, number>();
@@ -2014,7 +2064,11 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			text,
 		});
 		const request = intakeRequestFromChatMessage({ ...inputRecord, ...output });
-		const preview = previewNaturalLanguageRouting(request, session);
+		const preview = previewNaturalLanguageRouting(
+			request,
+			session,
+			chatIntakeGate.effectiveMode,
+		);
 		const nowMs = clockMs(now);
 		if (providerUsageLiveConfig?.durableStateRootDir && nowMs - lastUsageRefreshAttemptAtMs > 30_000) {
 			lastUsageRefreshAttemptAtMs = nowMs;
@@ -2048,9 +2102,29 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			if (!Array.isArray(output.parts)) output.parts = [];
 			output.parts.push(buildTextPart(usageTextToAppend));
 		};
+		if (
+			looksLikeSuggestionDismissal(request.intake_summary) &&
+			!looksLikeExplicitFlowDeskRequest(request.intake_summary)
+		) {
+			recentSuggestionCards.set(
+				chatSuggestionDismissKey(request.session_ref),
+				nowMs,
+			);
+			writeDurableSuggestionPreference(
+				durableSuggestionRoot,
+				chatSuggestionDismissKey(request.session_ref),
+				request,
+				undefined,
+				nowMs,
+				"dismiss",
+			);
+		}
 		for (const [key, recordedAtMs] of recentSuggestionCards) {
+			const ttlMs = key.endsWith("|dismiss-suggestions")
+				? flowdeskChatSuggestionDismissWindowMs
+				: flowdeskChatSuggestionDuplicateWindowMs;
 			if (
-				nowMs - recordedAtMs > flowdeskChatSuggestionDuplicateWindowMs ||
+				nowMs - recordedAtMs > ttlMs ||
 				nowMs < recordedAtMs
 			)
 				recentSuggestionCards.delete(key);
@@ -2120,6 +2194,21 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			return;
 		}
 		if (!mayCreatePendingConfirmation(preview)) {
+			const dismissedAtMs =
+				recentSuggestionCards.get(chatSuggestionDismissKey(request.session_ref)) ??
+				readDurableSuggestionPreferenceAtMs(
+					durableSuggestionRoot,
+					chatSuggestionDismissKey(request.session_ref),
+					nowMs,
+				);
+			if (
+				dismissedAtMs !== undefined &&
+				nowMs - dismissedAtMs <= flowdeskChatSuggestionDismissWindowMs
+			) {
+				appendUsageCard();
+				appendStallCard();
+				return;
+			}
 			const duplicateKey = suggestionDuplicateKey(
 				request,
 				preview.evaluation.response,
@@ -2148,7 +2237,11 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 				return;
 			}
 		}
-		const result = evaluateNaturalLanguageRouting(request, session);
+		const result = evaluateNaturalLanguageRouting(
+			request,
+			session,
+			chatIntakeGate.effectiveMode,
+		);
 		if (!Array.isArray(output.parts)) output.parts = [];
 		output.parts.push(buildTextPart(steeringText(result)));
 		appendUsageCard();
@@ -2699,6 +2792,91 @@ function disabledProjectConfigLoad(): FlowDeskProjectConfigLoadResultV1 {
 	return { enabled: false, status: "disabled", ...disabledAuthority };
 }
 
+function defaultChatIntakeModeGate(): FlowDeskChatIntakeModeGateV1 {
+	return {
+		effectiveMode: "steering",
+		conformanceReadable: false,
+		blockingSafe: false,
+		...disabledAuthority,
+	};
+}
+
+function readChatBlockingConformanceMetadataFromOptions(
+	options?: PluginOptions,
+): unknown {
+	const raw = options?.[flowdeskProjectConfigOption];
+	if (!isRecord(raw)) return undefined;
+	if (raw.chatBlockingConformanceMetadata !== undefined)
+		return raw.chatBlockingConformanceMetadata;
+	if (raw.conformanceRuntimeMetadata !== undefined)
+		return raw.conformanceRuntimeMetadata;
+	const rootDir =
+		typeof raw.rootDir === "string" && raw.rootDir.trim().length > 0
+			? raw.rootDir
+			: undefined;
+	if (rootDir === undefined) return undefined;
+	const root = resolve(rootDir);
+	const candidates = [
+		resolve(root, ".flowdesk", "conformance-runtime-metadata.json"),
+		resolve(root, ".flowdesk", "conformance.json"),
+	];
+	for (const candidate of candidates) {
+		if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) continue;
+		try {
+			return JSON.parse(readFileSync(candidate, "utf8")) as unknown;
+		} catch {
+			// Try the next conventional conformance path; absence/read failure is handled by the gate.
+		}
+	}
+	return undefined;
+}
+
+function chatIntakeModeGateFromProjectConfig(
+	load: FlowDeskProjectConfigLoadResultV1,
+	options?: PluginOptions,
+): FlowDeskChatIntakeModeGateV1 {
+	if (load.chatIntakeMode !== "blocking") {
+		return {
+			requestedMode: load.chatIntakeMode,
+			effectiveMode: "steering",
+			conformanceReadable: false,
+			blockingSafe: false,
+			...disabledAuthority,
+		};
+	}
+	const metadata = readChatBlockingConformanceMetadataFromOptions(options);
+	const validation = validateConformanceRuntimeMetadataV1(metadata);
+	const record = isRecord(metadata) ? metadata : {};
+	const evidenceRefs = Array.isArray(record.evidence_refs)
+		? record.evidence_refs.filter((ref): ref is string => typeof ref === "string")
+		: [];
+	const disabledModes = Array.isArray(record.disabled_modes)
+		? record.disabled_modes.filter((mode): mode is string => typeof mode === "string")
+		: [];
+	const blockingSafe =
+		validation.ok &&
+		record.chat_intake_mode === "blocking" &&
+		record.hook_harness_mode === "enforce" &&
+		evidenceRefs.length > 0 &&
+		!disabledModes.includes("hard_chat_blocking");
+	return {
+		requestedMode: "blocking",
+		effectiveMode: blockingSafe ? "blocking" : "steering",
+		conformanceReadable: validation.ok,
+		blockingSafe,
+		...(evidenceRefs[0] === undefined
+			? {}
+			: { conformanceRef: safeToken(evidenceRefs[0], "conformance-chat-blocking") }),
+		...(blockingSafe
+			? {}
+			: {
+					diagnostic:
+						"chat_intake_mode=blocking requested, but readable chat.message blocking conformance was not available; FlowDesk is using steering mode for this session.",
+				}),
+		...disabledAuthority,
+	};
+}
+
 function projectConfigPathFromOptions(
 	options?: PluginOptions,
 ): string | undefined {
@@ -2762,18 +2940,28 @@ function loadProjectConfigFromOptions(
 		};
 	try {
 		const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+		const record = isRecord(parsed) ? parsed : {};
 		const validation = validateProjectConfigV1(parsed);
-		if (!validation.ok)
+		const blockingCompatibilityValidation =
+			!validation.ok && record.chat_intake_mode === "blocking"
+				? validateProjectConfigV1({ ...record, chat_intake_mode: "steering" })
+				: undefined;
+		if (!validation.ok && blockingCompatibilityValidation?.ok !== true)
 			return {
 				enabled: true,
 				status: "blocked",
 				redactedBlockReason: validation.errors.join("; ").slice(0, 500),
 				...disabledAuthority,
 			};
-		const record = parsed as Record<string, unknown>;
 		return {
 			enabled: true,
 			status: "loaded",
+			...(validation.ok
+				? {}
+				: {
+						redactedBlockReason:
+							"project config requested chat_intake_mode=blocking; server gate will require readable blocking conformance or use steering",
+					}),
 			configRef: safeToken(record.config_id, "config-redacted"),
 			releaseMode:
 				typeof record.release_mode === "string"
@@ -3565,7 +3753,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 						status: "blocked",
 						reason: "opencode_sdk_client_unavailable_for_agent_task_run",
 						redactedBlockReason:
-							"OpenCode did not provide an SDK client to the FlowDesk agent task tool. The tool remains schema-visible because agentTaskRun is enabled, but lane launch is fail-closed until the runtime client is available.",
+							"OpenCode did not provide an SDK client to the FlowDesk agent task tool. The tool remains schema-visible because agentTaskRun is enabled, but task launch is fail-closed until the runtime client is available.",
 						safeNextActions: ["/flowdesk-doctor", "/flowdesk-status"],
 					});
 				if (!rootDir)
@@ -4121,7 +4309,7 @@ function createFlowDeskOrchestrateOptInTools(
 				agentName: tool.schema.string().optional().describe("Agent name for author and synthesis calls. Defaults to reviewer-gpt-frontier."),
 				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to allow provider calls."),
 				allowProviderCall: tool.schema.boolean().describe("Must be true to allow provider calls."),
-				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual lane launch."),
+				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual task launch."),
 			},
 			async execute(input) {
 				if (!isRecord(input)) return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "invalid input", safeNextActions: ["/flowdesk-doctor"] });
@@ -4239,7 +4427,7 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 		[flowdeskAutoContinueExecutionToolName]: tool({
 			description: [
 				"Execute exactly one explicit opt-in auto-continue step by reloading durable FlowDesk workflow_dispatch_plan evidence, selecting the first pending durable plan task, and requiring the executable payload taskId to match it.",
-				"WHEN TO USE: only when the user explicitly asks to continue one pending durable FlowDesk plan task and acknowledges this makes a provider/runtime call and actual lane launch in dev mode.",
+				"WHEN TO USE: only when the user explicitly asks to continue one pending durable FlowDesk plan task and acknowledges this makes a provider/runtime call and actual task launch in dev mode.",
 				"WHEN NOT TO USE: preview-only requests, default Release 1 workflows, fallback/reselection/provider switching, controlled write/apply, ordinary chat, status, usage, or multi-step automatic execution.",
 				"INVOKE WITH: workflowId, parentSessionId, one task payload with taskId, promptText, agentName, providerQualifiedModelId, optional outputContractRef=contract-task-result-v1, and developerModeAcknowledged=true, allowProviderCall=true, allowActualLaneLaunch=true, allowAutoContinueExecution=true.",
 				"AFTER CALLING: surface summaryForUser, ids, pending/completed counts, safeNextActions, and authority. Never claim default dispatch authority, fallback authority, write authority, hard chat cancellation, or multi-step continuation.",
@@ -4254,7 +4442,7 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 					providerQualifiedModelId: tool.schema.string().describe("Concrete provider/model id such as openai/gpt-5.5."),
 					outputContractRef: tool.schema.string().optional().describe("Optional; only contract-task-result-v1 is supported in this pass."),
 				}),
-				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev-mode beta lane launch."),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev-mode beta task launch."),
 				allowProviderCall: tool.schema.boolean().describe("Must be true to allow the provider call for this one lane."),
 				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual one-lane runtime launch."),
 				allowAutoContinueExecution: tool.schema.boolean().describe("Must be true to opt into this single auto-continue execution step."),
@@ -4291,7 +4479,7 @@ export function createFlowDeskWorkflowDispatchOptInTools(
 					providerQualifiedModelId: tool.schema.string().describe("Concrete provider/model id such as openai/gpt-5.5."),
 					outputContractRef: tool.schema.string().optional().describe("Optional; only contract-task-result-v1 is supported in this pass."),
 				}),
-				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev-mode beta lane launch."),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev-mode beta task launch."),
 				allowProviderCall: tool.schema.boolean().describe("Must be true to allow the provider call for this one lane."),
 				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual one-lane runtime launch."),
 			},
@@ -4384,7 +4572,7 @@ export function createFlowDeskLaneHeartbeatWriterOptInTools(
 	return {
 		[flowdeskLaneHeartbeatWriterToolName]: tool({
 			description: [
-				"Record a durable FlowDesk lane heartbeat for a FlowDesk-owned lane (reviewer lane, runtime lane launch, provider acquisition lane, managed-dispatch attempt, fallback regate plan). Each call produces one validated flowdesk.lane_heartbeat.v1 record with a monotonically increasing heartbeat_seq per lane id, persisted as durable session evidence. Heartbeats are diagnostic evidence only and never approve dispatch, widen scope, or replace Guard. Default soft heartbeat interval is about 2 minutes; the 5-minute stall threshold lives in the stall projection.",
+				"Record a durable FlowDesk lane heartbeat for a FlowDesk-owned task lane (reviewer lane, runtime task launch, provider acquisition lane, managed-dispatch attempt, fallback regate plan). Each call produces one validated flowdesk.lane_heartbeat.v1 record with a monotonically increasing heartbeat_seq per lane id, persisted as durable session evidence. Heartbeats are diagnostic evidence only and never approve dispatch, widen scope, or replace Guard. Default soft heartbeat interval is about 2 minutes; the 5-minute stall threshold lives in the stall projection.",
 				"WHEN TO USE: a FlowDesk coordinator that owns the lane needs to prove it is still active during a long-running step. Trigger when the assistant is coordinating a FlowDesk lane and the previous heartbeat or lifecycle update was emitted close to the soft heartbeat interval (about 2 minutes by default), OR when the user explicitly asks to record/refresh a heartbeat. Also trigger on English phrases such as 'heartbeat', 'record heartbeat', 'emit heartbeat', 'mark progress', 'I'm still alive', 'lane is still progressing', 'heartbeat for the lane', and Korean phrases such as '하트비트 남겨줘', '하트비트 기록해줘', '심박 남겨줘', '심장박동 기록', '레인 살아 있다고 표시', '진행 신호 남겨줘', '진행 표시 해줘', '아직 살아 있다고 알려줘'.",
 				"WHEN NOT TO USE: lifecycle transitions to terminal states (use lane_lifecycle materializers), reviewer verdict observations, provider-call evidence, dispatch authority changes, arbitrary OpenCode user-driven tool calls that FlowDesk did not launch, or any case where you do not have a stable FlowDesk lane id and parent session id.",
 				"INVOKE WITH: workflowId, attemptId, laneId, parentSessionRef (must start with 'ses-'), agentRef (must start with 'agent-'), providerQualifiedModelId (concrete provider/model id), state (one of 'created', 'running', 'awaiting_dependency', 'cooldown'), and optional progressSummaryLabel (<=120 chars and redaction-safe), progressRef (starts with 'progress-' or 'heartbeat-progress-'), expectedIntervalMs, heartbeatSeq, observedAt. When heartbeatSeq is omitted the writer derives it from the latest heartbeat for the lane id. The plugin user already opted into this tool at configuration time, so do not ask the user for extra confirmation; just call.",
@@ -4814,6 +5002,10 @@ function watchdogConfigFromOptions(options: PluginOptions | undefined): FlowDesk
 
 const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const projectConfigLoad = loadProjectConfigFromOptions(options);
+	const chatIntakeModeGate = chatIntakeModeGateFromProjectConfig(
+		projectConfigLoad,
+		options,
+	);
 	const naturalLanguageRoutingEnabled =
 		isNaturalLanguageRoutingEnabled(options) &&
 		isNaturalLanguageRoutingAllowedByProjectConfig(projectConfigLoad);
@@ -5064,8 +5256,9 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						? flowdeskLocalNonDispatchAdapterProfile
 						: "disabled",
 					projectConfig: projectConfigLoad,
+					chatIntakeModeGate,
 					naturalLanguageRoutingProfile: naturalLanguageRoutingEnabled
-						? "chat_steering_command_backed_non_dispatch"
+						? "chat_steering_command_backed"
 						: "disabled",
 					naturalLanguageTools,
 					devBetaLaneCapability: {
@@ -5140,7 +5333,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	if (isNaturalLanguageRoutingEnabled(options))
 		Object.assign(
 			tools,
-			createFlowDeskNaturalLanguageRoutingTools(new Date(), localSession),
+			createFlowDeskNaturalLanguageRoutingTools(
+				new Date(),
+				localSession,
+				chatIntakeModeGate,
+			),
 		);
 	const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
 	if (agentTaskRunEnabled) {
@@ -5506,6 +5703,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			stallAlertOption,
 			durableStateRootFromOptions(options),
 			providerUsageLiveConfig,
+			chatIntakeModeGate,
 		),
 	};
 };

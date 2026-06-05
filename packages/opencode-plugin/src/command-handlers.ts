@@ -367,7 +367,7 @@ function evaluateResumeDiagnostic(request: FlowDeskResumeRequestV1): FlowDeskRes
     ok: true,
     status: statusOnly ? "diagnostic_only" : "recovery_available",
     safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-    user_message: statusOnly ? "FlowDesk kept recovery in status-only mode. No lane resume occurred." : "FlowDesk prepared a non-dispatch recovery decision that requires fresh checks before any resume action.",
+    user_message: statusOnly ? "FlowDesk kept recovery in status-only mode. No task resume occurred." : "FlowDesk prepared a command-backed recovery decision that requires fresh checks before any resume action.",
     resume_decision: statusOnly ? "status_only" : "requires_fresh_checks",
     required_fresh_checks: [
       { check: "checkpoint", required: true, ref: request.checkpoint_id },
@@ -386,7 +386,7 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowD
       ok: true,
       status: "diagnostic_only",
       safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-      user_message: `FlowDesk recorded lane abort lifecycle evidence for ${laneAbortResult.lane_id}; no SDK session abort, provider call, lane launch, hard chat cancellation, or no-reply authority was used.`,
+      user_message: `FlowDesk recorded task abort lifecycle evidence for ${laneAbortResult.lane_id}; no session abort, provider call, task launch, hard chat cancellation, or no-reply was used. No-reply is not a Release 1 capability.`,
       cancellation_state: "cancel_observed",
       remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
       lane_refs: [laneAbortResult.lifecycle_evidence_id]
@@ -398,7 +398,7 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowD
       ok: false,
       status: "blocked",
       safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-      user_message: `FlowDesk did not abort lane ${request.lane_id}: ${laneAbortResult.reason}. No SDK session abort, provider call, lane launch, hard chat cancellation, or no-reply authority was used.`,
+      user_message: `FlowDesk did not abort task ${request.lane_id}: ${laneAbortResult.reason}. No session abort, provider call, task launch, hard chat cancellation, or no-reply was used. No-reply is not a Release 1 capability.`,
       cancellation_state: "cancel_failed",
       remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"]
     };
@@ -408,7 +408,7 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowD
     ok: false,
     status: "blocked",
     safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-    user_message: "FlowDesk recorded an abort diagnostic without hard chat cancellation, no-reply authority, lane launch, or provider interaction.",
+    user_message: "FlowDesk recorded an abort diagnostic without hard chat cancellation, no-reply, task launch, or provider interaction. No-reply is not a Release 1 capability.",
     cancellation_state: "cancel_failed",
     remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"]
   };
@@ -432,7 +432,7 @@ function evaluateUsageDiagnostic(request: FlowDeskUsageRequestV1, context: FlowD
     safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"],
     user_message: authMissingHealth !== undefined
       ? `${authRequiredProviderLabel(request.provider_family)} models are excluded until auth readiness and real usage/quota/reset evidence are available for the exact provider/model/account scope; FlowDesk made no provider call.`
-      : request.refresh ? "FlowDesk reported usage as unknown without provider calls or persisted refresh." : "FlowDesk reported cached usage availability as unknown and non-dispatchable.",
+      : request.refresh ? "FlowDesk reported usage as unknown without provider calls or persisted refresh." : "FlowDesk reported cached usage availability as unknown and command-backed only.",
     usage_snapshot_ref: usageSnapshotRef,
     provider_health_snapshot_ref: authMissingHealth?.snapshot_id ?? context.diagnostic?.providerHealthSnapshotRef ?? `health-${id}`,
     freshness: "unknown",
@@ -492,7 +492,7 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
 			return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
 		}
 		if (runRequest.run_mode === "managed-dispatch") return result("missing_evaluator_input", toolName, requestResult, invalid("managed-dispatch requires server-level default managed-dispatch route authorization"), undefined, false);
-		if (context.run?.fakeRuntime === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("fake-runtime evaluator input is required"), undefined, false);
+		if (context.run?.fakeRuntime === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("command-backed test run evaluator input is required"), undefined, false);
 		const evaluation = evaluateFlowDeskFakeRuntimeCommandV1({ ...context.run.fakeRuntime, commandName: "/flowdesk-run", request: runRequest });
 		return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
 	}
@@ -529,6 +529,6 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
     return result("command_backed_diagnostic_handler", toolName, requestResult, responseSchemaResult(toolName, response), response, true);
   }
 
-  if (readiness?.handlerReadiness !== "core_evaluator_available") return result("schema_only_pending", toolName, requestResult, invalid("core evaluator adapter is not implemented for this handler yet"), undefined, false);
-  return result("schema_only_pending", toolName, requestResult, invalid("core evaluator adapter is not implemented for this handler yet"), undefined, false);
+  if (readiness?.handlerReadiness !== "core_evaluator_available") return result("schema_only_pending", toolName, requestResult, invalid("core evaluator is not implemented for this handler yet"), undefined, false);
+  return result("schema_only_pending", toolName, requestResult, invalid("core evaluator is not implemented for this handler yet"), undefined, false);
 }

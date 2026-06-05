@@ -638,7 +638,7 @@ function providerHealth(
 		dispatchability: "diagnostic_only",
 		source_ref: "health-local-source",
 		safe_remediation:
-			"Use FlowDesk local non-dispatch diagnostics before any retry.",
+			"Use FlowDesk command-backed diagnostics before any retry.",
 	};
 }
 

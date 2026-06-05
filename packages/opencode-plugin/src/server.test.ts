@@ -713,7 +713,7 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
 	);
 	assert.equal(
 		result.naturalLanguageRoutingProfile,
-		"chat_steering_command_backed_non_dispatch",
+		"chat_steering_command_backed",
 	);
 	assert.equal(
 		result.productionPromotionGate,
@@ -3666,13 +3666,13 @@ test("server plugin allows explicit opt-out of local tools and natural-language 
 	) as Record<string, unknown>;
 	assert.equal(
 		result.naturalLanguageRoutingProfile,
-		"chat_steering_command_backed_non_dispatch",
+		"chat_steering_command_backed",
 	);
 	assert.equal(result.productionOpenCodeRegistration, true);
 	assert.equal(result.providerCall, false);
 });
 
-test("server plugin loads project config and fails closed for missing or disabling config", async () => {
+test("server plugin loads project config and blocking intake falls back to steering without evidence", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-project-config-"));
 	try {
 		mkdirSync(join(root, ".flowdesk"), { recursive: true });
@@ -3702,6 +3702,33 @@ test("server plugin loads project config and fails closed for missing or disabli
 			(result.projectConfig as { configRef?: unknown }).configRef,
 			"config-test",
 		);
+
+		writeFileSync(
+			join(root, ".flowdesk", "config.json"),
+			`${JSON.stringify(release1ProjectConfig({ chat_intake_mode: "blocking" }), null, 2)}\n`,
+			"utf8",
+		);
+		const blockingWithoutEvidenceHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskProjectConfigOption]: { enabled: true, rootDir: root },
+			},
+		)) as ChatMessageHooks;
+		assert.ok(blockingWithoutEvidenceHooks["chat.message"]);
+		const blockingDoctor = blockingWithoutEvidenceHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(blockingDoctor);
+		const blockingResult = JSON.parse(
+			toolOutput(await blockingDoctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		const gate = blockingResult.chatIntakeModeGate as {
+			effectiveMode?: unknown;
+			diagnostic?: unknown;
+			blockingSafe?: unknown;
+		};
+		assert.equal(gate.effectiveMode, "steering");
+		assert.equal(gate.blockingSafe, false);
+		assert.match(String(gate.diagnostic), /using steering mode/);
 
 		writeFileSync(
 			join(root, ".flowdesk", "config.json"),
@@ -5799,6 +5826,76 @@ test("chat.message steering suppresses repeated non-confirmation cards for the s
 			JSON.stringify(differentSuggestionOutput),
 			/Suggested next step: \/flowdesk-status/,
 		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("chat.message steering persists dismiss preference without suppressing confirmations", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-chat-dismiss-"));
+	try {
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+			},
+		)) as ChatMessageHooks;
+		assert.ok(hooks["chat.message"]);
+
+		const firstPlanOutput = {
+			parts: [{ type: "text", text: "구현 계획을 세워줘" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{ messageID: "message-dismiss-first", sessionID: "session-dismiss" },
+			firstPlanOutput,
+		);
+		assert.equal(firstPlanOutput.parts.length, 2);
+
+		const dismissOutput = {
+			parts: [{ type: "text", text: "괜찮아 그냥 해줘" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{ messageID: "message-dismiss-action", sessionID: "session-dismiss" },
+			dismissOutput,
+		);
+
+		const suppressedPlanOutput = {
+			parts: [{ type: "text", text: "구현 계획을 다시 세워줘" }] as unknown[],
+		};
+		await hooks["chat.message"](
+			{ messageID: "message-dismiss-suppressed", sessionID: "session-dismiss" },
+			suppressedPlanOutput,
+		);
+		assert.equal(suppressedPlanOutput.parts.length, 1);
+
+		const restartedHooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskNaturalLanguageRoutingOption]: true,
+				[flowdeskDurableStateRootOption]: root,
+			},
+		)) as ChatMessageHooks;
+		assert.ok(restartedHooks["chat.message"]);
+		const durableSuppressedPlanOutput = {
+			parts: [{ type: "text", text: "구현 계획을 다시 세워줘" }] as unknown[],
+		};
+		await restartedHooks["chat.message"](
+			{ messageID: "message-dismiss-durable", sessionID: "session-dismiss" },
+			durableSuppressedPlanOutput,
+		);
+		assert.equal(durableSuppressedPlanOutput.parts.length, 1);
+
+		const confirmationOutput = {
+			parts: [
+				{ type: "text", text: "approved plan을 fake-runtime으로 실행 진행해" },
+			] as unknown[],
+		};
+		await hooks["chat.message"](
+			{ messageID: "message-dismiss-confirm", sessionID: "session-dismiss" },
+			confirmationOutput,
+		);
+		assert.match(JSON.stringify(confirmationOutput), /Confirmation code:/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
