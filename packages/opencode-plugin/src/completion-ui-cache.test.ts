@@ -264,6 +264,56 @@ test("completion UI cache writes provider-free completion wake-ready row for syn
 	}
 });
 
+test("completion UI cache writes wake-ready row for final partial_findings task_result", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-partial-findings-wake-"));
+	try {
+		const workflowId = "workflow-partial-findings-wake-1";
+		const laneId = "lane-partial-findings-wake-1";
+		const taskId = "task-partial-findings-wake-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-partial-findings-wake-1", {
+			...agentTaskContext(workflowId, laneId, taskId, "2026-06-05T00:00:00.000Z"),
+			parent_session_ref: "ses-parent-partial-findings-wake-1",
+			prompt_text: "Summarize cache wake behavior for partial findings results.",
+		});
+		writeEvidence(rootDir, workflowId, "lane_lifecycle", "lifecycle-partial-findings-wake-1", {
+			...laneLifecycle(workflowId, laneId, taskId, "complete", "2026-06-05T00:02:00.000Z"),
+			parent_session_ref: "ses-parent-partial-findings-wake-1",
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-partial-findings-wake-1", {
+			...taskResult(workflowId, laneId, taskId, "2026-06-05T00:02:00.000Z"),
+			completion_status: "final",
+			output_kind: "partial_findings",
+			usable_for_synthesis: true,
+		});
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-06-05T00:02:01.000Z" });
+
+		const sidebar = readCache(rootDir, "subtask-activity-sidebar.json");
+		const sidebarRows = sidebar.rows as Array<Record<string, unknown>>;
+		const sidebarRow = sidebarRows.find((row) => row.workflowId === workflowId && row.laneId === laneId);
+		assert.equal(sidebarRow?.state, "task_result");
+		assert.equal(sidebarRow?.completionStatus, "final");
+		assert.equal(sidebarRow?.outputKind, "partial_findings");
+		assert.equal(sidebarRow?.usableForSynthesis, true);
+
+		const wake = readCache(rootDir, "completion-wake-ready.json");
+		const rows = wake.rows as Array<Record<string, unknown>>;
+		const row = rows.find((candidate) => candidate.workflowId === workflowId && (candidate.completionKind === "auto_next_ready" || candidate.completionKind === "task_result"));
+		assert.ok(row, "final partial_findings task_result should create a wake-ready row");
+		assert.equal(row!.parentSessionRef, "ses-parent-partial-findings-wake-1");
+		assert.equal(row!.completionKind, "auto_next_ready");
+		assert.deepEqual(row!.laneIds, [laneId]);
+		assert.deepEqual(row!.taskIds, [taskId]);
+		assert.deepEqual(row!.taskResultRefs, [taskId]);
+		assert.deepEqual(row!.taskFailedRefs, []);
+		assert.deepEqual(row!.taskSummaries, ["cache wake behavior parti"]);
+		assert.equal(JSON.stringify(wake).includes("prompt_text"), false, "wake-ready cache must not persist raw prompt text");
+		assert.equal(JSON.stringify(wake).includes("partial findings results"), false, "wake-ready cache must not persist raw prompt content");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("completion UI cache wake-ready row falls back to parent session model snapshot and ignores lane model", () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-wake-model-"));
 	try {

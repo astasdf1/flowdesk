@@ -329,6 +329,10 @@ function boundedLogLabel(value: string): string {
 	return compact.length > 120 ? `${compact.slice(0, 119)}…` : compact;
 }
 
+function isUsableTerminalTaskResultRow(row: UiRow): boolean {
+	return row.state === "task_result" && row.completionStatus !== "partial" && row.usableForSynthesis !== false;
+}
+
 function mergeRowsByWorkflowLane(input: {
 	existing: unknown;
 	workflowId: string;
@@ -789,7 +793,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			authority: { displayOnly: true, realOpenCodeDispatch: false, providerCall: false, runtimeExecution: false, fallbackAuthority: false, hardCancelOrNoReplyAuthority: false },
 		}, null, 2)}\n`, "utf8");
 
-		const ready = !synthesisAlreadyRecorded && rows.length > 0 && rows.every((row) => row.state === "task_result" && row.completionStatus !== "partial" && row.usableForSynthesis !== false);
+		const ready = !synthesisAlreadyRecorded && rows.length > 0 && rows.every(isUsableTerminalTaskResultRow);
 		const readyAt = rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0);
 		const parentSessionRefs = [...new Set(rows.map((row) => row.parentSessionRef).filter((value): value is string => typeof value === "string" && value.length > 0))];
 		const parentSessionRef = parentSessionRefs.length === 1 ? parentSessionRefs[0] : undefined;
