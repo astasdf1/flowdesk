@@ -164,6 +164,7 @@ export const flowdeskCheckToolName = "flowdesk_check" as const;
 export const flowdeskDebugToolName = "flowdesk_debug" as const;
 export const flowdeskPlanShortToolName = "flowdesk_plan_short" as const;
 export const flowdeskResumeStatusToolName = "flowdesk_resume_status" as const;
+export const flowdeskRetryDiagToolName = "flowdesk_retry_diag" as const;
 export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption =
 	"fds1SchemaConversionProbe" as const;
@@ -1217,6 +1218,73 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					}),
 				];
 				return [lowLevelEntry, resumeStatusEntry];
+			}
+			if (stub.toolName === "flowdesk_retry") {
+				const retryDiagEntry: FlowDeskOpenCodeToolEntry = [
+					flowdeskRetryDiagToolName,
+					tool({
+						description:
+							"Plan a bounded FlowDesk retry diagnostic. No provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or noReply authority.",
+						args: {
+							attemptId: tool.schema
+								.string()
+								.describe("Required attempt id to inspect for retry diagnostics."),
+							retryReason: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded diagnostic retry reason."),
+							newBindingHint: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded retry binding hint."),
+							workflowId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional workflow id to forward."),
+							requestId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded request id."),
+						},
+						async execute(request) {
+							const record: Record<string, unknown> = isRecord(request)
+								? request
+								: {};
+							const workflowId =
+								typeof record.workflowId === "string" &&
+								record.workflowId.trim().length > 0
+									? record.workflowId
+									: undefined;
+							const newBindingHint =
+								typeof record.newBindingHint === "string" &&
+								record.newBindingHint.trim().length > 0
+									? boundedText(record.newBindingHint, "same-binding")
+									: undefined;
+							const lowLevelRequest = {
+								schema_version: "flowdesk.retry.request.v1" as const,
+								request_id: safeToken(
+									record.requestId,
+									`retry-diag-${randomUUID()}`,
+								),
+								input_mode: "alias_command" as const,
+								...(workflowId === undefined ? {} : { workflow_id: workflowId }),
+								attempt_id:
+									typeof record.attemptId === "string" ? record.attemptId : "",
+								retry_reason: boundedText(
+									typeof record.retryReason === "string" ? record.retryReason : "",
+									"FlowDesk retry diagnostic requested.",
+								),
+								...(newBindingHint === undefined
+									? {}
+									: { new_binding_hint: newBindingHint }),
+							};
+							return JSON.stringify(
+								session.evaluate("flowdesk_retry", lowLevelRequest),
+							);
+						},
+					}),
+				];
+				return [lowLevelEntry, retryDiagEntry];
 			}
 			if (stub.toolName !== "flowdesk_doctor") return [lowLevelEntry];
 			const checkEntry: FlowDeskOpenCodeToolEntry = [

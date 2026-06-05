@@ -70,6 +70,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskQuickFallbackRunToolName,
 	flowdeskRebindToolName,
 	flowdeskResumeStatusToolName,
+	flowdeskRetryDiagToolName,
 	flowdeskResultToolName,
 	flowdeskQuickReviewerRunOption,
 	flowdeskQuickReviewerRunToolName,
@@ -4866,6 +4867,275 @@ test("flowdesk_resume_status ignores unknown approval and identity fields safely
 		undefined as never,
 	);
 	const request = calls[0]?.request ?? {};
+	assert.equal("workflow_id" in request, false);
+	assert.equal("user_approval_ref" in request, false);
+	assert.equal("confirmation_nonce" in request, false);
+	assert.equal("actorRef" in request, false);
+	assert.equal("profileRef" in request, false);
+});
+
+test("flowdesk_retry_diag registers beside retry with compact description", async () => {
+	const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: false,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		},
+	)) as ChatMessageHooks;
+	assert.equal(disabledHooks.tool?.flowdesk_retry, undefined);
+	assert.equal(disabledHooks.tool?.[flowdeskRetryDiagToolName], undefined);
+
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	})) as ChatMessageHooks;
+	assert.ok(hooks.tool?.flowdesk_retry);
+	const retryDiagTool = hooks.tool?.[flowdeskRetryDiagToolName];
+	assert.ok(retryDiagTool);
+	assert.equal(retryDiagTool.description.length < 260, true);
+	assert.match(retryDiagTool.description, /retry diagnostic/);
+	assert.match(retryDiagTool.description, /No provider/);
+	assert.match(retryDiagTool.description, /noReply authority/);
+	assert.doesNotMatch(retryDiagTool.description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	assert.deepEqual(Object.keys(retryDiagTool.args), [
+		"attemptId",
+		"retryReason",
+		"newBindingHint",
+		"workflowId",
+		"requestId",
+	]);
+});
+
+test("flowdesk_retry_diag maps defaults and generates bounded request id", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const retryDiagTool = tools[flowdeskRetryDiagToolName];
+	assert.ok(retryDiagTool);
+	const result = JSON.parse(
+		toolOutput(
+			await retryDiagTool.execute(
+				{ attemptId: "attempt-retry-diag-default", retryReason: "" },
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.ok, true);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.toolName, "flowdesk_retry");
+	assert.deepEqual(
+		{
+			schema_version: calls[0]?.request.schema_version,
+			input_mode: calls[0]?.request.input_mode,
+			attempt_id: calls[0]?.request.attempt_id,
+			retry_reason: calls[0]?.request.retry_reason,
+			workflow_id: calls[0]?.request.workflow_id,
+			new_binding_hint: calls[0]?.request.new_binding_hint,
+		},
+		{
+			schema_version: "flowdesk.retry.request.v1",
+			input_mode: "alias_command",
+			attempt_id: "attempt-retry-diag-default",
+			retry_reason: "FlowDesk retry diagnostic requested.",
+			workflow_id: undefined,
+			new_binding_hint: undefined,
+		},
+	);
+	const requestId = String(calls[0]?.request.request_id);
+	assert.match(requestId, /^retry-diag-[A-Za-z0-9_.:-]+$/);
+	assert.equal(requestId.length <= 80, true);
+});
+
+test("flowdesk_retry_diag forwards explicit fields with snake_case mapping", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const retryDiagTool = tools[flowdeskRetryDiagToolName];
+	assert.ok(retryDiagTool);
+	await retryDiagTool.execute(
+		{
+			attemptId: "attempt-retry-diag-explicit",
+			retryReason: "verification failed after command-backed diagnostics",
+			newBindingHint: "same-binding",
+			workflowId: "workflow-retry-diag-explicit",
+			requestId: "request.retry diag/unsafe spaces",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.retry.request.v1",
+		request_id: "request.retry-diag-unsafe-spaces",
+		input_mode: "alias_command",
+		workflow_id: "workflow-retry-diag-explicit",
+		attempt_id: "attempt-retry-diag-explicit",
+		retry_reason: "verification failed after command-backed diagnostics",
+		new_binding_hint: "same-binding",
+	});
+});
+
+test("flowdesk_retry_diag result matches flowdesk_retry for equivalent payload", async () => {
+	const diagTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const retryTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const retryDiagTool = diagTools[flowdeskRetryDiagToolName];
+	const retryTool = retryTools.flowdesk_retry;
+	assert.ok(retryDiagTool);
+	assert.ok(retryTool);
+	const diag = JSON.parse(
+		toolOutput(
+			await retryDiagTool.execute(
+				{
+					requestId: "request-retry-diag-equivalent",
+					workflowId: "workflow-retry-diag-equivalent",
+					attemptId: "attempt-retry-diag-equivalent",
+					retryReason: "verification failed after command-backed diagnostics",
+					newBindingHint: "same-binding",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const lowLevel = JSON.parse(
+		toolOutput(
+			await retryTool.execute(
+				{
+					schema_version: "flowdesk.retry.request.v1",
+					request_id: "request-retry-diag-equivalent",
+					input_mode: "alias_command",
+					workflow_id: "workflow-retry-diag-equivalent",
+					attempt_id: "attempt-retry-diag-equivalent",
+					retry_reason: "verification failed after command-backed diagnostics",
+					new_binding_hint: "same-binding",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(diag, lowLevel);
+});
+
+test("flowdesk_retry_diag does not widen authority or synthesize identity", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakeRetryDiagTool = fakeTools[flowdeskRetryDiagToolName];
+	assert.ok(fakeRetryDiagTool);
+	await fakeRetryDiagTool.execute(
+		{
+			requestId: "request-retry-diag-no-identity-synthesis",
+			attemptId: "attempt-retry-diag-no-identity-synthesis",
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			redactedIntakeRef: "intake-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			allowProviderCall: true,
+			allowActualLaneLaunch: true,
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"attempt_id",
+		"input_mode",
+		"request_id",
+		"retry_reason",
+		"schema_version",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realRetryDiagTool = realTools[flowdeskRetryDiagToolName];
+	assert.ok(realRetryDiagTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realRetryDiagTool.execute(
+				{
+					requestId: "request-retry-diag-authority",
+					attemptId: "attempt-retry-diag-authority",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("flowdesk_retry_diag ignores unknown approval and identity fields safely", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const retryDiagTool = tools[flowdeskRetryDiagToolName];
+	assert.ok(retryDiagTool);
+	await retryDiagTool.execute(
+		{
+			requestId: "request-retry-diag-unknown-fields",
+			attemptId: "attempt-retry-diag-unknown-fields",
+			workflow_id: "workflow-snake-should-not-forward",
+			attempt_id: "attempt-snake-should-not-forward",
+			retry_reason: "reason-snake-should-not-forward",
+			new_binding_hint: "binding-snake-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			actorRef: "actor-should-not-forward",
+			profileRef: "profile-should-not-forward",
+		},
+		undefined as never,
+	);
+	const request = calls[0]?.request ?? {};
+	assert.equal(request.attempt_id, "attempt-retry-diag-unknown-fields");
 	assert.equal("workflow_id" in request, false);
 	assert.equal("user_approval_ref" in request, false);
 	assert.equal("confirmation_nonce" in request, false);
