@@ -14,6 +14,7 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-05 state:
 
+- Short wrapper tools: `flowdesk_now`, `flowdesk_quota`, and `flowdesk_next` now register as compact aliases over existing status-live, provider-usage-live, and auto-continue-preview behavior. They preserve read-only/diagnostic/preview-only authority and avoid long trigger-list descriptions.
 - Phase 6 core chat contracts: core chat-intake responses now carry first-class internal `intent_outcome` values (`general_chat`, `flowdesk_suggest`, `flowdesk_manage`, `unsafe_later_gate`), and `@flowdesk/core` exports a deterministic approval classifier with explicit/weak/denial/no-approval categories and reason codes. Existing public chat route decisions remain unchanged.
 - Phase 6 server/chat UX polish: `chat_intake_mode=blocking` now degrades to steering unless readable blocking conformance metadata is available, suggestion-card dismissal phrases persist a 5-minute session preference without suppressing confirmation cards, and user-facing command/chat copy was cleaned up from internal implementation wording.
 - Phase 6 strict copy audit: plugin source was rechecked for residual `fake-runtime`, `non-dispatch`, `adapter`, and `pre-spike` wording in user-facing strings; user-visible policy/taxonomy labels were changed to command-backed wording, and remaining target terms in the audited files were marked as schema/internal identifiers where intentional.

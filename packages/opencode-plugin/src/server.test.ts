@@ -37,6 +37,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskAgentTaskRunToolName,
 	flowdeskAutoContinueExecutionOption,
 	flowdeskAutoContinueExecutionToolName,
+	flowdeskAutoContinuePreviewToolName,
 	flowdeskControlledWriteApplyOption,
 	flowdeskControlledWriteApplyToolName,
 	flowdeskChatIntakeToolName,
@@ -51,11 +52,14 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskManagedFallbackRegateOption,
 	flowdeskManagedFallbackRegateToolName,
 	flowdeskNaturalLanguageRoutingOption,
+	flowdeskNextToolName,
+	flowdeskNowToolName,
 	flowdeskPreSpikeDoctorToolName,
 	flowdeskProductionEnablementOption,
 	flowdeskProjectConfigOption,
 	flowdeskProviderUsageLiveOption,
 	flowdeskProviderUsageLiveToolName,
+	flowdeskQuotaToolName,
 	flowdeskQuickFallbackRunOption,
 	flowdeskQuickFallbackRunToolName,
 	flowdeskQuickReviewerRunOption,
@@ -2124,6 +2128,67 @@ test("workflow dispatch plan tool persists planning evidence with authority disa
 		assert.equal(evidenceCounts.workflow_dispatch_plan, 1);
 		assert.equal(workflow.latestWorkflowDispatchPlanTaskCount, 2);
 		assert.match(String(statusResult.summaryForUser), /workflow_plan=/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_next wraps auto-continue preview without execution authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-next-wrapper-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskWorkflowDispatchPlanToolOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const planTool = hooks.tool?.[flowdeskWorkflowDispatchPlanToolName];
+		const previewTool = hooks.tool?.[flowdeskAutoContinuePreviewToolName];
+		const nextTool = hooks.tool?.[flowdeskNextToolName];
+		assert.ok(planTool);
+		assert.ok(previewTool);
+		assert.ok(nextTool);
+
+		await planTool.execute(
+			{
+				workflowId: "workflow-next-wrapper-1",
+				goalSummary: "Plan a short wrapper preview workflow.",
+				tasks: [
+					{
+						agentRole: "implementation",
+						title: "Implement wrapper",
+						summary: "Add short wrapper aliases.",
+					},
+				],
+			},
+			undefined as never,
+		);
+		const request = { workflowId: "workflow-next-wrapper-1", maxSteps: 3 };
+		const preview = JSON.parse(
+			toolOutput(await previewTool.execute(request, undefined as never)),
+		) as Record<string, unknown>;
+		const next = JSON.parse(
+			toolOutput(await nextTool.execute(request, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(next.status, "auto_continue_preview_ready");
+		assert.equal(next.nextTaskId, preview.nextTaskId);
+		assert.equal(next.pendingTaskCount, preview.pendingTaskCount);
+		assert.equal(next.summaryForUser, preview.summaryForUser);
+		const authority = next.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.autoContinuationExecuted, false);
+		assert.equal(authority.previewOnly, true);
+
+		const description = String(nextTool.description ?? "");
+		assert.ok(description.length < 240);
+		assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -6140,6 +6205,35 @@ test("provider usage live tool blocks when requested family is not configured", 
 	);
 });
 
+test("flowdesk_quota wraps provider usage live and defaults empty payload to all", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskProviderUsageLiveOption]: { enabled: true, providers: [] },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const usageTool = hooks.tool?.[flowdeskProviderUsageLiveToolName];
+	const quotaTool = hooks.tool?.[flowdeskQuotaToolName];
+	assert.ok(usageTool);
+	assert.ok(quotaTool);
+
+	const result = JSON.parse(
+		toolOutput(await quotaTool.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_provider_usage_live");
+	assert.equal(result.requestedProviderFamily, "all");
+	assert.deepEqual(result.resolvedProviderFamilies, []);
+	const authority = result.authority as Record<string, unknown>;
+	assert.equal(authority.providerCall, false);
+	assert.equal(authority.runtimeExecution, false);
+	assert.equal(authority.actualLaneLaunch, false);
+	assert.equal(authority.realOpenCodeDispatch, false);
+	assert.equal(authority.fallbackAuthority, false);
+
+	const description = String(quotaTool.description ?? "");
+	assert.ok(description.length < 240);
+	assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+});
+
 test("status live tool is absent by default and registers only with explicit opt-in plus a durable state root", async () => {
 	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
 		undefined as never,
@@ -6186,6 +6280,61 @@ test("status live tool is absent by default and registers only with explicit opt
 		assert.match(description, /reviewer verdict/);
 		assert.match(description, /lane lifecycle/);
 		assert.doesNotMatch(description, /paid provider/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_now wraps status live with read-only status evidence authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-now-wrapper-"));
+	try {
+		const workflowId = "workflow-now-wrapper-1";
+		const writeIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "reviewer-verdict-now-wrapper",
+			record: {
+				...reviewerVerdictRecord("architecture"),
+				workflow_id: workflowId,
+			},
+		});
+		assert.equal(writeIntent.ok, true, writeIntent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			writeIntent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskStatusLiveOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const statusTool = hooks.tool?.[flowdeskStatusLiveToolName];
+		const nowTool = hooks.tool?.[flowdeskNowToolName];
+		assert.ok(statusTool);
+		assert.ok(nowTool);
+
+		const result = JSON.parse(
+			toolOutput(await nowTool.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "status_live_collected");
+		assert.ok(String(result.summaryForUser).length > 0);
+		assert.deepEqual(result.resolvedWorkflowIds, [workflowId]);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.statusEvidenceObserved, true);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+
+		const description = String(nowTool.description ?? "");
+		assert.ok(description.length < 240);
+		assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -211,6 +211,9 @@ export const flowdeskQuickReviewerRunToolName =
 export const flowdeskProviderUsageLiveToolName =
 	"flowdesk_provider_usage_live" as const;
 export const flowdeskStatusLiveToolName = "flowdesk_status_live" as const;
+export const flowdeskNowToolName = "flowdesk_now" as const;
+export const flowdeskQuotaToolName = "flowdesk_quota" as const;
+export const flowdeskNextToolName = "flowdesk_next" as const;
 export const flowdeskQuickFallbackRunToolName =
 	"flowdesk_quick_fallback_run" as const;
 export const flowdeskLaneHeartbeatWriterToolName =
@@ -4407,6 +4410,16 @@ export function createFlowDeskWorkflowDispatchPlanOptInTools(
 export function createFlowDeskAutoContinuePreviewOptInTools(
 	config: FlowDeskAutoContinuePreviewToolConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const executePreview = (input: Record<string, unknown>) => {
+		const result = executeFlowDeskAutoContinuePreviewToolV1({
+			config,
+			request: {
+				workflowId: typeof input.workflowId === "string" ? input.workflowId : undefined,
+				maxSteps: typeof input.maxSteps === "number" ? input.maxSteps : undefined,
+			},
+		});
+		return JSON.stringify(result);
+	};
 	return {
 		[flowdeskAutoContinuePreviewToolName]: tool({
 			description: [
@@ -4421,14 +4434,18 @@ export function createFlowDeskAutoContinuePreviewOptInTools(
 				maxSteps: tool.schema.number().optional().describe("Bounded preview cap. Clamped to 1..5; no steps are executed."),
 			},
 			async execute(input) {
-				const result = executeFlowDeskAutoContinuePreviewToolV1({
-					config,
-					request: {
-						workflowId: typeof input.workflowId === "string" ? input.workflowId : undefined,
-						maxSteps: typeof input.maxSteps === "number" ? input.maxSteps : undefined,
-					},
-				});
-				return JSON.stringify(result);
+				return executePreview(input);
+			},
+		}),
+		[flowdeskNextToolName]: tool({
+			description:
+				"Preview the next pending durable FlowDesk plan task. Preview only: no provider, runtime, lane, fallback, write, or dispatch authority.",
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id with durable workflow_dispatch_plan evidence."),
+				maxSteps: tool.schema.number().optional().describe("Preview cap, clamped to 1..5."),
+			},
+			async execute(input) {
+				return executePreview(input);
 			},
 		}),
 	};
@@ -4746,6 +4763,21 @@ function statusLiveConfigFromOptions(
 export function createFlowDeskStatusLiveOptInTools(
 	config: FlowDeskStatusLiveConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const executeStatusLive = async (input: unknown) => {
+		const request = isRecord(input)
+			? {
+					workflowId:
+						typeof input.workflowId === "string"
+							? input.workflowId
+							: undefined,
+				}
+			: {};
+		const result = await executeFlowDeskStatusLiveV1({
+			config,
+			request,
+		});
+		return JSON.stringify(result);
+	};
 	return {
 		[flowdeskStatusLiveToolName]: tool({
 			description: [
@@ -4765,19 +4797,20 @@ export function createFlowDeskStatusLiveOptInTools(
 					),
 			},
 			async execute(input) {
-				const request = isRecord(input)
-					? {
-							workflowId:
-								typeof input.workflowId === "string"
-									? input.workflowId
-									: undefined,
-						}
-					: {};
-				const result = await executeFlowDeskStatusLiveV1({
-					config,
-					request,
-				});
-				return JSON.stringify(result);
+				return executeStatusLive(input);
+			},
+		}),
+		[flowdeskNowToolName]: tool({
+			description:
+				"Use for FlowDesk status, progress, recent results, or stalled lanes. Read-only durable status summary; no dispatch, provider, runtime, fallback, write, or hard-cancel authority.",
+			args: {
+				workflowId: tool.schema
+					.string()
+					.optional()
+					.describe("Optional workflow id; omit for recent workflow summary."),
+			},
+			async execute(input) {
+				return executeStatusLive(input);
 			},
 		}),
 	};
@@ -4923,6 +4956,21 @@ function createFlowDeskUiProbeTools(
 export function createFlowDeskProviderUsageLiveOptInTools(
 	config: FlowDeskProviderUsageLiveConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const executeProviderUsageLive = async (input: unknown) => {
+		const request = isRecord(input)
+			? {
+					providerFamily:
+						typeof input.providerFamily === "string"
+							? input.providerFamily
+							: undefined,
+				}
+			: {};
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config,
+			request,
+		});
+		return JSON.stringify(result);
+	};
 	return {
 		[flowdeskProviderUsageLiveToolName]: tool({
 			description: [
@@ -4942,19 +4990,20 @@ export function createFlowDeskProviderUsageLiveOptInTools(
 					),
 			},
 			async execute(input) {
-				const request = isRecord(input)
-					? {
-							providerFamily:
-								typeof input.providerFamily === "string"
-									? input.providerFamily
-									: undefined,
-						}
-					: {};
-				const result = await executeFlowDeskProviderUsageLiveV1({
-					config,
-					request,
-				});
-				return JSON.stringify(result);
+				return executeProviderUsageLive(input);
+			},
+		}),
+		[flowdeskQuotaToolName]: tool({
+			description:
+				"Use for FlowDesk usage, quota, remaining capacity, or reset times. Diagnostics only; no provider switch, fallback, dispatch, runtime, lane, or write authority.",
+			args: {
+				providerFamily: tool.schema
+					.string()
+					.optional()
+					.describe("Provider family: claude, openai, gemini, or all. Defaults to all."),
+			},
+			async execute(input) {
+				return executeProviderUsageLive(input);
 			},
 		}),
 	};
