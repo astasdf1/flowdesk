@@ -165,6 +165,7 @@ export const flowdeskDebugToolName = "flowdesk_debug" as const;
 export const flowdeskPlanShortToolName = "flowdesk_plan_short" as const;
 export const flowdeskResumeStatusToolName = "flowdesk_resume_status" as const;
 export const flowdeskRetryDiagToolName = "flowdesk_retry_diag" as const;
+export const flowdeskAbortCmdToolName = "flowdesk_abort_cmd" as const;
 export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption =
 	"fds1SchemaConversionProbe" as const;
@@ -1285,6 +1286,70 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					}),
 				];
 				return [lowLevelEntry, retryDiagEntry];
+			}
+			if (stub.toolName === "flowdesk_abort") {
+				const abortCmdEntry: FlowDeskOpenCodeToolEntry = [
+					flowdeskAbortCmdToolName,
+					tool({
+						description:
+							"Request a FlowDesk command-backed abort diagnostic/control action. No provider, dispatch, runtime/lane launch, write/apply, fallback, hard-chat, or noReply authority.",
+						args: {
+							workflowId: tool.schema
+								.string()
+								.describe("Required workflow id to abort diagnostically."),
+							reason: tool.schema
+								.string()
+								.describe("Required bounded abort reason."),
+							attemptId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional attempt id to forward."),
+							laneId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional lane id to forward."),
+							requestId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded request id."),
+						},
+						async execute(request) {
+							const record: Record<string, unknown> = isRecord(request)
+								? request
+								: {};
+							const attemptId =
+								typeof record.attemptId === "string" &&
+								record.attemptId.trim().length > 0
+									? boundedText(record.attemptId, "attempt")
+									: undefined;
+							const laneId =
+								typeof record.laneId === "string" &&
+								record.laneId.trim().length > 0
+									? boundedText(record.laneId, "lane")
+									: undefined;
+							const lowLevelRequest = {
+								schema_version: "flowdesk.abort.request.v1" as const,
+								request_id: safeToken(
+									record.requestId,
+									`abort-cmd-${randomUUID()}`,
+								),
+								input_mode: "alias_command" as const,
+								workflow_id:
+									typeof record.workflowId === "string" ? record.workflowId : "",
+								reason: boundedText(
+									typeof record.reason === "string" ? record.reason : "",
+									"FlowDesk abort diagnostic requested.",
+								),
+								...(attemptId === undefined ? {} : { attempt_id: attemptId }),
+								...(laneId === undefined ? {} : { lane_id: laneId }),
+							};
+							return JSON.stringify(
+								session.evaluate("flowdesk_abort", lowLevelRequest),
+							);
+						},
+					}),
+				];
+				return [lowLevelEntry, abortCmdEntry];
 			}
 			if (stub.toolName !== "flowdesk_doctor") return [lowLevelEntry];
 			const checkEntry: FlowDeskOpenCodeToolEntry = [

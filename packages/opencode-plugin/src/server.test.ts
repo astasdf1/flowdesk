@@ -33,6 +33,7 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskFds1SchemaConversionProbeTools,
 	createFlowDeskNaturalLanguageChatMessageHook,
 	createFlowDeskLocalNonDispatchAdapterTools,
+	flowdeskAbortCmdToolName,
 	flowdeskCheckToolName,
 	flowdeskDebugToolName,
 	flowdeskPlanShortToolName,
@@ -5137,6 +5138,282 @@ test("flowdesk_retry_diag ignores unknown approval and identity fields safely", 
 	const request = calls[0]?.request ?? {};
 	assert.equal(request.attempt_id, "attempt-retry-diag-unknown-fields");
 	assert.equal("workflow_id" in request, false);
+	assert.equal("user_approval_ref" in request, false);
+	assert.equal("confirmation_nonce" in request, false);
+	assert.equal("actorRef" in request, false);
+	assert.equal("profileRef" in request, false);
+});
+
+test("flowdesk_abort_cmd registers beside abort with compact description", async () => {
+	const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: false,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		},
+	)) as ChatMessageHooks;
+	assert.equal(disabledHooks.tool?.flowdesk_abort, undefined);
+	assert.equal(disabledHooks.tool?.[flowdeskAbortCmdToolName], undefined);
+
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	})) as ChatMessageHooks;
+	assert.ok(hooks.tool?.flowdesk_abort);
+	const abortCmdTool = hooks.tool?.[flowdeskAbortCmdToolName];
+	assert.ok(abortCmdTool);
+	assert.equal(abortCmdTool.description.length < 260, true);
+	assert.match(abortCmdTool.description, /command-backed abort/);
+	assert.match(abortCmdTool.description, /No provider/);
+	assert.match(abortCmdTool.description, /noReply authority/);
+	assert.doesNotMatch(abortCmdTool.description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	assert.deepEqual(Object.keys(abortCmdTool.args), [
+		"workflowId",
+		"reason",
+		"attemptId",
+		"laneId",
+		"requestId",
+	]);
+});
+
+test("flowdesk_abort_cmd maps required fields and generates bounded request id", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const abortCmdTool = tools[flowdeskAbortCmdToolName];
+	assert.ok(abortCmdTool);
+	const result = JSON.parse(
+		toolOutput(
+			await abortCmdTool.execute(
+				{
+					workflowId: "workflow-abort-cmd-default",
+					reason: "safe manual abort diagnostic",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.ok, true);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.toolName, "flowdesk_abort");
+	assert.deepEqual(
+		{
+			schema_version: calls[0]?.request.schema_version,
+			input_mode: calls[0]?.request.input_mode,
+			workflow_id: calls[0]?.request.workflow_id,
+			reason: calls[0]?.request.reason,
+			attempt_id: calls[0]?.request.attempt_id,
+			lane_id: calls[0]?.request.lane_id,
+		},
+		{
+			schema_version: "flowdesk.abort.request.v1",
+			input_mode: "alias_command",
+			workflow_id: "workflow-abort-cmd-default",
+			reason: "safe manual abort diagnostic",
+			attempt_id: undefined,
+			lane_id: undefined,
+		},
+	);
+	const requestId = String(calls[0]?.request.request_id);
+	assert.match(requestId, /^abort-cmd-[A-Za-z0-9_.:-]+$/);
+	assert.equal(requestId.length <= 80, true);
+});
+
+test("flowdesk_abort_cmd forwards explicit fields with snake_case mapping", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const abortCmdTool = tools[flowdeskAbortCmdToolName];
+	assert.ok(abortCmdTool);
+	await abortCmdTool.execute(
+		{
+			workflowId: "workflow-abort-cmd-explicit",
+			reason: "user requested command-backed abort diagnostic",
+			attemptId: "attempt-abort-cmd-explicit",
+			laneId: "lane-abort-cmd-explicit",
+			requestId: "request.abort cmd/unsafe spaces",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.abort.request.v1",
+		request_id: "request.abort-cmd-unsafe-spaces",
+		input_mode: "alias_command",
+		workflow_id: "workflow-abort-cmd-explicit",
+		reason: "user requested command-backed abort diagnostic",
+		attempt_id: "attempt-abort-cmd-explicit",
+		lane_id: "lane-abort-cmd-explicit",
+	});
+});
+
+test("flowdesk_abort_cmd result matches flowdesk_abort for equivalent payload", async () => {
+	const cmdTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const abortTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const abortCmdTool = cmdTools[flowdeskAbortCmdToolName];
+	const abortTool = abortTools.flowdesk_abort;
+	assert.ok(abortCmdTool);
+	assert.ok(abortTool);
+	const cmd = JSON.parse(
+		toolOutput(
+			await abortCmdTool.execute(
+				{
+					requestId: "request-abort-cmd-equivalent",
+					workflowId: "workflow-abort-cmd-equivalent",
+					reason: "equivalent abort diagnostic",
+					attemptId: "attempt-abort-cmd-equivalent",
+					laneId: "lane-abort-cmd-equivalent",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const lowLevel = JSON.parse(
+		toolOutput(
+			await abortTool.execute(
+				{
+					schema_version: "flowdesk.abort.request.v1",
+					request_id: "request-abort-cmd-equivalent",
+					input_mode: "alias_command",
+					workflow_id: "workflow-abort-cmd-equivalent",
+					reason: "equivalent abort diagnostic",
+					attempt_id: "attempt-abort-cmd-equivalent",
+					lane_id: "lane-abort-cmd-equivalent",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(cmd, lowLevel);
+});
+
+test("flowdesk_abort_cmd does not widen authority or synthesize identity", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakeAbortCmdTool = fakeTools[flowdeskAbortCmdToolName];
+	assert.ok(fakeAbortCmdTool);
+	await fakeAbortCmdTool.execute(
+		{
+			requestId: "request-abort-cmd-no-identity-synthesis",
+			workflowId: "workflow-abort-cmd-no-identity-synthesis",
+			reason: "abort without approval synthesis",
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			redactedIntakeRef: "intake-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			allowProviderCall: true,
+			allowActualLaneLaunch: true,
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"input_mode",
+		"reason",
+		"request_id",
+		"schema_version",
+		"workflow_id",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realAbortCmdTool = realTools[flowdeskAbortCmdToolName];
+	assert.ok(realAbortCmdTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realAbortCmdTool.execute(
+				{
+					requestId: "request-abort-cmd-authority",
+					workflowId: "workflow-abort-cmd-authority",
+					reason: "authority check abort",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("flowdesk_abort_cmd ignores unknown approval and identity fields safely", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const abortCmdTool = tools[flowdeskAbortCmdToolName];
+	assert.ok(abortCmdTool);
+	await abortCmdTool.execute(
+		{
+			requestId: "request-abort-cmd-unknown-fields",
+			workflowId: "workflow-abort-cmd-unknown-fields",
+			reason: "unknown field handling",
+			workflow_id: "workflow-snake-should-not-forward",
+			attempt_id: "attempt-snake-should-not-forward",
+			lane_id: "lane-snake-should-not-forward",
+			retry_reason: "reason-snake-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			actorRef: "actor-should-not-forward",
+			profileRef: "profile-should-not-forward",
+		},
+		undefined as never,
+	);
+	const request = calls[0]?.request ?? {};
+	assert.equal(request.workflow_id, "workflow-abort-cmd-unknown-fields");
+	assert.equal("attempt_id" in request, false);
+	assert.equal("lane_id" in request, false);
 	assert.equal("user_approval_ref" in request, false);
 	assert.equal("confirmation_nonce" in request, false);
 	assert.equal("actorRef" in request, false);
