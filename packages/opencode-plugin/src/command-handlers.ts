@@ -219,6 +219,7 @@ function defaultManagedDispatchPromotionRefs(context: FlowDeskCommandBackedHandl
     `default_dispatch_production_enablement_state=${readiness.production_enablement_state}`,
     `default_dispatch_managed_dispatch_ready=${readiness.managed_dispatch_ready}`,
     `default_dispatch_durable_precall_ready=${readiness.durable_precall_ready}`,
+    // internal identifier — not user-facing
     `default_dispatch_adapter_available=${readiness.adapter_available}`,
     `default_dispatch_sdk_client_available=${readiness.sdk_client_available}`,
     `default_dispatch_authority_enabled=${readiness.dispatch_authority_enabled}`,

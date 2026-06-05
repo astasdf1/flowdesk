@@ -317,6 +317,7 @@ interface FlowDeskDefaultManagedDispatchAuthorizationAutoOptionsV1 {
 	defaultEnablementRequested: boolean;
 	killSwitchState: "inactive" | "active";
 	durablePrecallRef: string;
+	// internal identifier — not user-facing
 	adapterProfileRef: string;
 	sdkClientRef: string;
 	defaultReleaseEnablementRef: string;
@@ -681,6 +682,7 @@ function routedToolRequest(
 			...baseToolRequest(request, "flowdesk.run.request.v1"),
 			run_mode: /dry[\s_-]*run|드라이\s*런/i.test(summary)
 				? "guarded-dry-run"
+				// schema enum / internal command mode — not user-facing
 				: "fake-runtime",
 			plan_revision_id: safeToken(
 				`plan-${request.workflow_id ?? request.request_id}`,
@@ -1089,6 +1091,7 @@ function redactedManagedDispatchBetaToolResult(
 	result: FlowDeskManagedDispatchBetaAdapterResultV1,
 ): Record<string, unknown> {
 	return {
+		// internal identifier — not user-facing
 		adapterProfile: result.adapterProfile,
 		status: result.status,
 		dispatchAttempted: result.dispatchAttempted,
@@ -1149,6 +1152,7 @@ function redactedExactModelProviderAcquisitionToolResult(
 	},
 ): Record<string, unknown> {
 	return {
+		// internal identifier — not user-facing
 		adapterProfile: result.adapterProfile,
 		status: result.status,
 		providerCallAttempted: result.providerCallAttempted,
@@ -1659,6 +1663,7 @@ export function createFlowDeskManagedDispatchBetaOptInTools(
 					!isRecord(record.dispatchManifest)
 				) {
 					return JSON.stringify({
+						// internal identifier — not user-facing
 						adapterProfile:
 							"managed_dispatch_beta_real_opencode_dispatch_adapter",
 						status: "blocked_before_dispatch",
@@ -1710,6 +1715,7 @@ export function createFlowDeskManagedDispatchBetaOptInTools(
 				const record: Record<string, unknown> = isRecord(input) ? input : {};
 				if (durableStateRootDir === undefined) {
 					return JSON.stringify({
+						// internal identifier — not user-facing
 						adapterProfile: "managed_dispatch_lane_finalize_observer",
 						status: "blocked_before_finalize",
 						redactedBlockReason: "managed-dispatch lane finalize requires a configured durable state root.",
@@ -1754,6 +1760,7 @@ export function createFlowDeskExactModelProviderAcquisitionLiveTestOptInTools(
 				const record: Record<string, unknown> = isRecord(input) ? input : {};
 				if (!isRecord(record.request)) {
 					return JSON.stringify({
+						// internal identifier — not user-facing
 						adapterProfile:
 							"exact_model_provider_acquisition_live_test_adapter",
 						status: "blocked_before_provider_acquisition",
@@ -3151,6 +3158,7 @@ function defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
 		typeof value.rollbackRef !== "string" ||
 		typeof value.expiresAt !== "string" ||
 		typeof value.durablePrecallRef !== "string" ||
+		// internal identifier — not user-facing
 		typeof value.adapterProfileRef !== "string" ||
 		typeof value.sdkClientRef !== "string" ||
 		typeof value.defaultReleaseEnablementRef !== "string" ||
@@ -3174,6 +3182,7 @@ function defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
 		defaultEnablementRequested: value.defaultEnablementRequested,
 		killSwitchState: value.killSwitchState,
 		durablePrecallRef: value.durablePrecallRef,
+		// internal identifier — not user-facing
 		adapterProfileRef: value.adapterProfileRef,
 		sdkClientRef: value.sdkClientRef,
 		defaultReleaseEnablementRef: value.defaultReleaseEnablementRef,
@@ -3239,6 +3248,7 @@ function deriveDefaultManagedDispatchAuthorizationFromProductionEnablement(
 	const readiness = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
 		productionEnablement,
 		durablePrecallRef: autoOptions.durablePrecallRef,
+		// internal identifier — not user-facing
 		adapterProfileRef: autoOptions.adapterProfileRef,
 		sdkClientRef: autoOptions.sdkClientRef,
 		defaultReleaseEnablementRef: autoOptions.defaultReleaseEnablementRef,
@@ -3478,6 +3488,7 @@ export function createFlowDeskRuntimeReviewerExecutionOptInTools(
 
 function redactedQuickReviewerRunBlocked(reason: string) {
 	return {
+		// internal identifier — not user-facing
 		adapterProfile: "quick_reviewer_run_helper",
 		status: "blocked_before_quick_reviewer_run",
 		laneCount: 0,
@@ -3504,6 +3515,7 @@ function redactedQuickReviewerRunToolResult(
 	result: FlowDeskQuickReviewerRunResultV1,
 ): Record<string, unknown> {
 	return {
+		// internal identifier — not user-facing
 		adapterProfile: result.adapterProfile,
 		status: result.status,
 		workflowId: result.workflowId,
@@ -3839,6 +3851,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 
 function redactedManagedFallbackRegateBlocked(reason: string) {
 	return {
+		// internal identifier — not user-facing
 		adapterProfile: "managed_fallback_regate_orchestrator",
 		status: "blocked_before_regate_plan",
 		dispatchAttempted: false,
@@ -3859,6 +3872,7 @@ function redactedManagedFallbackRegateToolResult(
 	result: ReturnType<typeof orchestrateFlowDeskManagedFallbackRegateV1>,
 ): Record<string, unknown> {
 	return {
+		// internal identifier — not user-facing
 		adapterProfile: result.adapterProfile,
 		status: result.status,
 		dispatchAttempted: result.dispatchAttempted,

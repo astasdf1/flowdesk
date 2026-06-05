@@ -58,6 +58,7 @@ import { evaluateFlowDeskCommandBackedHandlerV1 } from "./command-handlers.js";
 import { validateAndAbortFlowDeskLaneEvidenceV1 } from "./stall-recovery.js";
 
 export const flowdeskLocalNonDispatchAdapterProfile =
+	// internal identifier — not user-facing
 	"local_non_dispatch_command_adapter" as const;
 
 export interface FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
@@ -91,6 +92,7 @@ export interface FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
 
 export interface FlowDeskLocalNonDispatchAdapterToolResultV1
 	extends ValidationResult {
+	// internal identifier — not user-facing
 	adapterProfile: typeof flowdeskLocalNonDispatchAdapterProfile;
 	toolName: FlowDeskRelease1MinimumToolName;
 	handler: FlowDeskCommandBackedHandlerResultV1;
@@ -268,7 +270,7 @@ const disabledAuthority = {
 
 const taxonomy: WorkflowTaxonomyV1 = {
 	primary_category: "coding",
-	difficulty_drivers: ["local non-dispatch adapter"],
+	difficulty_drivers: ["local command-backed tool"],
 	coupling_scope: "few_files",
 	algorithmic_hardness: "low",
 	architecture_hardness: "low",
@@ -396,7 +398,7 @@ function policyPack(): FlowDeskPolicyPackV1 {
 		schema_version: "flowdesk.policy_pack.v1",
 		policy_pack_id: "policy-local",
 		policy_pack_hash: "policy-hash-local",
-		name: "Local non-dispatch policy",
+		name: "Local command-backed policy",
 		version: "1.0.0",
 		source_ref: "policy-source-local",
 		applies_to_release_modes: ["release1"],
@@ -406,7 +408,7 @@ function policyPack(): FlowDeskPolicyPackV1 {
 				rule_id: "rule-local-approval",
 				effect: "require_approval",
 				target: "permission_class",
-				summary_label: "Require scoped non-dispatch approval for local writes.",
+				summary_label: "Require scoped command-backed approval for local writes.",
 				refs: ["approval-local"],
 			},
 		],
@@ -608,6 +610,7 @@ function guardBoundary(
 		scopeRef: policyContext.scopeRef,
 		policy: policyContext.effectivePolicy,
 		auditRef: policyContext.auditRef,
+		// internal identifier — not user-facing
 		conformanceRef: "conformance-local-non-dispatch",
 		runtimeCapabilityRef: "runtime-local-fake",
 		nonDispatchPermission: permission(
@@ -1090,6 +1093,7 @@ function recordRunState(
 		run_mode:
 			request.run_mode === "guarded-dry-run"
 				? "guarded-dry-run"
+				// schema enum / internal command mode — not user-facing
 				: "fake-runtime",
 		state_at_start: "ready_to_run",
 		state_at_end: "complete",
@@ -1583,6 +1587,7 @@ function contextFor(
 			devBetaAgentTaskRun: state.devBetaAgentTaskRun,
 			sdkSessionHealth: {
 				status: "unknown",
+				// internal identifier — not user-facing
 				reason: "sdk_health_not_checked_non_dispatch_adapter",
 			},
 			laneAbortResult,
@@ -1676,6 +1681,7 @@ export function createFlowDeskLocalNonDispatchAdapterSession(
 					const handler = blockedRunHandler(toolName, confirmationResult);
 					return {
 						...confirmationResult,
+						// internal identifier — not user-facing
 						adapterProfile: flowdeskLocalNonDispatchAdapterProfile,
 						toolName,
 						handler,
@@ -1716,7 +1722,7 @@ export function createFlowDeskLocalNonDispatchAdapterSession(
 				);
 			if (handler.ok && toolName === "flowdesk_abort")
 				cancelPendingConfirmation(state, record, parts);
-			const adapterValidation =
+			const localValidation =
 				state.policyContext.errors.length > 0
 					? invalid(...state.policyContext.errors)
 					: state.lastDurableStateReadErrors.length > 0
@@ -1726,10 +1732,11 @@ export function createFlowDeskLocalNonDispatchAdapterSession(
 									toolName === "flowdesk_run" ||
 									toolName === "flowdesk_export_debug") &&
 								!stateWriteApplied
-							? invalid("local adapter state write failed")
+							? invalid("local command-backed state write failed")
 							: valid();
 			return {
-				...adapterValidation,
+				...localValidation,
+				// internal identifier — not user-facing
 				adapterProfile: flowdeskLocalNonDispatchAdapterProfile,
 				toolName,
 				handler,
