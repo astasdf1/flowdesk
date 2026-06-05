@@ -84,14 +84,22 @@ test("chat routing asks for clarification on ambiguous managed requests", () => 
 });
 
 test("chat routing blocks later-gate runtime authority requests", () => {
-  const result = evaluateFlowDeskChatIntakeV1({ request: request("perform real dispatch with automatic provider fallback"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+	const result = evaluateFlowDeskChatIntakeV1({ request: request("perform real dispatch with automatic provider fallback"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   const text = JSON.stringify(result.response);
   assert.equal(result.response.ok, false);
   assert.equal(result.response.classification, "blocked");
   assert.equal(result.response.intent_outcome, "unsafe_later_gate");
   assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false);
   assert.equal(/providerCall|actualLaneLaunch|fallbackAuthority|hardCancelOrNoReply|noReply|cancel:\s*true/i.test(text), false);
-  assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+	assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
+});
+
+test("chat routing blocks mixed Korean/English dispatch requests", () => {
+	const result = evaluateFlowDeskChatIntakeV1({ request: request("실제 OpenCode dispatch 바로 실행해줘"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
+	assert.equal(result.response.ok, false);
+	assert.equal(result.response.classification, "blocked");
+	assert.equal(result.response.intent_outcome, "unsafe_later_gate");
+	assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false);
 });
 
 test("chat routing blocks identifier-shaped later-gate authority requests", () => {

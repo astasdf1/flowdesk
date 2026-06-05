@@ -249,6 +249,78 @@ test("auto-continue execution blocks terminal incomplete durable task evidence b
 	}
 });
 
+test("auto-continue execution blocks ambiguous schema-valid no_output lifecycle before SDK calls", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-auto-continue-execution-valid-no-output-"));
+	const counters = { create: 0, prompt: 0, messages: 0 };
+	try {
+		const workflowId = "workflow-auto-continue-execution-valid-no-output-1";
+		const plan = executeFlowDeskWorkflowDispatchPlanToolV1({
+			config: { rootDir },
+			request: {
+				workflowId,
+				goalSummary: "Continue durable planned work",
+				tasks: [
+					{ agentRole: "implementation", title: "First task", summary: "Should be blocked" },
+					{ agentRole: "implementation", title: "Later task", summary: "Do not execute" },
+				],
+			},
+			now: () => new Date("2026-05-29T00:00:00.000Z"),
+		});
+		assert.equal(plan.status, "workflow_dispatch_plan_recorded", plan.summaryForUser);
+		const firstTaskId = `task-1-${workflowId}`;
+		writeEvidence(rootDir, workflowId, "lane_lifecycle", "lane-no-output-valid-one", {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-valid-no-output-one",
+			attempt_id: "attempt-valid-no-output-one",
+			parent_session_ref: "ses-parent-lifecycle-1",
+			child_session_ref: "ses-child-lifecycle-1",
+			message_ref: "msg-valid-no-output-one",
+			background_task_ref: "bg-valid-no-output-one",
+			continuation_session_ref: "ses-child-lifecycle-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "no_output",
+			runtime_echo_ref: "echo-valid-no-output-one",
+			telemetry_ref: "telemetry-valid-no-output-one",
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: "2026-05-29T00:00:00.000Z",
+			updated_at: "2026-05-29T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		});
+
+		const result = await executeFlowDeskAutoContinueExecutionToolV1({
+			config: { rootDir, client: fakeClient("unused", counters) as never, compatibilityGate: compatibilityGate() },
+			request: {
+				workflowId,
+				parentSessionId: "parent-session-1",
+				task: {
+					taskId: firstTaskId,
+					promptText: "Return the auto-continue result.",
+					agentName: "flowdesk-code-backend",
+					providerQualifiedModelId: "openai/gpt-5.5",
+				},
+				developerModeAcknowledged: true,
+				allowProviderCall: true,
+				allowActualLaneLaunch: true,
+				allowAutoContinueExecution: true,
+			},
+		});
+		assert.equal(result.status, "blocked_before_auto_continue_execution");
+		assert.match(String(result.redactedBlockReason), /terminal incomplete evidence: no_output/);
+		assert.equal(result.blockedTaskCount, 1);
+		assert.equal(counters.create, 0);
+		assert.equal(counters.prompt, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 function fakeClient(outputText: string, counters: { create: number; prompt: number; messages: number }) {
 	const sessionMessages = new Map<string, unknown[]>();
 	return {

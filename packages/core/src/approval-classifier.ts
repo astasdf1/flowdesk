@@ -27,7 +27,7 @@ const explicitEnglishApprovalPattern = /\b(?:approve(?:d)?|confirmed?|i\s+confir
 const explicitKoreanApprovalPattern = /(?:승인(?:해|합니다|했|됨)?|확인(?:해|합니다|했|됨)?|동의(?:해|합니다|했|됨)?|진행\s*(?:해|하|하세요|합니다)|실행\s*(?:해|하|하세요|합니다)|계속\s*(?:해|하|하세요)|그렇게\s*해|그대로\s*진행)/i;
 
 const weakEnglishApprovalPattern = /\b(?:yes|yep|yeah|ok(?:ay)?|sure|fine|sounds\s+good|looks\s+good|lgtm)\b/i;
-const weakKoreanApprovalPattern = /(?:네|예|응|어|좋아|오케이|ㅇㅋ|괜찮아|좋습니다)/i;
+const weakKoreanApprovalPattern = /(?:^|[\s,.!?])(?:네|예|응|좋아|오케이|ㅇㅋ|괜찮아|좋습니다)(?:$|[\s,.!?])/i;
 
 function addIf(reasonCodes: FlowDeskApprovalReasonCodeV1[], condition: boolean, reasonCode: FlowDeskApprovalReasonCodeV1): void {
   if (condition) reasonCodes.push(reasonCode);

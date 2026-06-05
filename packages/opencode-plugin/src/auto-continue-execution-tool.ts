@@ -267,10 +267,15 @@ function classifyPlanTasks(input: {
 		if (taskId !== undefined && plannedTaskIds.has(taskId)) completedTaskIds.add(taskId);
 	}
 	const blockedByTaskId = new Map<string, string>();
+	const ambiguousBlockedStates: string[] = [];
 	for (const entry of input.entries) {
 		const taskId = evidenceTaskId(entry.record);
-		if (taskId === undefined || !plannedTaskIds.has(taskId) || completedTaskIds.has(taskId)) continue;
 		const state = entry.evidenceClass === "task_failed" ? "task_failed" : blockedStateFromRecord(entry.record);
+		if (taskId === undefined) {
+			if (state !== undefined && (entry.evidenceClass === "lane_lifecycle" || entry.evidenceClass === "task_failed")) ambiguousBlockedStates.push(state);
+			continue;
+		}
+		if (!plannedTaskIds.has(taskId) || completedTaskIds.has(taskId)) continue;
 		if (state !== undefined) blockedByTaskId.set(taskId, state);
 	}
 	// Best-effort: also check schema-blocked lane_lifecycle/task_failed entries by re-reading raw JSON.
@@ -282,10 +287,18 @@ function classifyPlanTasks(input: {
 			const raw = tryReadRawRecord(input.rootDir, blocked.path);
 			if (raw === undefined) continue;
 			const taskId = evidenceTaskId(raw);
-			if (taskId === undefined || !plannedTaskIds.has(taskId) || completedTaskIds.has(taskId) || blockedByTaskId.has(taskId)) continue;
 			const state = blocked.evidenceClass === "task_failed" ? "task_failed" : blockedStateFromRecord(raw);
+			if (taskId === undefined) {
+				if (state !== undefined) ambiguousBlockedStates.push(state);
+				continue;
+			}
+			if (!plannedTaskIds.has(taskId) || completedTaskIds.has(taskId) || blockedByTaskId.has(taskId)) continue;
 			if (state !== undefined) blockedByTaskId.set(taskId, state);
 		}
+	}
+	if (blockedByTaskId.size === 0 && ambiguousBlockedStates.length > 0) {
+		const firstUncompleted = input.tasks.find((task) => !completedTaskIds.has(task.taskId));
+		if (firstUncompleted !== undefined) blockedByTaskId.set(firstUncompleted.taskId, ambiguousBlockedStates[0] ?? "ambiguous");
 	}
 	return {
 		completedTaskIds,

@@ -27,7 +27,7 @@ test("approval classifier gives denial/cancel precedence", () => {
 });
 
 test("approval classifier returns no approval for unrelated text", () => {
-  for (const text of ["what is the status", "please explain the plan", "상태 알려줘", "계획 설명해줘"]) {
+  for (const text of ["what is the status", "please explain the plan", "상태 알려줘", "계획 설명해줘", "오늘 날씨 어때"]) {
     const result = classifyFlowDeskApprovalTextV1(text);
     assert.equal(result.classification, "no_approval", text);
     assert.deepEqual(result.reason_codes, ["no_approval_signal"], text);
