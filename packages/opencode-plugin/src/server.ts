@@ -218,6 +218,7 @@ export const flowdeskQuickFallbackRunToolName =
 	"flowdesk_quick_fallback_run" as const;
 export const flowdeskLaneHeartbeatWriterToolName =
 	"flowdesk_lane_heartbeat_record" as const;
+export const flowdeskBeatToolName = "flowdesk_beat" as const;
 export const flowdeskWorkflowDispatchPlanToolName =
 	"flowdesk_workflow_dispatch_plan" as const;
 export const flowdeskWorkflowDispatchToolName =
@@ -4565,7 +4566,7 @@ function isAgentTaskRunEnabled(options?: PluginOptions): boolean {
 	return value === true || (isRecord(value) && value.enabled === true);
 }
 
-interface FlowDeskLaneHeartbeatWriterConfigV1 {
+export interface FlowDeskLaneHeartbeatWriterConfigV1 {
 	rootDir: string;
 	defaultExpectedIntervalMs?: number;
 }
@@ -4600,6 +4601,7 @@ function laneHeartbeatWriterConfigFromOptions(
 export function createFlowDeskLaneHeartbeatWriterOptInTools(
 	config: FlowDeskLaneHeartbeatWriterConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const args = createFlowDeskLaneHeartbeatWriterToolArgs();
 	return {
 		[flowdeskLaneHeartbeatWriterToolName]: tool({
 			description: [
@@ -4609,111 +4611,126 @@ export function createFlowDeskLaneHeartbeatWriterOptInTools(
 				"INVOKE WITH: workflowId, attemptId, laneId, parentSessionRef (must start with 'ses-'), agentRef (must start with 'agent-'), providerQualifiedModelId (concrete provider/model id), state (one of 'created', 'running', 'awaiting_dependency', 'cooldown'), and optional progressSummaryLabel (<=120 chars and redaction-safe), progressRef (starts with 'progress-' or 'heartbeat-progress-'), expectedIntervalMs, heartbeatSeq, observedAt. When heartbeatSeq is omitted the writer derives it from the latest heartbeat for the lane id. The plugin user already opted into this tool at configuration time, so do not ask the user for extra confirmation; just call.",
 				"AFTER CALLING: confirm status=lane_heartbeat_recorded with the heartbeat_seq, observed_at, and expected_next_heartbeat_at. On status=blocked_before_lane_heartbeat surface the redactedBlockReason and suggest /flowdesk-status or /flowdesk-doctor. Never echo raw prompts, transcripts, provider payloads, runtime echo, or any other forbidden raw markers.",
 			].join(" "),
-			args: {
-				workflowId: tool.schema
-					.string()
-					.describe("Stable opaque FlowDesk workflow id bound to this lane."),
-				attemptId: tool.schema
-					.string()
-					.describe("Stable opaque attempt id bound to this lane."),
-				laneId: tool.schema
-					.string()
-					.describe(
-						"Stable opaque FlowDesk lane id (e.g. 'lane-quick-policy_security-...').",
-					),
-				parentSessionRef: tool.schema
-					.string()
-					.describe(
-						"Opaque ses-* ref for the parent session that owns this lane.",
-					),
-				agentRef: tool.schema
-					.string()
-					.describe("Opaque agent-* ref for the FlowDesk agent profile."),
-				providerQualifiedModelId: tool.schema
-					.string()
-					.describe(
-						"Concrete provider-qualified model id (e.g. 'openai/gpt-5.4-mini-fast').",
-					),
-				state: tool.schema
-					.enum(["created", "running", "awaiting_dependency", "cooldown"])
-					.describe("Active lane state at heartbeat time."),
-				progressSummaryLabel: tool.schema
-					.string()
-					.optional()
-					.describe(
-						"Bounded redacted progress label (<=120 chars). No raw prompts, tool args, or transcripts.",
-					),
-				progressRef: tool.schema
-					.string()
-					.optional()
-					.describe(
-						"Opaque progress reference starting with 'progress-' or 'heartbeat-progress-'.",
-					),
-				expectedIntervalMs: tool.schema
-					.number()
-					.optional()
-					.describe(
-						"Override for expected next heartbeat interval in milliseconds; clamped to >=10s and <=24h.",
-					),
-				heartbeatSeq: tool.schema
-					.number()
-					.optional()
-					.describe(
-						"Optional explicit heartbeat sequence. When omitted, the writer increments from the latest persisted heartbeat for this lane id.",
-					),
-				observedAt: tool.schema
-					.string()
-					.optional()
-					.describe("ISO timestamp; defaults to now."),
-			},
+			args,
 			async execute(input) {
-				const record: Record<string, unknown> = isRecord(input) ? input : {};
-				const request: FlowDeskLaneHeartbeatWriteRequestV1 = {
-					rootDir: config.rootDir,
-					workflowId:
-						typeof record.workflowId === "string" ? record.workflowId : "",
-					attemptId:
-						typeof record.attemptId === "string" ? record.attemptId : "",
-					laneId: typeof record.laneId === "string" ? record.laneId : "",
-					parentSessionRef:
-						typeof record.parentSessionRef === "string"
-							? record.parentSessionRef
-							: "",
-					agentRef: typeof record.agentRef === "string" ? record.agentRef : "",
-					providerQualifiedModelId:
-						typeof record.providerQualifiedModelId === "string"
-							? record.providerQualifiedModelId
-							: "",
-					state:
-						record.state === "created" ||
-						record.state === "running" ||
-						record.state === "awaiting_dependency" ||
-						record.state === "cooldown"
-							? record.state
-							: "running",
-					...(typeof record.progressSummaryLabel === "string"
-						? { progressSummaryLabel: record.progressSummaryLabel }
-						: {}),
-					...(typeof record.progressRef === "string"
-						? { progressRef: record.progressRef }
-						: {}),
-					...(typeof record.expectedIntervalMs === "number"
-						? { expectedIntervalMs: record.expectedIntervalMs }
-						: config.defaultExpectedIntervalMs === undefined
-							? {}
-							: { expectedIntervalMs: config.defaultExpectedIntervalMs }),
-					...(typeof record.heartbeatSeq === "number"
-						? { heartbeatSeq: record.heartbeatSeq }
-						: {}),
-					...(typeof record.observedAt === "string"
-						? { observedAt: record.observedAt }
-						: {}),
-				};
-				const result = recordFlowDeskLaneHeartbeatV1(request);
-				return JSON.stringify(result);
+				return executeFlowDeskLaneHeartbeatWriterToolV1(config, input);
+			},
+		}),
+		[flowdeskBeatToolName]: tool({
+			description:
+				"Record a diagnostic FlowDesk lane heartbeat as durable evidence. Does not grant dispatch, provider, runtime, lane-launch, fallback, write, hard-cancel, or noReply authority.",
+			args,
+			async execute(input) {
+				return executeFlowDeskLaneHeartbeatWriterToolV1(config, input);
 			},
 		}),
 	};
+}
+
+function createFlowDeskLaneHeartbeatWriterToolArgs(): FlowDeskOpenCodeToolArgs {
+	return {
+		workflowId: tool.schema
+			.string()
+			.describe("Stable opaque FlowDesk workflow id bound to this lane."),
+		attemptId: tool.schema
+			.string()
+			.describe("Stable opaque attempt id bound to this lane."),
+		laneId: tool.schema
+			.string()
+			.describe(
+				"Stable opaque FlowDesk lane id (e.g. 'lane-quick-policy_security-...').",
+			),
+		parentSessionRef: tool.schema
+			.string()
+			.describe("Opaque ses-* ref for the parent session that owns this lane."),
+		agentRef: tool.schema
+			.string()
+			.describe("Opaque agent-* ref for the FlowDesk agent profile."),
+		providerQualifiedModelId: tool.schema
+			.string()
+			.describe(
+				"Concrete provider-qualified model id (e.g. 'openai/gpt-5.4-mini-fast').",
+			),
+		state: tool.schema
+			.enum(["created", "running", "awaiting_dependency", "cooldown"])
+			.describe("Active lane state at heartbeat time."),
+		progressSummaryLabel: tool.schema
+			.string()
+			.optional()
+			.describe(
+				"Bounded redacted progress label (<=120 chars). No raw prompts, tool args, or transcripts.",
+			),
+		progressRef: tool.schema
+			.string()
+			.optional()
+			.describe(
+				"Opaque progress reference starting with 'progress-' or 'heartbeat-progress-'.",
+			),
+		expectedIntervalMs: tool.schema
+			.number()
+			.optional()
+			.describe(
+				"Override for expected next heartbeat interval in milliseconds; clamped to >=10s and <=24h.",
+			),
+		heartbeatSeq: tool.schema
+			.number()
+			.optional()
+			.describe(
+				"Optional explicit heartbeat sequence. When omitted, the writer increments from the latest persisted heartbeat for this lane id.",
+			),
+		observedAt: tool.schema
+			.string()
+			.optional()
+			.describe("ISO timestamp; defaults to now."),
+	};
+}
+
+export function executeFlowDeskLaneHeartbeatWriterToolV1(
+	config: FlowDeskLaneHeartbeatWriterConfigV1,
+	input: unknown,
+): string {
+	const record: Record<string, unknown> = isRecord(input) ? input : {};
+	const request: FlowDeskLaneHeartbeatWriteRequestV1 = {
+		rootDir: config.rootDir,
+		workflowId: typeof record.workflowId === "string" ? record.workflowId : "",
+		attemptId: typeof record.attemptId === "string" ? record.attemptId : "",
+		laneId: typeof record.laneId === "string" ? record.laneId : "",
+		parentSessionRef:
+			typeof record.parentSessionRef === "string"
+				? record.parentSessionRef
+				: "",
+		agentRef: typeof record.agentRef === "string" ? record.agentRef : "",
+		providerQualifiedModelId:
+			typeof record.providerQualifiedModelId === "string"
+				? record.providerQualifiedModelId
+				: "",
+		state:
+			record.state === "created" ||
+			record.state === "running" ||
+			record.state === "awaiting_dependency" ||
+			record.state === "cooldown"
+				? record.state
+				: "running",
+		...(typeof record.progressSummaryLabel === "string"
+			? { progressSummaryLabel: record.progressSummaryLabel }
+			: {}),
+		...(typeof record.progressRef === "string"
+			? { progressRef: record.progressRef }
+			: {}),
+		...(typeof record.expectedIntervalMs === "number"
+			? { expectedIntervalMs: record.expectedIntervalMs }
+			: config.defaultExpectedIntervalMs === undefined
+				? {}
+				: { expectedIntervalMs: config.defaultExpectedIntervalMs }),
+		...(typeof record.heartbeatSeq === "number"
+			? { heartbeatSeq: record.heartbeatSeq }
+			: {}),
+		...(typeof record.observedAt === "string"
+			? { observedAt: record.observedAt }
+			: {}),
+	};
+	const result = recordFlowDeskLaneHeartbeatV1(request);
+	return JSON.stringify(result);
 }
 
 function isStatusLiveEnabled(options?: PluginOptions): boolean {

@@ -38,6 +38,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskAutoContinueExecutionOption,
 	flowdeskAutoContinueExecutionToolName,
 	flowdeskAutoContinuePreviewToolName,
+	flowdeskBeatToolName,
 	flowdeskControlledWriteApplyOption,
 	flowdeskControlledWriteApplyToolName,
 	flowdeskChatIntakeToolName,
@@ -6911,6 +6912,7 @@ test("lane heartbeat writer tool is absent by default and registers only with ex
 		defaultHooks.tool?.[flowdeskLaneHeartbeatWriterToolName],
 		undefined,
 	);
+	assert.equal(defaultHooks.tool?.[flowdeskBeatToolName], undefined);
 	const enabledWithoutRoot = await flowdeskOpenCodeServerPlugin.server(
 		undefined as never,
 		{
@@ -6923,6 +6925,7 @@ test("lane heartbeat writer tool is absent by default and registers only with ex
 		enabledWithoutRoot.tool?.[flowdeskLaneHeartbeatWriterToolName],
 		undefined,
 	);
+	assert.equal(enabledWithoutRoot.tool?.[flowdeskBeatToolName], undefined);
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-lane-heartbeat-writer-"));
 	try {
 		const enabled = await flowdeskOpenCodeServerPlugin.server(
@@ -6936,6 +6939,18 @@ test("lane heartbeat writer tool is absent by default and registers only with ex
 		);
 		const tool = enabled.tool?.[flowdeskLaneHeartbeatWriterToolName];
 		assert.ok(tool);
+		const beatTool = enabled.tool?.[flowdeskBeatToolName];
+		assert.ok(beatTool);
+		const beatDescription = String(beatTool.description ?? "");
+		assert.ok(beatDescription.length < 240);
+		assert.doesNotMatch(
+			beatDescription,
+			/Trigger on|Korean phrases|English phrases|WHEN TO USE/,
+		);
+		assert.match(beatDescription, /diagnostic/);
+		assert.match(beatDescription, /durable evidence/);
+		assert.match(beatDescription, /Does not grant/);
+		assert.deepEqual(Object.keys(beatTool.args), Object.keys(tool.args));
 		const result = JSON.parse(
 			toolOutput(
 				await tool.execute(
@@ -6985,6 +7000,63 @@ test("lane heartbeat writer tool is absent by default and registers only with ex
 		) as Record<string, unknown>;
 		assert.equal(second.status, "lane_heartbeat_recorded");
 		assert.equal(second.heartbeatSeq, 2);
+		const beatBlocked = JSON.parse(
+			toolOutput(
+				await beatTool.execute(
+					{
+						workflowId: "workflow-heartbeat-tool",
+						attemptId: "attempt-heartbeat-tool",
+						laneId: "lane-heartbeat-tool-beat-blocked",
+						parentSessionRef: "not-a-session-ref",
+						agentRef: "agent-heartbeat-tool",
+						providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+						state: "running",
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(beatBlocked.status, "blocked_before_lane_heartbeat");
+		assert.equal(beatBlocked.writeAttempted, false);
+		const blockedAuthority = beatBlocked.authority as Record<string, unknown>;
+		assert.equal(blockedAuthority.realOpenCodeDispatch, false);
+		assert.equal(blockedAuthority.providerCall, false);
+		assert.equal(blockedAuthority.runtimeExecution, false);
+		assert.equal(blockedAuthority.actualLaneLaunch, false);
+		assert.equal(blockedAuthority.fallbackAuthority, false);
+		assert.equal(blockedAuthority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(blockedAuthority.toolAuthority, false);
+		assert.equal(blockedAuthority.laneHeartbeatPersisted, false);
+		const beatRecorded = JSON.parse(
+			toolOutput(
+				await beatTool.execute(
+					{
+						workflowId: "workflow-heartbeat-tool",
+						attemptId: "attempt-heartbeat-tool",
+						laneId: "lane-heartbeat-tool-beat",
+						parentSessionRef: "ses-heartbeat-tool-parent",
+						agentRef: "agent-heartbeat-tool",
+						providerQualifiedModelId: "openai/gpt-5.4-mini-fast",
+						state: "running",
+						progressSummaryLabel: "compact heartbeat helper",
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(beatRecorded.status, "lane_heartbeat_recorded");
+		assert.equal(beatRecorded.workflowId, "workflow-heartbeat-tool");
+		assert.equal(beatRecorded.laneId, "lane-heartbeat-tool-beat");
+		assert.equal(beatRecorded.heartbeatSeq, 1);
+		const beatAuthority = beatRecorded.authority as Record<string, unknown>;
+		assert.equal(beatAuthority.realOpenCodeDispatch, false);
+		assert.equal(beatAuthority.providerCall, false);
+		assert.equal(beatAuthority.runtimeExecution, false);
+		assert.equal(beatAuthority.actualLaneLaunch, false);
+		assert.equal(beatAuthority.fallbackAuthority, false);
+		assert.equal(beatAuthority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(beatAuthority.toolAuthority, false);
+		assert.equal(beatAuthority.laneHeartbeatPersisted, true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
