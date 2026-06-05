@@ -65,6 +65,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskQuotaToolName,
 	flowdeskQuickFallbackRunOption,
 	flowdeskQuickFallbackRunToolName,
+	flowdeskRebindToolName,
 	flowdeskQuickReviewerRunOption,
 	flowdeskQuickReviewerRunToolName,
 	flowdeskReviewerFanoutDiagnosticsOption,
@@ -6957,6 +6958,54 @@ test("quick fallback run tool is absent by default and registers only with expli
 	assert.match(description, /managed-dispatch promotion/);
 });
 
+test("flowdesk_rebind is absent by default and registers with quick fallback opt-in", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.equal(defaultHooks.tool?.[flowdeskQuickFallbackRunToolName], undefined);
+	assert.equal(defaultHooks.tool?.[flowdeskRebindToolName], undefined);
+
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskQuickFallbackRunOption]: {
+				enabled: true,
+				defaultFromProvider: "claude/sonnet-4",
+				defaultToProvider: "openai/gpt-5.5",
+			},
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		},
+	);
+	assert.ok(enabledHooks.tool?.[flowdeskQuickFallbackRunToolName]);
+	assert.ok(enabledHooks.tool?.[flowdeskRebindToolName]);
+});
+
+test("flowdesk_rebind has compact planning-only description and explicit fields", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const rebindTool = hooks.tool?.[flowdeskRebindToolName];
+	assert.ok(rebindTool);
+	const description = String(rebindTool.description ?? "");
+	assert.ok(description.length < 260);
+	assert.match(description, /Planning-only/);
+	assert.match(description, /no provider switch/);
+	assert.match(description, /noReply authority/);
+	assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+
+	const args = rebindTool.args as Record<string, unknown>;
+	assert.ok(args.fromProvider);
+	assert.ok(args.toProvider);
+	assert.ok(args.developerModeAcknowledged);
+});
+
 test("quick fallback run blocks without developerModeAcknowledged", async () => {
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskQuickFallbackRunOption]: { enabled: true },
@@ -6978,6 +7027,82 @@ test("quick fallback run blocks without developerModeAcknowledged", async () => 
 	) as Record<string, unknown>;
 	assert.equal(result.status, "blocked_before_quick_fallback_run");
 	assert.match(String(result.redactedBlockReason), /developerModeAcknowledged/);
+});
+
+test("flowdesk_rebind does not silently default developerModeAcknowledged true", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const rebindTool = hooks.tool?.[flowdeskRebindToolName];
+	assert.ok(rebindTool);
+	const result = JSON.parse(
+		toolOutput(
+			await rebindTool.execute(
+				{
+					fromProvider: "claude/sonnet-4",
+					toProvider: "openai/gpt-5.5",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_quick_fallback_run");
+	assert.match(String(result.redactedBlockReason), /developerModeAcknowledged/);
+});
+
+test("flowdesk_rebind requires explicit provider identities even when quick fallback has defaults", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: {
+			enabled: true,
+			defaultFromProvider: "claude/sonnet-4",
+			defaultToProvider: "openai/gpt-5.5",
+		},
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const rebindTool = hooks.tool?.[flowdeskRebindToolName];
+	assert.ok(rebindTool);
+	const result = JSON.parse(
+		toolOutput(
+			await rebindTool.execute(
+				{
+					developerModeAcknowledged: true,
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.status, "blocked_before_quick_fallback_run");
+	assert.match(String(result.redactedBlockReason), /fromProvider and toProvider/);
+});
+
+test("flowdesk_rebind matches quick fallback blocked semantics and authority", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskQuickFallbackRunOption]: { enabled: true },
+		localNonDispatchAdapter: false,
+		naturalLanguageRouting: false,
+	});
+	const quickTool = hooks.tool?.[flowdeskQuickFallbackRunToolName];
+	const rebindTool = hooks.tool?.[flowdeskRebindToolName];
+	assert.ok(quickTool);
+	assert.ok(rebindTool);
+	const request = {
+		fromProvider: "openai/gpt-5.5",
+		toProvider: "openai/gpt-5.5",
+		developerModeAcknowledged: true,
+	};
+	const quickResult = JSON.parse(
+		toolOutput(await quickTool.execute(request, undefined as never)),
+	) as Record<string, unknown>;
+	const rebindResult = JSON.parse(
+		toolOutput(await rebindTool.execute(request, undefined as never)),
+	) as Record<string, unknown>;
+	assert.equal(rebindResult.status, quickResult.status);
+	assert.equal(rebindResult.redactedBlockReason, quickResult.redactedBlockReason);
+	assert.deepEqual(rebindResult.safeNextActions, quickResult.safeNextActions);
+	assert.deepEqual(rebindResult.authority, quickResult.authority);
 });
 
 test("quick fallback run produces a fresh full re-gate plan and persists it when opted in", async () => {
@@ -7024,6 +7149,52 @@ test("quick fallback run produces a fresh full re-gate plan and persists it when
 		assert.equal(authority.realOpenCodeDispatch, false);
 		assert.equal(authority.fallbackAuthority, false);
 		assert.equal(authority.automaticFallbackAuthorized, false);
+		assert.equal(authority.regatePlanPrepared, true);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_rebind completes planning path without provider switch or runtime authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-rebind-planning-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskQuickFallbackRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const rebindTool = hooks.tool?.[flowdeskRebindToolName];
+		assert.ok(rebindTool);
+		const result = JSON.parse(
+			toolOutput(
+				await rebindTool.execute(
+					{
+						fromProvider: "claude/sonnet-4",
+						toProvider: "openai/gpt-5.5",
+						reason: "manual_reselection_requested",
+						developerModeAcknowledged: true,
+						persistRegatePlanEvidence: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "quick_fallback_run_completed");
+		assert.equal(result.requestedFromProvider, "claude/sonnet-4");
+		assert.equal(result.requestedToProvider, "openai/gpt-5.5");
+		assert.equal(result.regatePlanPrepared, undefined);
+		const authority = result.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.automaticFallbackAuthorized, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
 		assert.equal(authority.regatePlanPrepared, true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

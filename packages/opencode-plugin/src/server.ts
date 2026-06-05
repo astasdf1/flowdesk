@@ -217,6 +217,7 @@ export const flowdeskQuotaToolName = "flowdesk_quota" as const;
 export const flowdeskNextToolName = "flowdesk_next" as const;
 export const flowdeskQuickFallbackRunToolName =
 	"flowdesk_quick_fallback_run" as const;
+export const flowdeskRebindToolName = "flowdesk_rebind" as const;
 export const flowdeskLaneHeartbeatWriterToolName =
 	"flowdesk_lane_heartbeat_record" as const;
 export const flowdeskBeatToolName = "flowdesk_beat" as const;
@@ -4150,6 +4151,37 @@ function quickFallbackRunConfigFromOptions(
 export function createFlowDeskQuickFallbackRunOptInTools(
 	config: FlowDeskQuickFallbackRunConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const quickFallbackRequestFrom = (input: unknown) =>
+		isRecord(input)
+			? {
+					fromProvider:
+						typeof input.fromProvider === "string"
+							? input.fromProvider
+							: undefined,
+					toProvider:
+						typeof input.toProvider === "string"
+							? input.toProvider
+							: undefined,
+					reason:
+						typeof input.reason === "string" ? input.reason : undefined,
+					workflowId:
+						typeof input.workflowId === "string"
+							? input.workflowId
+							: undefined,
+					developerModeAcknowledged:
+						typeof input.developerModeAcknowledged === "boolean"
+							? input.developerModeAcknowledged
+							: undefined,
+					persistRegatePlanEvidence:
+						typeof input.persistRegatePlanEvidence === "boolean"
+							? input.persistRegatePlanEvidence
+							: undefined,
+				}
+			: {};
+	const explicitIdentityConfig: FlowDeskQuickFallbackRunConfigV1 = {
+		...(config.rootDir ? { rootDir: config.rootDir } : {}),
+		...(config.sourceLabel ? { sourceLabel: config.sourceLabel } : {}),
+	};
 	return {
 		[flowdeskQuickFallbackRunToolName]: tool({
 			description: [
@@ -4197,35 +4229,38 @@ export function createFlowDeskQuickFallbackRunOptInTools(
 					),
 			},
 			async execute(input) {
-				const request = isRecord(input)
-					? {
-							fromProvider:
-								typeof input.fromProvider === "string"
-									? input.fromProvider
-									: undefined,
-							toProvider:
-								typeof input.toProvider === "string"
-									? input.toProvider
-									: undefined,
-							reason:
-								typeof input.reason === "string" ? input.reason : undefined,
-							workflowId:
-								typeof input.workflowId === "string"
-									? input.workflowId
-									: undefined,
-							developerModeAcknowledged:
-								typeof input.developerModeAcknowledged === "boolean"
-									? input.developerModeAcknowledged
-									: undefined,
-							persistRegatePlanEvidence:
-								typeof input.persistRegatePlanEvidence === "boolean"
-									? input.persistRegatePlanEvidence
-									: undefined,
-						}
-					: {};
+				const request = quickFallbackRequestFrom(input);
 				const result = await executeFlowDeskQuickFallbackRunV1({
 					config,
 					request,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+		[flowdeskRebindToolName]: tool({
+			description:
+				"Plan a provider rebind regate using the quick fallback helper. Planning-only: no provider switch, dispatch, runtime, lane launch, write/apply, hard-cancel, or noReply authority.",
+			args: {
+				fromProvider: tool.schema
+					.string()
+					.describe("Current concrete provider-qualified model id."),
+				toProvider: tool.schema
+					.string()
+					.describe("Target concrete provider-qualified model id."),
+				reason: tool.schema.string().optional().describe("Optional fallback reason label."),
+				workflowId: tool.schema.string().optional().describe("Optional workflow id."),
+				developerModeAcknowledged: tool.schema
+					.boolean()
+					.describe("Must be explicitly true for this dev-mode planning helper."),
+				persistRegatePlanEvidence: tool.schema
+					.boolean()
+					.optional()
+					.describe("Optionally persist fallback_regate_plan evidence when configured."),
+			},
+			async execute(input) {
+				const result = await executeFlowDeskQuickFallbackRunV1({
+					config: explicitIdentityConfig,
+					request: quickFallbackRequestFrom(input),
 				});
 				return JSON.stringify(result);
 			},
