@@ -227,6 +227,7 @@ export const flowdeskControlledWriteApplyToolName =
 	"flowdesk_controlled_write_apply" as const;
 export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
+export const flowdeskTaskToolName = "flowdesk_task" as const;
 export const flowdeskWorkflowSynthesisPreviewToolName = "flowdesk_workflow_synthesis_preview" as const;
 export const flowdeskAutoContinuePreviewToolName = "flowdesk_auto_continue_preview" as const;
 export const flowdeskAutoContinueExecutionOption = "autoContinueExecution" as const;
@@ -3742,16 +3743,14 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 		if (input.failureCategory !== undefined) lines.push(`failure: ${input.failureCategory}${input.redactedReason === undefined ? "" : ` (${input.redactedReason})`}`);
 		return lines.join("\n");
 	};
-	return {
-		[flowdeskAgentTaskRunToolName]: tool({
-				description: [
-				"Run a single task on a specific agent and model, returning the result text.",
-				"Use this to delegate a well-defined subtask to a specific model (e.g. Claude Opus for security analysis, GPT for architecture review).",
-				"Requires developerModeAcknowledged=true and allowProviderCall=true per call.",
-				"WHEN TO USE: user asks to delegate a specific task to a specific model/agent.",
-				"WHEN NOT TO USE: multi-step workflows (use flowdesk_workflow_dispatch).",
-				"After calling, use flowdesk_status_live to check the lane status.",
-			].join(" "),
+	const createAgentTaskTool = (input: {
+		description: string;
+		defaultAsyncMode: boolean;
+		defaultNudgeQuietPeriodMs?: number;
+		compactArgs?: boolean;
+	}) =>
+		tool({
+			description: input.description,
 			args: {
 				workflowId: tool.schema.string().describe("Workflow id (e.g. workflow-xxx)"),
 				taskDescription: tool.schema.string().max(20_000).describe("The task prompt to send to the agent"),
@@ -3760,8 +3759,12 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				parentSessionId: tool.schema.string().optional().describe("Parent session id. When omitted or blank, FlowDesk binds to the current OpenCode ctx.sessionID when available."),
 				developerModeAcknowledged: tool.schema.boolean(),
 				allowProviderCall: tool.schema.boolean(),
-				nudgeQuietPeriodMs: tool.schema.number().optional().describe("Milliseconds of silence before sending a nudge prompt. Default 10000ms (10s). Recommended: always pass 10000. At 10s silence → nudge 1, 20s → nudge 2, 30s+ → lane fails and watchdog retries."),
-			asyncMode: tool.schema.boolean().optional().describe("When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 10s/20s, and aborts at 30s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
+				nudgeQuietPeriodMs: tool.schema.number().optional().describe(input.compactArgs === true
+					? "Optional no-response nudge quiet period in milliseconds; defaults to 10000 for flowdesk_task."
+					: "Milliseconds of silence before sending a nudge prompt. Default 10000ms (10s). Recommended: always pass 10000. At 10s silence → nudge 1, 20s → nudge 2, 30s+ → lane fails and watchdog retries."),
+				asyncMode: tool.schema.boolean().optional().describe(input.compactArgs === true
+					? "Optional async launch mode; defaults to true for flowdesk_task."
+					: "When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 10s/20s, and aborts at 30s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
 			},
 			async execute(args, ctx) {
 				if (!client)
@@ -3802,8 +3805,10 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					? requestedParentSessionId
 					: currentSessionId;
 				const nudgeQuietPeriodMs = typeof record.nudgeQuietPeriodMs === "number" && record.nudgeQuietPeriodMs > 0
-					? Math.floor(record.nudgeQuietPeriodMs) : undefined;
-				const asyncMode = record.asyncMode === true;
+					? Math.floor(record.nudgeQuietPeriodMs) : input.defaultNudgeQuietPeriodMs;
+				const asyncMode = typeof record.asyncMode === "boolean"
+					? record.asyncMode
+					: input.defaultAsyncMode;
 				const taskId = `task-${Date.now().toString(36)}`;
 				const laneId = `lane-task-${Date.now().toString(36)}`;
 				const result = await executeFlowDeskAgentTaskV1({
@@ -3849,6 +3854,25 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					}),
 				});
 			},
+		});
+	return {
+		[flowdeskAgentTaskRunToolName]: createAgentTaskTool({
+			description: [
+				"Run a single task on a specific agent and model, returning the result text.",
+				"Use this to delegate a well-defined subtask to a specific model (e.g. Claude Opus for security analysis, GPT for architecture review).",
+				"Requires developerModeAcknowledged=true and allowProviderCall=true per call.",
+				"WHEN TO USE: user asks to delegate a specific task to a specific model/agent.",
+				"WHEN NOT TO USE: multi-step workflows (use flowdesk_workflow_dispatch).",
+				"After calling, use flowdesk_status_live to check the lane status.",
+			].join(" "),
+			defaultAsyncMode: false,
+		}),
+		[flowdeskTaskToolName]: createAgentTaskTool({
+			description:
+				"Compact dev/beta agent task launcher. Requires explicit developerModeAcknowledged and allowProviderCall; defaults parentSessionId='', nudgeQuietPeriodMs=10000, asyncMode=true.",
+			defaultAsyncMode: true,
+			defaultNudgeQuietPeriodMs: 10_000,
+			compactArgs: true,
 		}),
 	};
 }

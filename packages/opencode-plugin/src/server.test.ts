@@ -35,6 +35,7 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskAgentTaskRunOption,
 	flowdeskAgentTaskRunToolName,
+	flowdeskTaskToolName,
 	flowdeskAutoContinueExecutionOption,
 	flowdeskAutoContinueExecutionToolName,
 	flowdeskAutoContinuePreviewToolName,
@@ -8254,6 +8255,7 @@ test("flowdesk_agent_task_run tool is absent by default and remains schema-visib
 		defaultHooks.tool?.[flowdeskAgentTaskRunToolName],
 		undefined,
 	);
+	assert.equal(defaultHooks.tool?.[flowdeskTaskToolName], undefined);
 
 	const dummyClient = {
 		session: {
@@ -8284,9 +8286,15 @@ test("flowdesk_agent_task_run tool is absent by default and remains schema-visib
 		);
 		const schemaVisibleTool =
 			enabledWithoutClientHooks.tool?.[flowdeskAgentTaskRunToolName];
+		const schemaVisibleShortTool =
+			enabledWithoutClientHooks.tool?.[flowdeskTaskToolName];
 		assert.ok(
 			schemaVisibleTool,
 			"tool should remain schema-visible without client when opted in",
+		);
+		assert.ok(
+			schemaVisibleShortTool,
+			"short wrapper should remain schema-visible under the same opt-in",
 		);
 		const noClientResult = JSON.parse(
 			toolOutput(
@@ -8308,6 +8316,26 @@ test("flowdesk_agent_task_run tool is absent by default and remains schema-visib
 			noClientResult.reason,
 			"opencode_sdk_client_unavailable_for_agent_task_run",
 		);
+		const shortNoClientResult = JSON.parse(
+			toolOutput(
+				await schemaVisibleShortTool.execute(
+					{
+						workflowId: "workflow-task-schema-visible-1",
+						taskDescription: "Analyze schema visibility only.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.deepEqual(
+			shortNoClientResult,
+			noClientResult,
+			"short wrapper should preserve the underlying fail-closed result without adding authority",
+		);
 	} finally {
 		rmSync(noClientRoot, { recursive: true, force: true });
 	}
@@ -8324,10 +8352,14 @@ test("flowdesk_agent_task_run tool is absent by default and remains schema-visib
 			},
 		);
 		const agentTool = enabledHooks.tool?.[flowdeskAgentTaskRunToolName];
+		const shortTaskTool = enabledHooks.tool?.[flowdeskTaskToolName];
 		assert.ok(agentTool, "tool should register with client and durableStateRoot");
+		assert.ok(shortTaskTool, "short wrapper should register with the same opt-in");
 		assert.match(String(agentTool.description ?? ""), /delegate/i);
 		assert.match(String(agentTool.description ?? ""), /WHEN TO USE/);
 		assert.match(String(agentTool.description ?? ""), /WHEN NOT TO USE/);
+		assert.ok(String(shortTaskTool.description ?? "").length < 260);
+		assert.doesNotMatch(String(shortTaskTool.description ?? ""), /WHEN TO USE/);
 
 		const manyToolHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ client: dummyClient } as never,
@@ -8344,6 +8376,7 @@ test("flowdesk_agent_task_run tool is absent by default and remains schema-visib
 		);
 		const manyToolNames = Object.keys(manyToolHooks.tool ?? {});
 		assert.ok(manyToolNames.includes(flowdeskAgentTaskRunToolName));
+		assert.ok(manyToolNames.includes(flowdeskTaskToolName));
 		assert.ok(manyToolNames.includes(flowdeskControlledWriteApplyToolName));
 		assert.ok(
 			manyToolNames.indexOf(flowdeskAgentTaskRunToolName) <
@@ -8449,6 +8482,152 @@ test("flowdesk_agent_task_run blocks without developerModeAcknowledged", async (
 		) as Record<string, unknown>;
 		assert.equal(blockedNoProvider.status, "blocked");
 		assert.match(String(blockedNoProvider.reason), /allowProviderCall/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_task requires explicit consent fields without silently defaulting true", async () => {
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-short-task-block-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-short-task-block-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-short-task-block-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+		assert.ok(shortTaskTool);
+
+		const missingDevConsent = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-short-task-consent-1",
+						taskDescription: "Analyze explicit consent handling.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(missingDevConsent.status, "blocked");
+		assert.match(String(missingDevConsent.reason), /developerModeAcknowledged/);
+
+		const missingProviderConsent = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-short-task-consent-1",
+						taskDescription: "Analyze explicit consent handling.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						developerModeAcknowledged: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(missingProviderConsent.status, "blocked");
+		assert.match(String(missingProviderConsent.reason), /allowProviderCall/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_task normalizes safe defaults and adds no authority claims", async () => {
+	const createOptions: unknown[] = [];
+	const promptOptions: unknown[] = [];
+	const dummyClient = {
+		session: {
+			create(options: unknown) {
+				createOptions.push(options);
+				return Promise.resolve({ id: "child-short-task-defaults-1" });
+			},
+			prompt(options: unknown) {
+				promptOptions.push(options);
+				return Promise.resolve({ info: { id: "message-short-task-defaults-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-short-task-defaults-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+		assert.ok(shortTaskTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-short-task-defaults-1",
+						taskDescription: "Analyze wrapper defaults.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					{ sessionID: "current-short-task-parent-1" } as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_launched");
+		assert.equal(result.asyncMode, true);
+		assert.equal((createOptions[0] as Record<string, unknown>).parentID, "current-short-task-parent-1");
+		assert.equal(promptOptions.length, 1);
+		assert.equal("authority" in result, false);
+		assert.equal("dispatchAuthority" in result, false);
+		assert.equal("writeAuthority" in result, false);
+		assert.equal("fallbackAuthority" in result, false);
+		assert.equal("hardChatAuthority" in result, false);
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-short-task-defaults-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		const context = evidence.entries.find(
+			(entry) =>
+				entry.evidenceClass === "agent_task_context" &&
+				entry.record.lane_id === result.laneId,
+		)?.record as Record<string, unknown> | undefined;
+		assert.equal(context?.parent_session_ref, "ses-current-short-task-parent-1");
+		assert.equal(context?.dispatch_authority_enabled, false);
+		const child = evidence.entries.find(
+			(entry) =>
+				entry.evidenceClass === "agent_task_child_session" &&
+				entry.record.lane_id === result.laneId,
+		)?.record as Record<string, unknown> | undefined;
+		assert.equal(child?.nudge_quiet_period_ms, 10_000);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

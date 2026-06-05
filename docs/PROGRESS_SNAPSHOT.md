@@ -14,6 +14,7 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-05 state:
 
+- Short task wrapper: `flowdesk_task` now registers beside explicit opt-in `flowdesk_agent_task_run` as a compact dev/beta task-lane alias with safe defaults for blank parent session, 10s nudge quiet period, and async launch while preserving per-call dev/provider consent.
 - Short heartbeat wrapper: `flowdesk_beat` now registers beside `flowdesk_lane_heartbeat_record` as a compact diagnostic heartbeat alias over the same durable writer path, preserving false dispatch/provider/runtime/write/fallback authority.
 - Short wrapper tools: `flowdesk_now`, `flowdesk_quota`, and `flowdesk_next` now register as compact aliases over existing status-live, provider-usage-live, and auto-continue-preview behavior. They preserve read-only/diagnostic/preview-only authority and avoid long trigger-list descriptions.
 - Phase 6 core chat contracts: core chat-intake responses now carry first-class internal `intent_outcome` values (`general_chat`, `flowdesk_suggest`, `flowdesk_manage`, `unsafe_later_gate`), and `@flowdesk/core` exports a deterministic approval classifier with explicit/weak/denial/no-approval categories and reason codes. Existing public chat route decisions remain unchanged.
