@@ -72,6 +72,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskRebindToolName,
 	flowdeskResumeStatusToolName,
 	flowdeskRetryDiagToolName,
+	flowdeskRunShortToolName,
 	flowdeskResultToolName,
 	flowdeskQuickReviewerRunOption,
 	flowdeskQuickReviewerRunToolName,
@@ -4251,6 +4252,252 @@ test("flowdesk_plan_short ignores unknown approval and identity fields safely", 
 	assert.equal("confirmation_nonce" in request, false);
 	assert.equal("actorRef" in request, false);
 	assert.equal("profileRef" in request, false);
+});
+
+test("flowdesk_run_short registers beside run with compact explicit-mode schema", async () => {
+	const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: false,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		},
+	)) as ChatMessageHooks;
+	assert.equal(disabledHooks.tool?.flowdesk_run, undefined);
+	assert.equal(disabledHooks.tool?.[flowdeskRunShortToolName], undefined);
+
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	})) as ChatMessageHooks;
+	assert.ok(hooks.tool?.flowdesk_run);
+	const runShortTool = hooks.tool?.[flowdeskRunShortToolName];
+	assert.ok(runShortTool);
+	assert.equal(runShortTool.description.length < 260, true);
+	assert.match(runShortTool.description, /compact FlowDesk command-backed run alias/);
+	assert.match(runShortTool.description, /Requires explicit runMode/);
+	assert.match(runShortTool.description, /no provider call/);
+	assert.match(runShortTool.description, /noReply authority/);
+	assert.doesNotMatch(runShortTool.description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	assert.deepEqual(Object.keys(runShortTool.args), [
+		"runMode",
+		"planRevisionId",
+		"workflowId",
+		"stepId",
+		"requestId",
+	]);
+});
+
+test("flowdesk_run_short requires explicit runMode and maps camelCase fields", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const runShortTool = tools[flowdeskRunShortToolName];
+	assert.ok(runShortTool);
+	await runShortTool.execute(
+		{
+			runMode: "guarded-dry-run",
+			planRevisionId: "plan-revision-short-1",
+			workflowId: "workflow-run-short-map",
+			stepId: "step-run-short-map",
+			requestId: "request.run short/explicit",
+		},
+		undefined as never,
+	);
+	assert.equal(calls[0]?.toolName, "flowdesk_run");
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.run.request.v1",
+		request_id: "request.run-short-explicit",
+		input_mode: "alias_command",
+		run_mode: "guarded-dry-run",
+		plan_revision_id: "plan-revision-short-1",
+		workflow_id: "workflow-run-short-map",
+		step_id: "step-run-short-map",
+	});
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realRunShortTool = realTools[flowdeskRunShortToolName];
+	assert.ok(realRunShortTool);
+	const missingRunMode = JSON.parse(
+		toolOutput(
+			await realRunShortTool.execute(
+				{
+					requestId: "request-run-short-missing-mode",
+					planRevisionId: "plan-revision-short-missing-mode",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(missingRunMode.handler?.ok, false);
+	assert.equal(missingRunMode.handler?.handlerMode, "request_schema_invalid");
+});
+
+test("flowdesk_run_short result matches flowdesk_run for equivalent fake-runtime payload", async () => {
+	const shortTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const runTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const runShortTool = shortTools[flowdeskRunShortToolName];
+	const runTool = runTools.flowdesk_run;
+	assert.ok(runShortTool);
+	assert.ok(runTool);
+	const short = JSON.parse(
+		toolOutput(
+			await runShortTool.execute(
+				{
+					requestId: "request-run-short-equivalent",
+					workflowId: "workflow-run-short-equivalent",
+					runMode: "fake-runtime",
+					planRevisionId: "plan-revision-run-short-equivalent",
+					stepId: "step-run-short-equivalent",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const lowLevel = JSON.parse(
+		toolOutput(
+			await runTool.execute(
+				{
+					schema_version: "flowdesk.run.request.v1",
+					request_id: "request-run-short-equivalent",
+					input_mode: "alias_command",
+					workflow_id: "workflow-run-short-equivalent",
+					run_mode: "fake-runtime",
+					plan_revision_id: "plan-revision-run-short-equivalent",
+					step_id: "step-run-short-equivalent",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(short, lowLevel);
+	assert.equal(short.providerCall, false);
+	assert.equal(short.runtimeExecution, false);
+	assert.equal(short.actualLaneLaunch, false);
+});
+
+test("flowdesk_run_short preserves managed-dispatch block parity", async () => {
+	const shortTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const runTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const runShortTool = shortTools[flowdeskRunShortToolName];
+	const runTool = runTools.flowdesk_run;
+	assert.ok(runShortTool);
+	assert.ok(runTool);
+	const short = JSON.parse(
+		toolOutput(
+			await runShortTool.execute(
+				{
+					requestId: "request-run-short-managed-block",
+					workflowId: "workflow-run-short-managed-block",
+					runMode: "managed-dispatch",
+					planRevisionId: "plan-revision-run-short-managed-block",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	const lowLevel = JSON.parse(
+		toolOutput(
+			await runTool.execute(
+				{
+					schema_version: "flowdesk.run.request.v1",
+					request_id: "request-run-short-managed-block",
+					input_mode: "alias_command",
+					workflow_id: "workflow-run-short-managed-block",
+					run_mode: "managed-dispatch",
+					plan_revision_id: "plan-revision-run-short-managed-block",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.deepEqual(short, lowLevel);
+	assert.equal(short.status, "blocked_before_dispatch");
+	assert.equal(short.dispatchAttempted, false);
+});
+
+test("flowdesk_run_short does not widen authority or forward approval identity fields", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakeRunShortTool = fakeTools[flowdeskRunShortToolName];
+	assert.ok(fakeRunShortTool);
+	await fakeRunShortTool.execute(
+		{
+			requestId: "request-run-short-no-approval-synthesis",
+			runMode: "guarded-dry-run",
+			planRevisionId: "plan-revision-no-approval-synthesis",
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			redactedIntakeRef: "intake-should-not-forward",
+			managed_dispatch_request: { should: "not-forward" },
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"input_mode",
+		"plan_revision_id",
+		"request_id",
+		"run_mode",
+		"schema_version",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realRunShortTool = realTools[flowdeskRunShortToolName];
+	assert.ok(realRunShortTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realRunShortTool.execute(
+				{
+					requestId: "request-run-short-authority",
+					runMode: "guarded-dry-run",
+					planRevisionId: "plan-revision-run-short-authority",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
 });
 
 test("flowdesk_check registers with compact diagnostic description", async () => {

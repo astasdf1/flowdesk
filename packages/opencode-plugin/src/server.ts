@@ -163,6 +163,7 @@ export const flowdeskPreSpikeDoctorToolName =
 export const flowdeskCheckToolName = "flowdesk_check" as const;
 export const flowdeskDebugToolName = "flowdesk_debug" as const;
 export const flowdeskPlanShortToolName = "flowdesk_plan_short" as const;
+export const flowdeskRunShortToolName = "flowdesk_run_short" as const;
 export const flowdeskResumeStatusToolName = "flowdesk_resume_status" as const;
 export const flowdeskRetryDiagToolName = "flowdesk_retry_diag" as const;
 export const flowdeskAbortCmdToolName = "flowdesk_abort_cmd" as const;
@@ -1124,6 +1125,82 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					}),
 				];
 				return [lowLevelEntry, planShortEntry];
+			}
+			if (stub.toolName === "flowdesk_run") {
+				const runShortEntry: FlowDeskOpenCodeToolEntry = [
+					flowdeskRunShortToolName,
+					tool({
+						description:
+							"Run a compact FlowDesk command-backed run alias. Requires explicit runMode and planRevisionId; no provider call, lane launch, fallback, write, hard-chat, or noReply authority.",
+						args: {
+							runMode: tool.schema
+								.enum(["guarded-dry-run", "fake-runtime", "managed-dispatch"])
+								.describe("Required run mode to forward explicitly."),
+							planRevisionId: tool.schema
+								.string()
+								.describe("Required plan revision id to run."),
+							workflowId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional workflow id to forward."),
+							stepId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional step id to forward."),
+							requestId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded request id."),
+						},
+						async execute(request) {
+							const record: Record<string, unknown> = isRecord(request)
+								? request
+								: {};
+							const workflowId =
+								typeof record.workflowId === "string" &&
+								record.workflowId.trim().length > 0
+									? record.workflowId
+									: undefined;
+							const stepId =
+								typeof record.stepId === "string" &&
+								record.stepId.trim().length > 0
+									? record.stepId
+									: undefined;
+							const lowLevelRequest = {
+								schema_version: "flowdesk.run.request.v1" as const,
+								request_id: safeToken(
+									record.requestId,
+									`run-short-${randomUUID()}`,
+								),
+								input_mode: "alias_command" as const,
+								run_mode:
+									record.runMode === "guarded-dry-run" ||
+									record.runMode === "fake-runtime" ||
+									record.runMode === "managed-dispatch"
+										? record.runMode
+										: "",
+								plan_revision_id:
+									typeof record.planRevisionId === "string"
+										? record.planRevisionId
+										: "",
+								...(workflowId === undefined ? {} : { workflow_id: workflowId }),
+								...(stepId === undefined ? {} : { step_id: stepId }),
+							};
+							if (lowLevelRequest.run_mode === "managed-dispatch") {
+								return JSON.stringify(
+									await evaluateFlowDeskManagedDispatchRunRoute(
+										lowLevelRequest,
+										managedDispatchRunRoute,
+									),
+								);
+							}
+							return JSON.stringify(
+								session.evaluate("flowdesk_run", lowLevelRequest),
+							);
+						},
+					}),
+				];
+				return [lowLevelEntry, runShortEntry];
 			}
 			if (stub.toolName === "flowdesk_export_debug") {
 				const debugEntry: FlowDeskOpenCodeToolEntry = [
