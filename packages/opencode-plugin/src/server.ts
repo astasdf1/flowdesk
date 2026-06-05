@@ -162,6 +162,7 @@ export const flowdeskPreSpikeDoctorToolName =
 	"flowdesk_pre_spike_doctor" as const;
 export const flowdeskCheckToolName = "flowdesk_check" as const;
 export const flowdeskDebugToolName = "flowdesk_debug" as const;
+export const flowdeskPlanShortToolName = "flowdesk_plan_short" as const;
 export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption =
 	"fds1SchemaConversionProbe" as const;
@@ -1056,6 +1057,71 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					},
 				}),
 			];
+			if (stub.toolName === "flowdesk_plan") {
+				const planShortEntry: FlowDeskOpenCodeToolEntry = [
+					flowdeskPlanShortToolName,
+					tool({
+						description:
+							"Create a compact FlowDesk plan record. Planning-only: no provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or noReply authority.",
+						args: {
+							goalSummary: tool.schema
+								.string()
+								.describe("Required planning goal summary."),
+							scopeSummary: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded planning scope summary."),
+							riskHint: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded planning risk hint."),
+							workflowId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional workflow id to forward."),
+							requestId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded request id."),
+						},
+						async execute(request) {
+							const record: Record<string, unknown> = isRecord(request)
+								? request
+								: {};
+							const workflowId =
+								typeof record.workflowId === "string" &&
+								record.workflowId.trim().length > 0
+									? record.workflowId
+									: undefined;
+							const lowLevelRequest = {
+								schema_version: "flowdesk.plan.request.v1" as const,
+								request_id: safeToken(
+									record.requestId,
+									`plan-${randomUUID()}`,
+								),
+								input_mode: "alias_command" as const,
+								...(workflowId === undefined ? {} : { workflow_id: workflowId }),
+								goal_summary: boundedText(
+									typeof record.goalSummary === "string" ? record.goalSummary : "",
+									"FlowDesk planning request.",
+								),
+								scope_summary: boundedText(
+									typeof record.scopeSummary === "string" ? record.scopeSummary : "",
+									"Compact command-backed planning scope.",
+								),
+								risk_hint: boundedText(
+									typeof record.riskHint === "string" ? record.riskHint : "",
+									"Planning-only; no execution authority requested.",
+								),
+							};
+							return JSON.stringify(
+								session.evaluate("flowdesk_plan", lowLevelRequest),
+							);
+						},
+					}),
+				];
+				return [lowLevelEntry, planShortEntry];
+			}
 			if (stub.toolName === "flowdesk_export_debug") {
 				const debugEntry: FlowDeskOpenCodeToolEntry = [
 					flowdeskDebugToolName,

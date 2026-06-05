@@ -35,6 +35,7 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskCheckToolName,
 	flowdeskDebugToolName,
+	flowdeskPlanShortToolName,
 	flowdeskAgentTaskRunOption,
 	flowdeskAgentTaskRunToolName,
 	flowdeskTaskToolName,
@@ -705,6 +706,8 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
 		...FLOWDESK_RELEASE_1_COMMAND_MANIFEST.flatMap((entry) =>
 			entry.toolName === "flowdesk_doctor"
 				? [entry.toolName, flowdeskCheckToolName]
+				: entry.toolName === "flowdesk_plan"
+					? [entry.toolName, flowdeskPlanShortToolName]
 				: [entry.toolName],
 		),
 		flowdeskChatIntakeToolName,
@@ -3847,6 +3850,8 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
 		FLOWDESK_RELEASE_1_COMMAND_MANIFEST.flatMap((entry) =>
 			entry.toolName === "flowdesk_doctor"
 				? [entry.toolName, flowdeskCheckToolName]
+				: entry.toolName === "flowdesk_plan"
+					? [entry.toolName, flowdeskPlanShortToolName]
 				: entry.toolName === "flowdesk_export_debug"
 					? [entry.toolName, flowdeskDebugToolName]
 					: [entry.toolName],
@@ -3973,6 +3978,276 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
 		"request_schema_invalid",
 	);
 	assert.equal(invalidPlanResult.localState?.stateWriteApplied, false);
+});
+
+test("flowdesk_plan_short registers only with command-backed planning and has compact description", async () => {
+	const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: false,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		},
+	)) as ChatMessageHooks;
+	assert.equal(disabledHooks.tool?.flowdesk_plan, undefined);
+	assert.equal(disabledHooks.tool?.[flowdeskPlanShortToolName], undefined);
+
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	})) as ChatMessageHooks;
+	assert.ok(hooks.tool?.flowdesk_plan);
+	const planShortTool = hooks.tool?.[flowdeskPlanShortToolName];
+	assert.ok(planShortTool);
+	assert.equal(planShortTool.description.length < 260, true);
+	assert.match(planShortTool.description, /compact FlowDesk plan record/);
+	assert.match(planShortTool.description, /Planning-only/);
+	assert.match(planShortTool.description, /no provider/);
+	assert.match(planShortTool.description, /noReply authority/);
+	assert.doesNotMatch(planShortTool.description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	assert.deepEqual(Object.keys(planShortTool.args), [
+		"goalSummary",
+		"scopeSummary",
+		"riskHint",
+		"workflowId",
+		"requestId",
+	]);
+});
+
+test("flowdesk_plan_short maps empty defaultable fields safely and generates bounded request id", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const planShortTool = tools[flowdeskPlanShortToolName];
+	assert.ok(planShortTool);
+	const result = JSON.parse(
+		toolOutput(
+			await planShortTool.execute(
+				{
+					goalSummary: " ",
+					scopeSummary: "",
+					riskHint: "",
+					workflowId: "",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.ok, true);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.toolName, "flowdesk_plan");
+	assert.deepEqual(
+		{
+			schema_version: calls[0]?.request.schema_version,
+			input_mode: calls[0]?.request.input_mode,
+			goal_summary: calls[0]?.request.goal_summary,
+			scope_summary: calls[0]?.request.scope_summary,
+			risk_hint: calls[0]?.request.risk_hint,
+			workflow_id: calls[0]?.request.workflow_id,
+		},
+		{
+			schema_version: "flowdesk.plan.request.v1",
+			input_mode: "alias_command",
+			goal_summary: "FlowDesk planning request.",
+			scope_summary: "Compact command-backed planning scope.",
+			risk_hint: "Planning-only; no execution authority requested.",
+			workflow_id: undefined,
+		},
+	);
+	const requestId = String(calls[0]?.request.request_id);
+	assert.match(requestId, /^plan-[A-Za-z0-9_.:-]+$/);
+	assert.equal(requestId.length <= 80, true);
+});
+
+test("flowdesk_plan_short forwards explicit planning fields exactly", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const planShortTool = tools[flowdeskPlanShortToolName];
+	assert.ok(planShortTool);
+	await planShortTool.execute(
+		{
+			goalSummary: "Implement compact planning wrapper",
+			scopeSummary: "Server tool registration and focused tests",
+			riskHint: "Planning-only command-backed alias",
+			workflowId: "workflow-plan-short-explicit",
+			requestId: "request.plan explicit/unsafe spaces",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.plan.request.v1",
+		request_id: "request.plan-explicit-unsafe-spaces",
+		input_mode: "alias_command",
+		workflow_id: "workflow-plan-short-explicit",
+		goal_summary: "Implement compact planning wrapper",
+		scope_summary: "Server tool registration and focused tests",
+		risk_hint: "Planning-only command-backed alias",
+	});
+});
+
+test("flowdesk_plan_short result matches flowdesk_plan for equivalent payload", async () => {
+	const shortTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const planTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const planShortTool = shortTools[flowdeskPlanShortToolName];
+	const planTool = planTools.flowdesk_plan;
+	assert.ok(planShortTool);
+	assert.ok(planTool);
+	const short = JSON.parse(
+		toolOutput(
+			await planShortTool.execute(
+				{
+					requestId: "request-plan-short-equivalent",
+					workflowId: "workflow-plan-short-equivalent",
+					goalSummary: "Equivalent compact plan",
+					scopeSummary: "Equivalent planning scope",
+					riskHint: "Equivalent planning risk",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const lowLevel = JSON.parse(
+		toolOutput(
+			await planTool.execute(
+				{
+					schema_version: "flowdesk.plan.request.v1",
+					request_id: "request-plan-short-equivalent",
+					input_mode: "alias_command",
+					workflow_id: "workflow-plan-short-equivalent",
+					goal_summary: "Equivalent compact plan",
+					scope_summary: "Equivalent planning scope",
+					risk_hint: "Equivalent planning risk",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(short, lowLevel);
+});
+
+test("flowdesk_plan_short does not widen authority or synthesize approval identity", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakePlanShortTool = fakeTools[flowdeskPlanShortToolName];
+	assert.ok(fakePlanShortTool);
+	await fakePlanShortTool.execute(
+		{
+			requestId: "request-plan-short-no-approval-synthesis",
+			goalSummary: "Plan without approvals",
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			redactedIntakeRef: "intake-should-not-forward",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"goal_summary",
+		"input_mode",
+		"request_id",
+		"risk_hint",
+		"schema_version",
+		"scope_summary",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realPlanShortTool = realTools[flowdeskPlanShortToolName];
+	assert.ok(realPlanShortTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realPlanShortTool.execute(
+				{
+					requestId: "request-plan-short-authority",
+					goalSummary: "Authority check plan",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("flowdesk_plan_short ignores unknown approval and identity fields safely", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const planShortTool = tools[flowdeskPlanShortToolName];
+	assert.ok(planShortTool);
+	await planShortTool.execute(
+		{
+			requestId: "request-plan-short-unknown-fields",
+			goalSummary: "Unknown field handling",
+			workflow_id: "workflow-snake-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			actorRef: "actor-should-not-forward",
+			profileRef: "profile-should-not-forward",
+		},
+		undefined as never,
+	);
+	const request = calls[0]?.request ?? {};
+	assert.equal("workflow_id" in request, false);
+	assert.equal("user_approval_ref" in request, false);
+	assert.equal("confirmation_nonce" in request, false);
+	assert.equal("actorRef" in request, false);
+	assert.equal("profileRef" in request, false);
 });
 
 test("flowdesk_check registers with compact diagnostic description", async () => {
