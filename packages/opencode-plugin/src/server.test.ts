@@ -69,6 +69,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskQuickFallbackRunOption,
 	flowdeskQuickFallbackRunToolName,
 	flowdeskRebindToolName,
+	flowdeskResumeStatusToolName,
 	flowdeskResultToolName,
 	flowdeskQuickReviewerRunOption,
 	flowdeskQuickReviewerRunToolName,
@@ -4621,6 +4622,255 @@ test("flowdesk_debug does not widen authority or synthesize approval identity", 
 	assert.equal(result.actualLaneLaunch, false);
 	assert.equal(result.fallbackAuthority, false);
 	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("flowdesk_resume_status registers beside resume with compact description", async () => {
+	const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: false,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		},
+	)) as ChatMessageHooks;
+	assert.equal(disabledHooks.tool?.flowdesk_resume, undefined);
+	assert.equal(disabledHooks.tool?.[flowdeskResumeStatusToolName], undefined);
+
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	})) as ChatMessageHooks;
+	assert.ok(hooks.tool?.flowdesk_resume);
+	const resumeStatusTool = hooks.tool?.[flowdeskResumeStatusToolName];
+	assert.ok(resumeStatusTool);
+	assert.equal(resumeStatusTool.description.length < 260, true);
+	assert.match(resumeStatusTool.description, /resume checkpoint status/);
+	assert.match(resumeStatusTool.description, /Diagnostics only/);
+	assert.match(resumeStatusTool.description, /no provider/);
+	assert.match(resumeStatusTool.description, /noReply authority/);
+	assert.doesNotMatch(resumeStatusTool.description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	assert.deepEqual(Object.keys(resumeStatusTool.args), [
+		"checkpointId",
+		"requestId",
+	]);
+});
+
+test("flowdesk_resume_status maps checkpoint and generates bounded request id", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const resumeStatusTool = tools[flowdeskResumeStatusToolName];
+	assert.ok(resumeStatusTool);
+	const result = JSON.parse(
+		toolOutput(
+			await resumeStatusTool.execute(
+				{ checkpointId: "checkpoint-resume-status-default" },
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.ok, true);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.toolName, "flowdesk_resume");
+	assert.deepEqual(
+		{
+			schema_version: calls[0]?.request.schema_version,
+			input_mode: calls[0]?.request.input_mode,
+			checkpoint_id: calls[0]?.request.checkpoint_id,
+			resume_mode: calls[0]?.request.resume_mode,
+		},
+		{
+			schema_version: "flowdesk.resume.request.v1",
+			input_mode: "alias_command",
+			checkpoint_id: "checkpoint-resume-status-default",
+			resume_mode: "status_only",
+		},
+	);
+	const requestId = String(calls[0]?.request.request_id);
+	assert.match(requestId, /^resume-status-[A-Za-z0-9_.:-]+$/);
+	assert.equal(requestId.length <= 80, true);
+});
+
+test("flowdesk_resume_status forwards explicit request id and status-only mode", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const resumeStatusTool = tools[flowdeskResumeStatusToolName];
+	assert.ok(resumeStatusTool);
+	await resumeStatusTool.execute(
+		{
+			checkpointId: "checkpoint-resume-status-explicit",
+			requestId: "request.resume status/unsafe spaces",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.resume.request.v1",
+		request_id: "request.resume-status-unsafe-spaces",
+		input_mode: "alias_command",
+		checkpoint_id: "checkpoint-resume-status-explicit",
+		resume_mode: "status_only",
+	});
+});
+
+test("flowdesk_resume_status result matches flowdesk_resume for equivalent payload", async () => {
+	const statusTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const resumeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const resumeStatusTool = statusTools[flowdeskResumeStatusToolName];
+	const resumeTool = resumeTools.flowdesk_resume;
+	assert.ok(resumeStatusTool);
+	assert.ok(resumeTool);
+	const status = JSON.parse(
+		toolOutput(
+			await resumeStatusTool.execute(
+				{
+					requestId: "request-resume-status-equivalent",
+					checkpointId: "checkpoint-resume-status-equivalent",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const lowLevel = JSON.parse(
+		toolOutput(
+			await resumeTool.execute(
+				{
+					schema_version: "flowdesk.resume.request.v1",
+					request_id: "request-resume-status-equivalent",
+					input_mode: "alias_command",
+					checkpoint_id: "checkpoint-resume-status-equivalent",
+					resume_mode: "status_only",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(status, lowLevel);
+});
+
+test("flowdesk_resume_status does not widen authority or synthesize identity", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakeResumeStatusTool = fakeTools[flowdeskResumeStatusToolName];
+	assert.ok(fakeResumeStatusTool);
+	await fakeResumeStatusTool.execute(
+		{
+			requestId: "request-resume-status-no-identity-synthesis",
+			checkpointId: "checkpoint-resume-status-no-identity-synthesis",
+			workflowId: "workflow-should-not-forward",
+			workflow_id: "workflow-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			redactedIntakeRef: "intake-should-not-forward",
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"checkpoint_id",
+		"input_mode",
+		"request_id",
+		"resume_mode",
+		"schema_version",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realResumeStatusTool = realTools[flowdeskResumeStatusToolName];
+	assert.ok(realResumeStatusTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realResumeStatusTool.execute(
+				{
+					requestId: "request-resume-status-authority",
+					checkpointId: "checkpoint-resume-status-authority",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("flowdesk_resume_status ignores unknown approval and identity fields safely", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const resumeStatusTool = tools[flowdeskResumeStatusToolName];
+	assert.ok(resumeStatusTool);
+	await resumeStatusTool.execute(
+		{
+			requestId: "request-resume-status-unknown-fields",
+			checkpointId: "checkpoint-resume-status-unknown-fields",
+			workflow_id: "workflow-snake-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+			actorRef: "actor-should-not-forward",
+			profileRef: "profile-should-not-forward",
+		},
+		undefined as never,
+	);
+	const request = calls[0]?.request ?? {};
+	assert.equal("workflow_id" in request, false);
+	assert.equal("user_approval_ref" in request, false);
+	assert.equal("confirmation_nonce" in request, false);
+	assert.equal("actorRef" in request, false);
+	assert.equal("profileRef" in request, false);
 });
 
 test("server plugin allows explicit opt-out of local tools and natural-language routing", async () => {

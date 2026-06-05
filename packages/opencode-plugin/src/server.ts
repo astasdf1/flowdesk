@@ -163,6 +163,7 @@ export const flowdeskPreSpikeDoctorToolName =
 export const flowdeskCheckToolName = "flowdesk_check" as const;
 export const flowdeskDebugToolName = "flowdesk_debug" as const;
 export const flowdeskPlanShortToolName = "flowdesk_plan_short" as const;
+export const flowdeskResumeStatusToolName = "flowdesk_resume_status" as const;
 export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption =
 	"fds1SchemaConversionProbe" as const;
@@ -1178,6 +1179,44 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					}),
 				];
 				return [lowLevelEntry, debugEntry];
+			}
+			if (stub.toolName === "flowdesk_resume") {
+				const resumeStatusEntry: FlowDeskOpenCodeToolEntry = [
+					flowdeskResumeStatusToolName,
+					tool({
+						description:
+							"Preview FlowDesk resume checkpoint status. Diagnostics only; no provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or noReply authority.",
+						args: {
+							checkpointId: tool.schema
+								.string()
+								.describe("Required checkpoint id to inspect."),
+							requestId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded request id."),
+						},
+						async execute(request) {
+							const record: Record<string, unknown> = isRecord(request)
+								? request
+								: {};
+							const lowLevelRequest = {
+								schema_version: "flowdesk.resume.request.v1" as const,
+								request_id: safeToken(
+									record.requestId,
+									`resume-status-${randomUUID()}`,
+								),
+								input_mode: "alias_command" as const,
+								checkpoint_id:
+									typeof record.checkpointId === "string" ? record.checkpointId : "",
+								resume_mode: "status_only" as const,
+							};
+							return JSON.stringify(
+								session.evaluate("flowdesk_resume", lowLevelRequest),
+							);
+						},
+					}),
+				];
+				return [lowLevelEntry, resumeStatusEntry];
 			}
 			if (stub.toolName !== "flowdesk_doctor") return [lowLevelEntry];
 			const checkEntry: FlowDeskOpenCodeToolEntry = [
