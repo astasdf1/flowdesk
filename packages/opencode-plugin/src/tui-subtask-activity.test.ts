@@ -98,6 +98,59 @@ test("TUI subtask activity renders effective nudge count from cache", () => {
 	}
 });
 
+test("TUI subtask activity truncates sidebar task summaries to 25 chars and 5 words", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-label-width-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [
+					{ workflowId: "workflow-label-width", laneId: "lane-task-label-width", taskSummary: "123456789012345678901234567890", state: "running", classification: "progressing_normal", startedAt: "2026-05-29T00:00:00.000Z", recoveryActionRefs: ["/flowdesk-status"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		const view = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, now: () => new Date("2026-05-29T00:01:00.000Z") });
+		assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(view), [
+			"Subtasks:",
+			"… 09:00 1234567890123456789012345",
+		]);
+
+		const wordLimitedRoot = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-label-words-"));
+		const wordLimitedUiDir = join(wordLimitedRoot, ".flowdesk", "ui");
+		mkdirSync(wordLimitedUiDir, { recursive: true });
+		writeFileSync(
+			join(wordLimitedUiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-05-29T00:00:00.000Z",
+				expires_at: "2026-05-29T00:02:00.000Z",
+				rows: [
+					{ workflowId: "workflow-label-words", laneId: "lane-task-label-words", taskSummary: "one two three four five six", state: "running", classification: "progressing_normal", startedAt: "2026-05-29T00:00:00.000Z", recoveryActionRefs: ["/flowdesk-status"] },
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+		try {
+			const wordLimitedView = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: wordLimitedRoot, now: () => new Date("2026-05-29T00:01:00.000Z") });
+			assert.deepEqual(formatFlowDeskTuiSubtaskActivityCompactLines(wordLimitedView), [
+				"Subtasks:",
+				"… 09:00 one two three four five",
+			]);
+		} finally {
+			rmSync(wordLimitedRoot, { recursive: true, force: true });
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("TUI subtask activity view degrades to command fallback when cache is absent", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-subtasks-missing-"));
 	try {
@@ -360,7 +413,28 @@ test("TUI subtask activity compact lines keep titles compact enough for one line
 	}, 5);
 	assert.deepEqual(lines, [
 		"Subtasks:",
-		"… 09:13 Investigate password",
+		"… 09:13 Investigate password rese",
+	]);
+});
+
+test("TUI subtask activity compact lines support a three-row sidebar cap", () => {
+	const lines = formatFlowDeskTuiSubtaskActivityCompactLines({
+		status: "loaded",
+		observedAt: "2026-05-29T00:00:00.000Z",
+		rootDir: ".flowdesk",
+		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"],
+		rows: [
+			{ workflowId: "w", laneId: "lane-task-one", taskId: "task-one", taskSummary: "One", state: "running", classification: "progressing_normal", lastObservedAt: "2026-05-29T00:01:00.000Z", recoveryActionRefs: ["/flowdesk-status"] },
+			{ workflowId: "w", laneId: "lane-task-two", taskId: "task-two", taskSummary: "Two", state: "running", classification: "progressing_normal", lastObservedAt: "2026-05-29T00:02:00.000Z", recoveryActionRefs: ["/flowdesk-status"] },
+			{ workflowId: "w", laneId: "lane-task-three", taskId: "task-three", taskSummary: "Three", state: "running", classification: "progressing_normal", lastObservedAt: "2026-05-29T00:03:00.000Z", recoveryActionRefs: ["/flowdesk-status"] },
+			{ workflowId: "w", laneId: "lane-task-four", taskId: "task-four", taskSummary: "Four", state: "running", classification: "progressing_normal", lastObservedAt: "2026-05-29T00:04:00.000Z", recoveryActionRefs: ["/flowdesk-status"] },
+		],
+	}, 3);
+	assert.deepEqual(lines, [
+		"Subtasks:",
+		"… 09:04 Four",
+		"… 09:03 Three",
+		"… 09:02 Two",
 	]);
 });
 

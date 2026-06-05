@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	reloadFlowDeskSessionEvidenceV1,
@@ -57,6 +57,8 @@ type CompletionWakeReadyRow = {
 	taskSummaries: readonly string[];
 	notificationLabel: string;
 	nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
+	/** Parent/main-session model snapshot; wake consumer prefers this over config fallback. */
+	parentWakeProviderQualifiedModelId?: string;
 };
 
 type AgentTaskLogIndexRow = {
@@ -80,8 +82,11 @@ type AgentTaskLogIndexRow = {
 	openCodeLocalSessionRefs: { childSessionId?: string; sessionDiffPath?: string };
 };
 
-const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch.authority|fallback.authority|reselect.authority/i;
-const SUBTASK_ACTIVITY_CACHE_ROW_LIMIT = 20;
+const SIDEBAR_TASK_LABEL_MAX_WORDS = 5;
+const SIDEBAR_TASK_LABEL_MAX_CHARS = 25;
+const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidden injection|opencode\srun|dispatch\.authority|fallback\.authority|reselect\.authority/i;
+const SUBTASK_ACTIVITY_CACHE_GLOBAL_ROW_LIMIT = 100;
+const SUBTASK_ACTIVITY_CACHE_SESSION_PROTECTED_ROW_LIMIT = 20;
 
 const GENERIC_TASK_SUMMARY_WORDS = new Set([
 	"architecture",
@@ -102,6 +107,33 @@ const GENERIC_TASK_SUMMARY_WORDS = new Set([
 	"inspect",
 	"assess",
 	"propose",
+	"review",
+	"summarize",
+	"should",
+	"be",
+	"am",
+	"is",
+	"are",
+	"was",
+	"were",
+	"been",
+	"being",
+	"do",
+	"does",
+	"did",
+	"have",
+	"has",
+	"had",
+	"will",
+	"would",
+	"can",
+	"could",
+	"may",
+	"might",
+	"must",
+	"shall",
+	"safely",
+	"useful",
 ]);
 
 function getString(record: Record<string, unknown>, key: string): string | undefined {
@@ -135,6 +167,52 @@ function readJsonRecord(path: string): Record<string, unknown> | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+function readRawAgentTaskContextByLane(rootDir: string, workflowId: string): Map<string, FlowDeskSessionEvidenceReloadEntryV1> {
+	const byLane = new Map<string, FlowDeskSessionEvidenceReloadEntryV1>();
+	try {
+		const dir = join(rootDir, ".flowdesk", "sessions", workflowId, "evidence", "agent-task-context");
+		if (!existsSync(dir)) return byLane;
+		for (const name of readdirSync(dir)) {
+			if (!name.endsWith(".json")) continue;
+			const record = readJsonRecord(join(dir, name));
+			if (record === undefined || record.schema_version !== "flowdesk.agent_task_context.v1") continue;
+			if (getString(record, "workflow_id") !== workflowId) continue;
+			const laneId = getString(record, "lane_id");
+			if (laneId === undefined) continue;
+			const relativePath = join(".flowdesk", "sessions", workflowId, "evidence", "agent-task-context", name);
+			const candidate: FlowDeskSessionEvidenceReloadEntryV1 = {
+				evidenceClass: "agent_task_context",
+				evidenceId: name.slice(0, -".json".length),
+				record,
+				path: relativePath,
+			};
+			const existing = byLane.get(laneId);
+			const candidateTime = observedTime(getString(record, "updated_at") ?? getString(record, "created_at") ?? getString(record, "observed_at"));
+			const existingTime = existing === undefined ? -1 : observedTime(getString(existing.record, "updated_at") ?? getString(existing.record, "created_at") ?? getString(existing.record, "observed_at"));
+			if (existing === undefined || candidateTime >= existingTime) byLane.set(laneId, candidate);
+		}
+	} catch {
+		return byLane;
+	}
+	return byLane;
+}
+
+function mergeRawAgentTaskContextFields(input: {
+	validated: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+	raw: Map<string, FlowDeskSessionEvidenceReloadEntryV1>;
+}): Map<string, FlowDeskSessionEvidenceReloadEntryV1> {
+	const merged = new Map(input.validated);
+	for (const [laneId, raw] of input.raw) {
+		const existing = merged.get(laneId);
+		if (existing === undefined) {
+			merged.set(laneId, raw);
+			continue;
+		}
+		merged.set(laneId, { ...existing, record: { ...existing.record, ...raw.record } });
+	}
+	return merged;
 }
 
 function observedTime(value: unknown): number {
@@ -230,13 +308,13 @@ function compactTaskSummary(value: string | undefined): string | undefined {
 		.replace(/\s+/g, " ")
 		.trim();
 	const source = firstSentence.length > 0 ? firstSentence : value.replace(/\s+/g, " ").trim();
-	if (FORBIDDEN_SUMMARY_MARKERS.test(source)) return undefined;
 	const words = source.match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
 	const usefulWords = words.filter((word) => !GENERIC_TASK_SUMMARY_WORDS.has(word.toLocaleLowerCase()));
 	const labelWords = usefulWords.length > 0 ? usefulWords : words;
-	const joined = labelWords.slice(0, 4).join(" ");
+	const joined = labelWords.slice(0, SIDEBAR_TASK_LABEL_MAX_WORDS).join(" ");
 	const compact = (joined.length > 0 ? joined : source).replace(/[^\p{L}\p{N}_ -]/gu, "").trim();
-	return compact.length > 0 ? compact.slice(0, 20) : undefined;
+	if (compact.length === 0 || FORBIDDEN_SUMMARY_MARKERS.test(compact)) return undefined;
+	return compact.slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS);
 }
 
 function safeSummaryPreview(value: string | undefined): string | undefined {
@@ -277,9 +355,40 @@ function mergeRowsByWorkflowLane(input: {
 		const key = `${row.workflowId}\u0000${row.laneId}`;
 		merged.set(key, choosePreferredRow(merged.get(key), row));
 	}
-	return [...merged.values()]
-		.sort((left, right) => rowDisplayTime(right) - rowDisplayTime(left))
-		.slice(0, SUBTASK_ACTIVITY_CACHE_ROW_LIMIT);
+	return retainSubtaskActivityRows([...merged.values()].sort((left, right) => rowDisplayTime(right) - rowDisplayTime(left)));
+}
+
+function retainSubtaskActivityRows(rowsNewestFirst: readonly UiRow[]): readonly UiRow[] {
+	if (rowsNewestFirst.length <= SUBTASK_ACTIVITY_CACHE_GLOBAL_ROW_LIMIT) return rowsNewestFirst;
+
+	const selected = new Set<string>();
+	const selectedRows: UiRow[] = [];
+	const rowsByParentSession = new Map<string, UiRow[]>();
+	for (const row of rowsNewestFirst) {
+		const parentSessionBucket = row.parentSessionRef ?? "global";
+		const bucket = rowsByParentSession.get(parentSessionBucket) ?? [];
+		bucket.push(row);
+		rowsByParentSession.set(parentSessionBucket, bucket);
+	}
+
+	const selectRow = (row: UiRow): void => {
+		if (selectedRows.length >= SUBTASK_ACTIVITY_CACHE_GLOBAL_ROW_LIMIT) return;
+		const key = `${row.workflowId}\u0000${row.laneId}`;
+		if (selected.has(key)) return;
+		selected.add(key);
+		selectedRows.push(row);
+	};
+
+	for (const bucket of rowsByParentSession.values()) {
+		for (const row of bucket.slice(0, SUBTASK_ACTIVITY_CACHE_SESSION_PROTECTED_ROW_LIMIT)) {
+			selectRow(row);
+		}
+	}
+	for (const row of rowsNewestFirst) {
+		selectRow(row);
+	}
+
+	return selectedRows.sort((left, right) => rowDisplayTime(right) - rowDisplayTime(left));
 }
 
 function mergeAgentTaskLogIndexRows(input: {
@@ -382,6 +491,7 @@ function mergeCompletionWakeReadyRows(input: {
 			if (workflowId === undefined || readyAt === undefined || dedupeKey === undefined || consumptionKey === undefined) continue;
 			if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready" && completionKind !== "awaiting_permission" && completionKind !== "diagnostic_attention") continue;
 			const parentSessionRef = getString(row, "parentSessionRef");
+			const wakeModel = getString(row, "parentWakeProviderQualifiedModelId");
 			merged.set(dedupeKey, {
 				workflowId,
 				...(parentSessionRef === undefined ? {} : { parentSessionRef }),
@@ -395,9 +505,10 @@ function mergeCompletionWakeReadyRows(input: {
 				taskIds: Array.isArray(row.taskIds) ? row.taskIds.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
 				taskResultRefs: Array.isArray(row.taskResultRefs) ? row.taskResultRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
 				taskFailedRefs: Array.isArray(row.taskFailedRefs) ? row.taskFailedRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
-				taskSummaries: Array.isArray(row.taskSummaries) ? row.taskSummaries.filter((value): value is string => typeof value === "string" && value.length > 0 && !FORBIDDEN_SUMMARY_MARKERS.test(value)).map((value) => value.slice(0, 20)).slice(0, 3) : [],
+				taskSummaries: Array.isArray(row.taskSummaries) ? row.taskSummaries.filter((value): value is string => typeof value === "string" && value.length > 0 && !FORBIDDEN_SUMMARY_MARKERS.test(value)).map((value) => value.slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS)).slice(0, 3) : [],
 				notificationLabel: getString(row, "notificationLabel")?.slice(0, 80) ?? "FlowDesk completion ready",
 				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+				...(wakeModel !== undefined && wakeModel.includes("/") ? { parentWakeProviderQualifiedModelId: wakeModel } : {}),
 			});
 		}
 	}
@@ -547,7 +658,10 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		);
 		const resultByLane = latestByLane(reload.entries, "task_result");
 		const failedByLane = latestByLane(reload.entries, "task_failed");
-		const contextByLane = latestByLane(reload.entries, "agent_task_context");
+		const contextByLane = mergeRawAgentTaskContextFields({
+			validated: latestByLane(reload.entries, "agent_task_context"),
+			raw: readRawAgentTaskContextByLane(input.rootDir, input.workflowId),
+		});
 		const progressByLane = latestByLane(reload.entries, "agent_task_progress");
 		const childSessionByLane = latestByLane(reload.entries, "agent_task_child_session");
 		// Some lanes reach a terminal state via lane_lifecycle alone (e.g. reviewer
@@ -726,6 +840,17 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const permissionWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:awaiting_permission:${wakeReadyIso}:${awaitingPermissionRows.length}`;
 		const diagnosticWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:diagnostic_attention:${wakeReadyIso}:${toolDiagnosticRows.length}`;
 		const terminalCompletedRows = rows.filter((row) => row.classification === "terminal" && (row.state === "task_result" || row.state === "invocation_failed" || row.state === "task_failed" || row.state === "no_output"));
+		// Resolve the parent/main-session launch snapshot from evidence so wake
+		// prompts route to the parent session's model, not the delegated lane model.
+		// Priority: explicit parent wake model > parent session launch snapshot. Do
+		// NOT fall back to provider_qualified_model_id; that is the lane/task model.
+		const parentWakeModelCandidates = [...contextByLane.values()]
+			.map((entry) => getString(entry.record, "parent_wake_provider_qualified_model_id"))
+			.filter((value): value is string => typeof value === "string" && value.includes("/"));
+		const parentSessionModelCandidates = parentWakeModelCandidates.length > 0 ? [] : [...contextByLane.values()]
+			.map((entry) => getString(entry.record, "parent_session_provider_qualified_model_id"))
+			.filter((value): value is string => typeof value === "string" && value.includes("/"));
+		const parentWakeModelId = parentWakeModelCandidates[0] ?? parentSessionModelCandidates[0];
 		const workflowWakeReadyRow: CompletionWakeReadyRow | undefined = terminalComplete ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
@@ -741,6 +866,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			taskSummaries: rows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
 			notificationLabel: ready ? "FlowDesk synthesis ready" : failedRefs.length > 0 ? "FlowDesk task completed with failures" : "FlowDesk task completed",
 			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+			...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
 		} : awaitingPermissionRows.length > 0 ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
@@ -756,6 +882,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			taskSummaries: awaitingPermissionRows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
 			notificationLabel: "FlowDesk lane awaiting OpenCode permission",
 			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+			...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
 		} : toolDiagnosticRows.length > 0 ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
@@ -771,6 +898,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			taskSummaries: toolDiagnosticRows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
 			notificationLabel: "FlowDesk lane diagnostic attention requested",
 			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+			...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
 		} : undefined;
 		const laneWakeRows: CompletionWakeReadyRow[] = terminalComplete ? [] : terminalCompletedRows.map((row) => {
 			const rowParentScope = row.parentSessionRef ?? "global";
@@ -791,6 +919,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				taskSummaries: row.taskSummary === undefined ? [] : [row.taskSummary],
 				notificationLabel: rowFailed ? "FlowDesk lane completed with failure" : "FlowDesk lane result ready",
 				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
+				...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
 			};
 		});
 		let wakeReadyRows: readonly CompletionWakeReadyRow[] = mergeCompletionWakeReadyRows({
@@ -799,6 +928,14 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		});
 		for (const row of laneWakeRows) {
 			wakeReadyRows = mergeCompletionWakeReadyRows({ existing: wakeReadyRows, row });
+		}
+		if (workflowWakeReadyRow === undefined && laneWakeRows.length === 0) {
+			const activeParentScopes = new Set(rows.map((row) => row.parentSessionRef ?? "global"));
+			wakeReadyRows = wakeReadyRows.filter((row) => {
+				if (row.workflowId !== input.workflowId) return true;
+				if (row.completionKind !== "awaiting_permission" && row.completionKind !== "diagnostic_attention") return true;
+				return !activeParentScopes.has(row.parentSessionRef ?? "global");
+			});
 		}
 		writeFileSync(wakeReadyCachePath, `${JSON.stringify({
 			schema_version: "flowdesk.completion_wake_ready_cache.v1",

@@ -39,7 +39,8 @@ test("completion wake main-session consumer uses primary path prompt shape and m
 		assert.equal((prompts[0] as { path: { id: string } }).path.id, "ses_parent123");
 		assert.equal((prompts[0] as { query: { directory: string } }).query.directory, "/workspace/flowdesk");
 		assert.equal((prompts[0] as { body: { noReply: boolean } }).body.noReply, false);
-		assert.match(JSON.stringify(prompts[0]), /\[FlowDesk:done\]/);
+		assert.equal((prompts[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]?.text, "[FlowDesk:done] workflow-main-wake. Check /flowdesk-status.");
+		assert.doesNotMatch(JSON.stringify(prompts[0]), /Review API|FlowDesk synthesis ready/);
 
 		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedAt?: string; consumedBy?: string }> };
 		assert.equal(ready.rows[0]?.consumed, true);
@@ -58,6 +59,41 @@ test("completion wake main-session consumer skips when prompt client is unavaila
 	assert.equal(result.status, "main_session_wake_skipped");
 	assert.equal(result.retryScheduled, 0);
 	assert.equal(result.skippedReason, "opencode_sdk_client_unavailable");
+});
+
+test("completion wake main-session consumer skips while another consumer holds the lock", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-lock-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-04T00:00:00.000Z",
+			expires_at: "2026-06-04T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-main-wake-lock",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "auto_next_ready",
+				readyAt: "2026-06-04T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-main-wake-lock",
+				consumptionKey: "ses-ses_parent123:workflow-main-wake-lock:2026-06-04T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: ["Lock test"],
+				notificationLabel: "FlowDesk synthesis ready",
+			}],
+		}, null, 2)}\n`, "utf8");
+		mkdirSync(join(uiDir, "completion-wake-consumer.lock"));
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+		});
+		assert.equal(result.status, "main_session_wake_skipped");
+		assert.equal(result.skippedReason, "wake_consumer_lock_active");
+		assert.equal(prompts.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("completion wake consumer treats awaiting permission as advisory attention only", async () => {
@@ -89,10 +125,50 @@ test("completion wake consumer treats awaiting permission as advisory attention 
 		});
 		assert.equal(result.status, "main_session_wake_completed");
 		assert.equal(prompts.length, 1);
-		const prompt = JSON.stringify(prompts[0]);
-		assert.match(prompt, /\[FlowDesk:permission\]/);
+		assert.equal((prompts[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]?.text, "[FlowDesk:permission] workflow-permission-wake. Check /flowdesk-status.");
+		assert.doesNotMatch(JSON.stringify(prompts[0]), /Permission check|FlowDesk lane awaiting OpenCode permission/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer uses minimal failure and attention wake prompts", async () => {
+	for (const scenario of [
+		{ completionKind: "task_failed", workflowId: "workflow-failed-wake", label: "Failure details", expected: "[FlowDesk:failed] workflow-failed-wake. Check /flowdesk-status." },
+		{ completionKind: "diagnostic_attention", workflowId: "workflow-attention-wake", label: "Diagnostic details", expected: "[FlowDesk:attention] workflow-attention-wake. Check /flowdesk-status." },
+	] as const) {
+		const root = mkdtempSync(join(tmpdir(), "flowdesk-minimal-wake-"));
+		try {
+			const uiDir = join(root, ".flowdesk", "ui");
+			mkdirSync(uiDir, { recursive: true });
+			writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+				schema_version: "flowdesk.completion_wake_ready_cache.v1",
+				observed_at: "2026-06-04T00:00:00.000Z",
+				expires_at: "2026-06-04T00:02:00.000Z",
+				rows: [{
+					workflowId: scenario.workflowId,
+					parentSessionRef: "ses-ses_parent123",
+					completionKind: scenario.completionKind,
+					readyAt: "2026-06-04T00:00:30.000Z",
+					dedupeKey: `ses-ses_parent123\u0000${scenario.workflowId}`,
+					consumptionKey: `ses-ses_parent123:${scenario.workflowId}:2026-06-04T00:00:30.000Z:1`,
+					consumed: false,
+					taskSummaries: [scenario.label],
+					notificationLabel: scenario.label,
+				}],
+			}, null, 2)}\n`, "utf8");
+			const prompts: unknown[] = [];
+			const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+				config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+				client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+				now: new Date("2026-06-04T00:01:00.000Z"),
+			});
+			assert.equal(result.status, "main_session_wake_completed");
+			assert.equal((prompts[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]?.text, scenario.expected);
+			assert.doesNotMatch(JSON.stringify(prompts[0]), new RegExp(scenario.label));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	}
 });
 
@@ -253,6 +329,126 @@ test("completion wake main-session consumer stops retrying at retry cap", async 
 		});
 		assert.equal(result.wakeSucceeded, 0);
 		assert.equal(result.retryScheduled, 0);
+		assert.equal(prompts.length, 0);
+		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedBy?: string }> };
+		assert.equal(ready.rows[0]?.consumed, true);
+		assert.equal(ready.rows[0]?.consumedBy, "main_session_prompt_retry_cap");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer uses parent wake model over config fallback", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-rowmodel-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-rowmodel-wake",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-rowmodel-wake",
+				consumptionKey: "ses-ses_parent123:workflow-rowmodel-wake:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				parentWakeProviderQualifiedModelId: "anthropic/claude-opus-4-20250514",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(prompts.length, 1);
+		// Parent wake model must override the config model
+		const body = (prompts[0] as { body: { model: { providerID: string; modelID: string } } }).body;
+		assert.equal(body.model.providerID, "anthropic");
+		assert.equal(body.model.modelID, "claude-opus-4-20250514");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer falls back to config model when parent wake model is invalid", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-badmodel-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-badmodel-wake",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-badmodel-wake",
+				consumptionKey: "ses-ses_parent123:workflow-badmodel-wake:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				parentWakeProviderQualifiedModelId: "invalid-no-slash",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(prompts.length, 1);
+		// Invalid parent wake model should fall back to config model
+		const body = (prompts[0] as { body: { model: { providerID: string; modelID: string } } }).body;
+		assert.equal(body.model.providerID, "openai");
+		assert.equal(body.model.modelID, "gpt-5.5");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer skips row when both row model and config model are invalid", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-nomodel-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-nomodel-wake",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-nomodel-wake",
+				consumptionKey: "ses-ses_parent123:workflow-nomodel-wake:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				parentWakeProviderQualifiedModelId: "also-invalid",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			// Config model is also invalid (no slash)
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "broken" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		// Row should be marked consumed via cap (no valid model), not dispatched
+		assert.equal(result.wakeSucceeded, 0);
 		assert.equal(prompts.length, 0);
 		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedBy?: string }> };
 		assert.equal(ready.rows[0]?.consumed, true);

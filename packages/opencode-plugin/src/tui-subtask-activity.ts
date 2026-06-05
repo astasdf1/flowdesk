@@ -44,6 +44,9 @@ export interface FlowDeskTuiSubtaskActivityViewV1 {
 	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
 }
 
+const SIDEBAR_TASK_LABEL_MAX_WORDS = 5;
+const SIDEBAR_TASK_LABEL_MAX_CHARS = 25;
+
 export interface FlowDeskTuiAutoNextReadyWorkflowV1 {
 	workflowId: string;
 	parentSessionRef?: string;
@@ -131,7 +134,7 @@ function stringField(record: Record<string, unknown>, key: string): string | und
 
 function safeTaskSummaries(value: unknown): readonly string[] {
 	return Array.isArray(value)
-		? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim().slice(0, 20)).slice(0, 3)
+		? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim().slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS)).slice(0, 3)
 		: [];
 }
 
@@ -219,7 +222,7 @@ function rowFromRecord(record: Record<string, unknown>): FlowDeskTuiSubtaskActiv
 		...(stringField(record, "lastNudgeAt") === undefined ? {} : { lastNudgeAt: stringField(record, "lastNudgeAt") }),
 		...(stringField(record, "lastActivityAt") === undefined ? {} : { lastActivityAt: stringField(record, "lastActivityAt") }),
 		...(numberField(record, "nudgeQuietPeriodMs") === undefined ? {} : { nudgeQuietPeriodMs: numberField(record, "nudgeQuietPeriodMs") }),
-		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, 20) }),
+		...(stringField(record, "taskSummary") === undefined ? {} : { taskSummary: stringField(record, "taskSummary")?.slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS) }),
 		recoveryActionRefs,
 	};
 }
@@ -428,7 +431,7 @@ export function loadFlowDeskTuiLatestSynthesisViewV1(input: {
 
 function shortTaskLabel(row: FlowDeskTuiSubtaskActivityRowV1): string {
 	if (row.taskSummary !== undefined && row.taskSummary.trim().length > 0) {
-		return row.taskSummary.trim().slice(0, 20);
+		return row.taskSummary.trim().split(/\s+/).slice(0, SIDEBAR_TASK_LABEL_MAX_WORDS).join(" ").slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS);
 	}
 	const source = row.taskId ?? row.laneId;
 	const compact = source.replace(/^task-/, "").replace(/^lane-task-/, "");

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type CompletionKind = "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
@@ -32,6 +32,8 @@ interface WakeRow {
 	noReply?: boolean;
 	taskSummaries: readonly string[];
 	notificationLabel: string;
+	/** Parent/main-session model snapshot; preferred over config fallback. */
+	parentWakeProviderQualifiedModelId?: string;
 }
 
 interface PromptClient {
@@ -118,6 +120,7 @@ function rowsFromCache(value: unknown): WakeRow[] {
 		const completionKind = stringField(raw, "completionKind");
 		if (workflowId === undefined || readyAt === undefined || dedupeKey === undefined || consumptionKey === undefined) continue;
 			if (completionKind !== "task_result" && completionKind !== "task_failed" && completionKind !== "auto_next_ready" && completionKind !== "awaiting_permission" && completionKind !== "diagnostic_attention") continue;
+		const wakeModel = stringField(raw, "parentWakeProviderQualifiedModelId");
 		rows.push({
 			workflowId,
 			...(stringField(raw, "parentSessionRef") === undefined ? {} : { parentSessionRef: stringField(raw, "parentSessionRef") }),
@@ -131,6 +134,7 @@ function rowsFromCache(value: unknown): WakeRow[] {
 			...(typeof raw.noReply === "boolean" ? { noReply: raw.noReply } : {}),
 			taskSummaries: Array.isArray(raw.taskSummaries) ? raw.taskSummaries.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim().slice(0, 20)).slice(0, 3) : [],
 			notificationLabel: stringField(raw, "notificationLabel")?.slice(0, 80) ?? "FlowDesk task completed",
+			...(wakeModel !== undefined && wakeModel.includes("/") ? { parentWakeProviderQualifiedModelId: wakeModel } : {}),
 		});
 	}
 	return rows;
@@ -139,8 +143,7 @@ function rowsFromCache(value: unknown): WakeRow[] {
 function wakePrompt(row: WakeRow): string {
 	const kind = row.completionKind;
 	const tag = kind === "awaiting_permission" ? "permission" : kind === "diagnostic_attention" ? "attention" : kind === "task_failed" ? "failed" : "done";
-	const summary = row.taskSummaries.length > 0 ? ` ${row.taskSummaries[0]}` : "";
-	return `[FlowDesk:${tag}] ${row.workflowId}${summary}. Check /flowdesk-status.`;
+	return `[FlowDesk:${tag}] ${row.workflowId}. Check /flowdesk-status.`;
 }
 
 async function dispatchParentWakePrompt(input: {
@@ -191,11 +194,18 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	if (input.client?.session === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "opencode_sdk_client_unavailable" };
 	const dispatch = input.client.session.promptAsync ?? input.client.session.prompt;
 	if (dispatch === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "session_prompt_unavailable" };
-	const model = modelParts(input.config.providerQualifiedModelId);
-	if (model === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "invalid_model_id" };
+	const configModel = modelParts(input.config.providerQualifiedModelId);
 	const uiDir = join(input.config.rootDir, ".flowdesk", "ui");
 	const readyPath = join(uiDir, "completion-wake-ready.json");
 	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_ready_cache_missing" };
+	mkdirSync(uiDir, { recursive: true });
+	const lockDir = join(uiDir, "completion-wake-consumer.lock");
+	try {
+		mkdirSync(lockDir);
+	} catch {
+		return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_consumer_lock_active" };
+	}
+	try {
 	const parsed = JSON.parse(readFileSync(readyPath, "utf8")) as unknown;
 	const allRows = rowsFromCache(parsed);
 	// Global cooldown: if any row was consumed within the last 10 seconds, skip
@@ -213,7 +223,6 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	// unconsumed rows survive in the cache and will be retried on the next cycle.
 	const rows = allRows.filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined).slice(0, 1);
 	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
-	mkdirSync(uiDir, { recursive: true });
 	const observedAt = (input.now ?? new Date()).toISOString();
 	let wakeSucceeded = 0;
 	let retryScheduled = 0;
@@ -232,6 +241,15 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 			retryKeys.add(row.consumptionKey);
 			continue;
 		}
+		// Model priority: parent/main-session snapshot > config fallback.
+		// Invalid parent snapshot silently falls back to config model.
+		const rowModel = row.parentWakeProviderQualifiedModelId !== undefined ? modelParts(row.parentWakeProviderQualifiedModelId) : undefined;
+		const effectiveModel = rowModel ?? configModel;
+		if (effectiveModel === undefined) {
+			// Neither row-specific nor config model is valid; cannot dispatch.
+			cappedKeys.add(row.consumptionKey);
+			continue;
+		}
 		const succeeded = await dispatchParentWakePrompt({
 			dispatch,
 			session: input.client.session,
@@ -239,7 +257,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 			directory: input.config.directory,
 			text: wakePrompt(row),
 			noReply: noReplyForWakeRow(row),
-			model,
+			model: effectiveModel,
 		});
 		if (succeeded) {
 			wakeSucceeded += 1;
@@ -270,4 +288,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		}
 	}
 	return { status: "main_session_wake_completed", wakeAttempted: rows.length, wakeSucceeded, retryScheduled };
+	} finally {
+		rmSync(lockDir, { recursive: true, force: true });
+	}
 }

@@ -32,12 +32,78 @@ test("completion UI cache derives useful task summaries from generic prompts", (
 
 		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
 		const rows = sidebar.rows as Array<Record<string, unknown>>;
-		assert.equal(rows[0].taskSummary, "TUI Next ready label");
+		assert.equal(rows[0].taskSummary, "TUI Next ready labels");
 		assert.equal(rows[0].parentSessionRef, "ses-parent-labels-1");
 		const ready = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "auto-next-ready.json"), "utf8")) as Record<string, unknown>;
 		const workflows = ready.workflows as Array<Record<string, unknown>>;
-		assert.deepEqual(workflows[0].taskSummaries, ["TUI Next ready label"]);
+		assert.deepEqual(workflows[0].taskSummaries, ["TUI Next ready labels"]);
 		assert.equal(workflows[0].parentSessionRef, "ses-parent-labels-1");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache keeps useful summary when prompt mentions dispatch_authority_enabled", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-dispatch-field-label-"));
+	try {
+		const workflowId = "workflow-labels-dispatch-field-1";
+		const laneId = "lane-task-labels-dispatch-field-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-labels-dispatch-field-1", {
+			schema_version: "flowdesk.agent_task_context.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-labels-dispatch-field-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_session_ref: "ses-parent-labels-dispatch-field-1",
+			prompt_text: "Fix sidebar label handling for dispatch_authority_enabled evidence rows.",
+			prompt_text_truncated: false,
+			prompt_text_sha256: "a".repeat(64),
+			redaction_version: "v1",
+			created_at: "2026-05-29T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-labels-dispatch-field-1", taskResult(workflowId, laneId, "task-labels-dispatch-field-1"));
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-05-29T00:01:00.000Z" });
+
+		const sidebar = readCache(rootDir, "subtask-activity-sidebar.json");
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		assert.equal(rows[0].taskSummary, "Fix sidebar label handlin");
+		assert.notEqual(rows[0].taskSummary, undefined);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache task summaries use at most five words", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-five-word-label-"));
+	try {
+		const workflowId = "workflow-labels-five-words-1";
+		const laneId = "lane-task-labels-five-words-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-labels-five-words-1", {
+			schema_version: "flowdesk.agent_task_context.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-labels-five-words-1",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_session_ref: "ses-parent-labels-five-words-1",
+			prompt_text: "Alpha beta gamma delta epsilon zeta eta theta.",
+			prompt_text_truncated: false,
+			prompt_text_sha256: "a".repeat(64),
+			redaction_version: "v1",
+			created_at: "2026-05-29T00:00:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-labels-five-words-1", taskResult(workflowId, laneId, "task-labels-five-words-1"));
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-05-29T00:01:00.000Z" });
+
+		const sidebar = readCache(rootDir, "subtask-activity-sidebar.json");
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		assert.equal(rows[0].taskSummary, "Alpha beta gamma delta ep");
+		assert.ok(String(rows[0].taskSummary).split(/\s+/).length <= 5);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -150,6 +216,8 @@ test("completion UI cache writes provider-free completion wake-ready row for syn
 			task_id: "task-wake-ready-1",
 			agent_ref: "agent-reviewer-gpt-frontier",
 			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_wake_provider_qualified_model_id: "anthropic/claude-opus-4-20250514",
+			parent_session_provider_qualified_model_id: "openai/gpt-5.5-main",
 			parent_session_ref: "ses-parent-wake-ready-1",
 			prompt_text: "Review wake ready notification metadata only; do not dispatch anything.",
 			prompt_text_truncated: false,
@@ -188,6 +256,50 @@ test("completion UI cache writes provider-free completion wake-ready row for syn
 		});
 		assert.equal(JSON.stringify(wake).includes("prompt_text"), false, "wake-ready cache must not persist raw prompt text");
 		assert.equal(JSON.stringify(wake).includes("do not dispatch anything"), false, "wake-ready cache must not persist raw prompt content");
+		// Wake-ready row must include the parent/main wake model, not the lane model.
+		assert.equal(rows[0].parentWakeProviderQualifiedModelId, "anthropic/claude-opus-4-20250514", "wake-ready row must persist parent wake model from evidence");
+		assert.equal("wakeProviderQualifiedModelId" in rows[0], false, "wake-ready row must not persist the old lane-model field");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache wake-ready row falls back to parent session model snapshot and ignores lane model", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-wake-model-"));
+	try {
+		const workflowId = "workflow-wake-model-1";
+		const completedLaneId = "lane-task-wake-model-1";
+		const runningLaneId = "lane-task-wake-running-model-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-wake-model-1", {
+			...agentTaskContext(workflowId, completedLaneId, "task-wake-model-1", "2026-06-05T00:00:00.000Z"),
+			parent_session_ref: "ses-parent-wake-model-1",
+			provider_qualified_model_id: "anthropic/claude-sonnet-4-20250514",
+			parent_session_provider_qualified_model_id: "anthropic/claude-opus-4-20250514",
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-wake-model-1", taskResult(workflowId, completedLaneId, "task-wake-model-1", "2026-06-05T00:02:00.000Z"));
+		writeEvidence(rootDir, workflowId, "agent_task_child_session", "child-wake-running-model-1", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: runningLaneId,
+			task_id: "task-wake-running-model-1",
+			child_session_id: "ses-child-wake-running-model-1",
+			parent_session_ref: "ses-parent-wake-model-1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-flowdesk-verifier-testing",
+			nudge_count: 0,
+			last_nudge_at: null,
+			created_at: "2026-06-05T00:01:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-06-05T00:02:01.000Z" });
+
+		const wake = readCache(rootDir, "completion-wake-ready.json");
+		const rows = wake.rows as Array<Record<string, unknown>>;
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0].workflowId, workflowId);
+		assert.equal(rows[0].parentWakeProviderQualifiedModelId, "anthropic/claude-opus-4-20250514", "wake row must use parent session snapshot, not completed lane model");
+		assert.equal("wakeProviderQualifiedModelId" in rows[0], false, "wake row must not persist the old lane-model field");
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -236,6 +348,8 @@ test("completion UI cache writes lane-scoped wake-ready row when one delegated l
 		assert.deepEqual(rows[0].taskIds, ["task-lane-wake-ready-1"]);
 		assert.deepEqual(rows[0].taskResultRefs, ["task-lane-wake-ready-1"]);
 		assert.equal(rows[0].notificationLabel, "FlowDesk lane result ready");
+		assert.equal("parentWakeProviderQualifiedModelId" in rows[0], false, "wake row must omit parent wake model when only lane model evidence exists");
+		assert.equal("wakeProviderQualifiedModelId" in rows[0], false, "wake row must not fall back to lane model");
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -282,10 +396,10 @@ test("completion UI cache wake-ready rows are parent scoped and duplicate refres
 	}
 });
 
-test("completion UI cache keeps only the twenty newest subtask sidebar rows", () => {
+test("completion UI cache keeps only the hundred newest subtask sidebar rows globally", () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-row-limit-"));
 	try {
-		for (let index = 0; index < 21; index += 1) {
+		for (let index = 0; index < 101; index += 1) {
 			const workflowId = `workflow-row-limit-${index}`;
 			const laneId = `lane-task-row-limit-${index}`;
 			const taskId = `task-row-limit-${index}`;
@@ -311,10 +425,76 @@ test("completion UI cache keeps only the twenty newest subtask sidebar rows", ()
 
 		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
 		const rows = sidebar.rows as Array<Record<string, unknown>>;
-		assert.equal(rows.length, 20);
-		assert.equal(rows[0].workflowId, "workflow-row-limit-20");
-		assert.equal(rows[19].workflowId, "workflow-row-limit-1");
+		assert.equal(rows.length, 100);
+		assert.equal(rows[0].workflowId, "workflow-row-limit-100");
+		assert.equal(rows[99].workflowId, "workflow-row-limit-1");
 		assert.equal(rows.some((row) => row.workflowId === "workflow-row-limit-0"), false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("completion UI cache preserves twenty rows for an older parent session when another session is busy", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-session-retention-"));
+	try {
+		for (let index = 0; index < 20; index += 1) {
+			const workflowId = `workflow-session-older-${index}`;
+			const laneId = `lane-task-session-older-${index}`;
+			const taskId = `task-session-older-${index}`;
+			const createdAt = new Date(Date.UTC(2026, 4, 29, 0, index, 0)).toISOString();
+			writeEvidence(rootDir, workflowId, "agent_task_context", `context-session-older-${index}`, {
+				schema_version: "flowdesk.agent_task_context.v1",
+				workflow_id: workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: "agent-reviewer-gpt-frontier",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				parent_session_ref: "ses-parent-session-older",
+				prompt_text: `Review older session retention ${index}`,
+				prompt_text_truncated: false,
+				prompt_text_sha256: "a".repeat(64),
+				redaction_version: "v1",
+				created_at: createdAt,
+				dispatch_authority_enabled: false,
+			});
+			writeEvidence(rootDir, workflowId, "task_result", `task-result-session-older-${index}`, taskResult(workflowId, laneId, taskId, createdAt));
+			refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: createdAt });
+		}
+
+		for (let index = 0; index < 100; index += 1) {
+			const workflowId = `workflow-session-busy-${index}`;
+			const laneId = `lane-task-session-busy-${index}`;
+			const taskId = `task-session-busy-${index}`;
+			const createdAt = new Date(Date.UTC(2026, 4, 29, 1, index, 0)).toISOString();
+			writeEvidence(rootDir, workflowId, "agent_task_context", `context-session-busy-${index}`, {
+				schema_version: "flowdesk.agent_task_context.v1",
+				workflow_id: workflowId,
+				lane_id: laneId,
+				task_id: taskId,
+				agent_ref: "agent-reviewer-gpt-frontier",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				parent_session_ref: "ses-parent-session-busy",
+				prompt_text: `Review busy session retention ${index}`,
+				prompt_text_truncated: false,
+				prompt_text_sha256: "a".repeat(64),
+				redaction_version: "v1",
+				created_at: createdAt,
+				dispatch_authority_enabled: false,
+			});
+			writeEvidence(rootDir, workflowId, "task_result", `task-result-session-busy-${index}`, taskResult(workflowId, laneId, taskId, createdAt));
+			refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: createdAt });
+		}
+
+		const sidebar = readCache(rootDir, "subtask-activity-sidebar.json");
+		const rows = sidebar.rows as Array<Record<string, unknown>>;
+		const olderRows = rows.filter((row) => row.parentSessionRef === "ses-parent-session-older");
+		const busyRows = rows.filter((row) => row.parentSessionRef === "ses-parent-session-busy");
+		assert.equal(rows.length, 100);
+		assert.equal(olderRows.length, 20, "older parent session should retain its twenty rows despite newer busy-session rows");
+		assert.equal(busyRows.length, 80, "global cap should still bound total retained rows to one hundred");
+		for (let index = 0; index < 20; index += 1) {
+			assert.ok(olderRows.some((row) => row.workflowId === `workflow-session-older-${index}`), `older session row ${index} should survive`);
+		}
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
