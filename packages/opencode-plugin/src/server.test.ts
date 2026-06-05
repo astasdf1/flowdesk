@@ -211,6 +211,7 @@ interface LocalAdapterTestResult {
 		workflowState?: unknown;
 		pendingConfirmationStatus?: unknown;
 		pendingConfirmationRef?: unknown;
+		pendingConfirmationNonce?: unknown;
 		pendingConfirmationWorkflowId?: unknown;
 		pendingConfirmationExpiresAt?: unknown;
 		durableStateMode?: unknown;
@@ -4169,7 +4170,11 @@ test("chat intake holds execution-like requests for confirmation before run", as
 	);
 	const pendingApprovalRef =
 		result.routedToolResult?.localState?.pendingConfirmationRef;
+	const pendingConfirmationNonce =
+		result.routedToolResult?.localState?.pendingConfirmationNonce;
 	assert.equal(typeof pendingApprovalRef, "string");
+	assert.equal(typeof pendingConfirmationNonce, "string");
+	assert.notEqual(pendingConfirmationNonce, pendingApprovalRef);
 	assert.notEqual(result.routedToolName, "flowdesk_run");
 	assert.equal(result.runtimeExecution, false);
 	assert.equal(result.actualLaneLaunch, false);
@@ -4185,6 +4190,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
 					session_ref: "session-nl-run-confirm",
 					redacted_intake_ref: "intake-nl-run-confirm",
 					user_approval_ref: pendingApprovalRef,
+					confirmation_nonce: pendingConfirmationNonce,
 					intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
 					source_surface: "chat.message",
 				},
@@ -4224,6 +4230,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
 					session_ref: "session-nl-run-confirm",
 					redacted_intake_ref: "intake-nl-run-confirm",
 					user_approval_ref: pendingApprovalRef,
+					confirmation_nonce: pendingConfirmationNonce,
 					intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
 					source_surface: "chat.message",
 				},
@@ -4285,6 +4292,7 @@ test("chat intake holds execution-like requests for confirmation before run", as
 					workflow_id: "workflow-nl-run-confirm",
 					redacted_intake_ref: "intake-nl-run-confirm",
 					user_approval_ref: pendingApprovalRef,
+					confirmation_nonce: pendingConfirmationNonce,
 					intake_summary: "approved plan을 fake-runtime으로 실행 진행해",
 					source_surface: "chat.message",
 				},
@@ -4318,7 +4326,10 @@ test("local adapter fails closed for expired and cancelled pending confirmations
 	});
 	assert.equal(pendingPlan.localState.pendingConfirmationStatus, "pending");
 	const approvalRef = pendingPlan.localState.pendingConfirmationRef;
+	const nonce = pendingPlan.localState.pendingConfirmationNonce;
 	assert.equal(typeof approvalRef, "string");
+	assert.equal(typeof nonce, "string");
+	assert.notEqual(nonce, approvalRef);
 
 	clock = new Date("2026-05-17T00:16:00.000Z");
 	const expiredRun = session.evaluate("flowdesk_run", {
@@ -4329,6 +4340,7 @@ test("local adapter fails closed for expired and cancelled pending confirmations
 		session_ref: "session-expiring-plan",
 		redacted_intake_ref: "intake-expiring-plan",
 		user_approval_ref: approvalRef,
+		confirmation_nonce: nonce,
 		run_mode: "fake-runtime",
 		plan_revision_id: "plan-workflow-expiring-plan",
 		step_id: "step-expired-run",
@@ -4358,6 +4370,7 @@ test("local adapter fails closed for expired and cancelled pending confirmations
 	});
 	const cancellableApprovalRef =
 		cancellablePlan.localState.pendingConfirmationRef;
+	const cancellableNonce = cancellablePlan.localState.pendingConfirmationNonce;
 	const abort = cancelSession.evaluate("flowdesk_abort", {
 		schema_version: "flowdesk.abort.request.v1",
 		request_id: "request-cancel-pending",
@@ -4379,6 +4392,7 @@ test("local adapter fails closed for expired and cancelled pending confirmations
 		session_ref: "session-cancellable-plan",
 		redacted_intake_ref: "intake-cancellable-plan",
 		user_approval_ref: cancellableApprovalRef,
+		confirmation_nonce: cancellableNonce,
 		run_mode: "fake-runtime",
 		plan_revision_id: "plan-workflow-cancellable-plan",
 		step_id: "step-cancelled-run",
@@ -4390,6 +4404,90 @@ test("local adapter fails closed for expired and cancelled pending confirmations
 	);
 	assert.equal(cancelledRun.localState.pendingConfirmationStatus, "cancelled");
 	assert.equal(cancelledRun.actualLaneLaunch, false);
+});
+
+test("local adapter requires pending confirmation nonce and scope match", () => {
+	const session = createFlowDeskLocalNonDispatchAdapterSession(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const pendingPlan = session.evaluate("flowdesk_plan", {
+		schema_version: "flowdesk.plan.request.v1",
+		request_id: "request-nonce-scope-plan",
+		input_mode: "chat_routed",
+		workflow_id: "workflow-nonce-scope-plan",
+		session_ref: "session-nonce-scope-plan",
+		redacted_intake_ref: "intake-nonce-scope-plan",
+		goal_summary: "approved plan을 fake-runtime으로 실행 진행해",
+		scope_summary:
+			"FlowDesk natural-language chat intake routed to command-backed planning.",
+		risk_hint:
+			"execution-like chat intake requires explicit user confirmation before any run",
+	});
+	assert.equal(pendingPlan.localState.pendingConfirmationStatus, "pending");
+	const approvalRef = pendingPlan.localState.pendingConfirmationRef;
+	const nonce = pendingPlan.localState.pendingConfirmationNonce;
+	assert.equal(typeof approvalRef, "string");
+	assert.equal(typeof nonce, "string");
+	assert.notEqual(nonce, approvalRef);
+
+	const missingNonceRun = session.evaluate("flowdesk_run", {
+		schema_version: "flowdesk.run.request.v1",
+		request_id: "request-missing-nonce-run",
+		input_mode: "chat_routed",
+		workflow_id: "workflow-nonce-scope-plan",
+		session_ref: "session-nonce-scope-plan",
+		redacted_intake_ref: "intake-nonce-scope-plan",
+		user_approval_ref: approvalRef,
+		run_mode: "fake-runtime",
+		plan_revision_id: "plan-workflow-nonce-scope-plan",
+	});
+	assert.equal(missingNonceRun.handler.ok, false);
+	assert.equal(
+		missingNonceRun.handler.handlerMode,
+		"pending_confirmation_invalid",
+	);
+	assert.deepEqual(missingNonceRun.handler.errors, [
+		"confirmation_nonce does not match pending confirmation",
+	]);
+	assert.equal(missingNonceRun.localState.pendingConfirmationStatus, "pending");
+	assert.equal(missingNonceRun.runtimeExecution, false);
+
+	const wrongScopeRun = session.evaluate("flowdesk_run", {
+		schema_version: "flowdesk.run.request.v1",
+		request_id: "request-wrong-scope-run",
+		input_mode: "chat_routed",
+		workflow_id: "workflow-nonce-scope-plan",
+		session_ref: "session-other-scope",
+		redacted_intake_ref: "intake-nonce-scope-plan",
+		user_approval_ref: approvalRef,
+		confirmation_nonce: nonce,
+		run_mode: "fake-runtime",
+		plan_revision_id: "plan-workflow-nonce-scope-plan",
+	});
+	assert.equal(wrongScopeRun.handler.ok, false);
+	assert.equal(wrongScopeRun.handler.handlerMode, "pending_confirmation_invalid");
+	assert.deepEqual(wrongScopeRun.handler.errors, [
+		"session_ref does not match pending confirmation",
+	]);
+	assert.equal(wrongScopeRun.localState.pendingConfirmationStatus, "pending");
+	assert.equal(wrongScopeRun.actualLaneLaunch, false);
+
+	const confirmedRun = session.evaluate("flowdesk_run", {
+		schema_version: "flowdesk.run.request.v1",
+		request_id: "request-nonce-confirmed-run",
+		input_mode: "chat_routed",
+		workflow_id: "workflow-nonce-scope-plan",
+		session_ref: "session-nonce-scope-plan",
+		redacted_intake_ref: "intake-nonce-scope-plan",
+		user_approval_ref: approvalRef,
+		confirmation_nonce: nonce,
+		run_mode: "fake-runtime",
+		plan_revision_id: "plan-workflow-nonce-scope-plan",
+	});
+	assert.equal(confirmedRun.handler.ok, true);
+	assert.equal(confirmedRun.localState.pendingConfirmationStatus, "consumed");
+	assert.equal(confirmedRun.runtimeExecution, false);
+	assert.equal(confirmedRun.actualLaneLaunch, false);
 });
 
 test("local adapter can opt into durable .flowdesk state materialization", () => {

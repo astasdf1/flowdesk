@@ -26,6 +26,7 @@ export function canUseRealDispatchInRelease1(): false {
 
 export * from "./agent-profiles.js";
 export * from "./agent-registry.js";
+export * from "./approval-classifier.js";
 export * from "./audit.js";
 export * from "./authority-promotion.js";
 export * from "./bootstrap-foundation.js";

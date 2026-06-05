@@ -564,10 +564,17 @@ type FlowDeskRequestEnvelopeOptionalField =
 	| "workflow_id"
 	| "session_ref"
 	| "redacted_intake_ref"
-	| "user_approval_ref";
+	| "user_approval_ref"
+	| "confirmation_nonce";
 
 const chatEnvelopeOptionalFields: readonly FlowDeskRequestEnvelopeOptionalField[] =
-	["workflow_id", "session_ref", "redacted_intake_ref", "user_approval_ref"];
+	[
+		"workflow_id",
+		"session_ref",
+		"redacted_intake_ref",
+		"user_approval_ref",
+		"confirmation_nonce",
+	];
 
 function baseToolRequest(
 	request: FlowDeskChatIntakeRequestV1,
@@ -595,6 +602,10 @@ function baseToolRequest(
 		...(includeOptional.has("user_approval_ref") &&
 		request.user_approval_ref !== undefined
 			? { user_approval_ref: request.user_approval_ref }
+			: {}),
+		...(includeOptional.has("confirmation_nonce") &&
+		request.confirmation_nonce !== undefined
+			? { confirmation_nonce: request.confirmation_nonce }
 			: {}),
 	};
 }
@@ -4034,7 +4045,15 @@ function autoContinueExecutionToolConfigFromOptions(input: unknown, options?: Pl
 	const rootDir = explicitRoot ?? durableStateRootFromOptions(options);
 	if (rootDir === undefined) return undefined;
 	const client = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
-	return client === undefined ? undefined : { rootDir, client };
+	return client === undefined ? undefined : {
+		rootDir,
+		client,
+		compatibilityGate: {
+			autoContinueExecutionEnabled: true,
+			devBetaActualLaneLaunch: true,
+			evidenceRef: "plugin_option:autoContinueExecution.enabled+devBetaActualLaneLaunch",
+		},
+	};
 }
 
 function controlledWriteApplyConfigFromOptions(

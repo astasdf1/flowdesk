@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
 import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
@@ -5,6 +7,12 @@ import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-disp
 export interface FlowDeskAutoContinueExecutionToolConfigV1 {
 	rootDir: string;
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	compatibilityGate?: {
+		autoContinueExecutionEnabled?: boolean;
+		devBetaActualLaneLaunch?: boolean;
+		evidenceRef?: string;
+		allowMissingEvidenceForDevMode?: boolean;
+	};
 }
 
 export interface FlowDeskAutoContinueExecutionTaskPayloadV1 {
@@ -39,6 +47,12 @@ export interface FlowDeskAutoContinueExecutionToolResultV1 {
 	taskResultEvidenceId?: string;
 	pendingTaskCount: number;
 	completedTaskCount: number;
+	blockedTaskCount?: number;
+	autoContinueCompatibilityGate?: {
+		satisfied: boolean;
+		devModeOverrideUsed: boolean;
+		evidenceRef?: string;
+	};
 	redactedBlockReason?: string;
 	summaryForUser: string;
 	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-export-debug" | "/flowdesk-doctor")[];
@@ -57,6 +71,7 @@ export interface FlowDeskAutoContinueExecutionToolResultV1 {
 		autoContinuationExecuted: boolean;
 		workflowDispatchPlanReloaded: boolean;
 		devModeActualLaneLaunchAttempted: boolean;
+		autoContinueCompatibilityGateSatisfied: boolean;
 	};
 }
 
@@ -81,6 +96,7 @@ function authority(input: {
 	request?: FlowDeskAutoContinueExecutionToolRequestV1;
 	planReloaded: boolean;
 	actualLaneLaunchAttempted: boolean;
+	compatibilityGateSatisfied?: boolean;
 }): FlowDeskAutoContinueExecutionToolResultV1["authority"] {
 	return {
 		realOpenCodeDispatch: false,
@@ -97,6 +113,19 @@ function authority(input: {
 		autoContinuationExecuted: input.actualLaneLaunchAttempted,
 		workflowDispatchPlanReloaded: input.planReloaded,
 		devModeActualLaneLaunchAttempted: input.actualLaneLaunchAttempted,
+		autoContinueCompatibilityGateSatisfied: input.compatibilityGateSatisfied === true,
+	};
+}
+
+function compatibilityGateFromConfig(config: FlowDeskAutoContinueExecutionToolConfigV1): NonNullable<FlowDeskAutoContinueExecutionToolResultV1["autoContinueCompatibilityGate"]> {
+	const gate = config.compatibilityGate;
+	const explicitEvidence = typeof gate?.evidenceRef === "string" && gate.evidenceRef.trim().length > 0 ? gate.evidenceRef.trim() : undefined;
+	const satisfied = gate?.autoContinueExecutionEnabled === true && gate.devBetaActualLaneLaunch === true && explicitEvidence !== undefined;
+	const devModeOverrideUsed = satisfied !== true && gate?.allowMissingEvidenceForDevMode === true;
+	return {
+		satisfied: satisfied || devModeOverrideUsed,
+		devModeOverrideUsed,
+		...(explicitEvidence === undefined ? {} : { evidenceRef: explicitEvidence }),
 	};
 }
 
@@ -110,8 +139,10 @@ function blocked(input: {
 	taskId?: string;
 	pendingTaskCount?: number;
 	completedTaskCount?: number;
+	blockedTaskCount?: number;
 	planReloaded?: boolean;
 	actualLaneLaunchAttempted?: boolean;
+	compatibilityGate?: FlowDeskAutoContinueExecutionToolResultV1["autoContinueCompatibilityGate"];
 }): FlowDeskAutoContinueExecutionToolResultV1 {
 	const workflowId = input.workflowId ?? input.request?.workflowId;
 	return {
@@ -124,6 +155,8 @@ function blocked(input: {
 		...(input.taskId === undefined ? {} : { taskId: input.taskId }),
 		pendingTaskCount: input.pendingTaskCount ?? 0,
 		completedTaskCount: input.completedTaskCount ?? 0,
+		...(input.blockedTaskCount === undefined ? {} : { blockedTaskCount: input.blockedTaskCount }),
+		...(input.compatibilityGate === undefined ? {} : { autoContinueCompatibilityGate: input.compatibilityGate }),
 		redactedBlockReason: input.reason,
 		summaryForUser: `FlowDesk auto-continue execution blocked: ${input.reason}.`,
 		safeNextActions: safeNextActions(),
@@ -131,6 +164,7 @@ function blocked(input: {
 			request: input.request,
 			planReloaded: input.planReloaded === true,
 			actualLaneLaunchAttempted: input.actualLaneLaunchAttempted === true,
+			compatibilityGateSatisfied: input.compatibilityGate?.satisfied === true,
 		}),
 	};
 }
@@ -181,6 +215,85 @@ function normalizeRequest(value: unknown): FlowDeskAutoContinueExecutionToolRequ
 	};
 }
 
+const BLOCKED_TASK_STATES = new Set([
+	"task_failed",
+	"aborted",
+	"no_output",
+	"missing_verdict",
+	"invocation_failed",
+	"timeout",
+	"telemetry_ambiguous",
+	"ambiguous",
+	"incomplete",
+]);
+
+function evidenceTaskId(record: Record<string, unknown>): string | undefined {
+	return stringField(record, "task_id") ?? stringField(record, "taskId");
+}
+
+function blockedStateFromRecord(record: Record<string, unknown>): string | undefined {
+	for (const key of ["state", "status", "failure_class", "failure_category", "completion_status"]) {
+		const value = stringField(record, key);
+		if (value !== undefined && BLOCKED_TASK_STATES.has(value)) return value;
+	}
+	return undefined;
+}
+
+function tryReadRawRecord(rootDir: string, relativePath: string): Record<string, unknown> | undefined {
+	try {
+		const raw = readFileSync(join(rootDir, relativePath), "utf8");
+		const parsed: unknown = JSON.parse(raw);
+		return isRecord(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function classifyPlanTasks(input: {
+	tasks: Array<{ taskId: string; agentRoleRef?: string }>;
+	entries: Array<{ evidenceClass: string; record: Record<string, unknown> }>;
+	blockedEntries?: Array<{ evidenceClass: string; evidenceId: string; reason: string; path: string }>;
+	rootDir?: string;
+}): {
+	completedTaskIds: Set<string>;
+	blockedByTaskId: Map<string, string>;
+	pending: Array<{ taskId: string; agentRoleRef?: string }>;
+} {
+	const plannedTaskIds = new Set(input.tasks.map((task) => task.taskId));
+	const completedTaskIds = new Set<string>();
+	for (const entry of input.entries) {
+		if (entry.evidenceClass !== "task_result") continue;
+		const taskId = evidenceTaskId(entry.record);
+		if (taskId !== undefined && plannedTaskIds.has(taskId)) completedTaskIds.add(taskId);
+	}
+	const blockedByTaskId = new Map<string, string>();
+	for (const entry of input.entries) {
+		const taskId = evidenceTaskId(entry.record);
+		if (taskId === undefined || !plannedTaskIds.has(taskId) || completedTaskIds.has(taskId)) continue;
+		const state = entry.evidenceClass === "task_failed" ? "task_failed" : blockedStateFromRecord(entry.record);
+		if (state !== undefined) blockedByTaskId.set(taskId, state);
+	}
+	// Best-effort: also check schema-blocked lane_lifecycle/task_failed entries by re-reading raw JSON.
+	// This allows detection of terminal/incomplete states even when the record fails schema validation.
+	// No authority is granted from this path; it is classification only.
+	if (input.rootDir !== undefined && input.blockedEntries !== undefined) {
+		for (const blocked of input.blockedEntries) {
+			if (blocked.evidenceClass !== "lane_lifecycle" && blocked.evidenceClass !== "task_failed") continue;
+			const raw = tryReadRawRecord(input.rootDir, blocked.path);
+			if (raw === undefined) continue;
+			const taskId = evidenceTaskId(raw);
+			if (taskId === undefined || !plannedTaskIds.has(taskId) || completedTaskIds.has(taskId) || blockedByTaskId.has(taskId)) continue;
+			const state = blocked.evidenceClass === "task_failed" ? "task_failed" : blockedStateFromRecord(raw);
+			if (state !== undefined) blockedByTaskId.set(taskId, state);
+		}
+	}
+	return {
+		completedTaskIds,
+		blockedByTaskId,
+		pending: input.tasks.filter((task) => !completedTaskIds.has(task.taskId) && !blockedByTaskId.has(task.taskId)),
+	};
+}
+
 function terminalEvidencePresent(input: {
 	rootDir: string;
 	workflowId: string;
@@ -218,6 +331,9 @@ export async function executeFlowDeskAutoContinueExecutionToolV1(input: {
 		return blocked({ config: input.config, request, reason: "allowProviderCall=true, allowActualLaneLaunch=true, and allowAutoContinueExecution=true are required" });
 	if (hasForbiddenAuthority(input.rawInput ?? request))
 		return blocked({ config: input.config, request, reason: "request contains fallback/reselection, write/apply, or authority-smuggling wording" });
+	const compatibilityGate = compatibilityGateFromConfig(input.config);
+	if (compatibilityGate.satisfied !== true)
+		return blocked({ config: input.config, request, reason: "autoContinueExecution local compatibility evidence is required", compatibilityGate });
 	const workflowId = request.workflowId?.trim();
 	if (!workflowId) return blocked({ config: input.config, request, reason: "workflowId is required" });
 	if (typeof request.parentSessionId !== "string" || request.parentSessionId.trim().length === 0)
@@ -236,7 +352,7 @@ export async function executeFlowDeskAutoContinueExecutionToolV1(input: {
 		return blocked({ config: input.config, request, workflowId, reason: "only outputContractRef=contract-task-result-v1 is supported" });
 
 	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir: input.config.rootDir, workflowId });
-	if (!reload.ok || reload.blocked.length > 0)
+	if (!reload.ok)
 		return blocked({ config: input.config, request, workflowId, reason: "session evidence reload failed" });
 	const planEntries = reload.entries.filter((entry) => entry.evidenceClass === "workflow_dispatch_plan");
 	const latestPlan = planEntries[planEntries.length - 1];
@@ -254,18 +370,29 @@ export async function executeFlowDeskAutoContinueExecutionToolV1(input: {
 	}
 	if (tasks.length === 0)
 		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, reason: "workflow dispatch plan has no valid tasks", planReloaded: true });
-	const completedTaskIds = new Set<string>();
-	for (const entry of reload.entries) {
-		if (entry.evidenceClass !== "task_result") continue;
-		const taskId = stringField(entry.record, "task_id");
-		if (taskId !== undefined) completedTaskIds.add(taskId);
+	const classification = classifyPlanTasks({ tasks, entries: reload.entries, blockedEntries: reload.blocked, rootDir: input.config.rootDir });
+	const { completedTaskIds, blockedByTaskId, pending } = classification;
+	if (blockedByTaskId.size > 0) {
+		const [blockedTaskId, state] = blockedByTaskId.entries().next().value as [string, string];
+		return blocked({
+			config: input.config,
+			request,
+			workflowId,
+			planRevisionId: latestPlan.evidenceId,
+			taskId: blockedTaskId,
+			reason: `planned task ${blockedTaskId} has terminal incomplete evidence: ${state}`,
+			pendingTaskCount: pending.length,
+			completedTaskCount: completedTaskIds.size,
+			blockedTaskCount: blockedByTaskId.size,
+			planReloaded: true,
+			compatibilityGate,
+		});
 	}
-	const pending = tasks.filter((task) => !completedTaskIds.has(task.taskId));
 	if (pending.length === 0)
-		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, reason: "no pending planned tasks remain", pendingTaskCount: 0, completedTaskCount: completedTaskIds.size, planReloaded: true });
+		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, reason: "no pending planned tasks remain", pendingTaskCount: 0, completedTaskCount: completedTaskIds.size, planReloaded: true, compatibilityGate });
 	const next = pending[0];
 	if (taskRequest.taskId.trim() !== next.taskId)
-		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, taskId: taskRequest.taskId.trim(), reason: `task.taskId must match first pending durable plan task ${next.taskId}`, pendingTaskCount: pending.length, completedTaskCount: completedTaskIds.size, planReloaded: true });
+		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, taskId: taskRequest.taskId.trim(), reason: `task.taskId must match first pending durable plan task ${next.taskId}`, pendingTaskCount: pending.length, completedTaskCount: completedTaskIds.size, planReloaded: true, compatibilityGate });
 
 	const laneId = stableToken(`lane-auto-continue-${next.taskId}`, "lane-auto-continue-task");
 	const agentRef = stableToken((taskRequest.agentName.startsWith("agent-") ? taskRequest.agentName : `agent-${taskRequest.agentName}`).toLowerCase(), next.agentRoleRef ?? "agent-flowdesk-auto-continue");
@@ -284,7 +411,7 @@ export async function executeFlowDeskAutoContinueExecutionToolV1(input: {
 	const completed = taskResult.status === "task_completed";
 	const terminalVerified = terminalEvidencePresent({ rootDir: input.config.rootDir, workflowId, laneId, taskId: next.taskId, completed });
 	if (!terminalVerified)
-		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, laneId, taskId: next.taskId, pendingTaskCount: pending.length, completedTaskCount: completedTaskIds.size, reason: "terminal lifecycle or task evidence reload verification failed", planReloaded: true, actualLaneLaunchAttempted: true });
+		return blocked({ config: input.config, request, workflowId, planRevisionId: latestPlan.evidenceId, laneId, taskId: next.taskId, pendingTaskCount: pending.length, completedTaskCount: completedTaskIds.size, reason: "terminal lifecycle or task evidence reload verification failed", planReloaded: true, actualLaneLaunchAttempted: true, compatibilityGate });
 
 	return {
 		status: completed ? "auto_continue_execution_completed" : "auto_continue_execution_incomplete",
@@ -297,10 +424,11 @@ export async function executeFlowDeskAutoContinueExecutionToolV1(input: {
 		...(completed ? { taskResultEvidenceId: taskResult.taskResultEvidenceId } : { redactedBlockReason: taskResult.status === "task_failed" ? taskResult.redactedReason : taskResult.status === "task_launched" ? "async mode" : "unknown" }),
 		pendingTaskCount: pending.length,
 		completedTaskCount: completedTaskIds.size,
+		autoContinueCompatibilityGate: compatibilityGate,
 		summaryForUser: completed
 			? `FlowDesk auto-continue execution completed one explicit opt-in step for ${workflowId}. Default Release 1 dispatch authority remains disabled; no fallback execution was attempted.`
 			: `FlowDesk auto-continue execution launched one explicit opt-in step but captured no result. Default Release 1 dispatch authority remains disabled; no fallback execution was attempted.`,
 		safeNextActions: safeNextActions(),
-		authority: authority({ request, planReloaded: true, actualLaneLaunchAttempted: true }),
+		authority: authority({ request, planReloaded: true, actualLaneLaunchAttempted: true, compatibilityGateSatisfied: compatibilityGate.satisfied }),
 	};
 }

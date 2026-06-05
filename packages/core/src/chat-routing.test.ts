@@ -21,6 +21,7 @@ test("chat routing steers implementation requests into command-backed planning",
   assert.equal(result.ok, true);
   assert.equal(result.response.classification, "managed_plan");
   assert.equal(result.response.route_decision, "show_plan");
+  assert.equal(result.response.intent_outcome, "flowdesk_suggest");
   assert.deepEqual(result.response.safe_next_actions, ["/flowdesk-plan", "/flowdesk-status"]);
   assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
 });
@@ -29,6 +30,7 @@ test("chat routing maps explicit diagnostics and recovery to portable command fa
   const status = evaluateFlowDeskChatIntakeV1({ request: request("show current status and checkpoint"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(status.response.classification, "fast_chat");
   assert.equal(status.response.route_decision, "use_command_fallback");
+  assert.equal(status.response.intent_outcome, "flowdesk_manage");
   assert.deepEqual(status.response.safe_next_actions, ["/flowdesk-status"]);
 
   const retry = evaluateFlowDeskChatIntakeV1({ request: request("retry the last failed attempt"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
@@ -48,22 +50,26 @@ test("chat routing classifies English and Korean status, plan, and fake-runtime 
   const run = evaluateFlowDeskChatIntakeV1({ request: request("approved plan을 fake-runtime으로 실행 진행해"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(run.response.classification, "clarify");
   assert.equal(run.response.route_decision, "ask_clarification");
+  assert.equal(run.response.intent_outcome, "flowdesk_suggest");
   assert.deepEqual(run.response.safe_next_actions, ["ask_clarification", "/flowdesk-plan", "/flowdesk-status"]);
   assert.equal(run.response.safe_next_actions.includes("/flowdesk-run"), false);
   assert.equal(validateChatIntakeResponseV1(run.response).ok, true);
 
   const confirmedRun = evaluateFlowDeskChatIntakeV1({ request: request("approved plan을 fake-runtime으로 실행 진행해", { user_approval_ref: "approval-chat-run" }), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(confirmedRun.response.route_decision, "use_command_fallback");
+  assert.equal(confirmedRun.response.intent_outcome, "flowdesk_manage");
   assert.deepEqual(confirmedRun.response.safe_next_actions, ["/flowdesk-run", "/flowdesk-status"]);
   assert.equal(validateChatIntakeResponseV1(confirmedRun.response).ok, true);
 
   const weakApproval = evaluateFlowDeskChatIntakeV1({ request: request("maybe fake-runtime run this later", { user_approval_ref: "approval-chat-run" }), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(weakApproval.response.route_decision, "ask_clarification");
+  assert.equal(weakApproval.response.intent_outcome, "flowdesk_suggest");
   assert.equal(weakApproval.response.safe_next_actions.includes("/flowdesk-run"), false);
   assert.equal(validateChatIntakeResponseV1(weakApproval.response).ok, true);
 
   const unsafe = evaluateFlowDeskChatIntakeV1({ request: request("opencode run with actual lane launch"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(unsafe.response.ok, false);
+  assert.equal(unsafe.response.intent_outcome, "unsafe_later_gate");
   assert.equal(unsafe.response.safe_next_actions.includes("/flowdesk-run"), false);
   assert.equal(validateChatIntakeResponseV1(unsafe.response).ok, true);
 });
@@ -73,6 +79,7 @@ test("chat routing asks for clarification on ambiguous managed requests", () => 
   assert.equal(result.ok, true);
   assert.equal(result.response.classification, "clarify");
   assert.equal(result.response.route_decision, "ask_clarification");
+  assert.equal(result.response.intent_outcome, "flowdesk_suggest");
   assert.deepEqual(result.response.safe_next_actions, ["ask_clarification", "/flowdesk-status"]);
 });
 
@@ -81,6 +88,7 @@ test("chat routing blocks later-gate runtime authority requests", () => {
   const text = JSON.stringify(result.response);
   assert.equal(result.response.ok, false);
   assert.equal(result.response.classification, "blocked");
+  assert.equal(result.response.intent_outcome, "unsafe_later_gate");
   assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false);
   assert.equal(/providerCall|actualLaneLaunch|fallbackAuthority|hardCancelOrNoReply|noReply|cancel:\s*true/i.test(text), false);
   assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
@@ -93,6 +101,7 @@ test("chat routing blocks identifier-shaped later-gate authority requests", () =
     const text = JSON.stringify(result.response);
     assert.equal(result.response.ok, false, marker);
     assert.equal(result.response.classification, "blocked", marker);
+    assert.equal(result.response.intent_outcome, "unsafe_later_gate", marker);
     assert.equal(result.response.safe_next_actions.includes("/flowdesk-run"), false, marker);
     assert.equal(/providerCall|actualLaneLaunch|fallbackAuthority|hardCancelOrNoReply|noReply|cancel:\s*true|real-opencode-dispatch|opencode-run/i.test(text), false, marker);
     assert.equal(validateChatIntakeResponseV1(result.response).ok, true, marker);
@@ -103,6 +112,7 @@ test("chat routing leaves general chat alone", () => {
   const result = evaluateFlowDeskChatIntakeV1({ request: request("what is a good variable name for a timestamp"), chatIntakeMode: "steering", hookHarnessMode: "enforce" });
   assert.equal(result.response.classification, "fast_chat");
   assert.equal(result.response.route_decision, "continue_chat");
+  assert.equal(result.response.intent_outcome, "general_chat");
   assert.deepEqual(result.response.safe_next_actions, ["continue_chat"]);
   assert.equal(validateChatIntakeResponseV1(result.response).ok, true);
 });

@@ -46,7 +46,7 @@ test("auto-continue execution runs first pending durable plan task only with exp
 		});
 
 		const result = await executeFlowDeskAutoContinueExecutionToolV1({
-			config: { rootDir, client: fakeClient("Auto continue result.", counters) as never },
+			config: { rootDir, client: fakeClient("Auto continue result.", counters) as never, compatibilityGate: compatibilityGate() },
 			request: {
 				workflowId,
 				parentSessionId: "parent-session-1",
@@ -78,6 +78,8 @@ test("auto-continue execution runs first pending durable plan task only with exp
 		assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
 		assert.equal(result.authority.toolAuthority, false);
 		assert.equal(result.authority.autoContinuationExecuted, true);
+		assert.equal(result.authority.autoContinueCompatibilityGateSatisfied, true);
+		assert.equal(result.autoContinueCompatibilityGate?.evidenceRef, "test:autoContinueExecution.enabled+devBetaActualLaneLaunch");
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -114,18 +116,132 @@ test("auto-continue execution blocks missing opt-in and taskId mismatch before S
 		};
 
 		const missingOptIn = await executeFlowDeskAutoContinueExecutionToolV1({
-			config: { rootDir, client: fakeClient("unused", counters) as never },
+			config: { rootDir, client: fakeClient("unused", counters) as never, compatibilityGate: compatibilityGate() },
 			request: { ...base, allowAutoContinueExecution: false },
 		});
 		assert.equal(missingOptIn.status, "blocked_before_auto_continue_execution");
 		assert.match(String(missingOptIn.redactedBlockReason), /allowAutoContinueExecution=true/);
 
 		const mismatch = await executeFlowDeskAutoContinueExecutionToolV1({
-			config: { rootDir, client: fakeClient("unused", counters) as never },
+			config: { rootDir, client: fakeClient("unused", counters) as never, compatibilityGate: compatibilityGate() },
 			request: { ...base, task: { ...base.task, taskId: "task-other" } },
 		});
 		assert.equal(mismatch.status, "blocked_before_auto_continue_execution");
 		assert.match(String(mismatch.redactedBlockReason), /first pending durable plan task/);
+		assert.equal(counters.create, 0);
+		assert.equal(counters.prompt, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("auto-continue execution blocks when local compatibility evidence is absent", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-auto-continue-execution-compat-"));
+	const counters = { create: 0, prompt: 0, messages: 0 };
+	try {
+		const workflowId = "workflow-auto-continue-execution-compat-1";
+		const plan = executeFlowDeskWorkflowDispatchPlanToolV1({
+			config: { rootDir },
+			request: {
+				workflowId,
+				goalSummary: "Continue durable planned work",
+				tasks: [{ agentRole: "implementation", title: "First task", summary: "Execute item details" }],
+			},
+			now: () => new Date("2026-05-29T00:00:00.000Z"),
+		});
+		assert.equal(plan.status, "workflow_dispatch_plan_recorded", plan.summaryForUser);
+		const result = await executeFlowDeskAutoContinueExecutionToolV1({
+			config: { rootDir, client: fakeClient("unused", counters) as never },
+			request: {
+				workflowId,
+				parentSessionId: "parent-session-1",
+				task: {
+					taskId: `task-1-${workflowId}`,
+					promptText: "Return the auto-continue result.",
+					agentName: "flowdesk-code-backend",
+					providerQualifiedModelId: "openai/gpt-5.5",
+				},
+				developerModeAcknowledged: true,
+				allowProviderCall: true,
+				allowActualLaneLaunch: true,
+				allowAutoContinueExecution: true,
+			},
+		});
+		assert.equal(result.status, "blocked_before_auto_continue_execution");
+		assert.match(String(result.redactedBlockReason), /local compatibility evidence is required/);
+		assert.equal(result.autoContinueCompatibilityGate?.satisfied, false);
+		assert.equal(result.authority.autoContinueCompatibilityGateSatisfied, false);
+		assert.equal(counters.create, 0);
+		assert.equal(counters.prompt, 0);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("auto-continue execution blocks terminal incomplete durable task evidence before SDK calls", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-auto-continue-execution-failed-"));
+	const counters = { create: 0, prompt: 0, messages: 0 };
+	try {
+		const workflowId = "workflow-auto-continue-execution-failed-1";
+		const plan = executeFlowDeskWorkflowDispatchPlanToolV1({
+			config: { rootDir },
+			request: {
+				workflowId,
+				goalSummary: "Continue durable planned work",
+				tasks: [
+					{ agentRole: "implementation", title: "Failed task", summary: "Already failed" },
+					{ agentRole: "implementation", title: "Later task", summary: "Do not execute" },
+				],
+			},
+			now: () => new Date("2026-05-29T00:00:00.000Z"),
+		});
+		assert.equal(plan.status, "workflow_dispatch_plan_recorded", plan.summaryForUser);
+		const failedTaskId = `task-1-${workflowId}`;
+		writeEvidence(rootDir, workflowId, "lane_lifecycle", "lane-no-output-one", {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-failed-one",
+			attempt_id: "attempt-lane-failed-one",
+			parent_session_ref: "ses-parent-lifecycle-1",
+			child_session_ref: "ses-child-lane-failed-one",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_id: failedTaskId,
+			state: "no_output",
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: "2026-05-29T00:00:00.000Z",
+			updated_at: "2026-05-29T00:00:00.000Z",
+			spawned_by: "flowdesk",
+			durability: "best_effort_no_dir_fsync",
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+		});
+
+		const result = await executeFlowDeskAutoContinueExecutionToolV1({
+			config: { rootDir, client: fakeClient("unused", counters) as never, compatibilityGate: compatibilityGate() },
+			request: {
+				workflowId,
+				parentSessionId: "parent-session-1",
+				task: {
+					taskId: failedTaskId,
+					promptText: "Return the auto-continue result.",
+					agentName: "flowdesk-code-backend",
+					providerQualifiedModelId: "openai/gpt-5.5",
+				},
+				developerModeAcknowledged: true,
+				allowProviderCall: true,
+				allowActualLaneLaunch: true,
+				allowAutoContinueExecution: true,
+			},
+		});
+		assert.equal(result.status, "blocked_before_auto_continue_execution");
+		assert.match(String(result.redactedBlockReason), /terminal incomplete evidence: no_output/);
+		assert.equal(result.blockedTaskCount, 1);
+		assert.equal(result.pendingTaskCount, 1);
 		assert.equal(counters.create, 0);
 		assert.equal(counters.prompt, 0);
 	} finally {
@@ -154,6 +270,14 @@ function fakeClient(outputText: string, counters: { create: number; prompt: numb
 				return sessionMessages.get(String(options.sessionID ?? options.path?.id ?? "")) ?? [];
 			},
 		},
+	};
+}
+
+function compatibilityGate() {
+	return {
+		autoContinueExecutionEnabled: true,
+		devBetaActualLaneLaunch: true,
+		evidenceRef: "test:autoContinueExecution.enabled+devBetaActualLaneLaunch",
 	};
 }
 

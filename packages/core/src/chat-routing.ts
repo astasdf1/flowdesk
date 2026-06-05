@@ -8,6 +8,7 @@ import type {
 } from "./release1-contracts.js";
 import type { ValidationResult } from "./validators.js";
 import { invalid, valid, validateChatIntakeRequestV1, validateChatIntakeResponseV1, validateOpaqueRef } from "./validators.js";
+import { classifyFlowDeskApprovalTextV1 } from "./approval-classifier.js";
 
 export interface FlowDeskChatRoutingInputV1 {
   request: FlowDeskChatIntakeRequestV1;
@@ -27,7 +28,6 @@ const unsafeLaterGatePattern = /\b(real[\s_-]*(?:opencode[\s_-]*)?dispatch|realO
 const planningPattern = /\b(implement|add|build|create|fix|change|refactor|test|write|plan|debug|investigate|review|improve|audit|critique|assess|evaluate|analyze|inspect)\b|(?:계획|구현|만들|개발|수정|버그|개선|리팩토|테스트|작성|조사|분석|리뷰|검토|점검|진단|평가)/i;
 const reviewIntentPattern = /\b(?:review|critique|assess|evaluate|audit|inspect|how\s+(?:does\s+this\s+look|is\s+this\s+code)|what\s+(?:do|would)\s+you\s+think|spot\s+(?:issues|problems)|find\s+(?:issues|problems|bugs))\b|(?:리뷰|검토|점검|비판|평가|봐줘|괜찮(?:아|은지)|문제\s*(?:있어|찾)|이슈\s*찾|어때(?:\?|$|보여))/i;
 const executionLikePattern = /\b(?:run|execute|start|kick[\s_-]*off|launch)\b.{0,50}\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|plan|workflow)\b|\b(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run)\b|(?:실행|진행(?:해|하))|(?:(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?).{0,40}(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)))|(?:(?:돌려(?:줘|봐)?|시작\s*(?:해|하|시켜)|런(?:해|시켜)).{0,40}(?:fake[\s_-]*runtime|guarded[\s_-]*dry[\s_-]*run|dry[\s_-]*run|페이크|드라이런|계획|플랜|workflow|워크플로(?:우)?))/i;
-const explicitApprovalPattern = /\b(?:approve(?:d)?|confirm(?:ed)?|yes|proceed|go ahead|ok(?:ay)?|sure|sounds good)\b|(?:승인|확인|동의|좋아|네|예|오케이|진행\s*(?:해|하|하세요)|실행\s*(?:해|하|하세요)|그렇게\s*해|해주세요)/i;
 const clarificationPattern = /\b(maybe|not sure|unclear|something|stuff|thing|help me with it|continue this|kinda|sort of|whatever)\b|(?:잘\s*모르(?:겠|겠어)|애매|뭐였|뭔가|어떻게\s*해(?:야)?|뭐\s*해야|아무거나|적당히|대충)/i;
 const proactiveUsagePreflightPattern = /\b(?:large|big|long|multi[\s_-]*step|multi[\s_-]*perspective|multi[\s_-]*model|extensive|whole|entire|full[\s_-]*(?:pass|review|refactor)|many files|agentic loop|autonomous|refactor|migration|audit|review)\b|(?:큰\s*작업|대규모|장시간|오래\s*걸|전체|전부|다관점|다각도|멀티\s*(?:모델|관점)|여러\s*관점|리팩토링|마이그레이션|긴\s*작업|전체\s*완료|끝까지|심층\s*(?:리뷰|검토|분석))/i;
 const continuousWorkPattern = /\b(?:continue\s+(?:if\s+you\s+have\s+next\s+steps|until\s+blocked|with\s+the\s+(?:plan|design)|the\s+(?:whole|entire)\s+(?:plan|design)|working)|keep\s+(?:going|working)|work\s+through\s+the\s+(?:whole\s+)?(?:plan|design)|proceed\s+(?:with\s+)?(?:the\s+)?(?:whole|entire)?\s*(?:plan|design)|do\s+not\s+stop\s+until\s+blocked|don'?t\s+stop\s+until\s+blocked)\b|(?:계획\s*(?:전체|전부)?\s*(?:진행|계속|이어)|전체\s*(?:계획|설계|설계문서)\s*(?:진행|계속|기반)|설계\s*(?:문서)?\s*(?:기반|대로)\s*(?:계속|진행)|막히기\s*전까지|막히기전까지|막히지\s*않으면\s*(?:계속|진행)|계속\s*(?:진행|작업|이어|해줘)|전부\s*계속|다\s*끝날\s*때까지|다음\s*작업\s*(?:등록|이어)|끊기지\s*않게)/i;
@@ -60,6 +60,7 @@ function disabledResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntake
     safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
     user_message: "FlowDesk chat steering is unavailable; use portable commands for safe fallback.",
     classification: "fast_chat",
+    intent_outcome: "general_chat",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "use_command_fallback"
   };
@@ -73,6 +74,7 @@ function blockedResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeR
     safe_next_actions: [...fallbackActions],
     user_message: "FlowDesk blocked this chat route because it requires capabilities outside Release 1 command-backed steering.",
     classification: "blocked",
+    intent_outcome: "unsafe_later_gate",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "use_command_fallback",
     error: {
@@ -90,6 +92,7 @@ function schemaFailedResponse(): FlowDeskChatIntakeResponseV1 {
     safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
     user_message: "FlowDesk chat intake failed closed before routing.",
     classification: "blocked",
+    intent_outcome: "unsafe_later_gate",
     redacted_intake_ref: "intake-redacted",
     route_decision: "use_command_fallback",
     error: {
@@ -107,6 +110,7 @@ function commandFallbackResponse(input: FlowDeskChatRoutingInputV1, actions: rea
     safe_next_actions: uniqueActions([...actions, "/flowdesk-status"]),
     user_message: "FlowDesk routed this chat request to a command-backed Release 1 flow.",
     classification: "fast_chat",
+    intent_outcome: "flowdesk_manage",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "use_command_fallback"
   };
@@ -130,6 +134,7 @@ function managedPlanResponse(input: FlowDeskChatRoutingInputV1, usagePreflight =
     safe_next_actions: baseActions,
     user_message: userMessage,
     classification: "managed_plan",
+    intent_outcome: "flowdesk_suggest",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "show_plan"
   };
@@ -143,6 +148,7 @@ function executionConfirmationResponse(input: FlowDeskChatRoutingInputV1): FlowD
     safe_next_actions: ["ask_clarification", "/flowdesk-plan", "/flowdesk-status"],
     user_message: "FlowDesk needs explicit confirmation and a ready plan before steering an execution-like request.",
     classification: "clarify",
+    intent_outcome: "flowdesk_suggest",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "ask_clarification"
   };
@@ -156,6 +162,7 @@ function confirmedExecutionResponse(input: FlowDeskChatRoutingInputV1): FlowDesk
     safe_next_actions: ["/flowdesk-run", "/flowdesk-status"],
     user_message: "FlowDesk accepted typed confirmation and routed this request to a command-backed Release 1 run.",
     classification: "fast_chat",
+    intent_outcome: "flowdesk_manage",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "use_command_fallback"
   };
@@ -169,6 +176,7 @@ function continuousWorkResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChat
     safe_next_actions: ["/flowdesk-resume", "/flowdesk-status"],
     user_message: "FlowDesk can continue this plan-backed workflow until the next blocker or clarification point.",
     classification: "managed_plan",
+    intent_outcome: "flowdesk_manage",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "use_command_fallback"
   };
@@ -182,13 +190,14 @@ function continuousWorkNeedsPlanResponse(input: FlowDeskChatRoutingInputV1): Flo
     safe_next_actions: ["ask_clarification", "/flowdesk-status"],
     user_message: "FlowDesk needs an existing plan or design document before continuing work autonomously.",
     classification: "clarify",
+    intent_outcome: "flowdesk_suggest",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "ask_clarification"
   };
 }
 
 function hasTypedExecutionApproval(input: FlowDeskChatRoutingInputV1, summary: string): boolean {
-  return input.request.user_approval_ref !== undefined && explicitApprovalPattern.test(summary);
+  return input.request.user_approval_ref !== undefined && classifyFlowDeskApprovalTextV1(summary).classification === "explicit_approval";
 }
 
 function clarifyResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeResponseV1 {
@@ -199,6 +208,7 @@ function clarifyResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIntakeR
     safe_next_actions: ["ask_clarification", "/flowdesk-status"],
     user_message: "FlowDesk needs a clearer goal before steering this chat request into a command-backed flow.",
     classification: "clarify",
+    intent_outcome: "flowdesk_suggest",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "ask_clarification"
   };
@@ -212,6 +222,7 @@ function continueChatResponse(input: FlowDeskChatRoutingInputV1): FlowDeskChatIn
     safe_next_actions: ["continue_chat"],
     user_message: "FlowDesk did not take over this general chat request.",
     classification: "fast_chat",
+    intent_outcome: "general_chat",
     redacted_intake_ref: redactedIntakeRef(input),
     route_decision: "continue_chat"
   };

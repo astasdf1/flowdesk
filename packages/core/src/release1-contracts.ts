@@ -349,6 +349,7 @@ export interface FlowDeskToolRequestEnvelopeV1 {
   session_ref?: OpaqueRef;
   redacted_intake_ref?: OpaqueRef;
   user_approval_ref?: OpaqueRef;
+  confirmation_nonce?: OpaqueRef;
 }
 
 export interface FlowDeskRedactedErrorV1 {
@@ -379,6 +380,7 @@ export interface FlowDeskChatIntakeRequestV1 extends FlowDeskToolRequestEnvelope
 export interface FlowDeskChatIntakeResponseV1 extends FlowDeskToolResponseEnvelopeV1 {
   schema_version: "flowdesk.chat_intake.response.v1";
   classification: "fast_chat" | "managed_plan" | "clarify" | "blocked";
+  intent_outcome?: "general_chat" | "flowdesk_suggest" | "flowdesk_manage" | "unsafe_later_gate";
   redacted_intake_ref: OpaqueRef;
   route_decision: "continue_chat" | "show_plan" | "ask_clarification" | "block" | "use_command_fallback";
 }

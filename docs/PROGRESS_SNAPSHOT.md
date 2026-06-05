@@ -14,6 +14,7 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-05 state:
 
+- Phase 6 core chat contracts: core chat-intake responses now carry first-class internal `intent_outcome` values (`general_chat`, `flowdesk_suggest`, `flowdesk_manage`, `unsafe_later_gate`), and `@flowdesk/core` exports a deterministic approval classifier with explicit/weak/denial/no-approval categories and reason codes. Existing public chat route decisions remain unchanged.
 - TUI sidebar task labels: compact task-summary generation now targets at most 5 useful words, clamps generated/sidebar display labels to 25 characters, avoids `dispatch_authority_enabled` false-positive suppression, and still suppresses labels containing forbidden raw markers. Focused build/test verification passed and the fix is committed.
 - Wake prompt model routing: completion wake consumer now resolves the wake prompt model in priority order: row-specific persisted model from evidence → config fallback. The wake-ready cache producer persists `wakeProviderQualifiedModelId` from the launch-time `provider_qualified_model_id` in agent_task_context evidence. Invalid row-specific models fall back to config model without crashing. All 170 opencode-plugin functional tests pass.
 - Managed dispatch beta terminal evidence: a standalone plugin Terminal Evidence Writer module now classifies terminal SDK dispatch outcomes and writes write-once atomic terminal lifecycle evidence under `.flowdesk/sessions/<workflow>/evidence/terminal-lifecycle/`; adapter integration landed and focused build/test verification passed.
@@ -92,6 +93,7 @@ Latest archived 2026-06-05 verification includes:
 - `git diff --check` after the result-excerpt slice; one later session noted git bash commands were denied by the active tool permission policy.
 - Phase 5 closure verification: `npm run build`; `node --test packages/opencode-plugin/dist/completion-wake-main-session.test.js` (13/13); `node --test packages/opencode-plugin/dist/managed-dispatch-adapter.test.js` (67/67); `node --test packages/opencode-plugin/dist/fallback-fresh-evidence-gate.test.js` (10/10) passed after terminal evidence, quarantine/binding/fresh-fallback wiring, and stale wake-lock cleanup.
 - Phase 5 live smoke after OpenCode restart: direct MCP quick-fallback allow/block cases passed, and `workflow-phase5-live-stalelock` completed terminal with stale lock → `main_session_wake_completed` and fresh lock → `main_session_wake_skipped` / `wake_consumer_lock_active`.
+- Phase 6 core contract slice verification: `npm run build --workspace @flowdesk/core`; `node ../../scripts/run-tests.mjs --mode functional --package core --test chat-routing --test approval-classifier` from `packages/core` (476/476) passed after adding internal intent outcomes and deterministic approval classification.
 
 No broad test suite is required for this documentation-only cleanup slice.
 

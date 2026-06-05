@@ -356,7 +356,8 @@ function validateRequestEnvelope(value: Record<string, unknown>, schemaVersion: 
     value.workflow_id === undefined ? valid() : validateOpaqueId(value.workflow_id, "workflow_id"),
     value.session_ref === undefined ? valid() : validateOpaqueRef(value.session_ref, "session_ref"),
     value.redacted_intake_ref === undefined ? valid() : validateOpaqueRef(value.redacted_intake_ref, "redacted_intake_ref"),
-    value.user_approval_ref === undefined ? valid() : validateOpaqueRef(value.user_approval_ref, "user_approval_ref")
+    value.user_approval_ref === undefined ? valid() : validateOpaqueRef(value.user_approval_ref, "user_approval_ref"),
+    value.confirmation_nonce === undefined ? valid() : validateOpaqueRef(value.confirmation_nonce, "confirmation_nonce")
   ]);
 }
 
@@ -417,6 +418,7 @@ export function validateChatIntakeResponseV1(value: unknown): ValidationResult {
   return combine([
     validateResponseEnvelopeV1(value, "flowdesk.chat_intake.response.v1"),
     isEnumValue(value.classification, ["fast_chat", "managed_plan", "clarify", "blocked"]) ? valid() : invalid("classification is invalid"),
+    value.intent_outcome === undefined || isEnumValue(value.intent_outcome, ["general_chat", "flowdesk_suggest", "flowdesk_manage", "unsafe_later_gate"]) ? valid() : invalid("intent_outcome is invalid"),
     validateOpaqueRef(value.redacted_intake_ref, "redacted_intake_ref"),
     isEnumValue(value.route_decision, ["continue_chat", "show_plan", "ask_clarification", "block", "use_command_fallback"]) ? valid() : invalid("route_decision is invalid"),
     value.route_decision === "continue_chat" && safeActions.some((action: unknown) => action !== "continue_chat") ? invalid("continue_chat route must not imply managed FlowDesk authority") : valid(),

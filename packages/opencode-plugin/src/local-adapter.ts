@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import type {
@@ -69,6 +70,8 @@ export interface FlowDeskLocalNonDispatchAdapterStateSummaryV1 {
 		| "expired"
 		| "missing";
 	pendingConfirmationRef?: string;
+	/** Redacted-safe nonce that must be supplied as confirmation_nonce when consuming the pending confirmation. */
+	pendingConfirmationNonce?: string;
 	pendingConfirmationWorkflowId?: string;
 	pendingConfirmationExpiresAt?: string;
 	laneRecords: number;
@@ -241,6 +244,7 @@ interface LocalPolicyContext {
 interface LocalPendingConfirmation {
 	status: "pending" | "consumed" | "cancelled" | "expired";
 	approvalRef: string;
+	nonce: string;
 	workflowId: string;
 	sessionRef?: string;
 	redactedIntakeRef?: string;
@@ -807,6 +811,10 @@ function pendingApprovalRef(request: Record<string, unknown>): string {
 	return id("approval", request);
 }
 
+function pendingConfirmationNonce(): string {
+	return `nonce-${randomBytes(16).toString("hex")}`;
+}
+
 function pendingExpiresAt(parts: ReturnType<typeof nowParts>): string {
 	return new Date(parts.nowMs + 15 * 60 * 1000).toISOString();
 }
@@ -819,6 +827,7 @@ function createPendingConfirmation(
 	return {
 		status: "pending",
 		approvalRef: pendingApprovalRef(request),
+		nonce: pendingConfirmationNonce(),
 		workflowId: workflowIdFrom(request),
 		...(typeof request.session_ref === "string"
 			? { sessionRef: request.session_ref }
@@ -863,6 +872,8 @@ function validatePendingConfirmation(
 	const errors: string[] = [];
 	if (request.user_approval_ref !== pending.approvalRef)
 		errors.push("user_approval_ref does not match pending confirmation");
+	if (request.confirmation_nonce !== pending.nonce)
+		errors.push("confirmation_nonce does not match pending confirmation");
 	if (workflowIdFrom(request) !== pending.workflowId)
 		errors.push("workflow_id does not match pending confirmation");
 	if (!matchesOptionalScope(pending.sessionRef, request.session_ref))
@@ -1592,6 +1603,7 @@ function summarize(
 			: {
 					pendingConfirmationStatus: pending.status,
 					pendingConfirmationRef: pending.approvalRef,
+					pendingConfirmationNonce: pending.nonce,
 					pendingConfirmationWorkflowId: pending.workflowId,
 					pendingConfirmationExpiresAt: pending.expiresAtIso,
 				}),

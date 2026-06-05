@@ -21,7 +21,7 @@ export interface Release1JsonSchemaArtifact {
 }
 
 const requestEnvelopeRequired = ["schema_version", "request_id", "input_mode"] as const;
-const requestEnvelopeOptional = ["workflow_id", "session_ref", "redacted_intake_ref", "user_approval_ref"] as const;
+const requestEnvelopeOptional = ["workflow_id", "session_ref", "redacted_intake_ref", "user_approval_ref", "confirmation_nonce"] as const;
 const responseEnvelopeRequired = ["schema_version", "ok", "status", "safe_next_actions", "user_message"] as const;
 const responseEnvelopeOptional = ["workflow_id", "audit_ref", "debug_ref", "lane_refs", "error"] as const;
 
@@ -128,7 +128,7 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.tool.response.v1": responseEnvelopeOptional,
   "flowdesk.redacted_error.v1": ["code"],
   "flowdesk.chat_intake.request.v1": requestEnvelopeOptional,
-  "flowdesk.chat_intake.response.v1": responseEnvelopeOptional,
+  "flowdesk.chat_intake.response.v1": [...responseEnvelopeOptional, "intent_outcome"],
   "flowdesk.hook_harness.request.v1": ["chat_intake_mode", "conformance_ref"],
   "flowdesk.hook_harness.response.v1": ["audit_ref"],
   "flowdesk.doctor.request.v1": ["persist_report"],
@@ -206,7 +206,7 @@ function propertyArtifact(fieldName: string): Release1JsonSchemaPropertyArtifact
     ...(fieldName === "detail_level" ? { enum: STATUS_DETAIL_LEVELS } : {}),
     ...(fieldName === "resume_mode" ? { enum: RESUME_MODES } : {}),
     ...(fieldName === "retention_hint" ? { enum: RETENTION_HINTS } : {}),
-    ...(type === "string" && (fieldName.endsWith("_id") || fieldName.endsWith("_ref") || fieldName.endsWith("_hash")) ? { maxLength: 128 } : {}),
+    ...(type === "string" && (fieldName.endsWith("_id") || fieldName.endsWith("_ref") || fieldName.endsWith("_hash") || fieldName === "confirmation_nonce") ? { maxLength: 128 } : {}),
     ...(type === "string" && (fieldName.includes("summary") || fieldName === "user_message" || fieldName === "safe_remediation" || fieldName === "reason") ? { maxLength: 500 } : {}),
     ...(fieldName === "safe_next_actions" ? { maxItems: 8, enum: SAFE_NEXT_ACTIONS } : {}),
     ...(fieldName === "diagnostic_observations" ? { maxItems: 8 } : {}),

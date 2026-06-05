@@ -17,10 +17,11 @@ export interface FlowDeskAutoContinuePreviewToolResultV1 {
 	nextTaskSummary?: string;
 	pendingTaskCount: number;
 	completedTaskCount: number;
+	blockedTaskCount?: number;
 	maxSteps: number;
 	summaryForUser: string;
 	redactedBlockReason?: string;
-	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-plan" | "/flowdesk-doctor" | "/flowdesk-run")[];
+	safeNextActions: readonly ("/flowdesk-status" | "/flowdesk-plan" | "/flowdesk-doctor" | "/flowdesk-run" | "/flowdesk-retry" | "/flowdesk-resume" | "/flowdesk-abort")[];
 	authority: {
 		realOpenCodeDispatch: false;
 		providerCall: false;
@@ -48,6 +49,10 @@ const SAFE_AUTHORITY = {
 
 function safeNextActions(): FlowDeskAutoContinuePreviewToolResultV1["safeNextActions"] {
 	return ["/flowdesk-status", "/flowdesk-plan", "/flowdesk-doctor", "/flowdesk-run"];
+}
+
+function recoverySafeNextActions(): FlowDeskAutoContinuePreviewToolResultV1["safeNextActions"] {
+	return ["/flowdesk-status", "/flowdesk-retry", "/flowdesk-resume", "/flowdesk-abort", "/flowdesk-doctor"];
 }
 
 function blocked(input: {
@@ -89,6 +94,59 @@ function maxStepsFrom(value: number | undefined): number {
 	return Math.min(5, Math.max(1, Math.floor(value)));
 }
 
+const BLOCKED_TASK_STATES = new Set([
+	"task_failed",
+	"aborted",
+	"no_output",
+	"missing_verdict",
+	"invocation_failed",
+	"timeout",
+	"telemetry_ambiguous",
+	"ambiguous",
+	"incomplete",
+]);
+
+function evidenceTaskId(record: Record<string, unknown>): string | undefined {
+	return stringField(record, "task_id") ?? stringField(record, "taskId");
+}
+
+function blockedStateFromRecord(record: Record<string, unknown>): string | undefined {
+	for (const key of ["state", "status", "failure_class", "failure_category", "completion_status"]) {
+		const value = stringField(record, key);
+		if (value !== undefined && BLOCKED_TASK_STATES.has(value)) return value;
+	}
+	return undefined;
+}
+
+function classifyPlanTasks(input: {
+	tasks: Array<{ taskId: string; title?: string; summary?: string }>;
+	entries: Array<{ evidenceClass: string; record: Record<string, unknown> }>;
+}): {
+	completedTaskIds: Set<string>;
+	blockedByTaskId: Map<string, string>;
+	pending: Array<{ taskId: string; title?: string; summary?: string }>;
+} {
+	const plannedTaskIds = new Set(input.tasks.map((task) => task.taskId));
+	const completedTaskIds = new Set<string>();
+	for (const entry of input.entries) {
+		if (entry.evidenceClass !== "task_result") continue;
+		const taskId = evidenceTaskId(entry.record);
+		if (taskId !== undefined && plannedTaskIds.has(taskId)) completedTaskIds.add(taskId);
+	}
+	const blockedByTaskId = new Map<string, string>();
+	for (const entry of input.entries) {
+		const taskId = evidenceTaskId(entry.record);
+		if (taskId === undefined || !plannedTaskIds.has(taskId) || completedTaskIds.has(taskId)) continue;
+		const state = entry.evidenceClass === "task_failed" ? "task_failed" : blockedStateFromRecord(entry.record);
+		if (state !== undefined) blockedByTaskId.set(taskId, state);
+	}
+	return {
+		completedTaskIds,
+		blockedByTaskId,
+		pending: input.tasks.filter((task) => !completedTaskIds.has(task.taskId) && !blockedByTaskId.has(task.taskId)),
+	};
+}
+
 export function executeFlowDeskAutoContinuePreviewToolV1(input: {
 	config: FlowDeskAutoContinuePreviewToolConfigV1;
 	request?: FlowDeskAutoContinuePreviewToolRequestV1;
@@ -120,13 +178,23 @@ export function executeFlowDeskAutoContinuePreviewToolV1(input: {
 	}
 	if (tasks.length === 0) return blocked({ workflowId, reason: "workflow dispatch plan has no valid tasks", maxSteps });
 
-	const completedTaskIds = new Set<string>();
-	for (const entry of reload.entries) {
-		if (entry.evidenceClass !== "task_result") continue;
-		const taskId = stringField(entry.record, "task_id");
-		if (taskId !== undefined) completedTaskIds.add(taskId);
+	const classification = classifyPlanTasks({ tasks, entries: reload.entries });
+	const { completedTaskIds, blockedByTaskId, pending } = classification;
+	if (blockedByTaskId.size > 0) {
+		const [blockedTaskId, state] = blockedByTaskId.entries().next().value as [string, string];
+		return {
+			status: "blocked_before_auto_continue_preview",
+			workflowId,
+			pendingTaskCount: pending.length,
+			completedTaskCount: completedTaskIds.size,
+			blockedTaskCount: blockedByTaskId.size,
+			maxSteps,
+			redactedBlockReason: `planned task ${blockedTaskId} has terminal incomplete evidence: ${state}`,
+			summaryForUser: `FlowDesk auto-continue preview blocked: planned task ${blockedTaskId} has terminal incomplete evidence (${state}). Use status/retry/resume/abort recovery instead of silently re-pending it.`,
+			safeNextActions: recoverySafeNextActions(),
+			authority: SAFE_AUTHORITY,
+		};
 	}
-	const pending = tasks.filter((task) => !completedTaskIds.has(task.taskId));
 	if (pending.length === 0) {
 		return {
 			status: "auto_continue_preview_ready",
