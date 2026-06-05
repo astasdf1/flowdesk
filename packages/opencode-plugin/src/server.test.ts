@@ -79,6 +79,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskWorkflowDispatchPlanToolName,
 	flowdeskWorkflowDispatchPlanToolOption,
 	flowdeskWorkflowDispatchToolName,
+	flowdeskWriteToolName,
 } from "./server.js";
 import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
@@ -2518,6 +2519,7 @@ test("controlled write apply tool is absent by default and requires explicit opt
 			naturalLanguageRouting: false,
 		});
 		assert.equal(defaultHooks.tool?.[flowdeskControlledWriteApplyToolName], undefined);
+		assert.equal(defaultHooks.tool?.[flowdeskWriteToolName], undefined);
 
 		const noRootHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ workspace } as never,
@@ -2528,6 +2530,7 @@ test("controlled write apply tool is absent by default and requires explicit opt
 			},
 		);
 		assert.equal(noRootHooks.tool?.[flowdeskControlledWriteApplyToolName], undefined);
+		assert.equal(noRootHooks.tool?.[flowdeskWriteToolName], undefined);
 
 		const noDevBetaHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ workspace } as never,
@@ -2539,6 +2542,7 @@ test("controlled write apply tool is absent by default and requires explicit opt
 			},
 		);
 		assert.equal(noDevBetaHooks.tool?.[flowdeskControlledWriteApplyToolName], undefined);
+		assert.equal(noDevBetaHooks.tool?.[flowdeskWriteToolName], undefined);
 
 		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ workspace } as never,
@@ -2550,6 +2554,142 @@ test("controlled write apply tool is absent by default and requires explicit opt
 			},
 		);
 		assert.ok(enabledHooks.tool?.[flowdeskControlledWriteApplyToolName]);
+		assert.ok(enabledHooks.tool?.[flowdeskWriteToolName]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_write is opt-in beside controlled write apply with compact authority-safe description", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-write-registration-"));
+	const workspace = mkdtempSync(join(tmpdir(), "flowdesk-write-workspace-"));
+	try {
+		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+			localNonDispatchAdapter: false,
+			naturalLanguageRouting: false,
+		});
+		assert.equal(defaultHooks.tool?.[flowdeskWriteToolName], undefined);
+
+		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const writeTool = enabledHooks.tool?.[flowdeskWriteToolName];
+		assert.ok(writeTool);
+		assert.ok(enabledHooks.tool?.[flowdeskControlledWriteApplyToolName]);
+		const description = String(writeTool.description ?? "");
+		assert.ok(description.length < 260);
+		assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+		assert.match(description, /No dispatch, provider, runtime, lane, fallback, hard-chat, or noReply authority/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_write does not silently default explicit write consent fields true", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-write-consent-"));
+	const workspace = mkdtempSync(join(tmpdir(), "flowdesk-write-workspace-"));
+	try {
+		writeFileSync(join(workspace, "note.txt"), "before\n", "utf8");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const writeTool = hooks.tool?.[flowdeskWriteToolName];
+		assert.ok(writeTool);
+		const base = {
+			workflowId: "workflow-flowdesk-write-consent-1",
+			targetFilePath: "note.txt",
+			replacementText: "after\n",
+			expectedSha256: sha256Text("before\n"),
+			developerModeAcknowledged: true,
+			userApprovalRef: "approval-flowdesk-write-1",
+			allowControlledWrite: true,
+		};
+
+		for (const [request, reason, expectedAuthority] of [
+			[{ ...base, developerModeAcknowledged: undefined }, /developerModeAcknowledged=true/, { developerModeAcknowledged: false, allowControlledWrite: true }],
+			[{ ...base, allowControlledWrite: undefined }, /allowControlledWrite=true/, { developerModeAcknowledged: true, allowControlledWrite: false }],
+			[{ ...base, userApprovalRef: undefined }, /userApprovalRef/, { developerModeAcknowledged: true, allowControlledWrite: true }],
+			[{ ...base, expectedSha256: undefined, expectedContentSha256: undefined }, /expectedSha256/, { developerModeAcknowledged: true, allowControlledWrite: true }],
+		] as const) {
+			const result = JSON.parse(toolOutput(await writeTool.execute(request, undefined as never))) as Record<string, unknown>;
+			assert.equal(result.status, "blocked_before_controlled_write");
+			assert.match(String(result.redactedBlockReason), reason);
+			const authority = result.authority as Record<string, unknown>;
+			assert.equal(authority.developerModeAcknowledged, expectedAuthority.developerModeAcknowledged);
+			assert.equal(authority.allowControlledWrite, expectedAuthority.allowControlledWrite);
+			assert.equal(authority.controlledExternalWriteAuthorized, false);
+		}
+		assert.equal(readFileSync(join(workspace, "note.txt"), "utf8"), "before\n");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_write matches controlled write blocked path and preserves authority limits", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-write-blocks-"));
+	const workspace = mkdtempSync(join(tmpdir(), "flowdesk-write-workspace-"));
+	try {
+		writeFileSync(join(workspace, "note.txt"), "before\n", "utf8");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ workspace } as never,
+			{
+				[flowdeskControlledWriteApplyOption]: { enabled: true, devBetaControlledWriteApply: true, workspaceRoot: workspace },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const writeTool = hooks.tool?.[flowdeskWriteToolName];
+		const underlyingTool = hooks.tool?.[flowdeskControlledWriteApplyToolName];
+		assert.ok(writeTool);
+		assert.ok(underlyingTool);
+		const request = {
+			workflowId: "workflow-flowdesk-write-blocks-1",
+			targetFilePath: "../escape.txt",
+			expectedContentSha256: sha256Text("before\n"),
+			replacementText: "after\n",
+			developerModeAcknowledged: true,
+			userApprovalRef: "approval-flowdesk-write-1",
+			allowControlledWrite: true,
+			allowMissingExpectedHashForDevMode: false,
+		};
+		const compact = JSON.parse(toolOutput(await writeTool.execute(request, undefined as never))) as Record<string, unknown>;
+		const underlying = JSON.parse(
+			toolOutput(
+				await underlyingTool.execute(
+					{ ...request, reasonSummary: "flowdesk_write controlled replacement" },
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.deepEqual(compact, underlying);
+		assert.equal(compact.status, "blocked_before_controlled_write");
+		assert.match(String(compact.redactedBlockReason), /relative workspace file path/);
+		const authority = compact.authority as Record<string, unknown>;
+		assert.equal(authority.realOpenCodeDispatch, false);
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(authority.defaultRelease1WriteAuthority, false);
+		assert.equal(authority.controlledExternalWriteAuthorized, false);
+		assert.equal(readFileSync(join(workspace, "note.txt"), "utf8"), "before\n");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 		rmSync(workspace, { recursive: true, force: true });

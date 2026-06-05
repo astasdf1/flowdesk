@@ -14,6 +14,7 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-05 state:
 
+- Short write wrapper: `flowdesk_write` now registers beside explicit opt-in `flowdesk_controlled_write_apply` as a compact dev/beta controlled-write alias while preserving explicit consent fields, path/hash checks, and false dispatch/provider/runtime/lane/fallback/hard-chat authority.
 - Short task wrapper: `flowdesk_task` now registers beside explicit opt-in `flowdesk_agent_task_run` as a compact dev/beta task-lane alias with safe defaults for blank parent session, 10s nudge quiet period, and async launch while preserving per-call dev/provider consent.
 - Short continue wrapper: `flowdesk_continue` now registers beside explicit opt-in `flowdesk_auto_continue_execute` as a compact one-step auto-continue alias with `parentSessionId` defaulting to `""` while preserving all execution consent booleans as explicit per-call fields.
 - Short rebind wrapper: `flowdesk_rebind` now registers beside explicit opt-in `flowdesk_quick_fallback_run` as a compact planning-only provider rebind/regate alias with explicit provider identities and dev-mode acknowledgement.

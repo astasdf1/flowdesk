@@ -227,6 +227,7 @@ export const flowdeskWorkflowDispatchToolName =
 	"flowdesk_workflow_dispatch" as const;
 export const flowdeskControlledWriteApplyToolName =
 	"flowdesk_controlled_write_apply" as const;
+export const flowdeskWriteToolName = "flowdesk_write" as const;
 export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
 export const flowdeskTaskToolName = "flowdesk_task" as const;
@@ -4638,6 +4639,17 @@ export function createFlowDeskWorkflowDispatchOptInTools(
 export function createFlowDeskControlledWriteApplyOptInTools(
 	config: FlowDeskControlledWriteApplyToolConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const executeControlledWrite = (input: unknown, defaults?: { reasonSummary?: string }) => {
+		const rawInput =
+			defaults?.reasonSummary === undefined || !isRecord(input) || typeof input.reasonSummary === "string"
+				? input
+				: { ...input, reasonSummary: defaults.reasonSummary };
+		const result = executeFlowDeskControlledWriteApplyToolV1({
+			config,
+			rawInput,
+		});
+		return JSON.stringify(result);
+	};
 	return {
 		[flowdeskControlledWriteApplyToolName]: tool({
 			description: [
@@ -4660,11 +4672,28 @@ export function createFlowDeskControlledWriteApplyOptInTools(
 				allowControlledWrite: tool.schema.boolean().describe("Must be true to permit this one controlled local write."),
 			},
 			async execute(input) {
-				const result = executeFlowDeskControlledWriteApplyToolV1({
-					config,
-					rawInput: input,
+				return executeControlledWrite(input);
+			},
+		}),
+		[flowdeskWriteToolName]: tool({
+			description:
+				"Compact dev/beta controlled workspace file replacement. Requires explicit write consent fields; preserves path/hash checks. No dispatch, provider, runtime, lane, fallback, hard-chat, or noReply authority.",
+			args: {
+				workflowId: tool.schema.string().describe("Stable FlowDesk workflow id for durable ledger evidence."),
+				targetFilePath: tool.schema.string().describe("Workspace-relative target file path only. Absolute paths and traversal are rejected."),
+				expectedSha256: tool.schema.string().optional().describe("Optional sha256-<hex> hash of the current target file content."),
+				expectedContentSha256: tool.schema.string().optional().describe("Optional sha256-<hex> hash alias for the current target file content."),
+				allowMissingExpectedHashForDevMode: tool.schema.boolean().optional().describe("Must be true to proceed without an expected current-content hash."),
+				replacementText: tool.schema.string().describe("Complete replacement file text, bounded and non-binary."),
+				reasonSummary: tool.schema.string().optional().describe("Optional bounded redacted reason; omitted uses generic controlled-write wording."),
+				developerModeAcknowledged: tool.schema.boolean().describe("Must be true to acknowledge dev/beta controlled write authority."),
+				userApprovalRef: tool.schema.string().describe("Bounded opaque user approval reference for this write."),
+				allowControlledWrite: tool.schema.boolean().describe("Must be true to permit this one controlled local write."),
+			},
+			async execute(input) {
+				return executeControlledWrite(input, {
+					reasonSummary: "flowdesk_write controlled replacement",
 				});
-				return JSON.stringify(result);
 			},
 		}),
 	};
