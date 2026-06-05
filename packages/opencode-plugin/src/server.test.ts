@@ -33,6 +33,7 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskFds1SchemaConversionProbeTools,
 	createFlowDeskNaturalLanguageChatMessageHook,
 	createFlowDeskLocalNonDispatchAdapterTools,
+	flowdeskCheckToolName,
 	flowdeskAgentTaskRunOption,
 	flowdeskAgentTaskRunToolName,
 	flowdeskTaskToolName,
@@ -231,6 +232,8 @@ interface LocalAdapterTestResult {
 	providerCall?: unknown;
 	runtimeExecution?: unknown;
 	actualLaneLaunch?: unknown;
+	fallbackAuthority?: unknown;
+	hardCancelOrNoReplyAuthority?: unknown;
 }
 
 interface NaturalLanguageRoutingTestResult {
@@ -697,7 +700,11 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never);
 	assert.deepEqual(Object.keys(hooks.tool ?? {}), [
 		flowdeskPreSpikeDoctorToolName,
-		...FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName),
+		...FLOWDESK_RELEASE_1_COMMAND_MANIFEST.flatMap((entry) =>
+			entry.toolName === "flowdesk_doctor"
+				? [entry.toolName, flowdeskCheckToolName]
+				: [entry.toolName],
+		),
 		flowdeskChatIntakeToolName,
 	]);
 	assert.ok((hooks as ChatMessageHooks)["chat.message"]);
@@ -3835,7 +3842,11 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
 	);
 	assert.deepEqual(
 		Object.keys(localTools),
-		FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName),
+		FLOWDESK_RELEASE_1_COMMAND_MANIFEST.flatMap((entry) =>
+			entry.toolName === "flowdesk_doctor"
+				? [entry.toolName, flowdeskCheckToolName]
+				: [entry.toolName],
+		),
 	);
 
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
@@ -3958,6 +3969,202 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
 		"request_schema_invalid",
 	);
 	assert.equal(invalidPlanResult.localState?.stateWriteApplied, false);
+});
+
+test("flowdesk_check registers with compact diagnostic description", async () => {
+	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	});
+	const checkTool = hooks.tool?.[flowdeskCheckToolName];
+	assert.ok(checkTool);
+	assert.equal(checkTool.description.length < 240, true);
+	assert.match(checkTool.description, /doctor diagnostics/);
+	assert.match(checkTool.description, /no provider call/);
+	assert.match(checkTool.description, /noReply authority/);
+	assert.deepEqual(Object.keys(checkTool.args), [
+		"checkScope",
+		"profile",
+		"persistReport",
+		"requestId",
+	]);
+});
+
+test("flowdesk_check maps empty payload to doctor defaults", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const checkTool = tools[flowdeskCheckToolName];
+	assert.ok(checkTool);
+	const result = JSON.parse(toolOutput(await checkTool.execute({}, undefined as never))) as Record<string, unknown>;
+	assert.equal(result.ok, true);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.toolName, "flowdesk_doctor");
+	assert.deepEqual(
+		{
+			schema_version: calls[0]?.request.schema_version,
+			input_mode: calls[0]?.request.input_mode,
+			check_scope: calls[0]?.request.check_scope,
+			profile: calls[0]?.request.profile,
+			persist_report: calls[0]?.request.persist_report,
+		},
+		{
+			schema_version: "flowdesk.doctor.request.v1",
+			input_mode: "alias_command",
+			check_scope: "all",
+			profile: "production",
+			persist_report: false,
+		},
+	);
+	assert.match(String(calls[0]?.request.request_id), /^check-[A-Za-z0-9_.:-]+$/);
+});
+
+test("flowdesk_check forwards explicit diagnostic fields exactly", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const checkTool = tools[flowdeskCheckToolName];
+	assert.ok(checkTool);
+	await checkTool.execute(
+		{
+			checkScope: "provider_health",
+			profile: "development",
+			persistReport: true,
+			requestId: "request.check explicit/unsafe spaces",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.doctor.request.v1",
+		request_id: "request.check-explicit-unsafe-spaces",
+		input_mode: "alias_command",
+		check_scope: "provider_health",
+		profile: "development",
+		persist_report: true,
+	});
+});
+
+test("flowdesk_check result matches flowdesk_doctor for equivalent low-level payload", async () => {
+	const checkTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const doctorTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const checkTool = checkTools[flowdeskCheckToolName];
+	const doctorTool = doctorTools.flowdesk_doctor;
+	assert.ok(checkTool);
+	assert.ok(doctorTool);
+	const check = JSON.parse(
+		toolOutput(
+			await checkTool.execute(
+				{
+					requestId: "request-check-equivalent",
+					checkScope: "runtime",
+					profile: "test",
+					persistReport: false,
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const doctor = JSON.parse(
+		toolOutput(
+			await doctorTool.execute(
+				{
+					schema_version: "flowdesk.doctor.request.v1",
+					request_id: "request-check-equivalent",
+					input_mode: "alias_command",
+					check_scope: "runtime",
+					profile: "test",
+					persist_report: false,
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(check, doctor);
+});
+
+test("flowdesk_check does not widen authority or synthesize approval identity", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakeCheckTool = fakeTools[flowdeskCheckToolName];
+	assert.ok(fakeCheckTool);
+	await fakeCheckTool.execute(
+		{
+			requestId: "request-no-approval-synthesis",
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			workflowId: "workflow-should-not-forward",
+			workflow_id: "workflow-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"check_scope",
+		"input_mode",
+		"persist_report",
+		"profile",
+		"request_id",
+		"schema_version",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realCheckTool = realTools[flowdeskCheckToolName];
+	assert.ok(realCheckTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realCheckTool.execute(
+				{ requestId: "request-check-authority", checkScope: "runtime" },
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
 });
 
 test("server plugin allows explicit opt-out of local tools and natural-language routing", async () => {

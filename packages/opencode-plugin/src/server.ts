@@ -160,6 +160,7 @@ import {
 
 export const flowdeskPreSpikeDoctorToolName =
 	"flowdesk_pre_spike_doctor" as const;
+export const flowdeskCheckToolName = "flowdesk_check" as const;
 export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption =
 	"fds1SchemaConversionProbe" as const;
@@ -1011,8 +1012,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
 	managedDispatchRunRoute: FlowDeskManagedDispatchRunRouteOptionsV1 = {},
 ): Record<string, FlowDeskOpenCodeTool> {
-	return Object.fromEntries(
-		FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.map((stub) => {
+	const entries = FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.flatMap((stub) => {
 			const artifact = getRelease1SchemaArtifact(stub.requestSchemaId);
 			if (artifact === undefined)
 				throw new Error(
@@ -1029,7 +1029,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					),
 				]),
 			) as FlowDeskOpenCodeToolArgs;
-			return [
+			const lowLevelEntry = [
 				stub.toolName,
 				tool({
 				description: `FlowDesk command-backed local tool for ${stub.toolName}; no provider call, real dispatch, or task launch.`,
@@ -1052,9 +1052,78 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 						return JSON.stringify(session.evaluate(stub.toolName, request));
 					},
 				}),
-			];
-		}),
-	);
+			] as const;
+			if (stub.toolName !== "flowdesk_doctor") return [lowLevelEntry];
+			const checkEntry = [
+				flowdeskCheckToolName,
+				tool({
+					description:
+						"Run FlowDesk doctor diagnostics with compact defaults; command-backed only, no provider call, dispatch, task launch, fallback, write/apply, hard-chat, or noReply authority.",
+					args: {
+						checkScope: tool.schema
+							.enum([
+								"install",
+								"runtime",
+								"policy",
+								"usage",
+								"provider_health",
+								"conformance",
+								"all",
+							])
+							.optional()
+							.describe("Doctor check scope; defaults to all."),
+						profile: tool.schema
+							.enum(["production", "development", "test"])
+							.optional()
+							.describe("Doctor profile; defaults to production."),
+						persistReport: tool.schema
+							.boolean()
+							.optional()
+							.describe("Persist a diagnostic report when true; defaults to false."),
+						requestId: tool.schema
+							.string()
+							.optional()
+							.describe("Optional bounded request id."),
+					},
+					async execute(request) {
+						const record = isRecord(request) ? request : {};
+						const lowLevelRequest = {
+							schema_version: "flowdesk.doctor.request.v1" as const,
+							request_id: safeToken(
+								record.requestId,
+								`check-${randomUUID()}`,
+							),
+							input_mode: "alias_command" as const,
+							check_scope:
+								record.checkScope === "install" ||
+								record.checkScope === "runtime" ||
+								record.checkScope === "policy" ||
+								record.checkScope === "usage" ||
+								record.checkScope === "provider_health" ||
+								record.checkScope === "conformance" ||
+								record.checkScope === "all"
+									? record.checkScope
+									: "all",
+							profile:
+								record.profile === "production" ||
+								record.profile === "development" ||
+								record.profile === "test"
+									? record.profile
+									: "production",
+							persist_report:
+								typeof record.persistReport === "boolean"
+									? record.persistReport
+									: false,
+						};
+						return JSON.stringify(
+							session.evaluate("flowdesk_doctor", lowLevelRequest),
+						);
+					},
+				}),
+			] as const;
+			return [lowLevelEntry, checkEntry];
+		});
+	return Object.fromEntries(entries);
 }
 
 export function createFlowDeskNaturalLanguageRoutingTools(
