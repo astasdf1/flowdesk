@@ -5,6 +5,9 @@ import {
 	consumeFlowDeskProductionApprovalSourceV1,
 } from "@flowdesk/core";
 import {
+	evaluateFallbackFreshEvidenceGate,
+} from "./fallback-fresh-evidence-gate.js";
+import {
 	materializeFlowDeskManagedFallbackRegatePlanEvidenceV1,
 	orchestrateFlowDeskManagedFallbackRegateV1,
 } from "./managed-dispatch-adapter.js";
@@ -273,6 +276,28 @@ export async function executeFlowDeskQuickFallbackRunV1(input: {
 		newAttemptId,
 		stamp,
 	});
+	const freshnessGate = evaluateFallbackFreshEvidenceGate({
+		previousAttemptId: parentAttemptId,
+		newAttemptId,
+		fallbackApproval: {
+			approvalId: `approval-fresh-${stamp}`,
+			actionType: "fallback_reselection",
+			attemptId: newAttemptId,
+			consumed: false,
+			observedAt,
+		},
+		providerUsageObservedAt: observedAt,
+		providerHealthObservedAt: observedAt,
+		maxEvidenceAgeMs: 10 * 60_000,
+		now: new Date(observedAt),
+	});
+	if (freshnessGate.status !== "allowed") {
+		return blockedResponse(
+			observedAt,
+			request,
+			`fallback freshness gate blocked: ${freshnessGate.redactedBlockReason ?? freshnessGate.reason}`,
+		);
+	}
 	const consumedApproval = buildSyntheticConsumedApproval({
 		toProvider,
 		workflowId,

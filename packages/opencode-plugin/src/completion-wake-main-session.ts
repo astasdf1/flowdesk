@@ -47,6 +47,7 @@ interface PromptClient {
 type PromptDispatch = (options: unknown) => unknown;
 
 const maxWakeRetriesPerConsumptionKey = 10;
+const LOCK_STALE_TTL_MS = 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,6 +56,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
 	const value = record[key];
 	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function writeWakeConsumerLockAcquiredAt(lockDir: string, now: Date): void {
+	writeFileSync(join(lockDir, "acquired_at.json"), `${JSON.stringify({ acquired_at: now.toISOString() }, null, 2)}\n`, "utf8");
+}
+
+function existingWakeConsumerLockIsStale(lockDir: string, now: Date): boolean {
+	try {
+		const parsed = JSON.parse(readFileSync(join(lockDir, "acquired_at.json"), "utf8")) as unknown;
+		if (!isRecord(parsed)) return true;
+		const acquiredAt = stringField(parsed, "acquired_at");
+		if (acquiredAt === undefined) return true;
+		const acquiredAtMs = Date.parse(acquiredAt);
+		return !Number.isFinite(acquiredAtMs) || now.getTime() - acquiredAtMs > LOCK_STALE_TTL_MS;
+	} catch {
+		return true;
+	}
+}
+
+function tryCreateWakeConsumerLock(lockDir: string, now: Date): boolean {
+	try {
+		mkdirSync(lockDir);
+	} catch {
+		return false;
+	}
+	try {
+		writeWakeConsumerLockAcquiredAt(lockDir, now);
+		return true;
+	} catch {
+		rmSync(lockDir, { recursive: true, force: true });
+		return false;
+	}
+}
+
+function acquireWakeConsumerLock(lockDir: string, now: Date): boolean {
+	if (tryCreateWakeConsumerLock(lockDir, now)) return true;
+	if (!existingWakeConsumerLockIsStale(lockDir, now)) return false;
+	try {
+		rmSync(lockDir, { recursive: true, force: true });
+	} catch {
+		return false;
+	}
+	return tryCreateWakeConsumerLock(lockDir, now);
 }
 
 function numericField(record: Record<string, unknown>, key: string): number | undefined {
@@ -200,9 +244,8 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_ready_cache_missing" };
 	mkdirSync(uiDir, { recursive: true });
 	const lockDir = join(uiDir, "completion-wake-consumer.lock");
-	try {
-		mkdirSync(lockDir);
-	} catch {
+	const now = input.now ?? new Date();
+	if (!acquireWakeConsumerLock(lockDir, now)) {
 		return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_consumer_lock_active" };
 	}
 	try {
@@ -211,7 +254,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	// Global cooldown: if any row was consumed within the last 10 seconds, skip
 	// this cycle entirely to prevent burst flooding when many events fire close together.
 	const WAKE_COOLDOWN_MS = 10_000;
-	const nowMs = (input.now ?? new Date()).getTime();
+	const nowMs = now.getTime();
 	const recentlyConsumed = allRows.some((row) => {
 		if (row.consumed !== true) return false;
 		const consumedAt = typeof (row as unknown as Record<string, unknown>).consumedAt === "string" ? Date.parse(String((row as unknown as Record<string, unknown>).consumedAt)) : 0;
@@ -223,7 +266,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	// unconsumed rows survive in the cache and will be retried on the next cycle.
 	const rows = allRows.filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined).slice(0, 1);
 	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
-	const observedAt = (input.now ?? new Date()).toISOString();
+	const observedAt = now.toISOString();
 	let wakeSucceeded = 0;
 	let retryScheduled = 0;
 	const consumedKeys = new Set<string>();

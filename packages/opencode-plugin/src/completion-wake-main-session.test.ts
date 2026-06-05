@@ -82,15 +82,61 @@ test("completion wake main-session consumer skips while another consumer holds t
 				notificationLabel: "FlowDesk synthesis ready",
 			}],
 		}, null, 2)}\n`, "utf8");
-		mkdirSync(join(uiDir, "completion-wake-consumer.lock"));
+		const lockDir = join(uiDir, "completion-wake-consumer.lock");
+		mkdirSync(lockDir);
+		writeFileSync(join(lockDir, "acquired_at.json"), `${JSON.stringify({ acquired_at: "2026-06-04T00:00:30.000Z" }, null, 2)}\n`, "utf8");
 		const prompts: unknown[] = [];
 		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
 			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
 			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-04T00:01:00.000Z"),
 		});
 		assert.equal(result.status, "main_session_wake_skipped");
 		assert.equal(result.skippedReason, "wake_consumer_lock_active");
 		assert.equal(prompts.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer reacquires and processes when lock is stale", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-stale-lock-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-04T00:00:00.000Z",
+			expires_at: "2026-06-04T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-main-wake-stale-lock",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "auto_next_ready",
+				readyAt: "2026-06-04T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-main-wake-stale-lock",
+				consumptionKey: "ses-ses_parent123:workflow-main-wake-stale-lock:2026-06-04T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: ["Stale lock test"],
+				notificationLabel: "FlowDesk synthesis ready",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const lockDir = join(uiDir, "completion-wake-consumer.lock");
+		mkdirSync(lockDir);
+		writeFileSync(join(lockDir, "acquired_at.json"), `${JSON.stringify({ acquired_at: "2026-06-04T00:00:00.000Z" }, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-04T00:01:01.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(result.retryScheduled, 0);
+		assert.equal(prompts.length, 1);
+		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedAt?: string; consumedBy?: string }> };
+		assert.equal(ready.rows[0]?.consumed, true);
+		assert.equal(ready.rows[0]?.consumedAt, "2026-06-04T00:01:01.000Z");
+		assert.equal(ready.rows[0]?.consumedBy, "main_session_prompt");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
