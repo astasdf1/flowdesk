@@ -113,6 +113,7 @@ import {
 import {
 	executeFlowDeskAutoContinueExecutionToolV1,
 	type FlowDeskAutoContinueExecutionToolConfigV1,
+	type FlowDeskAutoContinueExecutionToolRequestV1,
 } from "./auto-continue-execution-tool.js";
 import {
 	executeFlowDeskControlledWriteApplyToolV1,
@@ -232,6 +233,7 @@ export const flowdeskWorkflowSynthesisPreviewToolName = "flowdesk_workflow_synth
 export const flowdeskAutoContinuePreviewToolName = "flowdesk_auto_continue_preview" as const;
 export const flowdeskAutoContinueExecutionOption = "autoContinueExecution" as const;
 export const flowdeskAutoContinueExecutionToolName = "flowdesk_auto_continue_execute" as const;
+export const flowdeskContinueToolName = "flowdesk_continue" as const;
 export const flowdeskUiProbeToolName = "flowdesk_ui_probe" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
@@ -4479,6 +4481,33 @@ export function createFlowDeskAutoContinuePreviewOptInTools(
 export function createFlowDeskAutoContinueExecutionOptInTools(
 	config: FlowDeskAutoContinueExecutionToolConfigV1,
 ): Record<string, FlowDeskOpenCodeTool> {
+	const executeAutoContinue = async (input: unknown, defaults?: { parentSessionId?: string }) => {
+		const record: Record<string, unknown> = isRecord(input) ? input : {};
+		const task = isRecord(record.task) ? record.task : undefined;
+		const request: FlowDeskAutoContinueExecutionToolRequestV1 = {
+			...(typeof record.workflowId === "string" ? { workflowId: record.workflowId } : {}),
+			...(typeof record.parentSessionId === "string"
+				? { parentSessionId: record.parentSessionId }
+				: defaults?.parentSessionId === undefined
+					? {}
+					: { parentSessionId: defaults.parentSessionId }),
+			...(task === undefined ? {} : {
+				task: {
+					...(typeof task.taskId === "string" ? { taskId: task.taskId } : {}),
+					...(typeof task.promptText === "string" ? { promptText: task.promptText } : {}),
+					...(typeof task.agentName === "string" ? { agentName: task.agentName } : {}),
+					...(typeof task.providerQualifiedModelId === "string" ? { providerQualifiedModelId: task.providerQualifiedModelId } : {}),
+					...(typeof task.outputContractRef === "string" ? { outputContractRef: task.outputContractRef } : {}),
+				},
+			}),
+			...(record.developerModeAcknowledged === true ? { developerModeAcknowledged: true } : {}),
+			...(record.allowProviderCall === true ? { allowProviderCall: true } : {}),
+			...(record.allowActualLaneLaunch === true ? { allowActualLaneLaunch: true } : {}),
+			...(record.allowAutoContinueExecution === true ? { allowAutoContinueExecution: true } : {}),
+		};
+		const result = await executeFlowDeskAutoContinueExecutionToolV1({ config, request, rawInput: input });
+		return JSON.stringify(result);
+	};
 	return {
 		[flowdeskAutoContinueExecutionToolName]: tool({
 			description: [
@@ -4504,8 +4533,29 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 				allowAutoContinueExecution: tool.schema.boolean().describe("Must be true to opt into this single auto-continue execution step."),
 			},
 			async execute(input) {
-				const result = await executeFlowDeskAutoContinueExecutionToolV1({ config, rawInput: input });
-				return JSON.stringify(result);
+				return executeAutoContinue(input);
+			},
+		}),
+		[flowdeskContinueToolName]: tool({
+			description:
+				"Compact dev/beta auto-continue launcher for one durable planned task. Requires explicit consent booleans; defaults omitted parentSessionId to ''.",
+			args: {
+				workflowId: tool.schema.string().describe("Workflow id with durable workflow_dispatch_plan evidence."),
+				parentSessionId: tool.schema.string().optional().describe("Optional parent session id; omitted defaults to ''."),
+				task: tool.schema.object({
+					taskId: tool.schema.string().describe("Must match the first pending planned task id."),
+					promptText: tool.schema.string().describe("Explicit bounded prompt text for this one lane."),
+					agentName: tool.schema.string().describe("OpenCode agent name or agent-* ref for the lane."),
+					providerQualifiedModelId: tool.schema.string().describe("Concrete provider/model id such as openai/gpt-5.5."),
+					outputContractRef: tool.schema.string().optional().describe("Optional; only contract-task-result-v1 is supported."),
+				}),
+				developerModeAcknowledged: tool.schema.boolean(),
+				allowProviderCall: tool.schema.boolean(),
+				allowActualLaneLaunch: tool.schema.boolean(),
+				allowAutoContinueExecution: tool.schema.boolean(),
+			},
+			async execute(input) {
+				return executeAutoContinue(input, { parentSessionId: "" });
 			},
 		}),
 	};

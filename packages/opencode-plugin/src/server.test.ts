@@ -39,6 +39,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskAutoContinueExecutionOption,
 	flowdeskAutoContinueExecutionToolName,
 	flowdeskAutoContinuePreviewToolName,
+	flowdeskContinueToolName,
 	flowdeskBeatToolName,
 	flowdeskControlledWriteApplyOption,
 	flowdeskControlledWriteApplyToolName,
@@ -2322,7 +2323,7 @@ test("workflow dispatch tool is absent by default and requires opt-in root and c
 	}
 });
 
-test("auto-continue execution tool is absent by default and requires explicit opt-in root and client", async () => {
+test("auto-continue execution and flowdesk_continue tools are absent by default and require explicit opt-in root and client", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-auto-continue-execution-registration-"));
 	try {
 		const defaultHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
@@ -2330,6 +2331,7 @@ test("auto-continue execution tool is absent by default and requires explicit op
 			naturalLanguageRouting: false,
 		});
 		assert.equal(defaultHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+		assert.equal(defaultHooks.tool?.[flowdeskContinueToolName], undefined);
 
 		const noRootHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
@@ -2340,6 +2342,7 @@ test("auto-continue execution tool is absent by default and requires explicit op
 			},
 		);
 		assert.equal(noRootHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+		assert.equal(noRootHooks.tool?.[flowdeskContinueToolName], undefined);
 
 		const noClientHooks = await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 			[flowdeskAutoContinueExecutionOption]: { enabled: true, devBetaActualLaneLaunch: true },
@@ -2348,6 +2351,7 @@ test("auto-continue execution tool is absent by default and requires explicit op
 			naturalLanguageRouting: false,
 		});
 		assert.equal(noClientHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+		assert.equal(noClientHooks.tool?.[flowdeskContinueToolName], undefined);
 
 		const noDevBetaHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
@@ -2359,6 +2363,7 @@ test("auto-continue execution tool is absent by default and requires explicit op
 			},
 		);
 		assert.equal(noDevBetaHooks.tool?.[flowdeskAutoContinueExecutionToolName], undefined);
+		assert.equal(noDevBetaHooks.tool?.[flowdeskContinueToolName], undefined);
 
 		const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
 			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
@@ -2370,6 +2375,130 @@ test("auto-continue execution tool is absent by default and requires explicit op
 			},
 		);
 		assert.ok(enabledHooks.tool?.[flowdeskAutoContinueExecutionToolName]);
+		assert.ok(enabledHooks.tool?.[flowdeskContinueToolName]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_continue has compact description and preserves explicit consent", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-continue-consent-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskAutoContinueExecutionOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const continueTool = hooks.tool?.[flowdeskContinueToolName];
+		assert.ok(continueTool);
+		const description = String(continueTool.description ?? "");
+		assert.ok(description.length < 260);
+		assert.doesNotMatch(description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+
+		const missingDevConsent = JSON.parse(
+			toolOutput(
+				await continueTool.execute(
+					{
+						workflowId: "workflow-continue-consent-1",
+						task: {
+							taskId: "task-continue-1",
+							promptText: "Continue the first pending task.",
+							agentName: "reviewer-gpt-frontier",
+							providerQualifiedModelId: "openai/gpt-5.5",
+						},
+						allowProviderCall: true,
+						allowActualLaneLaunch: true,
+						allowAutoContinueExecution: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(missingDevConsent.status, "blocked_before_auto_continue_execution");
+		assert.match(String(missingDevConsent.redactedBlockReason), /developerModeAcknowledged=true/);
+		assert.equal((missingDevConsent.authority as Record<string, unknown>).developerModeAcknowledged, false);
+
+		const missingExecutionConsent = JSON.parse(
+			toolOutput(
+				await continueTool.execute(
+					{
+						workflowId: "workflow-continue-consent-1",
+						task: {
+							taskId: "task-continue-1",
+							promptText: "Continue the first pending task.",
+							agentName: "reviewer-gpt-frontier",
+							providerQualifiedModelId: "openai/gpt-5.5",
+						},
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+						allowActualLaneLaunch: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(missingExecutionConsent.status, "blocked_before_auto_continue_execution");
+		assert.match(String(missingExecutionConsent.redactedBlockReason), /allowAutoContinueExecution=true/);
+		const authority = missingExecutionConsent.authority as Record<string, unknown>;
+		assert.equal(authority.providerCall, false);
+		assert.equal(authority.runtimeExecution, false);
+		assert.equal(authority.actualLaneLaunch, false);
+		assert.equal(authority.autoContinueExecutionOptIn, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_continue defaults parentSessionId and matches underlying blocked path", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-continue-parent-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: workflowDispatchFakeClient("result", { create: 0, prompt: 0, messages: 0 }) } as never,
+			{
+				[flowdeskAutoContinueExecutionOption]: { enabled: true, devBetaActualLaneLaunch: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const autoTool = hooks.tool?.[flowdeskAutoContinueExecutionToolName];
+		const continueTool = hooks.tool?.[flowdeskContinueToolName];
+		assert.ok(autoTool);
+		assert.ok(continueTool);
+
+		const compactRequest = {
+			workflowId: "workflow-continue-parent-1",
+			task: {
+				taskId: "task-continue-parent-1",
+				promptText: "Continue the first pending task.",
+				agentName: "reviewer-gpt-frontier",
+				providerQualifiedModelId: "openai/gpt-5.5",
+			},
+			developerModeAcknowledged: true,
+			allowProviderCall: true,
+			allowActualLaneLaunch: true,
+			allowAutoContinueExecution: true,
+		};
+		const compact = JSON.parse(
+			toolOutput(await continueTool.execute(compactRequest, undefined as never)),
+		) as Record<string, unknown>;
+		const underlying = JSON.parse(
+			toolOutput(
+				await autoTool.execute(
+					{ ...compactRequest, parentSessionId: "" },
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+
+		assert.equal(compact.parentSessionId, "");
+		assert.equal(compact.status, "blocked_before_auto_continue_execution");
+		assert.equal(compact.redactedBlockReason, "parentSessionId is required");
+		assert.deepEqual(compact, underlying);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
