@@ -34,6 +34,7 @@ import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskNaturalLanguageChatMessageHook,
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskCheckToolName,
+	flowdeskDebugToolName,
 	flowdeskAgentTaskRunOption,
 	flowdeskAgentTaskRunToolName,
 	flowdeskTaskToolName,
@@ -3845,7 +3846,9 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
 		FLOWDESK_RELEASE_1_COMMAND_MANIFEST.flatMap((entry) =>
 			entry.toolName === "flowdesk_doctor"
 				? [entry.toolName, flowdeskCheckToolName]
-				: [entry.toolName],
+				: entry.toolName === "flowdesk_export_debug"
+					? [entry.toolName, flowdeskDebugToolName]
+					: [entry.toolName],
 		),
 	);
 
@@ -4156,6 +4159,183 @@ test("flowdesk_check does not widen authority or synthesize approval identity", 
 		toolOutput(
 			await realCheckTool.execute(
 				{ requestId: "request-check-authority", checkScope: "runtime" },
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.equal(result.providerCall, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.fallbackAuthority, false);
+	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("flowdesk_debug registers only with command-backed debug export and has compact description", async () => {
+	const disabledHooks = (await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskLocalNonDispatchAdapterOption]: false,
+			[flowdeskNaturalLanguageRoutingOption]: false,
+		},
+	)) as ChatMessageHooks;
+	assert.equal(disabledHooks.tool?.flowdesk_export_debug, undefined);
+	assert.equal(disabledHooks.tool?.[flowdeskDebugToolName], undefined);
+
+	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
+		[flowdeskLocalNonDispatchAdapterOption]: true,
+		[flowdeskNaturalLanguageRoutingOption]: false,
+	})) as ChatMessageHooks;
+	assert.ok(hooks.tool?.flowdesk_export_debug);
+	const debugTool = hooks.tool?.[flowdeskDebugToolName];
+	assert.ok(debugTool);
+	assert.equal(debugTool.description.length < 240, true);
+	assert.match(debugTool.description, /redacted FlowDesk debug bundle/);
+	assert.match(debugTool.description, /no provider/);
+	assert.match(debugTool.description, /noReply authority/);
+	assert.doesNotMatch(debugTool.description, /Trigger on|Korean phrases|English phrases|WHEN TO USE/);
+	assert.deepEqual(Object.keys(debugTool.args), [
+		"includeSections",
+		"retentionHint",
+		"requestId",
+	]);
+});
+
+test("flowdesk_debug forwards explicit redacted export args safely", async () => {
+	const calls: { toolName: unknown; request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(toolName, request) {
+			calls.push({ toolName, request: request as Record<string, unknown> });
+			return { ok: true, toolName, request } as never;
+		},
+	};
+	const tools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const debugTool = tools[flowdeskDebugToolName];
+	assert.ok(debugTool);
+	const result = JSON.parse(
+		toolOutput(
+			await debugTool.execute(
+				{
+					includeSections: ["doctor", "redaction_summary"],
+					retentionHint: "delete_after_export",
+					requestId: "request.debug explicit/unsafe spaces",
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(result.ok, true);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.toolName, "flowdesk_export_debug");
+	assert.deepEqual(calls[0]?.request, {
+		schema_version: "flowdesk.export_debug.request.v1",
+		request_id: "request.debug-explicit-unsafe-spaces",
+		input_mode: "alias_command",
+		include_sections: ["doctor", "redaction_summary"],
+		retention_hint: "delete_after_export",
+	});
+});
+
+test("flowdesk_debug result matches flowdesk_export_debug for equivalent payload", async () => {
+	const debugTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const exportTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const debugTool = debugTools[flowdeskDebugToolName];
+	const exportDebugTool = exportTools.flowdesk_export_debug;
+	assert.ok(debugTool);
+	assert.ok(exportDebugTool);
+	const debug = JSON.parse(
+		toolOutput(
+			await debugTool.execute(
+				{
+					requestId: "request-debug-equivalent",
+					includeSections: ["redaction_summary"],
+					retentionHint: "keep_until_default_expiry",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	const exportDebug = JSON.parse(
+		toolOutput(
+			await exportDebugTool.execute(
+				{
+					schema_version: "flowdesk.export_debug.request.v1",
+					request_id: "request-debug-equivalent",
+					input_mode: "alias_command",
+					include_sections: ["redaction_summary"],
+					retention_hint: "keep_until_default_expiry",
+				},
+				undefined as never,
+			),
+		),
+	) as LocalAdapterTestResult;
+	assert.deepEqual(debug, exportDebug);
+});
+
+test("flowdesk_debug does not widen authority or synthesize approval identity", async () => {
+	const calls: { request: Record<string, unknown> }[] = [];
+	const session: NonNullable<
+		Parameters<typeof createFlowDeskLocalNonDispatchAdapterTools>[1]
+	> = {
+		state: {},
+		evaluate(_toolName, request) {
+			calls.push({ request: request as Record<string, unknown> });
+			return { ok: true, request } as never;
+		},
+	};
+	const fakeTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+		session,
+	);
+	const fakeDebugTool = fakeTools[flowdeskDebugToolName];
+	assert.ok(fakeDebugTool);
+	await fakeDebugTool.execute(
+		{
+			requestId: "request-debug-no-approval-synthesis",
+			includeSections: ["doctor", 123, "redaction_summary"],
+			userApprovalRef: "approval-should-not-forward",
+			user_approval_ref: "approval-snake-should-not-forward",
+			workflowId: "workflow-should-not-forward",
+			workflow_id: "workflow-snake-should-not-forward",
+			sessionRef: "session-should-not-forward",
+			confirmationNonce: "nonce-should-not-forward",
+			confirmation_nonce: "nonce-snake-should-not-forward",
+		},
+		undefined as never,
+	);
+	assert.deepEqual(Object.keys(calls[0]?.request ?? {}).sort(), [
+		"include_sections",
+		"input_mode",
+		"request_id",
+		"retention_hint",
+		"schema_version",
+	]);
+	assert.deepEqual(calls[0]?.request.include_sections, [
+		"doctor",
+		"redaction_summary",
+	]);
+
+	const realTools = createFlowDeskLocalNonDispatchAdapterTools(
+		new Date("2026-05-17T00:00:00.000Z"),
+	);
+	const realDebugTool = realTools[flowdeskDebugToolName];
+	assert.ok(realDebugTool);
+	const result = JSON.parse(
+		toolOutput(
+			await realDebugTool.execute(
+				{
+					requestId: "request-debug-authority",
+					includeSections: ["redaction_summary"],
+				},
 				undefined as never,
 			),
 		),

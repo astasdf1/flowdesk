@@ -161,6 +161,7 @@ import {
 export const flowdeskPreSpikeDoctorToolName =
 	"flowdesk_pre_spike_doctor" as const;
 export const flowdeskCheckToolName = "flowdesk_check" as const;
+export const flowdeskDebugToolName = "flowdesk_debug" as const;
 export const flowdeskChatIntakeToolName = "flowdesk_chat_intake" as const;
 export const flowdeskFds1SchemaConversionProbeOption =
 	"fds1SchemaConversionProbe" as const;
@@ -1012,7 +1013,8 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
 	managedDispatchRunRoute: FlowDeskManagedDispatchRunRouteOptionsV1 = {},
 ): Record<string, FlowDeskOpenCodeTool> {
-	const entries = FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.flatMap((stub) => {
+	type FlowDeskOpenCodeToolEntry = [string, FlowDeskOpenCodeTool];
+	const entries: FlowDeskOpenCodeToolEntry[] = FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.flatMap((stub): FlowDeskOpenCodeToolEntry[] => {
 			const artifact = getRelease1SchemaArtifact(stub.requestSchemaId);
 			if (artifact === undefined)
 				throw new Error(
@@ -1029,7 +1031,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					),
 				]),
 			) as FlowDeskOpenCodeToolArgs;
-			const lowLevelEntry = [
+			const lowLevelEntry: FlowDeskOpenCodeToolEntry = [
 				stub.toolName,
 				tool({
 				description: `FlowDesk command-backed local tool for ${stub.toolName}; no provider call, real dispatch, or task launch.`,
@@ -1052,9 +1054,66 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 						return JSON.stringify(session.evaluate(stub.toolName, request));
 					},
 				}),
-			] as const;
+			];
+			if (stub.toolName === "flowdesk_export_debug") {
+				const debugEntry: FlowDeskOpenCodeToolEntry = [
+					flowdeskDebugToolName,
+					tool({
+						description:
+							"Export a redacted FlowDesk debug bundle. Diagnostics only; no provider, dispatch, runtime/lane, fallback, write/apply, hard-chat, or noReply authority.",
+						args: {
+							includeSections: tool.schema
+								.array(tool.schema.string())
+								.max(7)
+								.describe("Redacted debug sections to include."),
+							retentionHint: tool.schema
+								.enum([
+									"delete_after_export",
+									"keep_until_default_expiry",
+									"keep_until_policy_expiry",
+								])
+								.optional()
+								.describe(
+									"Debug export retention; defaults to keep_until_default_expiry.",
+								),
+							requestId: tool.schema
+								.string()
+								.optional()
+								.describe("Optional bounded request id."),
+						},
+						async execute(request) {
+							const record: Record<string, unknown> = isRecord(request)
+								? request
+								: {};
+							const lowLevelRequest = {
+								schema_version: "flowdesk.export_debug.request.v1" as const,
+								request_id: safeToken(
+									record.requestId,
+									`debug-${randomUUID()}`,
+								),
+								input_mode: "alias_command" as const,
+								include_sections: Array.isArray(record.includeSections)
+									? record.includeSections.filter(
+										(section): section is string => typeof section === "string",
+									)
+									: [],
+								retention_hint:
+									record.retentionHint === "delete_after_export" ||
+									record.retentionHint === "keep_until_default_expiry" ||
+									record.retentionHint === "keep_until_policy_expiry"
+										? record.retentionHint
+										: "keep_until_default_expiry",
+							};
+							return JSON.stringify(
+								session.evaluate("flowdesk_export_debug", lowLevelRequest),
+							);
+						},
+					}),
+				];
+				return [lowLevelEntry, debugEntry];
+			}
 			if (stub.toolName !== "flowdesk_doctor") return [lowLevelEntry];
-			const checkEntry = [
+			const checkEntry: FlowDeskOpenCodeToolEntry = [
 				flowdeskCheckToolName,
 				tool({
 					description:
@@ -1086,7 +1145,9 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 							.describe("Optional bounded request id."),
 					},
 					async execute(request) {
-						const record = isRecord(request) ? request : {};
+						const record: Record<string, unknown> = isRecord(request)
+							? request
+							: {};
 						const lowLevelRequest = {
 							schema_version: "flowdesk.doctor.request.v1" as const,
 							request_id: safeToken(
@@ -1120,7 +1181,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 						);
 					},
 				}),
-			] as const;
+			];
 			return [lowLevelEntry, checkEntry];
 		});
 	return Object.fromEntries(entries);

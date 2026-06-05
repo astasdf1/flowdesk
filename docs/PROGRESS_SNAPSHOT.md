@@ -8,12 +8,13 @@ Update this file whenever code, tests, docs, packaging, installer behavior, conf
 
 If no progress fields changed during a non-trivial work session, the final response should state that this snapshot was checked and did not need an update.
 
-## Current Canonical State (2026-06-05)
+## Current Canonical State (2026-06-06)
 
 FlowDesk is a conservative OpenCode plugin with a default Release 1 path built around command-backed, non-dispatch chat routing, redacted durable evidence, status/usage diagnostics, passive TUI display, and guarded recovery surfaces. Explicit dev/beta provider-lane, workflow-dispatch, auto-continue, and controlled-write paths exist only behind opt-in flags and per-call acknowledgements.
 
-Recent visible 2026-06-05 state:
+Recent visible 2026-06-06 state:
 
+- Short debug wrapper: `flowdesk_debug` now registers beside `flowdesk_export_debug` under the normal command-backed local tool path as a compact redacted debug-export alias with explicit section selection, safe request-id generation, default export retention, and false provider/dispatch/runtime/lane/fallback/write/hard-chat/noReply authority.
 - Short diagnostic wrapper: `flowdesk_check` now registers beside `flowdesk_doctor` under the normal command-backed local tool path as a compact doctor alias with safe defaults and false provider/dispatch/runtime/lane/fallback/write/hard-chat/noReply authority.
 - Short write wrapper: `flowdesk_write` now registers beside explicit opt-in `flowdesk_controlled_write_apply` as a compact dev/beta controlled-write alias while preserving explicit consent fields, path/hash checks, and false dispatch/provider/runtime/lane/fallback/hard-chat authority.
 - Short task wrapper: `flowdesk_task` now registers beside explicit opt-in `flowdesk_agent_task_run` as a compact dev/beta task-lane alias with safe defaults for blank parent session, 10s nudge quiet period, and async launch while preserving per-call dev/provider consent.
@@ -112,8 +113,9 @@ Latest archived 2026-06-05 verification includes:
 - Phase 6 strict copy-audit verification: `npm run build`; `node --test --test-name-pattern="nonce|confirmation|chat.message|steering|suggestion|blocking|intake|pre-spike|non-dispatch|fake-runtime|adapter" packages/opencode-plugin/dist/server.test.js` (28/28); `git diff --check` passed after user-facing copy cleanup and internal-only marker review.
 - Phase 6 live-smoke remediation verification: `npm run build`; `node --test packages/core/dist/approval-classifier.test.js packages/core/dist/chat-routing.test.js packages/opencode-plugin/dist/auto-continue-execution-tool.test.js` (29/29); corrected dist live smoke passed for chat `intent_outcome`, approval classifier, and auto-continue `no_output` block-before-launch cases.
 - Phase 6 MCP live-after-restart verification: `flowdesk_chat_intake` direct live calls passed for plan/general/unsafe-dispatch/status routing; unsafe dispatch blocked without `/flowdesk-run`, and all authority flags remained false.
+- `flowdesk_debug` wrapper verification: `npm run build`; `node --test --test-name-pattern="flowdesk_debug" packages/opencode-plugin/dist/server.test.js` (4/4) passed after adding the compact redacted debug-export alias. `git diff --check` was attempted but blocked by the active bash permission policy.
 
-No broad test suite is required for this documentation-only cleanup slice.
+No broad test suite was run for this focused wrapper slice.
 
 ## Release 1 Checklist
 
