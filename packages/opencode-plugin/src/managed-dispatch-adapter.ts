@@ -59,6 +59,8 @@ import {
 } from "@flowdesk/core";
 
 import { observeFlowDeskAgentTaskOutputV1 } from "./agent-task-output.js";
+import { evaluateBindingPolicyRevalidation } from "./binding-policy-revalidation.js";
+import { evaluateQuarantineEnforcer } from "./quarantine-enforcer.js";
 import {
 	classifyDispatchTerminalState,
 	persistTerminalEvidence,
@@ -682,6 +684,10 @@ function managedFallbackRegateAuthority(
 		freshRegatePlanPrepared: prepared,
 		automaticFallbackAuthorized: false,
 	};
+}
+
+function approvalObservedAt(approval: FlowDeskProductionApprovalSourceV1 | undefined): string | undefined {
+	return approval?.consumed_at ?? approval?.issued_at;
 }
 
 function controlledExternalWriteAuthority(
@@ -3304,6 +3310,9 @@ function opencodeRuntimeProviderIDForFlowDeskProviderFamily(
 			return "google";
 		case "openai":
 			return "openai";
+		case "opencode":
+		case "opencode_go":
+			return "opencode";
 		default:
 			return undefined;
 	}
@@ -4727,6 +4736,55 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			input.boundaryInput,
 			guardDecision,
 			"Durable dispatch pre-call gate did not expose a reloaded consumed approval source.",
+		);
+	}
+	const managedDispatchNow = new Date(
+		Math.max(
+			input.boundaryInput.now ?? Date.now(),
+			Date.parse(
+				approvalObservedAt(consumedApproval) ??
+				new Date(input.boundaryInput.now ?? Date.now()).toISOString(),
+			),
+		),
+	);
+	const quarantineDecision = evaluateQuarantineEnforcer({
+		workflowId: input.dispatchManifest.workflow_id,
+		attemptId: input.dispatchManifest.attempt_id,
+		laneId: input.request.laneId ?? input.dispatchManifest.attempt_id,
+		guardApproval: input.boundaryInput.guardApproval === undefined
+			? undefined
+			: {
+				approvalId: input.boundaryInput.guardApproval.guard_decision_id,
+				expiresAt: input.boundaryInput.guardApproval.expires_at,
+			},
+		now: managedDispatchNow,
+	});
+	if (quarantineDecision.status !== "allowed") {
+		return blocked(
+			input.boundaryInput,
+			guardDecision,
+			`Managed-dispatch quarantine blocked: ${quarantineDecision.redactedBlockReason ?? quarantineDecision.reason ?? "unknown"}.`,
+		);
+	}
+
+	const bindingPolicyRevalidation = evaluateBindingPolicyRevalidation({
+		expectedPolicyHash: input.dispatchManifest.provider_binding_hash,
+		observedPolicyHash: consumedApproval.provider_binding_hash,
+		policyObservedAt: approvalObservedAt(consumedApproval),
+		maxPolicyAgeMs: Math.max(
+			1,
+			Date.parse(consumedApproval.expires_at) -
+				Date.parse(approvalObservedAt(consumedApproval) ?? consumedApproval.expires_at),
+		),
+		providerQualifiedModelId: approvedProviderQualifiedModelId,
+		allowedProviderQualifiedModelIds: [approvedProviderQualifiedModelId],
+		now: managedDispatchNow,
+	});
+	if (bindingPolicyRevalidation.status !== "allowed") {
+		return blocked(
+			input.boundaryInput,
+			guardDecision,
+			`Binding policy revalidation blocked: ${bindingPolicyRevalidation.redactedBlockReason ?? bindingPolicyRevalidation.reason}.`,
 		);
 	}
 	const {

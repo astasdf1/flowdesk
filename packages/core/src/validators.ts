@@ -218,6 +218,7 @@ export function validateProviderQualifiedModelId(value: unknown): ValidationResu
     "openai",
     "gemini",
     "google",
+    "opencode",
     "opencode_go",
     "z_ai",
   ];

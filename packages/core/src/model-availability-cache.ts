@@ -12,11 +12,11 @@ import {
 	validateProviderFamily,
 } from "./validators.js";
 
-const FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES = ["claude", "anthropic", "openai", "gemini", "opencode_go", "z_ai"] as const;
+const FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES = ["claude", "anthropic", "openai", "gemini", "google", "opencode", "opencode_go", "z_ai"] as const;
 
 export interface FlowDeskExactModelAvailabilityEntryV1 {
 	entry_id: string;
-	provider_family: "claude" | "anthropic" | "openai" | "gemini" | "opencode_go" | "z_ai";
+	provider_family: "claude" | "anthropic" | "openai" | "gemini" | "google" | "opencode" | "opencode_go" | "z_ai";
 	provider_identity_ref: string;
 	provider_qualified_model_id: string;
 	model_family: string;
@@ -107,7 +107,7 @@ export interface FlowDeskExactModelAvailabilityCacheProviderAcquisitionResultV1 
 	registry_hash: string;
 	policy_pack_hash: string;
 	auth_account_boundary_ref: string;
-	provider_family: "claude" | "anthropic" | "openai" | "gemini" | "opencode_go" | "z_ai";
+	provider_family: "claude" | "anthropic" | "openai" | "gemini" | "google" | "opencode" | "opencode_go" | "z_ai";
 	provider_identity_ref: string;
 	provider_qualified_model_id: string;
 	model_family: string;
