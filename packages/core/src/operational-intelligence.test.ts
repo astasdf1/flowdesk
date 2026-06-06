@@ -61,6 +61,22 @@ import {
 	scoreWorkflowProposal,
 	type FlowDeskScoringEngineInputV1,
 	type FlowDeskScoringEngineResultV1,
+	evaluateFlowDeskFederatedRegistryConnectorGateV1,
+	validateFlowDeskFederatedGateEvaluationResultV1,
+	type FlowDeskFederatedGateEvaluationResultV1,
+	createFlowDeskFederatedRegistryConnectorCapabilityV1,
+	validateFlowDeskFederatedRegistryConnectorCapabilityV1,
+	type FlowDeskFederatedRegistryConnectorCapabilityV1,
+	type FlowDeskFederatedConnectorKindV1,
+	type FlowDeskFederatedConnectorCapabilityStateV1,
+	createFlowDeskFederatedRegistryPublicationPreflightV1,
+	validateFlowDeskFederatedRegistryPublicationPreflightV1,
+	type FlowDeskFederatedRegistryPublicationPreflightV1,
+	type FlowDeskFederatedPreflightStateV1,
+	createFlowDeskGitHubDryRunPublicationResultV1,
+	validateFlowDeskGitHubDryRunPublicationResultV1,
+	type FlowDeskGitHubDryRunPublicationResultV1,
+	type FlowDeskGitHubDryRunStateV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -3026,4 +3042,570 @@ test("scoring engine: invalid workflowId → ok:false with errors", () => {
 	assert.equal(result.score, undefined);
 	// healthLabel should still be returned (unknown on error)
 	assert.equal(result.healthLabel, "unknown");
+});
+
+// ─── P8-S4: Federated registry connector gate evaluator tests ─────────────────
+
+test("federated gate evaluator: gate_satisfied is always false with minimal inputs", () => {
+	const result: FlowDeskFederatedGateEvaluationResultV1 = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-1",
+		attemptId: "attempt-gate-1",
+	});
+	// Structural: gate_satisfied is always false
+	assert.equal(result.gate_satisfied, false, "gate_satisfied must always be false");
+	// Required literals
+	assert.equal(result.advisory_only, true);
+	assert.equal(result.non_authorizing, true);
+	assert.equal(result.connector_gate_promotion_authorized, false);
+	assert.equal(result.remote_write_authority_enabled, false);
+	assert.equal(result.dispatch_authority_enabled, false);
+	// schema_version
+	assert.equal(result.schema_version, "flowdesk.federated_gate_evaluation.v1");
+	// Validator accepts the result
+	assert.equal(validateFlowDeskFederatedGateEvaluationResultV1(result).ok, true);
+});
+
+test("federated gate evaluator: gate_satisfied is always false even with all refs present", () => {
+	const result: FlowDeskFederatedGateEvaluationResultV1 = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-full-1",
+		attemptId: "attempt-gate-full-1",
+		capabilityDescriptorRef: "capability-descriptor-ref-1",
+		intentRef: "intent-ref-1",
+		threatModelDocRef: "threat-model-doc-ref-1",
+		privacyReviewRef: "privacy-review-ref-1",
+		securityAuditRef: "security-audit-ref-1",
+	});
+	// Even with all refs supplied, gate_satisfied must still be false
+	assert.equal(result.gate_satisfied, false, "gate_satisfied must always be false even with all refs");
+	assert.equal(result.connector_gate_promotion_authorized, false);
+	assert.equal(result.remote_write_authority_enabled, false);
+	assert.equal(result.dispatch_authority_enabled, false);
+	// Validator must accept
+	assert.equal(validateFlowDeskFederatedGateEvaluationResultV1(result).ok, true);
+});
+
+test("federated gate evaluator: redacted_block_reasons always includes connector_gate_promotion_not_yet_authorized", () => {
+	// Test with minimal input
+	const minimal = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-reasons-1",
+		attemptId: "attempt-gate-reasons-1",
+	});
+	assert.ok(
+		minimal.redacted_block_reasons.includes("connector_gate_promotion_not_yet_authorized"),
+		"redacted_block_reasons must always include connector_gate_promotion_not_yet_authorized"
+	);
+	// Test with all refs — still present
+	const full = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-reasons-2",
+		attemptId: "attempt-gate-reasons-2",
+		privacyReviewRef: "privacy-ref-1",
+		securityAuditRef: "security-ref-1",
+		capabilityDescriptorRef: "capability-ref-1",
+	});
+	assert.ok(
+		full.redacted_block_reasons.includes("connector_gate_promotion_not_yet_authorized"),
+		"redacted_block_reasons must always include connector_gate_promotion_not_yet_authorized even with all refs"
+	);
+	// missing_evidence_labels always includes the capability label
+	assert.ok(
+		minimal.missing_evidence_labels.includes("flowdesk.federated_registry_connector_capability.v1"),
+		"missing_evidence_labels must always include flowdesk.federated_registry_connector_capability.v1"
+	);
+});
+
+test("federated gate evaluator: privacy_review_evidence_missing appears when privacyReviewRef absent", () => {
+	const withoutPrivacy = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-privacy-1",
+		attemptId: "attempt-gate-privacy-1",
+		// privacyReviewRef intentionally absent
+	});
+	assert.ok(
+		withoutPrivacy.redacted_block_reasons.includes("privacy_review_evidence_missing"),
+		"privacy_review_evidence_missing must be present when privacyReviewRef is absent"
+	);
+	assert.ok(
+		withoutPrivacy.missing_evidence_labels.includes("privacy_review_record"),
+		"missing_evidence_labels must include privacy_review_record when privacyReviewRef absent"
+	);
+	// When present, privacy_review_evidence_missing should NOT appear
+	const withPrivacy = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-privacy-2",
+		attemptId: "attempt-gate-privacy-2",
+		privacyReviewRef: "privacy-review-ref-1",
+	});
+	assert.ok(
+		!withPrivacy.redacted_block_reasons.includes("privacy_review_evidence_missing"),
+		"privacy_review_evidence_missing must NOT appear when privacyReviewRef is present"
+	);
+	assert.ok(
+		!withPrivacy.missing_evidence_labels.includes("privacy_review_record"),
+		"privacy_review_record must NOT appear in missing_evidence_labels when privacyReviewRef is present"
+	);
+});
+
+test("federated gate evaluator: security_audit_evidence_missing appears when securityAuditRef absent", () => {
+	const withoutAudit = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-audit-1",
+		attemptId: "attempt-gate-audit-1",
+		// securityAuditRef intentionally absent
+	});
+	assert.ok(
+		withoutAudit.redacted_block_reasons.includes("security_audit_evidence_missing"),
+		"security_audit_evidence_missing must be present when securityAuditRef is absent"
+	);
+	assert.ok(
+		withoutAudit.missing_evidence_labels.includes("security_audit_record"),
+		"missing_evidence_labels must include security_audit_record when securityAuditRef absent"
+	);
+	// When present, security_audit_evidence_missing should NOT appear
+	const withAudit = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-audit-2",
+		attemptId: "attempt-gate-audit-2",
+		securityAuditRef: "security-audit-ref-1",
+	});
+	assert.ok(
+		!withAudit.redacted_block_reasons.includes("security_audit_evidence_missing"),
+		"security_audit_evidence_missing must NOT appear when securityAuditRef is present"
+	);
+	assert.ok(
+		!withAudit.missing_evidence_labels.includes("security_audit_record"),
+		"security_audit_record must NOT appear in missing_evidence_labels when securityAuditRef is present"
+	);
+});
+
+test("federated gate evaluator: authority smuggling rejected by schema validator", () => {
+	const result = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "workflow-gate-smuggling-1",
+		attemptId: "attempt-gate-smuggling-1",
+	});
+
+	// Validator rejects gate_satisfied set to true
+	const forgedGateSatisfied = validateFlowDeskFederatedGateEvaluationResultV1({
+		...result,
+		gate_satisfied: true,
+	});
+	assert.equal(forgedGateSatisfied.ok, false);
+	assert.ok(
+		forgedGateSatisfied.errors.some((e) => /gate_satisfied.*false/.test(e) || /authority smuggling/.test(e)),
+		`Expected gate_satisfied authority error, got: ${forgedGateSatisfied.errors.join("; ")}`
+	);
+
+	// Validator rejects connector_gate_promotion_authorized set to true
+	const forgedPromotion = validateFlowDeskFederatedGateEvaluationResultV1({
+		...result,
+		connector_gate_promotion_authorized: true,
+	});
+	assert.equal(forgedPromotion.ok, false);
+	assert.ok(
+		forgedPromotion.errors.some((e) => /connector_gate_promotion_authorized.*false/.test(e) || /authority smuggling/.test(e)),
+		`Expected connector_gate_promotion_authorized authority error, got: ${forgedPromotion.errors.join("; ")}`
+	);
+
+	// Validator rejects dispatch_authority_enabled set to true
+	const forgedDispatch = validateFlowDeskFederatedGateEvaluationResultV1({
+		...result,
+		dispatch_authority_enabled: true,
+	});
+	assert.equal(forgedDispatch.ok, false);
+	assert.ok(
+		forgedDispatch.errors.some((e) => /dispatch_authority_enabled.*false/.test(e) || /authority smuggling/.test(e)),
+		`Expected dispatch_authority_enabled authority error, got: ${forgedDispatch.errors.join("; ")}`
+	);
+
+	// Validator rejects remote_write_authority_enabled set to true
+	const forgedRemoteWrite = validateFlowDeskFederatedGateEvaluationResultV1({
+		...result,
+		remote_write_authority_enabled: true,
+	});
+	assert.equal(forgedRemoteWrite.ok, false);
+	assert.ok(
+		forgedRemoteWrite.errors.some((e) => /remote_write_authority_enabled.*false/.test(e) || /authority smuggling/.test(e)),
+		`Expected remote_write_authority_enabled authority error, got: ${forgedRemoteWrite.errors.join("; ")}`
+	);
+});
+
+// ─── P8-S3: FlowDeskFederatedRegistryConnectorCapabilityV1 tests ──────────────
+
+const validCapabilityInput = {
+	capabilityDescriptorId: "cap-desc-1",
+	capabilityRef: "cap-ref-1",
+	connectorKind: "github_issue" as const,
+	connectorProfileRef: "profile-ref-1",
+	registryRef: "registry-ref-1",
+	authScopeRef: "auth-scope-1",
+	targetKind: "github_issue" as const,
+	toolRef: "tool-ref-1",
+	capabilityState: "available" as const,
+	contentFormatRef: "format-ref-1",
+	dryRunSupported: true,
+	discoveredAt: "2026-06-07T00:00:00.000Z",
+};
+
+test("P8-S3 connector capability: valid available state → connector_gate_satisfiable=true", () => {
+	const result = createFlowDeskFederatedRegistryConnectorCapabilityV1(validCapabilityInput);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.capability !== undefined);
+	assert.equal(result.capability!.capability_state, "available");
+	assert.equal(result.capability!.connector_gate_satisfiable, true);
+	assert.equal(result.capability!.dry_run_supported, true);
+	assert.equal(result.capability!.remote_write_blocked_by_default, true);
+	assert.equal(result.capability!.remote_write_authority_enabled, false);
+	assert.equal(result.capability!.dispatch_authority_enabled, false);
+	assert.equal(result.capability!.providerCall, false);
+	assert.equal(result.capability!.actualLaneLaunch, false);
+	assert.equal(result.capability!.runtimeExecution, false);
+	// Validate round-trip
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(result.capability!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 connector capability: missing_tools state → connector_gate_satisfiable=false", () => {
+	const result = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		...validCapabilityInput,
+		capabilityDescriptorId: "cap-desc-missing-1",
+		capabilityState: "missing_tools",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.capability!.capability_state, "missing_tools");
+	assert.equal(result.capability!.connector_gate_satisfiable, false);
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(result.capability!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 connector capability: auth_missing state → connector_gate_satisfiable=false", () => {
+	const result = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		...validCapabilityInput,
+		capabilityDescriptorId: "cap-desc-auth-1",
+		capabilityState: "auth_missing",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.capability!.connector_gate_satisfiable, false);
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(result.capability!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 connector capability: blocked state → connector_gate_satisfiable=false", () => {
+	const result = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		...validCapabilityInput,
+		capabilityDescriptorId: "cap-desc-blocked-1",
+		capabilityState: "blocked",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.capability!.connector_gate_satisfiable, false);
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(result.capability!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 connector capability: authority smuggling rejection → connector_gate_satisfiable=true with non-available state rejected by validator", () => {
+	const created = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		...validCapabilityInput,
+		capabilityDescriptorId: "cap-desc-smuggle-1",
+		capabilityState: "missing_tools",
+	});
+	assert.equal(created.ok, true);
+	// Attempt to smuggle connector_gate_satisfiable=true for non-available state
+	const tampered = { ...created.capability!, connector_gate_satisfiable: true };
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /connector_gate_satisfiable.*false|not available/i.test(e)),
+		`Expected connector_gate_satisfiable error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 connector capability: authority flag smuggling dispatch_authority_enabled=true → rejected", () => {
+	const created = createFlowDeskFederatedRegistryConnectorCapabilityV1(validCapabilityInput);
+	assert.equal(created.ok, true);
+	const tampered = { ...created.capability!, dispatch_authority_enabled: true as unknown as false };
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /dispatch_authority_enabled.*false|authority smuggling/i.test(e)),
+		`Expected dispatch authority error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 connector capability: github_pr_comment kind → valid", () => {
+	const result = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		...validCapabilityInput,
+		capabilityDescriptorId: "cap-desc-pr-1",
+		connectorKind: "github_pr_comment",
+		targetKind: "github_pr_comment",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.capability!.connector_kind, "github_pr_comment");
+	const validation = validateFlowDeskFederatedRegistryConnectorCapabilityV1(result.capability!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 connector capability: invalid connector_kind (http_endpoint) → rejected", () => {
+	const result = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		...validCapabilityInput,
+		capabilityDescriptorId: "cap-desc-bad-kind-1",
+		connectorKind: "http_endpoint" as unknown as "github_issue",
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.some((e: string) => /connector_kind/i.test(e)));
+});
+
+// ─── P8-S3: FlowDeskFederatedRegistryPublicationPreflightV1 tests ─────────────
+
+const validPreflightInput = {
+	preflightId: "preflight-1",
+	publicationIntentRef: "pub-intent-ref-1",
+	capabilityDescriptorRef: "cap-desc-ref-1",
+	workflowId: "workflow-pf-1",
+	attemptId: "attempt-pf-1",
+	registryRef: "registry-ref-pf-1",
+	connectorKind: "github_issue" as const,
+	targetRef: "target-ref-pf-1",
+	contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	redactionPolicyRef: "redaction-policy-1",
+	authScopeRef: "auth-scope-pf-1",
+	contentFormatRef: "format-ref-pf-1",
+	idempotencyKeyRef: "idempotency-key-1",
+	preWriteAuditRef: "pre-write-audit-1",
+	preflightState: "preflight_passed" as const,
+	blockedLabels: [] as string[],
+	createdAt: "2026-06-07T00:00:00.000Z",
+};
+
+test("P8-S3 preflight: valid preflight_passed state", () => {
+	const result = createFlowDeskFederatedRegistryPublicationPreflightV1(validPreflightInput);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.preflight !== undefined);
+	assert.equal(result.preflight!.preflight_state, "preflight_passed");
+	assert.equal(result.preflight!.connector_gate_satisfied, false);
+	assert.equal(result.preflight!.remote_write_blocked_by_default, true);
+	assert.equal(result.preflight!.remote_write_attempted, false);
+	assert.equal(result.preflight!.preflight_only, true);
+	assert.equal(result.preflight!.non_authorizing, true);
+	assert.equal(result.preflight!.advisory_only, true);
+	assert.equal(result.preflight!.dry_run_required, true);
+	assert.equal(result.preflight!.dispatch_authority_enabled, false);
+	assert.equal(result.preflight!.providerCall, false);
+	assert.equal(result.preflight!.actualLaneLaunch, false);
+	assert.equal(result.preflight!.runtimeExecution, false);
+	const validation = validateFlowDeskFederatedRegistryPublicationPreflightV1(result.preflight!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 preflight: blocked state with blocked_labels", () => {
+	const result = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		...validPreflightInput,
+		preflightId: "preflight-blocked-1",
+		preflightState: "blocked",
+		blockedLabels: ["connector-gate-not-satisfied", "dry-run-required"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.preflight!.preflight_state, "blocked");
+	assert.ok(result.preflight!.blocked_labels.length > 0);
+	const validation = validateFlowDeskFederatedRegistryPublicationPreflightV1(result.preflight!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 preflight: blocked state with empty blocked_labels → rejected", () => {
+	const result = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		...validPreflightInput,
+		preflightId: "preflight-bad-1",
+		preflightState: "blocked",
+		blockedLabels: [],
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.some((e: string) => /blocked.*blocked_labels|blocked_labels.*blocked/i.test(e)),
+		`Expected blocked_labels error, got: ${result.errors.join("; ")}`);
+});
+
+test("P8-S3 preflight: hash-prefixed content_hash_ref valid", () => {
+	const result = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		...validPreflightInput,
+		preflightId: "preflight-hash-1",
+		contentHashRef: "hash-content-abc123",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const validation = validateFlowDeskFederatedRegistryPublicationPreflightV1(result.preflight!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 preflight: invalid content_hash_ref (no hash- or sha256- prefix) → rejected", () => {
+	const result = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		...validPreflightInput,
+		preflightId: "preflight-badhash-1",
+		contentHashRef: "raw-content-without-prefix",
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.some((e: string) => /content_hash_ref/i.test(e)),
+		`Expected content_hash_ref error, got: ${result.errors.join("; ")}`);
+});
+
+test("P8-S3 preflight: connector_gate_satisfied=true → rejected by validator", () => {
+	const created = createFlowDeskFederatedRegistryPublicationPreflightV1(validPreflightInput);
+	assert.equal(created.ok, true);
+	// Attempt to smuggle connector_gate_satisfied=true
+	const tampered = { ...created.preflight!, connector_gate_satisfied: true as unknown as false };
+	const validation = validateFlowDeskFederatedRegistryPublicationPreflightV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /connector_gate_satisfied.*false|authority smuggling/i.test(e)),
+		`Expected connector_gate_satisfied error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 preflight: authority flag smuggling providerCall=true → rejected", () => {
+	const created = createFlowDeskFederatedRegistryPublicationPreflightV1(validPreflightInput);
+	assert.equal(created.ok, true);
+	const tampered = { ...created.preflight!, providerCall: true as unknown as false };
+	const validation = validateFlowDeskFederatedRegistryPublicationPreflightV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /providerCall.*false|authority smuggling/i.test(e)),
+		`Expected providerCall error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 preflight: unknown property → rejected (closed schema)", () => {
+	const created = createFlowDeskFederatedRegistryPublicationPreflightV1(validPreflightInput);
+	assert.equal(created.ok, true);
+	const withExtra = { ...created.preflight!, extra_unknown_prop: "injected" };
+	const validation = validateFlowDeskFederatedRegistryPublicationPreflightV1(withExtra);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some(e => /unknown properties/i.test(e)));
+});
+
+// ─── P8-S3: FlowDeskGitHubDryRunPublicationResultV1 tests ─────────────────────
+
+const validDryRunInput = {
+	dryRunResultId: "dry-run-1",
+	preflightRef: "preflight-ref-1",
+	writePlanRef: "write-plan-ref-1",
+	workflowId: "workflow-dr-1",
+	attemptId: "attempt-dr-1",
+	connectorKind: "github_issue" as const,
+	redactedTargetLabel: "issue #42 in myorg/myrepo",
+	redactedContentPreview: "Score summary for workflow workflow-dr-1",
+	contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	dryRunState: "dry_run_recorded" as const,
+	blockedLabels: [] as string[],
+	fakeRemoteWriteAttempted: true,
+};
+
+test("P8-S3 dry-run: valid dry_run_recorded state", () => {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1(validDryRunInput);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.result !== undefined);
+	assert.equal(result.result!.dry_run_state, "dry_run_recorded");
+	assert.equal(result.result!.would_produce_ref_shape, "github_url");
+	assert.equal(result.result!.remote_write_attempted, false);
+	assert.equal(result.result!.github_write_attempted, false);
+	assert.equal(result.result!.connector_write_attempted, false);
+	assert.equal(result.result!.remote_write_authority_enabled, false);
+	assert.equal(result.result!.external_write_authority_enabled, false);
+	assert.equal(result.result!.dispatch_authority_enabled, false);
+	assert.equal(result.result!.providerCall, false);
+	assert.equal(result.result!.actualLaneLaunch, false);
+	assert.equal(result.result!.runtimeExecution, false);
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(result.result!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 dry-run: blocked state with blocked_labels", () => {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1({
+		...validDryRunInput,
+		dryRunResultId: "dry-run-blocked-1",
+		dryRunState: "blocked",
+		blockedLabels: ["connector-gate-not-satisfied"],
+		fakeRemoteWriteAttempted: false,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.result!.dry_run_state, "blocked");
+	assert.ok(result.result!.blocked_labels.length > 0);
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(result.result!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 dry-run: raw URL in redacted_target_label → rejected", () => {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1({
+		...validDryRunInput,
+		dryRunResultId: "dry-run-rawurl-1",
+		redactedTargetLabel: "https://github.com/myorg/myrepo/issues/42",
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.some((e: string) => /redacted_target_label.*url|url.*redacted_target_label/i.test(e)),
+		`Expected URL rejection error, got: ${result.errors.join("; ")}`);
+});
+
+test("P8-S3 dry-run: http URL in redacted_target_label → rejected", () => {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1({
+		...validDryRunInput,
+		dryRunResultId: "dry-run-httpurl-1",
+		redactedTargetLabel: "http://github.com/myorg/myrepo/pull/99",
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.some((e: string) => /redacted_target_label.*url|url.*redacted_target_label/i.test(e)),
+		`Expected URL rejection error, got: ${result.errors.join("; ")}`);
+});
+
+test("P8-S3 dry-run: authority smuggling dispatch_authority_enabled=true → rejected", () => {
+	const created = createFlowDeskGitHubDryRunPublicationResultV1(validDryRunInput);
+	assert.equal(created.ok, true);
+	const tampered = { ...created.result!, dispatch_authority_enabled: true as unknown as false };
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /dispatch_authority_enabled.*false|authority smuggling/i.test(e)),
+		`Expected dispatch authority error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 dry-run: authority smuggling remote_write_attempted=true → rejected", () => {
+	const created = createFlowDeskGitHubDryRunPublicationResultV1(validDryRunInput);
+	assert.equal(created.ok, true);
+	const tampered = { ...created.result!, remote_write_attempted: true as unknown as false };
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /remote_write_attempted.*false|authority smuggling/i.test(e)),
+		`Expected remote_write_attempted error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 dry-run: authority smuggling github_write_attempted=true → rejected", () => {
+	const created = createFlowDeskGitHubDryRunPublicationResultV1(validDryRunInput);
+	assert.equal(created.ok, true);
+	const tampered = { ...created.result!, github_write_attempted: true as unknown as false };
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /github_write_attempted.*false|authority smuggling/i.test(e)),
+		`Expected github_write_attempted error, got: ${validation.errors.join("; ")}`);
+});
+
+test("P8-S3 dry-run: unknown property → rejected (closed schema)", () => {
+	const created = createFlowDeskGitHubDryRunPublicationResultV1(validDryRunInput);
+	assert.equal(created.ok, true);
+	const withExtra = { ...created.result!, unexpected_field: "injected" };
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(withExtra);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /unknown properties/i.test(e)));
+});
+
+test("P8-S3 dry-run: github_pr_comment kind → valid", () => {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1({
+		...validDryRunInput,
+		dryRunResultId: "dry-run-pr-1",
+		connectorKind: "github_pr_comment",
+		redactedTargetLabel: "PR #15 in myorg/myrepo",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.result!.connector_kind, "github_pr_comment");
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(result.result!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 dry-run: content_hash_ref with hash- prefix → valid", () => {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1({
+		...validDryRunInput,
+		dryRunResultId: "dry-run-hashprefix-1",
+		contentHashRef: "hash-content-preview-abc123",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(result.result!);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S3 dry-run: invalid would_produce_ref_shape → rejected by validator", () => {
+	const created = createFlowDeskGitHubDryRunPublicationResultV1(validDryRunInput);
+	assert.equal(created.ok, true);
+	const tampered = { ...created.result!, would_produce_ref_shape: "opaque_remote_ref" as unknown as "github_url" };
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(tampered);
+	assert.equal(validation.ok, false);
+	assert.ok(validation.errors.some((e: string) => /would_produce_ref_shape.*github_url/i.test(e)),
+		`Expected would_produce_ref_shape error, got: ${validation.errors.join("; ")}`);
 });

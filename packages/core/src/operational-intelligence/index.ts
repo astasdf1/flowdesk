@@ -16,7 +16,7 @@
  *   session-summary.ts → shared.ts
  *   specialist.ts → shared.ts
  *   mcp-advisory.ts → shared.ts
- *   federated.ts → shared.ts, evaluation-events.ts
+ *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run)
  */
 
 // shared public types (P7-S13.6a: common OI advisory envelope + health label taxonomy)
@@ -153,6 +153,8 @@ export {
 } from "./mcp-advisory.js";
 
 // federated (Phase 8 scaffold; depends on evaluation-events)
+// P8-S3: federated registry connector capability + preflight contracts
+// P8-S4: connector gate evaluator (always-false, blocked-by-default)
 export {
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 	type FlowDeskFederatedScoreRegistryPublicationIntentV1,
@@ -160,6 +162,26 @@ export {
 	createFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	validateFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	validateFlowDeskFederatedScoreRegistryPublicationRequestV1,
+	type FlowDeskFederatedGateEvaluationInputV1,
+	type FlowDeskFederatedGateEvaluationResultV1,
+	evaluateFlowDeskFederatedRegistryConnectorGateV1,
+	validateFlowDeskFederatedGateEvaluationResultV1,
+	type FlowDeskFederatedConnectorKindV1,
+	type FlowDeskFederatedConnectorCapabilityStateV1,
+	type FlowDeskFederatedRegistryConnectorCapabilityV1,
+	type FlowDeskFederatedRegistryConnectorCapabilityResultV1,
+	createFlowDeskFederatedRegistryConnectorCapabilityV1,
+	validateFlowDeskFederatedRegistryConnectorCapabilityV1,
+	type FlowDeskFederatedPreflightStateV1,
+	type FlowDeskFederatedRegistryPublicationPreflightV1,
+	type FlowDeskFederatedRegistryPublicationPreflightResultV1,
+	createFlowDeskFederatedRegistryPublicationPreflightV1,
+	validateFlowDeskFederatedRegistryPublicationPreflightV1,
+	type FlowDeskGitHubDryRunStateV1,
+	type FlowDeskGitHubDryRunPublicationResultV1,
+	type FlowDeskGitHubDryRunPublicationResultResultV1,
+	createFlowDeskGitHubDryRunPublicationResultV1,
+	validateFlowDeskGitHubDryRunPublicationResultV1,
 } from "./federated.js";
 
 // scoring-engine (P7-S14: minimal OI scoring engine)

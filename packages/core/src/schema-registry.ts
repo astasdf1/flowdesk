@@ -213,6 +213,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.fallback_regate_plan.v1", "fallback-regate-plan", "FlowDeskFallbackRegatePlanV1", "later_release"),
   artifactEntry("flowdesk.advisory_output_firewall.v1", "advisory-output-firewall", "FlowDeskAdvisoryOutputFirewallV1", "later_release"),
   artifactEntry("flowdesk.federated_registry_state.v1", "federated-registry-state", "FlowDeskFederatedRegistryStateV1", "later_release"),
+  artifactEntry("flowdesk.federated_gate_evaluation.v1", "federated-gate-evaluation", "FlowDeskFederatedGateEvaluationResultV1", "later_release"),
   artifactEntry("flowdesk.category_fit_snapshot.v1", "category-fit-snapshot", "FlowDeskCategoryFitSnapshotV1", "later_release"),
   artifactEntry("flowdesk.workflow_plan_proposal.v1", "workflow-plan-proposal", "FlowDeskWorkflowPlanProposalV1", "later_release"),
   artifactEntry("flowdesk.workflow_plan_proposal_set.v1", "workflow-plan-proposal-set", "FlowDeskWorkflowPlanProposalSetV1", "later_release"),
@@ -226,6 +227,9 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.oi_session_summary.v1", "oi-session-summary", "FlowDeskOISessionSummaryV1", "later_release"),
   artifactEntry("flowdesk.specialist_workflow_eligibility.v1", "specialist-workflow-eligibility", "FlowDeskSpecialistWorkflowEligibilityV1", "later_release"),
   artifactEntry("flowdesk.mcp_connector_advisory.v1", "mcp-connector-advisory", "FlowDeskMCPConnectorAdvisoryV1", "later_release"),
+  artifactEntry("flowdesk.federated_registry_connector_capability.v1", "federated-registry-connector-capability", "FlowDeskFederatedRegistryConnectorCapabilityV1", "later_release"),
+  artifactEntry("flowdesk.federated_registry_publication_preflight.v1", "federated-registry-publication-preflight", "FlowDeskFederatedRegistryPublicationPreflightV1", "later_release"),
+  artifactEntry("flowdesk.github_dry_run_publication_result.v1", "github-dry-run-publication-result", "FlowDeskGitHubDryRunPublicationResultV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
