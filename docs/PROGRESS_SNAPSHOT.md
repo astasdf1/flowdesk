@@ -14,6 +14,7 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-06 state:
 
+- Wrapper-first coordinator/command prompts: project/global `flowdesk-main` prompts and global `/flowdesk-*` command prompts now prefer short agent-facing wrappers (`flowdesk_task`, `flowdesk_now`, `flowdesk_quota`, `flowdesk_plan_short`, `flowdesk_run_short`, `flowdesk_check`, `flowdesk_debug`, `flowdesk_result`, `flowdesk_resume_status`, `flowdesk_retry_diag`, `flowdesk_abort_cmd`, `flowdesk_continue`, `flowdesk_rebind`, `flowdesk_beat`) while preserving explicit consent/authority wording and low-level tools as fallback/internal schema surfaces. Running OpenCode sessions must restart before the loaded coordinator/commands use the new wording.
 - Full task-result viewer: `flowdesk_result` now registers beside `flowdesk_status_live` when status-live durable root access is configured, returning full durable `task_result.result_text` for a selected workflow/task while preserving read-only/no-provider/no-dispatch/no-runtime/no-lane/no-write/no-fallback/no-hard-chat authority. Multi-result workflows return a compact taskId selector unless a specific taskId is supplied.
 - Short planning wrapper: `flowdesk_plan_short` now registers beside `flowdesk_plan` under the normal command-backed local tool path as a compact planning alias with safe defaults, generated bounded request ids, optional workflow forwarding, and false provider/dispatch/runtime/lane/write/fallback/hard-chat/noReply authority.
 - Short run wrapper: `flowdesk_run_short` now registers beside `flowdesk_run` under the normal command-backed local tool path as a compact run alias with explicit required `runMode`, generated bounded request ids, camelCase-to-snake_case forwarding, managed-dispatch block parity, and false provider/lane launch/write/fallback/hard-chat/noReply authority.
@@ -125,8 +126,9 @@ Latest archived 2026-06-05 verification includes:
 - `flowdesk_resume_status` wrapper verification: `npm run build`; `node --test --test-name-pattern="flowdesk_resume_status" packages/opencode-plugin/dist/server.test.js` (6/6) passed after adding the compact status-only resume diagnostic alias. `git diff --check` was attempted but blocked by the active bash permission policy.
 - `flowdesk_retry_diag` wrapper verification: `npm run build`; `node --test --test-name-pattern="flowdesk_retry_diag" packages/opencode-plugin/dist/server.test.js` (6/6) passed after adding the compact command-backed retry diagnostic alias. `git diff --check` was attempted but blocked by the active bash permission policy.
 - `flowdesk_abort_cmd` wrapper verification: `npm run build`; `node --test --test-name-pattern="flowdesk_abort_cmd" packages/opencode-plugin/dist/server.test.js` (6/6) passed after adding the compact command-backed abort diagnostic/control alias. `git diff --check` was attempted but blocked by the active bash permission policy.
+- Wrapper-first prompt/template verification: `npm run test -- packages/opencode-plugin/src/bootstrap-installer.test.ts` (681/681), `npm run build`, and `git diff --check` passed after updating the bootstrap main-agent template, installed project/global `flowdesk-main` prompts, and global `/flowdesk-*` command prompts to prefer short wrappers.
 
-No broad test suite was run for this focused wrapper slice.
+No additional broad test suite was run for this focused wrapper prompt/template slice.
 
 ## Release 1 Checklist
 
