@@ -46,6 +46,9 @@ import {
 	createFlowDeskWorkflowSignatureIndexEntryV1,
 	validateFlowDeskWorkflowSignatureIndexEntryV1,
 	type FlowDeskWorkflowSignatureIndexEntryV1,
+	createFlowDeskOISessionSummaryV1,
+	validateFlowDeskOISessionSummaryV1,
+	type FlowDeskOISessionSummaryV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -2016,6 +2019,214 @@ test("workflow signature index entry rejects authority smuggling and unknown pro
 	const unknown = validateFlowDeskWorkflowSignatureIndexEntryV1({ ...entry, providerCall: true });
 	assert.equal(unknown.ok, false);
 	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+// ─── P7-S11: OI Session Summary tests ────────────────────────────────────────
+
+test("OI session summary creates valid summary with healthy label", () => {
+	const result = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-1",
+		sessionRef: "ses-session-1",
+		workflowId: "workflow-oi-1",
+		proposalsScored: 5,
+		reuseGatesChecked: 3,
+		fanoutGatesEvaluated: 2,
+		ledgerEntriesTotal: 10,
+		advisoryHealthLabel: "healthy",
+		capturedAt: "2026-06-06T12:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	assert.equal(result.errors.length, 0);
+	assert.ok(result.summary !== undefined);
+	const s = result.summary as FlowDeskOISessionSummaryV1;
+	assert.equal(s.schema_version, "flowdesk.oi_session_summary.v1");
+	assert.equal(s.summary_id, "oi-summary-1");
+	assert.equal(s.session_ref, "ses-session-1");
+	assert.equal(s.workflow_id, "workflow-oi-1");
+	assert.equal(s.proposals_scored, 5);
+	assert.equal(s.reuse_gates_checked, 3);
+	assert.equal(s.fanout_gates_evaluated, 2);
+	assert.equal(s.ledger_entries_total, 10);
+	assert.equal(s.advisory_health_label, "healthy");
+	assert.equal(s.advisory_only, true);
+	assert.equal(s.non_authorizing, true);
+	assert.equal(s.dispatch_authority_enabled, false);
+	assert.equal(s.approval_authority_enabled, false);
+	assert.equal(s.provider_authority_enabled, false);
+	assert.equal(s.runtime_authority_enabled, false);
+	assert.equal(s.fallback_authority_enabled, false);
+	assert.equal(s.lane_launch_authority_enabled, false);
+	assert.equal(s.write_authority_enabled, false);
+	assert.equal(s.hard_chat_authority_enabled, false);
+	// Validate round-trips
+	const validation = validateFlowDeskOISessionSummaryV1(s);
+	assert.equal(validation.ok, true);
+});
+
+test("OI session summary creates valid summary with degraded label and zero counts", () => {
+	const result = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-degraded-1",
+		sessionRef: "ses-degraded-session-1",
+		workflowId: "workflow-oi-degraded-1",
+		proposalsScored: 0,
+		reuseGatesChecked: 0,
+		fanoutGatesEvaluated: 0,
+		ledgerEntriesTotal: 0,
+		advisoryHealthLabel: "degraded",
+		capturedAt: "2026-06-06T13:00:00.000Z",
+		safeNextActions: ["flowdesk-doctor", "flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	assert.ok(result.summary !== undefined);
+	const s = result.summary as FlowDeskOISessionSummaryV1;
+	assert.equal(s.advisory_health_label, "degraded");
+	assert.equal(s.proposals_scored, 0);
+	assert.equal(s.ledger_entries_total, 0);
+	// Validate round-trips
+	const validation = validateFlowDeskOISessionSummaryV1(s);
+	assert.equal(validation.ok, true);
+});
+
+test("OI session summary validator rejects authority smuggling", () => {
+	const result = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-auth-1",
+		sessionRef: "ses-auth-1",
+		workflowId: "workflow-oi-auth-1",
+		proposalsScored: 1,
+		reuseGatesChecked: 1,
+		fanoutGatesEvaluated: 1,
+		ledgerEntriesTotal: 1,
+		advisoryHealthLabel: "healthy",
+		capturedAt: "2026-06-06T14:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	assert.ok(result.summary !== undefined);
+
+	// Attempt authority smuggling: flip advisory_only and set a dispatch flag
+	const smuggled = {
+		...result.summary,
+		advisory_only: false,
+		dispatch_authority_enabled: true,
+	};
+	const validation = validateFlowDeskOISessionSummaryV1(smuggled);
+	assert.equal(validation.ok, false);
+	assert.match(validation.errors.join("; "), /advisory-only|dispatch/);
+});
+
+test("OI session summary validator rejects negative counts", () => {
+	// proposals_scored negative
+	const r1 = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-neg-1",
+		sessionRef: "ses-neg-1",
+		workflowId: "workflow-oi-neg-1",
+		proposalsScored: -1,
+		reuseGatesChecked: 0,
+		fanoutGatesEvaluated: 0,
+		ledgerEntriesTotal: 0,
+		advisoryHealthLabel: "unknown",
+		capturedAt: "2026-06-06T15:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(r1.ok, false);
+	assert.match(r1.errors.join("; "), /proposals_scored.*non-negative/);
+
+	// reuse_gates_checked negative
+	const r2 = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-neg-2",
+		sessionRef: "ses-neg-2",
+		workflowId: "workflow-oi-neg-2",
+		proposalsScored: 0,
+		reuseGatesChecked: -5,
+		fanoutGatesEvaluated: 0,
+		ledgerEntriesTotal: 0,
+		advisoryHealthLabel: "stale",
+		capturedAt: "2026-06-06T15:01:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(r2.ok, false);
+	assert.match(r2.errors.join("; "), /reuse_gates_checked.*non-negative/);
+
+	// Validator-level negative count (via direct object)
+	const directNeg = validateFlowDeskOISessionSummaryV1({
+		schema_version: "flowdesk.oi_session_summary.v1",
+		summary_id: "oi-summary-neg-3",
+		session_ref: "ses-neg-3",
+		workflow_id: "workflow-oi-neg-3",
+		proposals_scored: 0,
+		reuse_gates_checked: 0,
+		fanout_gates_evaluated: 0,
+		ledger_entries_total: -2,
+		advisory_health_label: "healthy",
+		captured_at: "2026-06-06T15:02:00.000Z",
+		safe_next_actions: ["flowdesk-status"],
+		advisory_only: true,
+		non_authorizing: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	});
+	assert.equal(directNeg.ok, false);
+	assert.match(directNeg.errors.join("; "), /ledger_entries_total.*non-negative/);
+});
+
+test("OI session summary validator rejects invalid advisory_health_label", () => {
+	const result = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-label-1",
+		sessionRef: "ses-label-1",
+		workflowId: "workflow-oi-label-1",
+		proposalsScored: 0,
+		reuseGatesChecked: 0,
+		fanoutGatesEvaluated: 0,
+		ledgerEntriesTotal: 0,
+		advisoryHealthLabel: "invalid-label" as never,
+		capturedAt: "2026-06-06T16:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /advisory_health_label.*healthy.*degraded.*stale.*unknown/);
+
+	// Validator-level bad label
+	const directBad = validateFlowDeskOISessionSummaryV1({
+		schema_version: "flowdesk.oi_session_summary.v1",
+		summary_id: "oi-summary-label-2",
+		session_ref: "ses-label-2",
+		workflow_id: "workflow-oi-label-2",
+		proposals_scored: 0,
+		reuse_gates_checked: 0,
+		fanout_gates_evaluated: 0,
+		ledger_entries_total: 0,
+		advisory_health_label: "excellent",
+		captured_at: "2026-06-06T16:01:00.000Z",
+		safe_next_actions: ["flowdesk-status"],
+		advisory_only: true,
+		non_authorizing: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	});
+	assert.equal(directBad.ok, false);
+	assert.match(directBad.errors.join("; "), /advisory_health_label/);
+
+	// Also confirm validator rejects non-object inputs
+	assert.equal(validateFlowDeskOISessionSummaryV1(null).ok, false);
+	assert.equal(validateFlowDeskOISessionSummaryV1(42).ok, false);
+	assert.equal(validateFlowDeskOISessionSummaryV1([]).ok, false);
 });
 
 test("workflow signature index entry rejects malformed input and timestamp inconsistency", () => {
