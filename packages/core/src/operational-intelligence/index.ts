@@ -16,7 +16,7 @@
  *   session-summary.ts → shared.ts
  *   specialist.ts → shared.ts
  *   mcp-advisory.ts → shared.ts
- *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run; P8-S10: +ledger idempotency)
+ *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run; P8-S10: +ledger idempotency; P8-S11: +discovery topology)
  */
 
 // shared public types (P7-S13.6a: common OI advisory envelope + health label taxonomy)
@@ -157,6 +157,7 @@ export {
 // P8-S4: connector gate evaluator (always-false, blocked-by-default)
 // P8-S6a: OAuth/consent architecture contracts (advisory-only, no runtime OAuth calls)
 // P8-S8: GitHub dry-run publication planner (pure advisory wiring)
+// P8-S11: federated discovery topology contracts (config + query plan)
 export {
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 	type FlowDeskFederatedScoreRegistryPublicationIntentV1,
@@ -214,6 +215,15 @@ export {
 	createFlowDeskFederatedLedgerIdempotencyRecordV1,
 	validateFlowDeskFederatedLedgerIdempotencyRecordV1,
 	computeFederatedLedgerEntryId,
+	// P8-S11: federated discovery topology contracts
+	type FlowDeskFederatedDiscoveryConfigV1,
+	type FlowDeskFederatedDiscoveryConfigResultV1,
+	createFlowDeskFederatedDiscoveryConfigV1,
+	validateFlowDeskFederatedDiscoveryConfigV1,
+	type FlowDeskFederatedDiscoveryQueryPlanV1,
+	type FlowDeskFederatedDiscoveryQueryPlanResultV1,
+	createFlowDeskFederatedDiscoveryQueryPlanV1,
+	validateFlowDeskFederatedDiscoveryQueryPlanV1,
 } from "./federated.js";
 
 // scoring-engine (P7-S14: minimal OI scoring engine)

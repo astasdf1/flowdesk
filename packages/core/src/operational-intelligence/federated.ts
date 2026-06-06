@@ -1818,3 +1818,316 @@ export function validateFlowDeskFederatedLedgerIdempotencyRecordV1(value: unknow
 	errors.push(...validateNoForbiddenRawPayloads(record, "federated_ledger_idempotency_record").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
+
+// ─── P8-S11: Federated Discovery Topology ────────────────────────────────────
+
+/**
+ * GitHub label validation for discovery: must be schema-safe (no raw URLs),
+ * 1..80 chars, lowercase alphanumeric + hyphens only.
+ */
+function validateGitHubDiscoveryLabel(value: unknown, label: string): ValidationResult {
+	if (typeof value !== "string" || value.length < 1 || value.length > 80) {
+		return invalid(`${label} must be a bounded 1..80 string`);
+	}
+	// Reject raw URLs
+	if (/https?:\/\//i.test(value)) return invalid(`${label} must not contain raw URLs`);
+	// Must be a schema-safe label: lowercase alphanumeric + hyphens
+	if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) {
+		return invalid(`${label} must be a schema-safe label (lowercase alphanumeric + hyphens, no raw URLs)`);
+	}
+	return valid();
+}
+
+/**
+ * Advisory-only discovery configuration contract.
+ * Defines where and how to search for federated scores published by other installations.
+ * Uses GitHub label-scoped queries only; no actual HTTP call is made by this contract.
+ */
+export interface FlowDeskFederatedDiscoveryConfigV1 {
+	schema_version: "flowdesk.federated_discovery_config.v1";
+	discovery_config_id: string;
+	registry_ref: string;
+	discovery_method: "github_label_search";
+	github_label: string;
+	trusted_installation_refs: readonly string[];
+	max_results_per_query: number;
+	query_rate_limit_per_hour: number;
+	cache_ttl_seconds: number;
+	advisory_only: true;
+	non_authorizing: true;
+	network_call_made: false;
+	remote_read_authority_enabled: false;
+	dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskFederatedDiscoveryConfigResultV1 {
+	ok: boolean;
+	errors: string[];
+	config?: FlowDeskFederatedDiscoveryConfigV1;
+}
+
+export function createFlowDeskFederatedDiscoveryConfigV1(input: {
+	discoveryConfigId: string;
+	registryRef: string;
+	githubLabel: string;
+	trustedInstallationRefs: readonly string[];
+	maxResultsPerQuery: number;
+	queryRateLimitPerHour: number;
+	cacheTtlSeconds: number;
+}): FlowDeskFederatedDiscoveryConfigResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.discoveryConfigId, "discovery_config_id").errors);
+	errors.push(...validateOpaqueRef(input.registryRef, "registry_ref").errors);
+	errors.push(...validateGitHubDiscoveryLabel(input.githubLabel, "github_label").errors);
+	// trusted_installation_refs: max 20
+	if (!Array.isArray(input.trustedInstallationRefs)) {
+		errors.push("trusted_installation_refs must be an array");
+	} else if (input.trustedInstallationRefs.length > 20) {
+		errors.push("trusted_installation_refs must have at most 20 entries");
+	} else {
+		for (const [index, ref] of input.trustedInstallationRefs.entries()) {
+			errors.push(...validateOpaqueRef(ref, `trusted_installation_refs[${index}]`).errors);
+		}
+	}
+	// max_results_per_query: 1..50
+	if (typeof input.maxResultsPerQuery !== "number" || !Number.isInteger(input.maxResultsPerQuery) || input.maxResultsPerQuery < 1 || input.maxResultsPerQuery > 50) {
+		errors.push("max_results_per_query must be an integer in 1..50");
+	}
+	// query_rate_limit_per_hour: 1..100
+	if (typeof input.queryRateLimitPerHour !== "number" || !Number.isInteger(input.queryRateLimitPerHour) || input.queryRateLimitPerHour < 1 || input.queryRateLimitPerHour > 100) {
+		errors.push("query_rate_limit_per_hour must be an integer in 1..100");
+	}
+	// cache_ttl_seconds: 60..86400
+	if (typeof input.cacheTtlSeconds !== "number" || !Number.isInteger(input.cacheTtlSeconds) || input.cacheTtlSeconds < 60 || input.cacheTtlSeconds > 86400) {
+		errors.push("cache_ttl_seconds must be an integer in 60..86400");
+	}
+	if (errors.length > 0) return { ok: false, errors };
+	return {
+		ok: true,
+		errors: [],
+		config: {
+			schema_version: "flowdesk.federated_discovery_config.v1",
+			discovery_config_id: input.discoveryConfigId,
+			registry_ref: input.registryRef,
+			discovery_method: "github_label_search",
+			github_label: input.githubLabel,
+			trusted_installation_refs: input.trustedInstallationRefs,
+			max_results_per_query: input.maxResultsPerQuery,
+			query_rate_limit_per_hour: input.queryRateLimitPerHour,
+			cache_ttl_seconds: input.cacheTtlSeconds,
+			advisory_only: true,
+			non_authorizing: true,
+			network_call_made: false,
+			remote_read_authority_enabled: false,
+			dispatch_authority_enabled: false,
+		},
+	};
+}
+
+export function validateFlowDeskFederatedDiscoveryConfigV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("federated discovery config must be an object");
+	const record = value as Partial<FlowDeskFederatedDiscoveryConfigV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"discovery_config_id",
+		"registry_ref",
+		"discovery_method",
+		"github_label",
+		"trusted_installation_refs",
+		"max_results_per_query",
+		"query_rate_limit_per_hour",
+		"cache_ttl_seconds",
+		"advisory_only",
+		"non_authorizing",
+		"network_call_made",
+		"remote_read_authority_enabled",
+		"dispatch_authority_enabled",
+	], "federated discovery config").errors);
+	if (record.schema_version !== "flowdesk.federated_discovery_config.v1") {
+		errors.push("federated discovery config schema_version is invalid");
+	}
+	errors.push(...validateOpaqueId(record.discovery_config_id, "discovery_config_id").errors);
+	errors.push(...validateOpaqueRef(record.registry_ref, "registry_ref").errors);
+	// discovery_method must be literal "github_label_search"
+	if (record.discovery_method !== "github_label_search") {
+		errors.push("discovery_method must be \"github_label_search\"");
+	}
+	errors.push(...validateGitHubDiscoveryLabel(record.github_label, "github_label").errors);
+	// trusted_installation_refs: max 20
+	if (!Array.isArray(record.trusted_installation_refs)) {
+		errors.push("trusted_installation_refs must be an array");
+	} else if (record.trusted_installation_refs.length > 20) {
+		errors.push("trusted_installation_refs must have at most 20 entries");
+	} else {
+		for (const [index, ref] of record.trusted_installation_refs.entries()) {
+			errors.push(...validateOpaqueRef(ref, `trusted_installation_refs[${index}]`).errors);
+		}
+	}
+	// max_results_per_query: 1..50
+	if (typeof record.max_results_per_query !== "number" || !Number.isInteger(record.max_results_per_query) || record.max_results_per_query < 1 || record.max_results_per_query > 50) {
+		errors.push("max_results_per_query must be an integer in 1..50");
+	}
+	// query_rate_limit_per_hour: 1..100
+	if (typeof record.query_rate_limit_per_hour !== "number" || !Number.isInteger(record.query_rate_limit_per_hour) || record.query_rate_limit_per_hour < 1 || record.query_rate_limit_per_hour > 100) {
+		errors.push("query_rate_limit_per_hour must be an integer in 1..100");
+	}
+	// cache_ttl_seconds: 60..86400
+	if (typeof record.cache_ttl_seconds !== "number" || !Number.isInteger(record.cache_ttl_seconds) || record.cache_ttl_seconds < 60 || record.cache_ttl_seconds > 86400) {
+		errors.push("cache_ttl_seconds must be an integer in 60..86400");
+	}
+	// Invariant literal authority flags
+	if (record.advisory_only !== true) errors.push("advisory_only must be true");
+	if (record.non_authorizing !== true) errors.push("non_authorizing must be true");
+	if (record.network_call_made !== false) errors.push("network_call_made must be false (no actual HTTP call; authority smuggling rejected)");
+	if (record.remote_read_authority_enabled !== false) errors.push("remote_read_authority_enabled must be false (authority smuggling rejected)");
+	if (record.dispatch_authority_enabled !== false) errors.push("dispatch_authority_enabled must be false (authority smuggling rejected)");
+	errors.push(...validateNoForbiddenRawPayloads(record, "federated_discovery_config").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+/**
+ * Advisory-only discovery query plan contract.
+ * Describes the parameters for a discovery query — no actual network call is made.
+ */
+export interface FlowDeskFederatedDiscoveryQueryPlanV1 {
+	schema_version: "flowdesk.federated_discovery_query_plan.v1";
+	query_plan_id: string;
+	discovery_config_ref: string;
+	canonical_workflow_ref?: string;
+	scored_at_day?: string;
+	max_results: number;
+	query_plan_state: "ready" | "blocked";
+	blocked_labels: readonly string[];
+	network_call_planned: false;
+	created_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	remote_read_authority_enabled: false;
+	dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskFederatedDiscoveryQueryPlanResultV1 {
+	ok: boolean;
+	errors: string[];
+	queryPlan?: FlowDeskFederatedDiscoveryQueryPlanV1;
+}
+
+export function createFlowDeskFederatedDiscoveryQueryPlanV1(input: {
+	queryPlanId: string;
+	discoveryConfigRef: string;
+	canonicalWorkflowRef?: string;
+	scoredAtDay?: string;
+	maxResults: number;
+	queryPlanState: "ready" | "blocked";
+	blockedLabels: readonly string[];
+	createdAt: string;
+}): FlowDeskFederatedDiscoveryQueryPlanResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.queryPlanId, "query_plan_id").errors);
+	errors.push(...validateOpaqueRef(input.discoveryConfigRef, "discovery_config_ref").errors);
+	// optional: canonical_workflow_ref
+	if (input.canonicalWorkflowRef !== undefined) {
+		errors.push(...validateOpaqueRef(input.canonicalWorkflowRef, "canonical_workflow_ref").errors);
+	}
+	// optional: scored_at_day in YYYY-MM-DD format
+	if (input.scoredAtDay !== undefined) {
+		errors.push(...validateScoredAtDay(input.scoredAtDay, "scored_at_day").errors);
+	}
+	// max_results: 1..50
+	if (typeof input.maxResults !== "number" || !Number.isInteger(input.maxResults) || input.maxResults < 1 || input.maxResults > 50) {
+		errors.push("max_results must be an integer in 1..50");
+	}
+	// query_plan_state
+	if (!["ready", "blocked"].includes(input.queryPlanState)) {
+		errors.push("query_plan_state must be \"ready\" or \"blocked\"");
+	}
+	// blocked_labels: required array; must be non-empty when blocked
+	if (!Array.isArray(input.blockedLabels)) {
+		errors.push("blocked_labels must be an array");
+	} else if (input.queryPlanState === "blocked" && input.blockedLabels.length === 0) {
+		errors.push("blocked query plan must carry blocked_labels");
+	}
+	errors.push(...validateTimestamp(input.createdAt, "created_at").errors);
+	if (errors.length > 0) return { ok: false, errors };
+	return {
+		ok: true,
+		errors: [],
+		queryPlan: {
+			schema_version: "flowdesk.federated_discovery_query_plan.v1",
+			query_plan_id: input.queryPlanId,
+			discovery_config_ref: input.discoveryConfigRef,
+			...(input.canonicalWorkflowRef !== undefined ? { canonical_workflow_ref: input.canonicalWorkflowRef } : {}),
+			...(input.scoredAtDay !== undefined ? { scored_at_day: input.scoredAtDay } : {}),
+			max_results: input.maxResults,
+			query_plan_state: input.queryPlanState,
+			blocked_labels: input.blockedLabels,
+			network_call_planned: false,
+			created_at: input.createdAt,
+			advisory_only: true,
+			non_authorizing: true,
+			remote_read_authority_enabled: false,
+			dispatch_authority_enabled: false,
+		},
+	};
+}
+
+export function validateFlowDeskFederatedDiscoveryQueryPlanV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("federated discovery query plan must be an object");
+	const record = value as Partial<FlowDeskFederatedDiscoveryQueryPlanV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"query_plan_id",
+		"discovery_config_ref",
+		"canonical_workflow_ref",
+		"scored_at_day",
+		"max_results",
+		"query_plan_state",
+		"blocked_labels",
+		"network_call_planned",
+		"created_at",
+		"advisory_only",
+		"non_authorizing",
+		"remote_read_authority_enabled",
+		"dispatch_authority_enabled",
+	], "federated discovery query plan").errors);
+	if (record.schema_version !== "flowdesk.federated_discovery_query_plan.v1") {
+		errors.push("federated discovery query plan schema_version is invalid");
+	}
+	errors.push(...validateOpaqueId(record.query_plan_id, "query_plan_id").errors);
+	errors.push(...validateOpaqueRef(record.discovery_config_ref, "discovery_config_ref").errors);
+	// optional: canonical_workflow_ref
+	if (record.canonical_workflow_ref !== undefined) {
+		errors.push(...validateOpaqueRef(record.canonical_workflow_ref, "canonical_workflow_ref").errors);
+	}
+	// optional: scored_at_day
+	if (record.scored_at_day !== undefined) {
+		errors.push(...validateScoredAtDay(record.scored_at_day, "scored_at_day").errors);
+	}
+	// max_results: 1..50
+	if (typeof record.max_results !== "number" || !Number.isInteger(record.max_results) || record.max_results < 1 || record.max_results > 50) {
+		errors.push("max_results must be an integer in 1..50");
+	}
+	// query_plan_state
+	if (!["ready", "blocked"].includes(record.query_plan_state ?? "")) {
+		errors.push("query_plan_state must be \"ready\" or \"blocked\"");
+	}
+	// blocked_labels
+	if (!Array.isArray(record.blocked_labels)) {
+		errors.push("blocked_labels must be an array");
+	} else if (record.query_plan_state === "blocked" && record.blocked_labels.length === 0) {
+		errors.push("blocked query plan must carry blocked_labels");
+	}
+	errors.push(...validateTimestamp(record.created_at, "created_at").errors);
+	// Invariant literal authority flags — closed schema, authority smuggling rejected
+	if (record.network_call_planned !== false) {
+		errors.push("network_call_planned must be false (plan only, no actual HTTP call; authority smuggling rejected)");
+	}
+	if (record.advisory_only !== true) errors.push("advisory_only must be true");
+	if (record.non_authorizing !== true) errors.push("non_authorizing must be true");
+	if (record.remote_read_authority_enabled !== false) errors.push("remote_read_authority_enabled must be false (authority smuggling rejected)");
+	if (record.dispatch_authority_enabled !== false) errors.push("dispatch_authority_enabled must be false (authority smuggling rejected)");
+	errors.push(...validateNoForbiddenRawPayloads(record, "federated_discovery_query_plan").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}

@@ -101,6 +101,13 @@ import {
 	validateFlowDeskFederatedLedgerIdempotencyRecordV1,
 	computeFederatedLedgerEntryId,
 	type FlowDeskFederatedLedgerIdempotencyRecordV1,
+	// P8-S11: federated discovery topology contracts
+	createFlowDeskFederatedDiscoveryConfigV1,
+	validateFlowDeskFederatedDiscoveryConfigV1,
+	type FlowDeskFederatedDiscoveryConfigV1,
+	createFlowDeskFederatedDiscoveryQueryPlanV1,
+	validateFlowDeskFederatedDiscoveryQueryPlanV1,
+	type FlowDeskFederatedDiscoveryQueryPlanV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -5031,6 +5038,205 @@ test("P8-S10 federated ledger idempotency: authority smuggling rejected (closed 
 
 	// Unknown property injection (closed schema)
 	const unknownProp = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...record, providerCall: true });
+	assert.equal(unknownProp.ok, false);
+	assert.match(unknownProp.errors.join("; "), /unknown properties/);
+});
+
+// ─── P8-S11: Federated Discovery Topology ─────────────────────────────────────
+
+test("P8-S11 federated discovery config: valid github_label_search with 10 trusted installations", () => {
+	const trustedRefs = Array.from({ length: 10 }, (_, i) => `trusted-installation-${String(i + 1).padStart(2, "0")}`);
+	const result = createFlowDeskFederatedDiscoveryConfigV1({
+		discoveryConfigId: "discovery-config-s11-valid-01",
+		registryRef: "registry-ref-s11-01",
+		githubLabel: "flowdesk-score-v1",
+		trustedInstallationRefs: trustedRefs,
+		maxResultsPerQuery: 20,
+		queryRateLimitPerHour: 60,
+		cacheTtlSeconds: 3600,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const config = result.config as FlowDeskFederatedDiscoveryConfigV1;
+	assert.equal(config.schema_version, "flowdesk.federated_discovery_config.v1");
+	assert.equal(config.discovery_method, "github_label_search");
+	assert.equal(config.github_label, "flowdesk-score-v1");
+	assert.equal(config.trusted_installation_refs.length, 10);
+	assert.equal(config.max_results_per_query, 20);
+	assert.equal(config.query_rate_limit_per_hour, 60);
+	assert.equal(config.cache_ttl_seconds, 3600);
+	assert.equal(config.advisory_only, true);
+	assert.equal(config.non_authorizing, true);
+	assert.equal(config.network_call_made, false);
+	assert.equal(config.remote_read_authority_enabled, false);
+	assert.equal(config.dispatch_authority_enabled, false);
+	// Validator also passes
+	assert.equal(validateFlowDeskFederatedDiscoveryConfigV1(config).ok, true);
+});
+
+test("P8-S11 federated discovery config: trusted_installation_refs > 20 rejected", () => {
+	// 21 entries — must be rejected
+	const tooManyRefs = Array.from({ length: 21 }, (_, i) => `trusted-installation-${String(i + 1).padStart(2, "0")}`);
+	const result = createFlowDeskFederatedDiscoveryConfigV1({
+		discoveryConfigId: "discovery-config-s11-too-many",
+		registryRef: "registry-ref-s11-02",
+		githubLabel: "flowdesk-score-v1",
+		trustedInstallationRefs: tooManyRefs,
+		maxResultsPerQuery: 10,
+		queryRateLimitPerHour: 50,
+		cacheTtlSeconds: 300,
+	});
+	assert.equal(result.ok, false, "21 trusted installation refs must be rejected");
+	assert.match(result.errors.join("; "), /trusted_installation_refs.*20/);
+
+	// Validator also rejects via a forged object
+	const forged: FlowDeskFederatedDiscoveryConfigV1 = {
+		schema_version: "flowdesk.federated_discovery_config.v1",
+		discovery_config_id: "discovery-config-s11-too-many",
+		registry_ref: "registry-ref-s11-02",
+		discovery_method: "github_label_search",
+		github_label: "flowdesk-score-v1",
+		trusted_installation_refs: tooManyRefs,
+		max_results_per_query: 10,
+		query_rate_limit_per_hour: 50,
+		cache_ttl_seconds: 300,
+		advisory_only: true,
+		non_authorizing: true,
+		network_call_made: false,
+		remote_read_authority_enabled: false,
+		dispatch_authority_enabled: false,
+	};
+	assert.equal(validateFlowDeskFederatedDiscoveryConfigV1(forged).ok, false);
+	assert.match(validateFlowDeskFederatedDiscoveryConfigV1(forged).errors.join("; "), /trusted_installation_refs.*20/);
+});
+
+test("P8-S11 federated discovery config: query_rate_limit_per_hour > 100 rejected", () => {
+	const result = createFlowDeskFederatedDiscoveryConfigV1({
+		discoveryConfigId: "discovery-config-s11-rate-limit",
+		registryRef: "registry-ref-s11-03",
+		githubLabel: "flowdesk-score-v1",
+		trustedInstallationRefs: ["trusted-installation-01"],
+		maxResultsPerQuery: 10,
+		queryRateLimitPerHour: 101,    // too high
+		cacheTtlSeconds: 300,
+	});
+	assert.equal(result.ok, false, "query_rate_limit_per_hour=101 must be rejected");
+	assert.match(result.errors.join("; "), /query_rate_limit_per_hour.*1\.\.100/);
+
+	// Boundary: 100 must be accepted
+	const boundary = createFlowDeskFederatedDiscoveryConfigV1({
+		discoveryConfigId: "discovery-config-s11-rate-limit-boundary",
+		registryRef: "registry-ref-s11-03",
+		githubLabel: "flowdesk-score-v1",
+		trustedInstallationRefs: ["trusted-installation-01"],
+		maxResultsPerQuery: 10,
+		queryRateLimitPerHour: 100,
+		cacheTtlSeconds: 300,
+	});
+	assert.equal(boundary.ok, true, `query_rate_limit_per_hour=100 must be valid: ${boundary.errors.join("; ")}`);
+
+	// Boundary: 0 must be rejected
+	const tooLow = createFlowDeskFederatedDiscoveryConfigV1({
+		discoveryConfigId: "discovery-config-s11-rate-limit-zero",
+		registryRef: "registry-ref-s11-03",
+		githubLabel: "flowdesk-score-v1",
+		trustedInstallationRefs: ["trusted-installation-01"],
+		maxResultsPerQuery: 10,
+		queryRateLimitPerHour: 0,
+		cacheTtlSeconds: 300,
+	});
+	assert.equal(tooLow.ok, false, "query_rate_limit_per_hour=0 must be rejected");
+});
+
+test("P8-S11 federated discovery query plan: valid ready state", () => {
+	const result = createFlowDeskFederatedDiscoveryQueryPlanV1({
+		queryPlanId: "query-plan-s11-valid-01",
+		discoveryConfigRef: "discovery-config-ref-s11-01",
+		canonicalWorkflowRef: "hash-canonical-workflow-ref-s11-01",
+		scoredAtDay: "2026-06-07",
+		maxResults: 10,
+		queryPlanState: "ready",
+		blockedLabels: [],
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const plan = result.queryPlan as FlowDeskFederatedDiscoveryQueryPlanV1;
+	assert.equal(plan.schema_version, "flowdesk.federated_discovery_query_plan.v1");
+	assert.equal(plan.query_plan_state, "ready");
+	assert.equal(plan.max_results, 10);
+	assert.equal(plan.network_call_planned, false);
+	assert.equal(plan.canonical_workflow_ref, "hash-canonical-workflow-ref-s11-01");
+	assert.equal(plan.scored_at_day, "2026-06-07");
+	assert.equal(plan.advisory_only, true);
+	assert.equal(plan.non_authorizing, true);
+	assert.equal(plan.remote_read_authority_enabled, false);
+	assert.equal(plan.dispatch_authority_enabled, false);
+	// Validator passes
+	assert.equal(validateFlowDeskFederatedDiscoveryQueryPlanV1(plan).ok, true);
+
+	// Also valid without optional fields
+	const minimalResult = createFlowDeskFederatedDiscoveryQueryPlanV1({
+		queryPlanId: "query-plan-s11-minimal-01",
+		discoveryConfigRef: "discovery-config-ref-s11-02",
+		maxResults: 5,
+		queryPlanState: "ready",
+		blockedLabels: [],
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(minimalResult.ok, true, `minimal plan (no optional fields) must be valid: ${minimalResult.errors.join("; ")}`);
+	assert.equal(minimalResult.queryPlan?.canonical_workflow_ref, undefined);
+	assert.equal(minimalResult.queryPlan?.scored_at_day, undefined);
+});
+
+test("P8-S11 federated discovery query plan: network_call_planned=true rejected (authority smuggling)", () => {
+	// First, create a valid plan to get a base object
+	const result = createFlowDeskFederatedDiscoveryQueryPlanV1({
+		queryPlanId: "query-plan-s11-auth-smuggle-01",
+		discoveryConfigRef: "discovery-config-ref-s11-auth",
+		maxResults: 10,
+		queryPlanState: "ready",
+		blockedLabels: [],
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const plan = result.queryPlan as FlowDeskFederatedDiscoveryQueryPlanV1;
+
+	// Attempt to smuggle network_call_planned=true
+	const forgedNetworkCall = validateFlowDeskFederatedDiscoveryQueryPlanV1({
+		...plan,
+		network_call_planned: true,
+	});
+	assert.equal(forgedNetworkCall.ok, false, "network_call_planned=true must be rejected as authority smuggling");
+	assert.match(forgedNetworkCall.errors.join("; "), /network_call_planned.*false|authority smuggling/);
+
+	// dispatch_authority_enabled smuggling
+	const forgedDispatch = validateFlowDeskFederatedDiscoveryQueryPlanV1({
+		...plan,
+		dispatch_authority_enabled: true,
+	});
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled.*false|authority smuggling/);
+
+	// remote_read_authority_enabled smuggling
+	const forgedReadAuth = validateFlowDeskFederatedDiscoveryQueryPlanV1({
+		...plan,
+		remote_read_authority_enabled: true,
+	});
+	assert.equal(forgedReadAuth.ok, false);
+	assert.match(forgedReadAuth.errors.join("; "), /remote_read_authority_enabled.*false|authority smuggling/);
+
+	// non_authorizing stripped
+	const strippedNonAuth = validateFlowDeskFederatedDiscoveryQueryPlanV1({
+		...plan,
+		non_authorizing: false as true,
+	});
+	assert.equal(strippedNonAuth.ok, false);
+	assert.match(strippedNonAuth.errors.join("; "), /non_authorizing.*true/);
+
+	// Unknown property injection (closed schema)
+	const unknownProp = validateFlowDeskFederatedDiscoveryQueryPlanV1({
+		...plan,
+		providerCall: true,
+	});
 	assert.equal(unknownProp.ok, false);
 	assert.match(unknownProp.errors.join("; "), /unknown properties/);
 });
