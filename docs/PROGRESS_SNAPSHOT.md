@@ -14,6 +14,9 @@ FlowDesk is a conservative OpenCode plugin with a default Release 1 path built a
 
 Recent visible 2026-06-06 state:
 
+- Release 1 wrapper-first regression/publish-prep: full regression passed at 1005/1005 after updating default tool-list assertions for short wrapper registration; `npm run build` passed; `npm pack --dry-run --workspace @flowdesk/core` and `npm pack --dry-run --workspace @flowdesk/opencode-plugin` both passed for `0.2.0` artifacts, including package metadata, README/LICENSE, dist exports, and plugin bootstrap CLI contents.
+- Fresh install smoke: a verifier lane confirmed build/full-suite/package metadata and installer CLI smoke in a safe temp profile/durable-root setup. Installer output wrote 9 command files and 4 bootstrap artifacts with provider/runtime dispatch disabled; the only lane-local blocker (`npm pack --dry-run` denied by shell policy) was resolved in the main session by successful workspace pack dry-runs.
+- User documentation: `README.md` and `docs/USER_MANUAL.md` now document short wrapper tools and explicitly state that wrappers do not grant dispatch, fallback, cancellation, runtime/lane launch, or write authority beyond their existing explicit opt-in/read-only/preview scopes.
 - Wrapper-first coordinator/command prompts: project/global `flowdesk-main` prompts and project/global `/flowdesk-*` command prompts now direct agents to short wrappers (`flowdesk_task`, `flowdesk_now`, `flowdesk_quota`, `flowdesk_plan_short`, `flowdesk_run_short`, `flowdesk_check`, `flowdesk_debug`, `flowdesk_result`, `flowdesk_resume_status`, `flowdesk_retry_diag`, `flowdesk_abort_cmd`, `flowdesk_continue`, `flowdesk_rebind`, `flowdesk_beat`) while preserving explicit consent/authority wording. Installed project/global prompt files no longer contain old low-level tool names or `Matching FlowDesk tool stub` wording; low-level names remain only in source constants/tests/internal schema references. Running OpenCode sessions must restart before the loaded coordinator/commands use the new wording.
 - Full task-result viewer: `flowdesk_result` now registers beside `flowdesk_status_live` when status-live durable root access is configured, returning full durable `task_result.result_text` for a selected workflow/task while preserving read-only/no-provider/no-dispatch/no-runtime/no-lane/no-write/no-fallback/no-hard-chat authority. Multi-result workflows return a compact taskId selector unless a specific taskId is supplied.
 - Short planning wrapper: `flowdesk_plan_short` now registers beside `flowdesk_plan` under the normal command-backed local tool path as a compact planning alias with safe defaults, generated bounded request ids, optional workflow forwarding, and false provider/dispatch/runtime/lane/write/fallback/hard-chat/noReply authority.
@@ -94,6 +97,14 @@ Current package version wording: workspace package manifests and dry-run package
 - Running OpenCode/TUI processes often require restart after plugin/profile/config changes before live behavior reflects rebuilt code.
 
 ## Current Verification Baseline
+
+Latest 2026-06-06 wrapper-first Release 1 verification includes:
+
+- `npm run build` passed after short wrapper docs and test assertion updates.
+- `npm run test:full` passed at 1005/1005 after updating default/local tool-list assertions for wrapper registration.
+- `node --test --test-name-pattern="default server and plugin scaffold remain Release 1|server plugin defaults to safe local|server plugin can expose local non-dispatch" packages/opencode-plugin/dist/server.test.js packages/opencode-plugin/dist/managed-dispatch-adapter.test.js` passed 3/3 for the previously failing wrapper default-list assertions.
+- `workflow-docs-wrapper-manual-20260606` completed terminal/usable after adding short-wrapper documentation to `README.md` and `docs/USER_MANUAL.md`; main-session `npm run build` passed afterward.
+- `workflow-fresh-install-smoke-20260606` completed terminal/usable with build/full-suite/package metadata/installer CLI smoke evidence; main-session `npm pack --dry-run --workspace @flowdesk/core` and `npm pack --dry-run --workspace @flowdesk/opencode-plugin` both passed for `0.2.0` artifacts.
 
 Latest archived 2026-06-05 verification includes:
 
