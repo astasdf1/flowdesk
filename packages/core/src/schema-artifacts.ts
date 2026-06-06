@@ -145,7 +145,9 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.github_oauth_architecture.v1": ["schema_version", "architecture_id", "auth_scope_ref", "required_github_scopes", "token_storage", "token_ref", "auth_state", "dry_run_allowed_without_token", "advisory_only", "non_authorizing", "provider_call_made", "token_transmitted_in_evidence", "remote_write_authority_enabled", "dispatch_authority_enabled"],
   "flowdesk.federated_ledger_idempotency.v1": ["schema_version", "idempotency_record_id", "canonical_workflow_ref", "scored_at_day", "installation_id_hash_ref", "ledger_entry_id", "deduplication_scope", "idempotency_window_days", "created_at", "advisory_only", "non_authorizing", "remote_write_authority_enabled", "dispatch_authority_enabled"],
   "flowdesk.federated_discovery_config.v1": ["schema_version", "discovery_config_id", "registry_ref", "discovery_method", "github_label", "trusted_installation_refs", "max_results_per_query", "query_rate_limit_per_hour", "cache_ttl_seconds", "advisory_only", "non_authorizing", "network_call_made", "remote_read_authority_enabled", "dispatch_authority_enabled"],
-  "flowdesk.federated_discovery_query_plan.v1": ["schema_version", "query_plan_id", "discovery_config_ref", "max_results", "query_plan_state", "blocked_labels", "network_call_planned", "created_at", "advisory_only", "non_authorizing", "remote_read_authority_enabled", "dispatch_authority_enabled"]
+  "flowdesk.federated_discovery_query_plan.v1": ["schema_version", "query_plan_id", "discovery_config_ref", "max_results", "query_plan_state", "blocked_labels", "network_call_planned", "created_at", "advisory_only", "non_authorizing", "remote_read_authority_enabled", "dispatch_authority_enabled"],
+  "flowdesk.federated_publication_result.v1": ["schema_version", "publication_result_id", "ledger_idempotency_ref", "dry_run_result_ref", "guard_approval_ref", "publication_state", "blocked_labels", "connector_gate_satisfied", "github_write_attempted", "remote_write_attempted", "created_at", "advisory_only", "non_authorizing", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled"],
+  "flowdesk.federated_revocation_request.v1": ["schema_version", "revocation_request_id", "publication_result_ref", "ledger_idempotency_ref", "revocation_reason", "revocation_state", "github_write_attempted", "remote_write_attempted", "created_at", "advisory_only", "non_authorizing", "remote_write_authority_enabled", "dispatch_authority_enabled"]
 } satisfies Record<string, readonly string[]>;
 
 const optionalFields: Record<string, readonly string[]> = {
@@ -225,7 +227,9 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.github_oauth_architecture.v1": [],
   "flowdesk.federated_ledger_idempotency.v1": [],
   "flowdesk.federated_discovery_config.v1": [],
-  "flowdesk.federated_discovery_query_plan.v1": ["canonical_workflow_ref", "scored_at_day"]
+  "flowdesk.federated_discovery_query_plan.v1": ["canonical_workflow_ref", "scored_at_day"],
+  "flowdesk.federated_publication_result.v1": [],
+  "flowdesk.federated_revocation_request.v1": ["revocation_note_ref"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {

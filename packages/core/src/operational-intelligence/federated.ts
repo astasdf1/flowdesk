@@ -4,6 +4,7 @@
  * P8-S3: federated registry connector capability + preflight contracts
  * P8-S4: federated registry connector gate evaluator (always-false, blocked-by-default)
  * P8-S10: federated ledger idempotency record (global uniqueness contract)
+ * P8-S12: actual publication result + revocation advisory contracts
  */
 import { createHash } from "node:crypto";
 import {
@@ -2129,5 +2130,318 @@ export function validateFlowDeskFederatedDiscoveryQueryPlanV1(value: unknown): V
 	if (record.remote_read_authority_enabled !== false) errors.push("remote_read_authority_enabled must be false (authority smuggling rejected)");
 	if (record.dispatch_authority_enabled !== false) errors.push("dispatch_authority_enabled must be false (authority smuggling rejected)");
 	errors.push(...validateNoForbiddenRawPayloads(record, "federated_discovery_query_plan").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+// ─── P8-S12: Federated Publication Result (advisory, gate never promoted) ────
+
+/**
+ * Advisory-only publication result contract.
+ * publication_state is always "pending_gate_promotion" or "blocked" — NEVER "published".
+ * connector_gate_satisfied, github_write_attempted, remote_write_attempted are literal false.
+ * No real GitHub API call is made; this contract defines the shape for a future gate promotion.
+ */
+export type FlowDeskFederatedPublicationStateV1 = "pending_gate_promotion" | "blocked";
+
+export interface FlowDeskFederatedPublicationResultV1 {
+	schema_version: "flowdesk.federated_publication_result.v1";
+	publication_result_id: string;
+	/** Links to FlowDeskFederatedLedgerIdempotencyRecordV1. */
+	ledger_idempotency_ref: string;
+	/** Links to the dry-run result that was approved for gate promotion. */
+	dry_run_result_ref: string;
+	/** Opaque ref — Guard approval required for real publication. */
+	guard_approval_ref: string;
+	/** Never "published" — gate has not been promoted. */
+	publication_state: FlowDeskFederatedPublicationStateV1;
+	blocked_labels: readonly string[];
+	/** Literal false — connector gate is never promoted in this contract. */
+	connector_gate_satisfied: false;
+	/** Literal false — real GitHub write requires later gate. */
+	github_write_attempted: false;
+	/** Literal false — no remote write in this advisory contract. */
+	remote_write_attempted: false;
+	created_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	remote_write_authority_enabled: false;
+	external_write_authority_enabled: false;
+	dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskFederatedPublicationResultResultV1 {
+	ok: boolean;
+	errors: string[];
+	result?: FlowDeskFederatedPublicationResultV1;
+}
+
+const PUBLICATION_STATES: readonly FlowDeskFederatedPublicationStateV1[] = [
+	"pending_gate_promotion",
+	"blocked",
+];
+
+export function createFlowDeskFederatedPublicationResultV1(input: {
+	publicationResultId: string;
+	ledgerIdempotencyRef: string;
+	dryRunResultRef: string;
+	guardApprovalRef: string;
+	publicationState: FlowDeskFederatedPublicationStateV1;
+	blockedLabels: readonly string[];
+	createdAt: string;
+}): FlowDeskFederatedPublicationResultResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.publicationResultId, "publication_result_id").errors);
+	errors.push(...validateOpaqueRef(input.ledgerIdempotencyRef, "ledger_idempotency_ref").errors);
+	errors.push(...validateOpaqueRef(input.dryRunResultRef, "dry_run_result_ref").errors);
+	errors.push(...validateOpaqueRef(input.guardApprovalRef, "guard_approval_ref").errors);
+	if (!PUBLICATION_STATES.includes(input.publicationState)) {
+		errors.push("publication_state must be \"pending_gate_promotion\" or \"blocked\" (never \"published\" in this contract)");
+	}
+	if (!Array.isArray(input.blockedLabels)) {
+		errors.push("blocked_labels must be an array");
+	} else if (input.publicationState === "blocked" && input.blockedLabels.length === 0) {
+		errors.push("blocked publication result must carry blocked_labels");
+	}
+	errors.push(...validateTimestamp(input.createdAt, "created_at").errors);
+	if (errors.length > 0) return { ok: false, errors };
+	return {
+		ok: true,
+		errors: [],
+		result: {
+			schema_version: "flowdesk.federated_publication_result.v1",
+			publication_result_id: input.publicationResultId,
+			ledger_idempotency_ref: input.ledgerIdempotencyRef,
+			dry_run_result_ref: input.dryRunResultRef,
+			guard_approval_ref: input.guardApprovalRef,
+			publication_state: input.publicationState,
+			blocked_labels: input.blockedLabels,
+			connector_gate_satisfied: false,
+			github_write_attempted: false,
+			remote_write_attempted: false,
+			created_at: input.createdAt,
+			advisory_only: true,
+			non_authorizing: true,
+			remote_write_authority_enabled: false,
+			external_write_authority_enabled: false,
+			dispatch_authority_enabled: false,
+		},
+	};
+}
+
+export function validateFlowDeskFederatedPublicationResultV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("federated publication result must be an object");
+	const record = value as Partial<FlowDeskFederatedPublicationResultV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"publication_result_id",
+		"ledger_idempotency_ref",
+		"dry_run_result_ref",
+		"guard_approval_ref",
+		"publication_state",
+		"blocked_labels",
+		"connector_gate_satisfied",
+		"github_write_attempted",
+		"remote_write_attempted",
+		"created_at",
+		"advisory_only",
+		"non_authorizing",
+		"remote_write_authority_enabled",
+		"external_write_authority_enabled",
+		"dispatch_authority_enabled",
+	], "federated publication result").errors);
+	if (record.schema_version !== "flowdesk.federated_publication_result.v1") {
+		errors.push("federated publication result schema_version is invalid");
+	}
+	errors.push(...validateOpaqueId(record.publication_result_id, "publication_result_id").errors);
+	errors.push(...validateOpaqueRef(record.ledger_idempotency_ref, "ledger_idempotency_ref").errors);
+	errors.push(...validateOpaqueRef(record.dry_run_result_ref, "dry_run_result_ref").errors);
+	errors.push(...validateOpaqueRef(record.guard_approval_ref, "guard_approval_ref").errors);
+	// publication_state must never be "published" — gate not promoted
+	if (!PUBLICATION_STATES.includes(record.publication_state as FlowDeskFederatedPublicationStateV1)) {
+		errors.push("publication_state must be \"pending_gate_promotion\" or \"blocked\" (\"published\" is not permitted — connector gate never promoted in this contract)");
+	}
+	if (!Array.isArray(record.blocked_labels)) {
+		errors.push("blocked_labels must be an array");
+	} else if (record.publication_state === "blocked" && record.blocked_labels.length === 0) {
+		errors.push("blocked publication result must carry blocked_labels");
+	}
+	errors.push(...validateTimestamp(record.created_at, "created_at").errors);
+	// Invariant literal authority flags
+	if (record.connector_gate_satisfied !== false) {
+		errors.push("connector_gate_satisfied must be false (gate never promoted; authority smuggling rejected)");
+	}
+	if (record.github_write_attempted !== false) {
+		errors.push("github_write_attempted must be false (real write requires later gate; authority smuggling rejected)");
+	}
+	if (record.remote_write_attempted !== false) {
+		errors.push("remote_write_attempted must be false (authority smuggling rejected)");
+	}
+	if (record.advisory_only !== true) errors.push("advisory_only must be true");
+	if (record.non_authorizing !== true) errors.push("non_authorizing must be true");
+	if (record.remote_write_authority_enabled !== false) {
+		errors.push("remote_write_authority_enabled must be false (authority smuggling rejected)");
+	}
+	if (record.external_write_authority_enabled !== false) {
+		errors.push("external_write_authority_enabled must be false (authority smuggling rejected)");
+	}
+	if (record.dispatch_authority_enabled !== false) {
+		errors.push("dispatch_authority_enabled must be false (authority smuggling rejected)");
+	}
+	errors.push(...validateNoForbiddenRawPayloads(record, "federated_publication_result").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+// ─── P8-S12: Federated Revocation Request (advisory, never executed) ──────────
+
+/**
+ * Advisory-only revocation request contract.
+ * revocation_state is always "pending" or "blocked" — NEVER "executed" without a later gate.
+ * github_write_attempted and remote_write_attempted are literal false.
+ */
+export type FlowDeskFederatedRevocationReasonV1 =
+	| "consent_revoked"
+	| "data_minimization_violation"
+	| "operator_request"
+	| "retention_expired";
+
+export type FlowDeskFederatedRevocationStateV1 = "pending" | "blocked";
+
+export interface FlowDeskFederatedRevocationRequestV1 {
+	schema_version: "flowdesk.federated_revocation_request.v1";
+	revocation_request_id: string;
+	/** Links to the publication result that would be revoked. */
+	publication_result_ref: string;
+	/** Links to the idempotency record for deduplication. */
+	ledger_idempotency_ref: string;
+	revocation_reason: FlowDeskFederatedRevocationReasonV1;
+	/** Never "executed" — execution requires a later gate. */
+	revocation_state: FlowDeskFederatedRevocationStateV1;
+	/** Literal false — real GitHub write requires later gate. */
+	github_write_attempted: false;
+	/** Literal false — no remote write in this advisory contract. */
+	remote_write_attempted: false;
+	/** Optional opaque ref for a human-readable revocation note. */
+	revocation_note_ref?: string;
+	created_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	remote_write_authority_enabled: false;
+	dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskFederatedRevocationRequestResultV1 {
+	ok: boolean;
+	errors: string[];
+	request?: FlowDeskFederatedRevocationRequestV1;
+}
+
+const REVOCATION_REASONS: readonly FlowDeskFederatedRevocationReasonV1[] = [
+	"consent_revoked",
+	"data_minimization_violation",
+	"operator_request",
+	"retention_expired",
+];
+
+const REVOCATION_STATES: readonly FlowDeskFederatedRevocationStateV1[] = ["pending", "blocked"];
+
+export function createFlowDeskFederatedRevocationRequestV1(input: {
+	revocationRequestId: string;
+	publicationResultRef: string;
+	ledgerIdempotencyRef: string;
+	revocationReason: FlowDeskFederatedRevocationReasonV1;
+	revocationState: FlowDeskFederatedRevocationStateV1;
+	revocationNoteRef?: string;
+	createdAt: string;
+}): FlowDeskFederatedRevocationRequestResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.revocationRequestId, "revocation_request_id").errors);
+	errors.push(...validateOpaqueRef(input.publicationResultRef, "publication_result_ref").errors);
+	errors.push(...validateOpaqueRef(input.ledgerIdempotencyRef, "ledger_idempotency_ref").errors);
+	if (!REVOCATION_REASONS.includes(input.revocationReason)) {
+		errors.push("revocation_reason must be one of: consent_revoked, data_minimization_violation, operator_request, retention_expired");
+	}
+	if (!REVOCATION_STATES.includes(input.revocationState)) {
+		errors.push("revocation_state must be \"pending\" or \"blocked\" (never \"executed\" without a later gate)");
+	}
+	if (input.revocationNoteRef !== undefined) {
+		errors.push(...validateOpaqueRef(input.revocationNoteRef, "revocation_note_ref").errors);
+	}
+	errors.push(...validateTimestamp(input.createdAt, "created_at").errors);
+	if (errors.length > 0) return { ok: false, errors };
+	const request: FlowDeskFederatedRevocationRequestV1 = {
+		schema_version: "flowdesk.federated_revocation_request.v1",
+		revocation_request_id: input.revocationRequestId,
+		publication_result_ref: input.publicationResultRef,
+		ledger_idempotency_ref: input.ledgerIdempotencyRef,
+		revocation_reason: input.revocationReason,
+		revocation_state: input.revocationState,
+		github_write_attempted: false,
+		remote_write_attempted: false,
+		...(input.revocationNoteRef !== undefined ? { revocation_note_ref: input.revocationNoteRef } : {}),
+		created_at: input.createdAt,
+		advisory_only: true,
+		non_authorizing: true,
+		remote_write_authority_enabled: false,
+		dispatch_authority_enabled: false,
+	};
+	return { ok: true, errors: [], request };
+}
+
+export function validateFlowDeskFederatedRevocationRequestV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("federated revocation request must be an object");
+	const record = value as Partial<FlowDeskFederatedRevocationRequestV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"revocation_request_id",
+		"publication_result_ref",
+		"ledger_idempotency_ref",
+		"revocation_reason",
+		"revocation_state",
+		"github_write_attempted",
+		"remote_write_attempted",
+		"revocation_note_ref",
+		"created_at",
+		"advisory_only",
+		"non_authorizing",
+		"remote_write_authority_enabled",
+		"dispatch_authority_enabled",
+	], "federated revocation request").errors);
+	if (record.schema_version !== "flowdesk.federated_revocation_request.v1") {
+		errors.push("federated revocation request schema_version is invalid");
+	}
+	errors.push(...validateOpaqueId(record.revocation_request_id, "revocation_request_id").errors);
+	errors.push(...validateOpaqueRef(record.publication_result_ref, "publication_result_ref").errors);
+	errors.push(...validateOpaqueRef(record.ledger_idempotency_ref, "ledger_idempotency_ref").errors);
+	// revocation_reason must be a valid enum value
+	if (!REVOCATION_REASONS.includes(record.revocation_reason as FlowDeskFederatedRevocationReasonV1)) {
+		errors.push("revocation_reason must be one of: consent_revoked, data_minimization_violation, operator_request, retention_expired");
+	}
+	// revocation_state must never be "executed"
+	if (!REVOCATION_STATES.includes(record.revocation_state as FlowDeskFederatedRevocationStateV1)) {
+		errors.push("revocation_state must be \"pending\" or \"blocked\" (\"executed\" is not permitted — requires a later gate)");
+	}
+	// optional: revocation_note_ref
+	if (record.revocation_note_ref !== undefined) {
+		errors.push(...validateOpaqueRef(record.revocation_note_ref, "revocation_note_ref").errors);
+	}
+	errors.push(...validateTimestamp(record.created_at, "created_at").errors);
+	// Invariant literal authority flags
+	if (record.github_write_attempted !== false) {
+		errors.push("github_write_attempted must be false (real write requires later gate; authority smuggling rejected)");
+	}
+	if (record.remote_write_attempted !== false) {
+		errors.push("remote_write_attempted must be false (authority smuggling rejected)");
+	}
+	if (record.advisory_only !== true) errors.push("advisory_only must be true");
+	if (record.non_authorizing !== true) errors.push("non_authorizing must be true");
+	if (record.remote_write_authority_enabled !== false) {
+		errors.push("remote_write_authority_enabled must be false (authority smuggling rejected)");
+	}
+	if (record.dispatch_authority_enabled !== false) {
+		errors.push("dispatch_authority_enabled must be false (authority smuggling rejected)");
+	}
+	errors.push(...validateNoForbiddenRawPayloads(record, "federated_revocation_request").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }

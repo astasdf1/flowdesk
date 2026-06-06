@@ -235,6 +235,8 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.federated_ledger_idempotency.v1", "federated-ledger-idempotency", "FlowDeskFederatedLedgerIdempotencyRecordV1", "later_release"),
   artifactEntry("flowdesk.federated_discovery_config.v1", "federated-discovery-config", "FlowDeskFederatedDiscoveryConfigV1", "later_release"),
   artifactEntry("flowdesk.federated_discovery_query_plan.v1", "federated-discovery-query-plan", "FlowDeskFederatedDiscoveryQueryPlanV1", "later_release"),
+  artifactEntry("flowdesk.federated_publication_result.v1", "federated-publication-result", "FlowDeskFederatedPublicationResultV1", "later_release"),
+  artifactEntry("flowdesk.federated_revocation_request.v1", "federated-revocation-request", "FlowDeskFederatedRevocationRequestV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",

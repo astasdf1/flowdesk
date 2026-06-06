@@ -108,6 +108,13 @@ import {
 	createFlowDeskFederatedDiscoveryQueryPlanV1,
 	validateFlowDeskFederatedDiscoveryQueryPlanV1,
 	type FlowDeskFederatedDiscoveryQueryPlanV1,
+	// P8-S12: actual publication result + revocation advisory contracts
+	createFlowDeskFederatedPublicationResultV1,
+	validateFlowDeskFederatedPublicationResultV1,
+	type FlowDeskFederatedPublicationResultV1,
+	createFlowDeskFederatedRevocationRequestV1,
+	validateFlowDeskFederatedRevocationRequestV1,
+	type FlowDeskFederatedRevocationRequestV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -5239,4 +5246,192 @@ test("P8-S11 federated discovery query plan: network_call_planned=true rejected 
 	});
 	assert.equal(unknownProp.ok, false);
 	assert.match(unknownProp.errors.join("; "), /unknown properties/);
+});
+
+// ─── P8-S12: Federated Publication Result + Revocation Request Tests ──────────
+
+test("P8-S12 federated publication result: valid pending_gate_promotion state", () => {
+	const result = createFlowDeskFederatedPublicationResultV1({
+		publicationResultId: "pub-result-s12-valid-01",
+		ledgerIdempotencyRef: "ledger-idempotency-ref-s12-01",
+		dryRunResultRef: "dry-run-result-ref-s12-01",
+		guardApprovalRef: "guard-approval-ref-s12-01",
+		publicationState: "pending_gate_promotion",
+		blockedLabels: [],
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const pub = result.result as FlowDeskFederatedPublicationResultV1;
+	assert.equal(pub.schema_version, "flowdesk.federated_publication_result.v1");
+	assert.equal(pub.publication_state, "pending_gate_promotion");
+	assert.equal(pub.connector_gate_satisfied, false);
+	assert.equal(pub.github_write_attempted, false);
+	assert.equal(pub.remote_write_attempted, false);
+	assert.equal(pub.advisory_only, true);
+	assert.equal(pub.non_authorizing, true);
+	assert.equal(pub.remote_write_authority_enabled, false);
+	assert.equal(pub.external_write_authority_enabled, false);
+	assert.equal(pub.dispatch_authority_enabled, false);
+	// Validator must also pass
+	assert.equal(validateFlowDeskFederatedPublicationResultV1(pub).ok, true);
+});
+
+test("P8-S12 federated publication result: publication_state \"published\" rejected (cannot be published in this contract)", () => {
+	// Creator should refuse "published" state
+	const result = createFlowDeskFederatedPublicationResultV1({
+		publicationResultId: "pub-result-s12-published-01",
+		ledgerIdempotencyRef: "ledger-idempotency-ref-s12-02",
+		dryRunResultRef: "dry-run-result-ref-s12-02",
+		guardApprovalRef: "guard-approval-ref-s12-02",
+		publicationState: "published" as "pending_gate_promotion",
+		blockedLabels: [],
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, false, "publication_state \"published\" must be rejected by creator");
+	assert.match(result.errors.join("; "), /pending_gate_promotion.*blocked|never.*published|published.*not permitted/i);
+
+	// Validator must also reject "published"
+	const validationResult = validateFlowDeskFederatedPublicationResultV1({
+		schema_version: "flowdesk.federated_publication_result.v1",
+		publication_result_id: "pub-result-s12-published-02",
+		ledger_idempotency_ref: "ledger-idempotency-ref-s12-03",
+		dry_run_result_ref: "dry-run-result-ref-s12-03",
+		guard_approval_ref: "guard-approval-ref-s12-03",
+		publication_state: "published",
+		blocked_labels: [],
+		connector_gate_satisfied: false,
+		github_write_attempted: false,
+		remote_write_attempted: false,
+		created_at: "2026-06-07T12:00:00.000Z",
+		advisory_only: true,
+		non_authorizing: true,
+		remote_write_authority_enabled: false,
+		external_write_authority_enabled: false,
+		dispatch_authority_enabled: false,
+	});
+	assert.equal(validationResult.ok, false, "validator must reject publication_state=\"published\"");
+	assert.match(validationResult.errors.join("; "), /pending_gate_promotion.*blocked|never.*published|published.*not permitted/i);
+});
+
+test("P8-S12 federated publication result: connector_gate_satisfied=true rejected (authority smuggling)", () => {
+	const result = createFlowDeskFederatedPublicationResultV1({
+		publicationResultId: "pub-result-s12-gate-smug-01",
+		ledgerIdempotencyRef: "ledger-idempotency-ref-s12-04",
+		dryRunResultRef: "dry-run-result-ref-s12-04",
+		guardApprovalRef: "guard-approval-ref-s12-04",
+		publicationState: "pending_gate_promotion",
+		blockedLabels: [],
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const pub = result.result as FlowDeskFederatedPublicationResultV1;
+
+	// Attempt to smuggle connector_gate_satisfied=true
+	const forgedGate = validateFlowDeskFederatedPublicationResultV1({
+		...pub,
+		connector_gate_satisfied: true,
+	});
+	assert.equal(forgedGate.ok, false, "connector_gate_satisfied=true must be rejected");
+	assert.match(forgedGate.errors.join("; "), /connector_gate_satisfied.*false|authority smuggling/i);
+
+	// Attempt to smuggle github_write_attempted=true
+	const forgedGithub = validateFlowDeskFederatedPublicationResultV1({
+		...pub,
+		github_write_attempted: true,
+	});
+	assert.equal(forgedGithub.ok, false, "github_write_attempted=true must be rejected");
+	assert.match(forgedGithub.errors.join("; "), /github_write_attempted.*false|authority smuggling/i);
+
+	// Attempt to smuggle remote_write_authority_enabled=true
+	const forgedRemote = validateFlowDeskFederatedPublicationResultV1({
+		...pub,
+		remote_write_authority_enabled: true,
+	});
+	assert.equal(forgedRemote.ok, false, "remote_write_authority_enabled=true must be rejected");
+	assert.match(forgedRemote.errors.join("; "), /remote_write_authority_enabled.*false|authority smuggling/i);
+});
+
+test("P8-S12 federated revocation request: valid consent_revoked reason", () => {
+	const result = createFlowDeskFederatedRevocationRequestV1({
+		revocationRequestId: "revocation-req-s12-valid-01",
+		publicationResultRef: "publication-result-ref-s12-01",
+		ledgerIdempotencyRef: "ledger-idempotency-ref-s12-rev-01",
+		revocationReason: "consent_revoked",
+		revocationState: "pending",
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const req = result.request as FlowDeskFederatedRevocationRequestV1;
+	assert.equal(req.schema_version, "flowdesk.federated_revocation_request.v1");
+	assert.equal(req.revocation_reason, "consent_revoked");
+	assert.equal(req.revocation_state, "pending");
+	assert.equal(req.github_write_attempted, false);
+	assert.equal(req.remote_write_attempted, false);
+	assert.equal(req.advisory_only, true);
+	assert.equal(req.non_authorizing, true);
+	assert.equal(req.remote_write_authority_enabled, false);
+	assert.equal(req.dispatch_authority_enabled, false);
+	assert.equal(req.revocation_note_ref, undefined);
+	// Validator must pass
+	assert.equal(validateFlowDeskFederatedRevocationRequestV1(req).ok, true);
+
+	// Also valid with all enum reasons and an optional note ref
+	for (const reason of ["consent_revoked", "data_minimization_violation", "operator_request", "retention_expired"] as const) {
+		const r = createFlowDeskFederatedRevocationRequestV1({
+			revocationRequestId: `revocation-req-s12-${reason}-01`,
+			publicationResultRef: "publication-result-ref-s12-02",
+			ledgerIdempotencyRef: "ledger-idempotency-ref-s12-rev-02",
+			revocationReason: reason,
+			revocationState: "pending",
+			revocationNoteRef: "revocation-note-ref-s12-01",
+			createdAt: "2026-06-07T12:00:00.000Z",
+		});
+		assert.equal(r.ok, true, `revocation reason "${reason}" must be valid: ${r.errors.join("; ")}`);
+		assert.equal(r.request?.revocation_note_ref, "revocation-note-ref-s12-01");
+	}
+});
+
+test("P8-S12 federated revocation request: revocation_state \"executed\" rejected", () => {
+	// Creator should refuse "executed" state
+	const result = createFlowDeskFederatedRevocationRequestV1({
+		revocationRequestId: "revocation-req-s12-executed-01",
+		publicationResultRef: "publication-result-ref-s12-03",
+		ledgerIdempotencyRef: "ledger-idempotency-ref-s12-rev-03",
+		revocationReason: "consent_revoked",
+		revocationState: "executed" as "pending",
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(result.ok, false, "revocation_state \"executed\" must be rejected by creator");
+	assert.match(result.errors.join("; "), /pending.*blocked|never.*executed|executed.*not permitted|requires a later gate/i);
+
+	// Validator must also reject "executed"
+	const validationResult = validateFlowDeskFederatedRevocationRequestV1({
+		schema_version: "flowdesk.federated_revocation_request.v1",
+		revocation_request_id: "revocation-req-s12-executed-02",
+		publication_result_ref: "publication-result-ref-s12-04",
+		ledger_idempotency_ref: "ledger-idempotency-ref-s12-rev-04",
+		revocation_reason: "consent_revoked",
+		revocation_state: "executed",
+		github_write_attempted: false,
+		remote_write_attempted: false,
+		created_at: "2026-06-07T12:00:00.000Z",
+		advisory_only: true,
+		non_authorizing: true,
+		remote_write_authority_enabled: false,
+		dispatch_authority_enabled: false,
+	});
+	assert.equal(validationResult.ok, false, "validator must reject revocation_state=\"executed\"");
+	assert.match(validationResult.errors.join("; "), /pending.*blocked|never.*executed|executed.*not permitted|requires a later gate/i);
+
+	// Invalid revocation reason also rejected
+	const badReason = createFlowDeskFederatedRevocationRequestV1({
+		revocationRequestId: "revocation-req-s12-bad-reason-01",
+		publicationResultRef: "publication-result-ref-s12-05",
+		ledgerIdempotencyRef: "ledger-idempotency-ref-s12-rev-05",
+		revocationReason: "unknown_reason" as "consent_revoked",
+		revocationState: "pending",
+		createdAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(badReason.ok, false, "invalid revocation_reason must be rejected");
+	assert.match(badReason.errors.join("; "), /revocation_reason/i);
 });

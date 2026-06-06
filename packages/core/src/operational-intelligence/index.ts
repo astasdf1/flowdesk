@@ -16,7 +16,7 @@
  *   session-summary.ts → shared.ts
  *   specialist.ts → shared.ts
  *   mcp-advisory.ts → shared.ts
- *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run; P8-S10: +ledger idempotency; P8-S11: +discovery topology)
+ *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run; P8-S10: +ledger idempotency; P8-S11: +discovery topology; P8-S12: +publication result, revocation request)
  */
 
 // shared public types (P7-S13.6a: common OI advisory envelope + health label taxonomy)
@@ -158,6 +158,7 @@ export {
 // P8-S6a: OAuth/consent architecture contracts (advisory-only, no runtime OAuth calls)
 // P8-S8: GitHub dry-run publication planner (pure advisory wiring)
 // P8-S11: federated discovery topology contracts (config + query plan)
+// P8-S12: actual publication result + revocation advisory contracts
 export {
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 	type FlowDeskFederatedScoreRegistryPublicationIntentV1,
@@ -224,6 +225,18 @@ export {
 	type FlowDeskFederatedDiscoveryQueryPlanResultV1,
 	createFlowDeskFederatedDiscoveryQueryPlanV1,
 	validateFlowDeskFederatedDiscoveryQueryPlanV1,
+	// P8-S12: actual publication result + revocation advisory contracts
+	type FlowDeskFederatedPublicationStateV1,
+	type FlowDeskFederatedPublicationResultV1,
+	type FlowDeskFederatedPublicationResultResultV1,
+	createFlowDeskFederatedPublicationResultV1,
+	validateFlowDeskFederatedPublicationResultV1,
+	type FlowDeskFederatedRevocationReasonV1,
+	type FlowDeskFederatedRevocationStateV1,
+	type FlowDeskFederatedRevocationRequestV1,
+	type FlowDeskFederatedRevocationRequestResultV1,
+	createFlowDeskFederatedRevocationRequestV1,
+	validateFlowDeskFederatedRevocationRequestV1,
 } from "./federated.js";
 
 // scoring-engine (P7-S14: minimal OI scoring engine)
