@@ -113,6 +113,31 @@ For explicit review work, the supported route is `flowdesk_agent_task_run`. The 
 
 None of these promote default real dispatch, automatic provider/model switching, or hard chat cancellation. FlowDesk verifies plugin-side evidence only (what it requested, what it persisted, and what OpenCode returned through SDK interfaces). Platform-internal execution facts are not verified by FlowDesk. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence. Watchdog auto-abort, auto-retry, and stall handling are opt-in diagnostics/recovery behaviors, not default Release 1 authority.
 
+### Short Wrapper Tools
+
+FlowDesk also exposes shorter tool names for common status, planning, recovery, and explicitly opted-in developer actions. These wrappers are meant to be easier for assistants to call correctly; they do not widen FlowDesk authority. Read-only wrappers stay read-only, preview wrappers stay preview-only, provider-backed task helpers still require explicit opt-in flags, and write helpers still require explicit approval.
+
+| Wrapper | Purpose | Use when | Example call pattern |
+|---|---|---|---|
+| `flowdesk_task` | Start one explicitly approved task lane with a named agent and model. | You intentionally want a single provider-backed reviewer or worker task and the required opt-in flags are available. | `flowdesk_task({ workflowId, taskDescription, agentName, providerQualifiedModelId, developerModeAcknowledged: true, allowProviderCall: true })` |
+| `flowdesk_now` | Show current or recent FlowDesk workflow status. | You ask “where are we?”, “what happened?”, or need recent progress/results. | `flowdesk_now({ workflowId })` |
+| `flowdesk_quota` | Check provider usage, quota, or reset information. | You ask how much Claude, OpenAI, Gemini, or all providers have left. | `flowdesk_quota({ providerFamily: "all" })` |
+| `flowdesk_check` | Run FlowDesk doctor diagnostics. | Setup, routing, policy, runtime readiness, usage, or conformance needs checking. | `flowdesk_check({ checkScope: "all", profile: "production" })` |
+| `flowdesk_debug` | Export a redacted debug bundle. | Support or troubleshooting needs safe diagnostic evidence. | `flowdesk_debug({ includeSections: ["status", "doctor"], retentionHint: "keep_until_default_expiry" })` |
+| `flowdesk_plan_short` | Record a compact FlowDesk plan. | You want FlowDesk to capture a goal and scope before any run step. | `flowdesk_plan_short({ goalSummary, scopeSummary, riskHint })` |
+| `flowdesk_run_short` | Run an existing plan revision through an explicitly chosen safe run mode. | FlowDesk has a plan revision and you confirmed the next guarded run step. | `flowdesk_run_short({ runMode, planRevisionId, workflowId })` |
+| `flowdesk_result` | Read the full saved result for one workflow task. | Status says results exist and you need the stored task output. | `flowdesk_result({ workflowId, taskId })` |
+| `flowdesk_resume_status` | Preview a resume checkpoint. | You need to see whether a paused workflow can resume, retry, or only report status. | `flowdesk_resume_status({ checkpointId })` |
+| `flowdesk_retry_diag` | Prepare retry diagnostics for an attempt. | A workflow failed or blocked and you want retry guidance, not an automatic retry. | `flowdesk_retry_diag({ attemptId, retryReason, workflowId })` |
+| `flowdesk_abort_cmd` | Request a bounded abort diagnostic/control action. | You want FlowDesk to move a workflow toward the safest stopped state. | `flowdesk_abort_cmd({ workflowId, reason, attemptId })` |
+| `flowdesk_continue` | Continue exactly one pending saved plan task. | You explicitly approve one developer-mode continuation step from durable plan evidence. | `flowdesk_continue({ workflowId, task: { taskId, promptText, agentName, providerQualifiedModelId }, developerModeAcknowledged: true, allowProviderCall: true, allowActualLaneLaunch: true, allowAutoContinueExecution: true })` |
+| `flowdesk_rebind` | Plan a provider/model rebind check. | A provider is blocked or unwanted and you ask to retry planning against a different provider. | `flowdesk_rebind({ fromProvider, toProvider, reason, developerModeAcknowledged: true })` |
+| `flowdesk_beat` | Record a redacted lane heartbeat. | A FlowDesk-owned lane is still progressing and you want the status trail refreshed. | `flowdesk_beat({ workflowId, attemptId, laneId, parentSessionRef, agentRef, providerQualifiedModelId, state: "running" })` |
+| `flowdesk_write` | Apply one approved workspace file replacement. | You explicitly approve a bounded developer-mode write to a known workspace file. | `flowdesk_write({ workflowId, targetFilePath, replacementText, userApprovalRef, developerModeAcknowledged: true, allowControlledWrite: true })` |
+| `flowdesk_next` | Preview the next pending saved plan task. | You ask what would run next without actually continuing it. | `flowdesk_next({ workflowId, maxSteps: 1 })` |
+
+Prefer the normal chat flow or portable `/flowdesk-*` commands unless FlowDesk has already surfaced one of these tools as the safe next action. A short wrapper call is not approval to dispatch work, switch providers, cancel chat, or write files outside the approved scope.
+
 ### Stalled Lane Alerts
 
 When `statusLive.enabled=true` and `chatMessageStallAlert.enabled=true` are both configured (with a resolvable `durableStateRoot`), FlowDesk passively appends a redacted stall card to your chat whenever durable session evidence shows a FlowDesk-owned lane that has not produced a heartbeat or lifecycle update for more than five minutes. The card lists how many lanes are stalled, the top workflow ids with the last-signal age in minutes, the explicit `FlowDesk does not auto-retry, auto-abort, or auto-fallback on stall.` line, and the safe next action allowlist (`/flowdesk-status`, `/flowdesk-retry`, `/flowdesk-resume`, `/flowdesk-abort`, `/flowdesk-doctor`, `/flowdesk-export-debug`). Set `chatMessageStallAlert.includeProgressingLate=true` to also surface lanes that crossed the 2-minute soft threshold but are not yet stalled, using the same safe action allowlist and tone.

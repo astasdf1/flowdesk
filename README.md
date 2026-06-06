@@ -82,6 +82,10 @@ Release 1 exposes portable command-backed controls:
 
 Natural-language chat is the preferred UX when OpenCode can safely steer it. Commands remain the fallback for setup, status, diagnostics, recovery, and explicit confirmation.
 
+### Short wrapper tools
+
+FlowDesk also includes short wrapper tools for common assistant-driven actions: `flowdesk_now`, `flowdesk_quota`, `flowdesk_check`, `flowdesk_debug`, `flowdesk_plan_short`, `flowdesk_run_short`, `flowdesk_result`, `flowdesk_resume_status`, `flowdesk_retry_diag`, `flowdesk_abort_cmd`, `flowdesk_next`, plus explicitly opted-in developer helpers such as `flowdesk_task`, `flowdesk_continue`, `flowdesk_rebind`, `flowdesk_beat`, and `flowdesk_write`. They make status, usage, planning, recovery, preview, heartbeat, and approved one-step task/write flows easier to call, but they do not grant new authority: read-only tools stay read-only, preview tools do not execute, provider-backed helpers require explicit opt-in, and controlled writes require explicit approval. See `docs/USER_MANUAL.md` for the per-wrapper purpose and example call patterns.
+
 Bootstrap installation is available through the package bin:
 
 ```bash
