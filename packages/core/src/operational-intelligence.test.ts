@@ -3,17 +3,21 @@ import test from "node:test";
 import {
 	createFlowDeskAdvisoryScoreLedgerAppendIntentV1,
 	createFlowDeskAdvisoryScoreLedgerEntryV1,
+	createFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	createFlowDeskOperationalIntelligenceScoreV1,
 	createFlowDeskWorkflowPlanProposalScoreEventV1,
 	createFlowDeskWorkflowPlanProposalV1,
 	decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
 	encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
 	validateFlowDeskAdvisoryScoreLedgerEntryV1,
+	validateFlowDeskFederatedScoreRegistryPublicationIntentV1,
+	validateFlowDeskFederatedScoreRegistryPublicationRequestV1,
 	validateFlowDeskOperationalIntelligenceScoreV1,
 	validateFlowDeskReferencePackV1,
 	validateFlowDeskWorkflowPlanProposalScoreEventV1,
 	validateFlowDeskWorkflowPlanProposalV1,
 	type FlowDeskReferencePackV1,
+	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 } from "./index.js";
 
 function scoreEvent(overrides: Partial<ReturnType<typeof createFlowDeskWorkflowPlanProposalScoreEventV1>> = {}) {
@@ -331,4 +335,164 @@ test("advisory score ledger append intents preserve ordering and idempotency", (
 	const wrongPrevious = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: existing, entry: { ...second, previous_ledger_entry_id: "ledger-entry-other" }, idempotencyKey: "idem-4" });
 	assert.equal(wrongPrevious.ok, false);
 	assert.match(wrongPrevious.errors.join("; "), /must match current tail/);
+});
+
+test("federated score registry publication intent is blocked by default", () => {
+	const result = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-1",
+		requestId: "registry-request-1",
+		workflowId: "workflow-1",
+		registryRef: "registry-local-advisory-1",
+		ledgerEntries: [ledgerEntry()],
+		requestedAt: "2026-06-06T00:00:02.000Z",
+	});
+	assert.equal(result.ok, true);
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationIntentV1(result.intent).ok, true);
+	assert.equal(result.intent?.state, "blocked");
+	assert.equal(result.intent?.federated_registry_publication_opt_in, false);
+	assert.equal(result.intent?.remote_write_blocked_by_default, true);
+	assert.equal(result.intent?.remote_write_attempted, false);
+	assert.equal(result.intent?.remote_write_authority_enabled, false);
+	assert.equal(result.intent?.external_write_authority_enabled, false);
+	assert.equal(result.intent?.blocked_labels.includes("federated-registry-publication-opt-in-missing"), true);
+});
+
+test("federated score registry publication request is opt-in and non-authorizing", () => {
+	const request: FlowDeskFederatedScoreRegistryPublicationRequestV1 = {
+		schema_version: "flowdesk.federated_score_registry_publication_request.v1",
+		request_id: "registry-request-0",
+		workflow_id: "workflow-1",
+		registry_ref: "registry-local-advisory-1",
+		ledger_entry_refs: ["ledger-entry-1"],
+		requested_at: "2026-06-06T00:00:02.500Z",
+		federated_registry_publication_opt_in: true,
+		connector_gate_satisfied: false,
+		remote_write_blocked_by_default: true,
+		remote_write_attempted: false,
+		non_authorizing: true,
+		advisory_only: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+	};
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationRequestV1(request).ok, true);
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationRequestV1({ ...request, remote_write_attempted: true }).ok, false);
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationRequestV1({ ...request, connector_gate_satisfied: true }).ok, false);
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationRequestV1({ ...request, registry_ref: "https://registry.example/raw" }).ok, false);
+});
+
+test("federated score registry opt-in remains non-authorizing without connector gate", () => {
+	const result = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-2",
+		requestId: "registry-request-2",
+		workflowId: "workflow-1",
+		registryRef: "registry-local-advisory-1",
+		ledgerEntries: [ledgerEntry()],
+		requestedAt: "2026-06-06T00:00:03.000Z",
+		federatedRegistryPublicationOptIn: true,
+	});
+	assert.equal(result.ok, true);
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationIntentV1(result.intent).ok, true);
+	assert.equal(result.intent?.federated_registry_publication_opt_in, true);
+	assert.equal(result.intent?.state, "blocked");
+	assert.equal(result.intent?.connector_gate_satisfied, false);
+	assert.equal(result.intent?.non_authorizing, true);
+	assert.equal(result.intent?.dispatch_authority_enabled, false);
+	assert.equal(result.intent?.provider_authority_enabled, false);
+	assert.equal(result.intent?.runtime_authority_enabled, false);
+	assert.equal(result.intent?.fallback_authority_enabled, false);
+	assert.equal(result.intent?.lane_launch_authority_enabled, false);
+	assert.equal(result.intent?.blocked_labels.includes("connector-gate-not-supplied-or-not-enabled"), true);
+});
+
+test("federated score registry publication rejects authority smuggling", () => {
+	const result = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-3",
+		requestId: "registry-request-3",
+		workflowId: "workflow-1",
+		registryRef: "registry-local-advisory-1",
+		ledgerEntries: [ledgerEntry()],
+		requestedAt: "2026-06-06T00:00:04.000Z",
+		federatedRegistryPublicationOptIn: true,
+	});
+	assert.equal(result.ok, true);
+	const forgedRemote = validateFlowDeskFederatedScoreRegistryPublicationIntentV1({ ...result.intent, remote_write_authority_enabled: true });
+	assert.equal(forgedRemote.ok, false);
+	assert.match(forgedRemote.errors.join("; "), /remote-write/);
+	const forgedConnectorGate = validateFlowDeskFederatedScoreRegistryPublicationIntentV1({ ...result.intent, connector_gate_satisfied: true });
+	assert.equal(forgedConnectorGate.ok, false);
+	assert.match(forgedConnectorGate.errors.join("; "), /connector gate unsatisfied/);
+	const unknownPublicationTarget = validateFlowDeskFederatedScoreRegistryPublicationIntentV1({ ...result.intent, githubPublicationUrl: "https://example.invalid" });
+	assert.equal(unknownPublicationTarget.ok, false);
+	assert.match(unknownPublicationTarget.errors.join("; "), /unknown properties/);
+});
+
+test("federated score registry refs stay redaction-safe", () => {
+	const rawRegistry = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-4",
+		requestId: "registry-request-4",
+		workflowId: "workflow-1",
+		registryRef: "https://github.com/org/repo/issues/1",
+		ledgerEntries: [ledgerEntry()],
+		requestedAt: "2026-06-06T00:00:05.000Z",
+		federatedRegistryPublicationOptIn: true,
+	});
+	assert.equal(rawRegistry.ok, false);
+	assert.match(rawRegistry.errors.join("; "), /schema-safe|paths/);
+
+	const rawConnector = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-5",
+		requestId: "registry-request-5",
+		workflowId: "workflow-1",
+		registryRef: "registry-local-advisory-1",
+		ledgerEntries: [ledgerEntry()],
+		requestedAt: "2026-06-06T00:00:06.000Z",
+		federatedRegistryPublicationOptIn: true,
+		connectorGateRef: "secret token raw prompt",
+	});
+	assert.equal(rawConnector.ok, false);
+	assert.match(rawConnector.errors.join("; "), /spaces|traversal|schema-safe/);
+});
+
+test("federated score registry intent is compatible with local ledger entries", () => {
+	const first = ledgerEntry();
+	const second = ledgerEntry({
+		ledger_entry_id: "ledger-entry-2",
+		sequence: 1,
+		previous_ledger_entry_id: "ledger-entry-1",
+		recorded_at: "2026-06-06T00:00:01.000Z",
+		event: scoreEvent({ score_event_id: "score-event-ledger-2", candidate_ref: "candidate-2" }),
+	});
+	const result = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-6",
+		requestId: "registry-request-6",
+		workflowId: "workflow-1",
+		registryRef: "registry-local-advisory-1",
+		ledgerEntries: [first, second],
+		requestedAt: "2026-06-06T00:00:07.000Z",
+		federatedRegistryPublicationOptIn: true,
+		connectorGateRef: "connector-gate-ref-1",
+	});
+	assert.equal(result.ok, true);
+	assert.deepEqual(result.intent?.ledger_entry_refs, ["ledger-entry-1", "ledger-entry-2"]);
+	assert.equal(result.intent?.ledger_entry_count, 2);
+	assert.equal(result.intent?.local_ledger_compatible, true);
+	assert.equal(validateFlowDeskFederatedScoreRegistryPublicationIntentV1(result.intent).ok, true);
+
+	const mismatched = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "registry-intent-7",
+		requestId: "registry-request-7",
+		workflowId: "workflow-other",
+		registryRef: "registry-local-advisory-1",
+		ledgerEntries: [first],
+		requestedAt: "2026-06-06T00:00:08.000Z",
+		federatedRegistryPublicationOptIn: true,
+	});
+	assert.equal(mismatched.ok, false);
+	assert.match(mismatched.errors.join("; "), /workflow_id must match/);
 });
