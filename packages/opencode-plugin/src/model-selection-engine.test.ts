@@ -6,6 +6,7 @@ import {
 	type ProviderUsageInput,
 	type WorkingModelSelectionInput,
 } from "./model-selection-engine.js";
+import { buildOIAssignmentAdvisoryV1 } from "./oi-assignment-advisor.js";
 
 function usage(family: ProviderUsageInput["providerFamily"], pct: number | null, alert: ProviderUsageInput["alertLevel"] = "ok"): ProviderUsageInput {
 	return { providerFamily: family, remainingPercent: pct, alertLevel: alert, freshness: "fresh", resetBucket: `${family}-weekly`, resetTime: "2026-06-06T00:00:00.000Z" };
@@ -221,4 +222,92 @@ test("model selection prefers period-normalized quota over raw percent", () => {
 	]);
 	const result = selectModelForTask("architecture", usageMap, storedAvailableModels, now);
 	assert.equal(result?.candidate.providerFamily, "openai");
+});
+
+test("selectModelForTask result is byte-identical regardless of OI advisory presence", () => {
+	// Fixed deterministic inputs — no randomness in these usage/model values.
+	const usageMap = new Map([
+		["claude", usage("claude", 80, "ok")],
+		["openai", usage("openai", 60, "ok")],
+		["gemini", usage("gemini", 70, "ok")],
+	]);
+	const ctx: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["anthropic/claude-opus-4-7", "openai/gpt-5.5"],
+	};
+
+	// Baseline: select WITHOUT any OI call.
+	const baselineResult = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(baselineResult, "baseline should produce a selection");
+
+	// Call OI advisory before selection (simulating an external pre-call).
+	buildOIAssignmentAdvisoryV1({
+		workflowId: "workflow-oi-det-test",
+		taskId: "task-pre",
+		agentRole: "security",
+		selectedCandidateRef: "candidate-pre-anthropic-claude-opus-4-7",
+		providerFamily: "claude",
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+		oiEnabled: true,
+	});
+
+	// Select again after OI pre-call — must be identical to baseline.
+	const afterPreOIResult = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(afterPreOIResult, "post-pre-OI selection should produce a selection");
+	assert.equal(
+		afterPreOIResult.candidate.providerQualifiedModelId,
+		baselineResult.candidate.providerQualifiedModelId,
+		"selection must be byte-identical regardless of OI pre-call",
+	);
+	assert.equal(
+		afterPreOIResult.candidate.providerFamily,
+		baselineResult.candidate.providerFamily,
+		"provider family must be byte-identical regardless of OI pre-call",
+	);
+
+	// Call OI advisory AFTER selection (the normal production order).
+	const postOIAdvisory = buildOIAssignmentAdvisoryV1({
+		workflowId: "workflow-oi-det-test",
+		taskId: "task-post",
+		agentRole: "security",
+		selectedCandidateRef: `candidate-${baselineResult.candidate.providerQualifiedModelId.replace(/\//g, "-")}`,
+		providerFamily: baselineResult.candidate.providerFamily,
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+		oiEnabled: true,
+	});
+
+	// OI advisory must be advisory-only — selecting again must still match baseline.
+	const afterPostOIResult = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(afterPostOIResult, "post-post-OI selection should produce a selection");
+	assert.equal(
+		afterPostOIResult.candidate.providerQualifiedModelId,
+		baselineResult.candidate.providerQualifiedModelId,
+		"selection must be byte-identical regardless of OI post-call",
+	);
+
+	// Sanity-check: the OI advisory itself is advisory-only (included, no thrown errors).
+	assert.equal(postOIAdvisory.included, true, "OI advisory should be included when oiEnabled=true");
+	assert.ok(
+		["healthy", "degraded", "stale", "unknown", "partial", "missing_source_evidence", "disabled_by_config"].includes(postOIAdvisory.healthLabel),
+		`OI advisory healthLabel should be a valid label, got: ${postOIAdvisory.healthLabel}`,
+	);
+
+	// Verify OI disabled path also does not affect selection.
+	buildOIAssignmentAdvisoryV1({
+		workflowId: "workflow-oi-det-test",
+		taskId: "task-disabled",
+		agentRole: "security",
+		selectedCandidateRef: "candidate-disabled",
+		providerFamily: "claude",
+		oiEnabled: false,
+	});
+	const afterDisabledOIResult = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(afterDisabledOIResult, "post-disabled-OI selection should produce a selection");
+	assert.equal(
+		afterDisabledOIResult.candidate.providerQualifiedModelId,
+		baselineResult.candidate.providerQualifiedModelId,
+		"selection must be byte-identical when OI is disabled",
+	);
 });

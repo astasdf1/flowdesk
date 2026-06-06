@@ -11,6 +11,7 @@ import {
 } from "@flowdesk/core";
 import type { FlowDeskTuiUsageProviderRowV1 } from "./tui-usage-snapshot.js";
 import { selectModelForTask, buildUsageMapFromProviders } from "./model-selection-engine.js";
+import { buildOIAssignmentAdvisoryV1, type OIAssignmentAdvisoryInputV1 } from "./oi-assignment-advisor.js";
 
 export interface FlowDeskWorkflowAssignToolResultV1 {
 	status: "assignments_written" | "blocked_before_assignments";
@@ -27,6 +28,18 @@ export interface FlowDeskWorkflowAssignToolResultV1 {
 		actualLaneLaunch: false;
 		fallbackAuthority: false;
 	};
+	/**
+	 * OI advisory metadata collected AFTER model selection.
+	 * Advisory-only: never influences selection, routing, dispatch, or fallback.
+	 */
+	oiAdvisory?: readonly {
+		taskId: string;
+		included: boolean;
+		healthLabel: string;
+		advisoryScore?: number;
+		hardFilterState?: string;
+		skippedReason?: string;
+	}[];
 }
 
 const SAFE_AUTHORITY = { realOpenCodeDispatch: false, providerCall: false, runtimeExecution: false, actualLaneLaunch: false, fallbackAuthority: false } as const;
@@ -74,6 +87,14 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 	const createdAt = selectionNow.toISOString();
 	const evidenceRefs: string[] = [];
 	const writeIntents: ReturnType<typeof prepareFlowDeskSessionEvidenceWriteIntentV1>[] = [];
+	const oiAdvisories: Array<{
+		taskId: string;
+		included: boolean;
+		healthLabel: string;
+		advisoryScore?: number;
+		hardFilterState?: string;
+		skippedReason?: string;
+	}> = [];
 
 	for (const node of nodes) {
 		const taskId = typeof node.task_id === "string" ? node.task_id : "";
@@ -83,6 +104,28 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		const usageMap = buildUsageMapFromProviders(rows, () => selectionNow);
 		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds, availabilitySource: "durable_cache" }, () => selectionNow);
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
+
+		// ── OI Advisory annotation (AFTER selection — must not influence it) ─────
+		// Advisory-only: result is metadata only; never fed back into selection.
+		const selectedRow = rows.find(r => r.providerFamily === selected.candidate.providerFamily);
+		const oiAdvisory = buildOIAssignmentAdvisoryV1({
+			workflowId: input.workflowId,
+			taskId,
+			agentRole,
+			selectedCandidateRef: `candidate-${selected.candidate.providerQualifiedModelId.replace(/\//g, "-")}`,
+			providerFamily: selected.candidate.providerFamily,
+			...(typeof selectedRow?.remainingPercent === "number" ? { usageRemainingPercent: selectedRow.remainingPercent } : {}),
+			...(selectedRow?.alertLevel !== undefined ? { alertLevel: selectedRow.alertLevel as OIAssignmentAdvisoryInputV1["alertLevel"] } : {}),
+			oiEnabled: true,
+		});
+		oiAdvisories.push({
+			taskId,
+			included: oiAdvisory.included,
+			healthLabel: oiAdvisory.healthLabel,
+			...(oiAdvisory.advisoryScore !== undefined ? { advisoryScore: oiAdvisory.advisoryScore } : {}),
+			...(oiAdvisory.hardFilterState !== undefined ? { hardFilterState: oiAdvisory.hardFilterState } : {}),
+			...(oiAdvisory.skippedReason !== undefined ? { skippedReason: oiAdvisory.skippedReason } : {}),
+		});
 
 		const assignmentId = `assignment-${randomBytes(4).toString("hex")}`;
 		const selectionId = `selection-${randomBytes(4).toString("hex")}`;
@@ -166,5 +209,6 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		summaryForUser: `FlowDesk assigned ${nodes.length} task(s) to agents/models using usage-weighted selection. Planning only: no dispatch authority opened.`,
 		safeNextActions: ["/flowdesk-status", "/flowdesk-export-debug"],
 		authority: SAFE_AUTHORITY,
+		oiAdvisory: oiAdvisories,
 	};
 }
