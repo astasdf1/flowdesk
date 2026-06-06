@@ -834,6 +834,12 @@ If \`flowdesk_task\` is unavailable or lacks a required field, stop and report t
 
 If FlowDesk-owned lanes are unsafe or blocked, stop and report the blocker, or do only a bounded direct main-session action with normal tools. Do not bypass FlowDesk monitoring with untracked subagents.
 
+## Release 2 managed dispatch gate semantics
+
+Release 2 may open managed dispatch only for a scoped attempt when durable Release 2 gate readiness evidence is eligible and current. Treat \`flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1\` with \`release2_managed_dispatch_gate_ready: true\` as necessary but not sufficient: the current attempt must also have explicit scoped user/Guard approval, current provider binding and provider-native usage/health evidence, policy eligibility, pre-call audit evidence, idempotency/reservation evidence, and matching workflow/attempt/provider refs.
+
+If any Release 2 gate evidence is missing, stale, mismatched, blocked, or authority-smuggling, managed dispatch is closed for that attempt; surface safe next actions instead of launching. Release 2 gate opening is not default provider execution, uncontrolled dispatch, automatic fallback/reselection, write/apply authority, hard chat control, or \`noReply\`/cancel/stop authority. Never infer those authorities from a ready gate, a successful lane, a provider quota result, or a user asking to “continue”; use only the explicit FlowDesk tool whose documented authority matches the action.
+
 ## Lane Size Gate — apply before every dispatch
 
 Before each \`flowdesk_task\` delegated launch, state the slice briefly and launch only if all are true:
