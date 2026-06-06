@@ -176,6 +176,18 @@ export {
 	validateFlowDeskMCPConnectorAdvisoryV1,
 } from "./mcp-advisory.js";
 
+// task-block-scoring
+export {
+	type FlowDeskTaskBlockCategoryV1,
+	type FlowDeskTaskBlockModelTierV1,
+	type FlowDeskTaskBlockScoringV1,
+	createFlowDeskTaskBlockScoringV1,
+	validateFlowDeskTaskBlockScoringV1,
+	type FlowDeskDesignSpecQualityV1,
+	createFlowDeskDesignSpecQualityV1,
+	validateFlowDeskDesignSpecQualityV1,
+} from "./task-block-scoring.js";
+
 // federated (Phase 8 scaffold; depends on evaluation-events)
 // P8-S3: federated registry connector capability + preflight contracts
 // P8-S4: connector gate evaluator (always-false, blocked-by-default)

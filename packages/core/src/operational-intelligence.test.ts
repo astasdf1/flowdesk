@@ -132,6 +132,13 @@ import {
 	validateFlowDeskAdvisoryVariantResultV1,
 	type FlowDeskAdvisoryVariantResultV1,
 	type FlowDeskAdvisoryVariantOutcomeClassV1,
+	createFlowDeskTaskBlockScoringV1,
+	validateFlowDeskTaskBlockScoringV1,
+	type FlowDeskTaskBlockScoringV1,
+	type FlowDeskTaskBlockCategoryV1,
+	createFlowDeskDesignSpecQualityV1,
+	validateFlowDeskDesignSpecQualityV1,
+	type FlowDeskDesignSpecQualityV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -5981,4 +5988,192 @@ test("advisory variant result rejects variant_index >= variant_total and complet
 	});
 	assert.equal(missingScore.ok, false);
 	assert.match(missingScore.errors.join("; "), /normalized_score_ref is required when outcome_class is 'completed_ok'/);
+});
+
+// ─── Task Block Scoring tests ────────────────────────────────────────────────
+
+test("task block scoring: valid score with derivation", () => {
+	const result = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-1",
+		blockLabel: "Test Block",
+		scoredAt: "2026-06-07T12:00:00.000Z",
+		scope: 3,
+		category: "implementation",
+		complexity: 2,
+		coupling: 2,
+		authoritySensitivity: 1,
+		novelty: 1,
+		readinessCheckPassed: true,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const s = result.scoring!;
+	assert.equal(s.schema_version, "flowdesk.task_block_scoring.v1");
+	// block_score = 3 (scope) + 3 (impl) + 2 (complex) + 2 (coupling) + 1 (auth) + 1 (novelty) = 12
+	assert.equal(s.block_score, 12);
+	assert.equal(s.category_score, 3);
+	assert.equal(s.recommended_model_tier, "flash"); // 10-12 -> flash
+	assert.equal(s.design_first_required, false);
+	assert.equal(s.multi_model_design_required, false);
+	assert.equal(validateFlowDeskTaskBlockScoringV1(s).ok, true);
+});
+
+test("task block scoring: category mapping", () => {
+	const categories: [FlowDeskTaskBlockCategoryV1, number][] = [
+		["schema_only", 2],
+		["implementation", 3],
+		["integration", 3],
+		["orchestration", 4],
+		["security_boundary", 5],
+		["design", 5],
+	];
+	for (const [cat, expectedScore] of categories) {
+		const result = createFlowDeskTaskBlockScoringV1({
+			blockId: `block-${cat}`,
+			blockLabel: `Label ${cat}`,
+			scoredAt: "2026-06-07T12:00:00.000Z",
+			scope: 1,
+			category: cat,
+			complexity: 1,
+			coupling: 1,
+			authoritySensitivity: 1,
+			novelty: 1,
+			readinessCheckPassed: true,
+		});
+		assert.equal(result.ok, true);
+		assert.equal(result.scoring?.category_score, expectedScore);
+	}
+});
+
+test("task block scoring: design_first_required and multi_model_design_required flags", () => {
+	// Case 1: high novelty -> design_first_required
+	const res1 = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-novelty",
+		blockLabel: "Novelty Block",
+		scoredAt: "2026-06-07T12:00:00.000Z",
+		scope: 1,
+		category: "implementation",
+		complexity: 1,
+		coupling: 1,
+		authoritySensitivity: 1,
+		novelty: 4,
+		readinessCheckPassed: true,
+	});
+	assert.equal(res1.scoring?.design_first_required, true);
+	assert.equal(res1.scoring?.multi_model_design_required, false);
+
+	// Case 2: high block_score -> both required
+	const res2 = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-high-score",
+		blockLabel: "High Score Block",
+		scoredAt: "2026-06-07T12:00:00.000Z",
+		scope: 5,
+		category: "design",
+		complexity: 5,
+		coupling: 5,
+		authoritySensitivity: 3,
+		novelty: 3,
+		readinessCheckPassed: true,
+	});
+	// score = 5 + 5 + 5 + 5 + 3 + 3 = 26
+	assert.equal(res2.scoring?.block_score, 26);
+	assert.equal(res2.scoring?.design_first_required, true);
+	assert.equal(res2.scoring?.multi_model_design_required, true);
+	assert.equal(res2.scoring?.recommended_model_tier, "opus"); // 25-28 -> opus
+});
+
+test("task block scoring: authority smuggling rejection", () => {
+	const base = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-auth",
+		blockLabel: "Auth Test",
+		scoredAt: "2026-06-07T12:00:00.000Z",
+		scope: 1,
+		category: "implementation",
+		complexity: 1,
+		coupling: 1,
+		authoritySensitivity: 1,
+		novelty: 1,
+		readinessCheckPassed: true,
+	}).scoring!;
+
+	const forged = validateFlowDeskTaskBlockScoringV1({ ...base, dispatch_authority_enabled: true });
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("; "), /dispatch_authority_enabled/);
+
+	const forged2 = validateFlowDeskTaskBlockScoringV1({ ...base, write_authority_enabled: true });
+	assert.equal(forged2.ok, false);
+	assert.match(forged2.errors.join("; "), /write_authority_enabled/);
+});
+
+// ─── Design Spec Quality tests ───────────────────────────────────────────────
+
+test("design spec quality: valid quality pass", () => {
+	const result = createFlowDeskDesignSpecQualityV1({
+		scoredDesignRef: "design-ref-1",
+		blockScoringRef: "block-ref-1",
+		completeness: 18,
+		precision: 17,
+		securityCoverage: 16,
+		consistency: 15,
+		implementability: 16,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const q = result.quality!;
+	assert.equal(q.schema_version, "flowdesk.design_spec_quality.v1");
+	assert.equal(q.total_score, 18 + 17 + 16 + 15 + 16); // 82
+	assert.equal(q.passes_threshold, true);
+	assert.equal(validateFlowDeskDesignSpecQualityV1(q).ok, true);
+});
+
+test("design spec quality: valid quality fail", () => {
+	const result = createFlowDeskDesignSpecQualityV1({
+		scoredDesignRef: "design-ref-2",
+		blockScoringRef: "block-ref-2",
+		completeness: 15,
+		precision: 15,
+		securityCoverage: 15,
+		consistency: 15,
+		implementability: 15,
+	});
+	assert.equal(result.ok, true);
+	assert.equal(result.quality?.total_score, 75);
+	assert.equal(result.quality?.passes_threshold, false);
+	assert.equal(validateFlowDeskDesignSpecQualityV1(result.quality!).ok, true);
+});
+
+test("design spec quality: total_score and passes_threshold derivation", () => {
+	const q = createFlowDeskDesignSpecQualityV1({
+		scoredDesignRef: "design-ref-3",
+		blockScoringRef: "block-ref-3",
+		completeness: 16,
+		precision: 16,
+		securityCoverage: 16,
+		consistency: 16,
+		implementability: 16,
+	}).quality!;
+	assert.equal(q.total_score, 80);
+	assert.equal(q.passes_threshold, true);
+
+	const forged = validateFlowDeskDesignSpecQualityV1({ ...q, total_score: 100 });
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("; "), /total_score inconsistent/);
+});
+
+test("design spec quality: authority smuggling rejection", () => {
+	const q = createFlowDeskDesignSpecQualityV1({
+		scoredDesignRef: "design-ref-4",
+		blockScoringRef: "block-ref-4",
+		completeness: 20,
+		precision: 20,
+		securityCoverage: 20,
+		consistency: 20,
+		implementability: 20,
+	}).quality!;
+
+	const forged = validateFlowDeskDesignSpecQualityV1({ ...q, runtime_authority_enabled: true });
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("; "), /runtime_authority_enabled/);
+
+	const forged2 = validateFlowDeskDesignSpecQualityV1({ ...q, hard_chat_authority_enabled: true });
+	assert.equal(forged2.ok, false);
+	assert.match(forged2.errors.join("; "), /hard_chat_authority_enabled/);
 });
