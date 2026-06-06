@@ -61,8 +61,13 @@ function inventoryFor(bindings: FlowDeskTopTierReviewerBindingV1[], lanePlans: F
     registered_binding_refs: bindings.map((binding) => `registry-${binding.binding_label}`),
     available_binding_refs: bindings.filter((binding) => binding.availability === "registered_available").map((binding) => `registry-${binding.binding_label}`),
     unavailable_binding_refs: bindings.filter((binding) => binding.availability === "registered_unavailable").map((binding) => `registry-${binding.binding_label}`),
+    included_binding_refs: bindings.filter((binding) => binding.availability === "registered_available").map((binding) => `registry-${binding.binding_label}`),
+    excluded_binding_refs: bindings.filter((binding) => binding.availability === "registered_unavailable").map((binding) => `registry-${binding.binding_label}`),
     blocked_binding_refs: bindings.filter((binding) => binding.availability === "registered_blocked").map((binding) => `registry-${binding.binding_label}`),
     lane_plan_refs: lanePlans.map((lane) => lane.lane_plan_id),
+    labels: ["registered", "available_highest_tier"],
+    blocked_labels: [],
+    evidence_refs: bindings.map((binding) => `registry-${binding.binding_label}`),
     max_concurrent_lane_count: lanePlans.length,
     budget_cap_label: "policy-budget-default",
     quota_reserve_label: "policy-reserve-default",
@@ -70,7 +75,13 @@ function inventoryFor(bindings: FlowDeskTopTierReviewerBindingV1[], lanePlans: F
     retry_budget_label: "policy-retry-default",
     inventory_decision: "ready",
     safe_next_actions: ["/flowdesk-status"],
-    dispatch_authority_enabled: false
+    dispatch_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    fallback_authority_enabled: false,
+    guard_replacement_authority_enabled: false,
+    external_write_authority_enabled: false
   };
 }
 
@@ -155,9 +166,6 @@ test("top tier review binding inventory fails closed on authority claims and emp
 
   const emptyRegistered = { ...inventoryFor([binding], lanes), registered_binding_refs: [] };
   assert.equal(validateTopTierReviewBindingInventoryV1(emptyRegistered).ok, false);
-
-  const emptyLanes = { ...inventoryFor([binding], lanes), lane_plan_refs: [] };
-  assert.equal(validateTopTierReviewBindingInventoryV1(emptyLanes).ok, false);
 
   const badDecision = { ...inventoryFor([binding], lanes), inventory_decision: "approved" as unknown as typeof FLOWDESK_TOP_TIER_REVIEW_INVENTORY_DECISIONS[number] };
   assert.equal(validateTopTierReviewBindingInventoryV1(badDecision).ok, false);

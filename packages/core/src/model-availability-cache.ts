@@ -1,4 +1,7 @@
-import type { FlowDeskTopTierReviewPerspective } from "./release1-contracts.js";
+import type {
+	FlowDeskTopTierReviewBindingInventoryV1,
+	FlowDeskTopTierReviewPerspective,
+} from "./release1-contracts.js";
 import type { FlowDeskRuntimeLaneLaunchRequestV1 } from "./runtime-lane-productization.js";
 import { validateFlowDeskRuntimeLaneLaunchRequestV1 } from "./runtime-lane-productization.js";
 import {
@@ -10,6 +13,7 @@ import {
 	validateOpaqueId,
 	validateOpaqueRef,
 	validateProviderFamily,
+	validateTopTierReviewBindingInventoryV1,
 } from "./validators.js";
 
 const FLOWDESK_EXACT_MODEL_PROVIDER_FAMILIES = ["claude", "anthropic", "openai", "gemini", "google", "opencode", "opencode_go", "z_ai"] as const;
@@ -191,6 +195,19 @@ export interface FlowDeskReviewerBindingPredicateEvaluationV1 extends Validation
 	runtimeExecution: false;
 }
 
+export interface FlowDeskTopTierReviewBindingInventorySnapshotResultV1 extends ValidationResult {
+	state: "materialized" | "blocked";
+	blocked_labels: string[];
+	inventory?: FlowDeskTopTierReviewBindingInventoryV1;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+	fallback_authority_enabled: false;
+	guard_replacement_authority_enabled: false;
+	external_write_authority_enabled: false;
+}
+
 export type FlowDeskUsagePressureLabelV1 = "ok" | "warning" | "critical" | "exhausted" | "unknown";
 
 export interface FlowDeskReviewerAssignmentRevalidationV1 extends ValidationResult {
@@ -264,6 +281,13 @@ const disabledReviewerRuntimeAuthority = {
 	providerCall: false as const,
 	actualLaneLaunch: false as const,
 	runtimeExecution: false as const,
+};
+
+const disabledReviewerInventoryAuthority = {
+	...disabledReviewerRuntimeAuthority,
+	fallback_authority_enabled: false as const,
+	guard_replacement_authority_enabled: false as const,
+	external_write_authority_enabled: false as const,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -438,6 +462,96 @@ export function evaluateFlowDeskReviewerBindingPredicatesV1(input: {
 		binding_states: bindingStates,
 		blocked_labels: unique(blockedLabels),
 		...disabledReviewerRuntimeAuthority,
+	};
+}
+
+export function materializeFlowDeskTopTierReviewBindingInventorySnapshotV1(input: {
+	predicateEvaluation: FlowDeskReviewerBindingPredicateEvaluationV1;
+	inventoryId: string;
+	workflowId: string;
+	planRevisionId: string;
+	createdAt: string;
+	redactionVersion?: string;
+	evidenceRefs?: readonly string[];
+	lanePlanRefs?: readonly string[];
+	maxConcurrentLaneCount?: number;
+	budgetCapLabel?: string;
+	quotaReserveLabel?: string;
+	timeoutLabel?: string;
+	retryBudgetLabel?: string;
+}): FlowDeskTopTierReviewBindingInventorySnapshotResultV1 {
+	const validationErrors: string[] = [];
+	validationErrors.push(...validateOpaqueId(input.inventoryId, "inventory_id").errors);
+	validationErrors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	validationErrors.push(...validateOpaqueId(input.planRevisionId, "plan_revision_id").errors);
+	validationErrors.push(...validateTimestamp(input.createdAt, "created_at").errors);
+	for (const [index, ref] of (input.evidenceRefs ?? []).entries()) validationErrors.push(...validateOpaqueRef(ref, `evidence_refs[${index}]`).errors);
+	for (const [index, ref] of (input.lanePlanRefs ?? []).entries()) validationErrors.push(...validateOpaqueRef(ref, `lane_plan_refs[${index}]`).errors);
+	const stateRef = (state: FlowDeskReviewerBindingPredicateStateV1, index: number): string => {
+		if (state.entry_id !== undefined && validateOpaqueRef(state.entry_id, "entry_id").ok) return state.entry_id;
+		return `binding-state-${index + 1}`;
+	};
+	const states = input.predicateEvaluation.binding_states;
+	const refsByState = states.map((state, index) => ({ state, ref: stateRef(state, index) }));
+	const registeredRefs = refsByState.filter(({ state }) => state.registered).map(({ ref }) => ref);
+	const availableRefs = refsByState.filter(({ state }) => state.registered && state.available).map(({ ref }) => ref);
+	const unavailableRefs = refsByState.filter(({ state }) => state.registered && !state.available).map(({ ref }) => ref);
+	const includedRefs = refsByState.filter(({ state }) => state.inclusion === "included").map(({ ref }) => ref);
+	const excludedRefs = refsByState.filter(({ state }) => state.inclusion === "excluded").map(({ ref }) => ref);
+	const blockedRefs = refsByState.filter(({ state }) => state.inclusion === "blocked").map(({ ref }) => ref);
+	const blockedLabels = unique([
+		...input.predicateEvaluation.blocked_labels,
+		...states.flatMap((state) => state.blocked_labels),
+	]);
+	const safeNextActions = unique(states.flatMap((state) => state.safe_next_actions)) as FlowDeskTopTierReviewBindingInventoryV1["safe_next_actions"];
+	const inventory: FlowDeskTopTierReviewBindingInventoryV1 = {
+		schema_version: "flowdesk.top_tier_review_binding_inventory.v1",
+		inventory_id: input.inventoryId,
+		workflow_id: input.workflowId,
+		plan_revision_id: input.planRevisionId,
+		created_at: input.createdAt,
+		redaction_version: input.redactionVersion ?? "redaction-v1",
+		registered_binding_refs: unique(registeredRefs),
+		available_binding_refs: unique(availableRefs),
+		unavailable_binding_refs: unique(unavailableRefs),
+		included_binding_refs: unique(includedRefs),
+		excluded_binding_refs: unique(excludedRefs),
+		blocked_binding_refs: unique(blockedRefs),
+		lane_plan_refs: unique([...(input.lanePlanRefs ?? [])]),
+		labels: unique(states.flatMap((state) => state.labels)),
+		blocked_labels: blockedLabels,
+		evidence_refs: unique([
+			...(input.evidenceRefs ?? []),
+			...(input.predicateEvaluation.cache_id === undefined ? [] : [input.predicateEvaluation.cache_id]),
+			...states.flatMap((state) => state.entry_id === undefined ? [] : [state.entry_id]),
+		]),
+		max_concurrent_lane_count: input.maxConcurrentLaneCount ?? Math.max(1, Math.min(32, includedRefs.length || 1)),
+		budget_cap_label: input.budgetCapLabel ?? "policy-budget-inventory-snapshot-only",
+		quota_reserve_label: input.quotaReserveLabel ?? "policy-quota-inventory-snapshot-only",
+		timeout_label: input.timeoutLabel ?? "policy-timeout-inventory-snapshot-only",
+		retry_budget_label: input.retryBudgetLabel ?? "policy-retry-inventory-snapshot-only",
+		inventory_decision: input.predicateEvaluation.state === "evaluated" ? "ready" : "blocked",
+		safe_next_actions: safeNextActions.length === 0 ? ["/flowdesk-status"] : safeNextActions,
+		...disabledReviewerInventoryAuthority,
+	};
+	const inventoryValidation = validateTopTierReviewBindingInventoryV1(inventory);
+	const errors = unique([...validationErrors, ...input.predicateEvaluation.errors, ...inventoryValidation.errors]);
+	if (errors.length > 0) {
+		return {
+			ok: false,
+			errors,
+			state: "blocked",
+			blocked_labels: unique(["inventory_snapshot_invalid", ...blockedLabels]),
+			...disabledReviewerInventoryAuthority,
+		};
+	}
+	return {
+		ok: true,
+		errors: [],
+		state: "materialized",
+		blocked_labels: blockedLabels,
+		inventory,
+		...disabledReviewerInventoryAuthority,
 	};
 }
 

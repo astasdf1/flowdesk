@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	type FlowDeskExactModelAvailabilityCacheV1,
 	evaluateFlowDeskReviewerBindingPredicatesV1,
+	materializeFlowDeskTopTierReviewBindingInventorySnapshotV1,
 	materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1,
 	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
 	planFlowDeskExactModelAvailabilityCacheRefreshV1,
@@ -17,6 +18,7 @@ import {
 	validateFlowDeskExactModelAvailabilityCacheV1,
 	validateFlowDeskReviewerAssignmentRevalidationV1,
 	validateFlowDeskReviewerFanoutPlanV1,
+	validateTopTierReviewBindingInventoryV1,
 } from "./index.js";
 
 function cache(
@@ -220,6 +222,134 @@ test("reviewer binding predicates distinguish registered unavailable and unregis
 	assert.equal(unregistered.binding_states[0]?.inclusion, "blocked");
 	assert.ok(unregistered.binding_states[0]?.blocked_labels.includes("binding_unregistered"));
 	assert.ok(unregistered.blocked_labels.includes("binding_unregistered"));
+});
+
+test("top tier review binding inventory snapshot materializes included excluded and blocked predicate refs", () => {
+	const evaluation = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache({
+			entries: [
+				cache().entries[0],
+				{
+					entry_id: "entry-gpt-unavailable",
+					provider_family: "openai",
+					provider_identity_ref: "provider-openai-1",
+					provider_qualified_model_id: "openai/gpt-5.5",
+					model_family: "gpt-5",
+					registered: true,
+					available: false,
+					highest_tier_eligible: false,
+					availability_ref: "availability-gpt-unavailable",
+				},
+			],
+		}),
+		localDate: "2026-05-21",
+		requestedProviderQualifiedModelIds: [
+			"claude/claude-opus-4-5",
+			"openai/gpt-5.5",
+			"gemini/gemini-2.5-pro",
+		],
+	});
+	const result = materializeFlowDeskTopTierReviewBindingInventorySnapshotV1({
+		predicateEvaluation: evaluation,
+		inventoryId: "inventory-1",
+		workflowId: "workflow-1",
+		planRevisionId: "plan-1",
+		createdAt: "2026-05-21T00:00:00.000Z",
+		evidenceRefs: ["predicate-evaluation-1"],
+	});
+	assert.equal(result.state, "materialized", result.errors.join("; "));
+	assert.ok(result.inventory);
+	assert.deepEqual(result.inventory.included_binding_refs, ["entry-claude-1"]);
+	assert.deepEqual(result.inventory.excluded_binding_refs, ["entry-gpt-unavailable"]);
+	assert.deepEqual(result.inventory.blocked_binding_refs, ["binding-state-3"]);
+	assert.ok(result.inventory.evidence_refs.includes("predicate-evaluation-1"));
+	assert.ok(result.inventory.evidence_refs.includes("cache-1"));
+	assert.ok(result.inventory.blocked_labels.includes("registered_but_unavailable"));
+	assert.ok(result.inventory.blocked_labels.includes("binding_unregistered"));
+	assert.equal(validateTopTierReviewBindingInventoryV1(result.inventory).ok, true);
+	assert.equal(result.inventory.providerCall, false);
+	assert.equal(result.inventory.actualLaneLaunch, false);
+	assert.equal(result.inventory.runtimeExecution, false);
+	assert.equal(result.inventory.fallback_authority_enabled, false);
+	assert.equal(result.inventory.guard_replacement_authority_enabled, false);
+	assert.equal(result.inventory.external_write_authority_enabled, false);
+});
+
+test("top tier review binding inventory snapshot preserves lower-tier substitution rejection label", () => {
+	const evaluation = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache({
+			entries: [
+				cache().entries[0],
+				{
+					entry_id: "entry-claude-sonnet-lower",
+					provider_family: "claude",
+					provider_identity_ref: "provider-claude-1",
+					provider_qualified_model_id: "claude/claude-sonnet-4-5",
+					model_family: "sonnet",
+					registered: true,
+					available: true,
+					highest_tier_eligible: false,
+					availability_ref: "availability-sonnet",
+				},
+			],
+		}),
+		localDate: "2026-05-21",
+	});
+	const result = materializeFlowDeskTopTierReviewBindingInventorySnapshotV1({
+		predicateEvaluation: evaluation,
+		inventoryId: "inventory-2",
+		workflowId: "workflow-1",
+		planRevisionId: "plan-1",
+		createdAt: "2026-05-21T00:00:00.000Z",
+	});
+	assert.equal(result.state, "materialized", result.errors.join("; "));
+	assert.ok(result.inventory?.labels.includes("lower_tier_substitution_rejected"));
+	assert.ok(result.inventory?.blocked_labels.includes("lower_tier_substitution_rejected"));
+	assert.deepEqual(result.inventory?.excluded_binding_refs, ["entry-claude-sonnet-lower"]);
+});
+
+test("top tier review binding inventory rejects raw payload path markers and authority smuggling", () => {
+	const evaluation = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache(),
+		localDate: "2026-05-21",
+	});
+	const result = materializeFlowDeskTopTierReviewBindingInventorySnapshotV1({
+		predicateEvaluation: evaluation,
+		inventoryId: "inventory-3",
+		workflowId: "workflow-1",
+		planRevisionId: "plan-1",
+		createdAt: "2026-05-21T00:00:00.000Z",
+	});
+	assert.ok(result.inventory);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, labels: ["provider payload"] }).ok, false);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, evidence_refs: ["/Users/example/raw"] }).ok, false);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, providerCall: true }).ok, false);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, actualLaneLaunch: true }).ok, false);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, fallback_authority_enabled: true }).ok, false);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, guard_replacement_authority_enabled: true }).ok, false);
+	assert.equal(validateTopTierReviewBindingInventoryV1({ ...result.inventory, external_write_authority_enabled: true }).ok, false);
+});
+
+test("top tier review binding inventory records safe next actions for blocked and unavailable bindings", () => {
+	const evaluation = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache({
+			entries: [{ ...cache().entries[0], available: false, highest_tier_eligible: false }],
+		}),
+		localDate: "2026-05-21",
+		requestedProviderQualifiedModelIds: ["claude/claude-opus-4-5", "openai/gpt-5.5"],
+	});
+	const result = materializeFlowDeskTopTierReviewBindingInventorySnapshotV1({
+		predicateEvaluation: evaluation,
+		inventoryId: "inventory-4",
+		workflowId: "workflow-1",
+		planRevisionId: "plan-1",
+		createdAt: "2026-05-21T00:00:00.000Z",
+	});
+	assert.equal(result.state, "materialized", result.errors.join("; "));
+	assert.ok(result.inventory?.safe_next_actions.includes("/flowdesk-usage"));
+	assert.ok(result.inventory?.safe_next_actions.includes("/flowdesk-doctor"));
+	assert.ok(result.inventory?.safe_next_actions.includes("/flowdesk-plan"));
+	assert.ok(result.inventory?.safe_next_actions.includes("/flowdesk-status"));
 });
 
 test("availability cache blocks stale date, aliases, and lower-tier substitution", () => {

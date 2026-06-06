@@ -1472,8 +1472,13 @@ export interface FlowDeskTopTierReviewBindingInventoryV1 {
   registered_binding_refs: OpaqueRef[];
   available_binding_refs: OpaqueRef[];
   unavailable_binding_refs: OpaqueRef[];
+  included_binding_refs: OpaqueRef[];
+  excluded_binding_refs: OpaqueRef[];
   blocked_binding_refs: OpaqueRef[];
   lane_plan_refs: OpaqueRef[];
+  labels: string[];
+  blocked_labels: string[];
+  evidence_refs: OpaqueRef[];
   max_concurrent_lane_count: number;
   budget_cap_label: string;
   quota_reserve_label: string;
@@ -1482,6 +1487,12 @@ export interface FlowDeskTopTierReviewBindingInventoryV1 {
   inventory_decision: FlowDeskTopTierReviewInventoryDecision;
   safe_next_actions: SafeNextAction[];
   dispatch_authority_enabled: false;
+  providerCall: false;
+  actualLaneLaunch: false;
+  runtimeExecution: false;
+  fallback_authority_enabled: false;
+  guard_replacement_authority_enabled: false;
+  external_write_authority_enabled: false;
 }
 
 export const FLOWDESK_TOP_TIER_REVIEW_VERDICT_LABELS = ["pass", "changes_required", "blocked", "inconclusive"] as const;
