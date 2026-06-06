@@ -96,6 +96,11 @@ import {
 	planFlowDeskGitHubDryRunPublicationV1,
 	type FlowDeskGitHubDryRunPublicationPlanInputV1,
 	type FlowDeskGitHubDryRunPublicationPlanResultV1,
+	// P8-S10: federated ledger idempotency record
+	createFlowDeskFederatedLedgerIdempotencyRecordV1,
+	validateFlowDeskFederatedLedgerIdempotencyRecordV1,
+	computeFederatedLedgerEntryId,
+	type FlowDeskFederatedLedgerIdempotencyRecordV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -4427,4 +4432,605 @@ test("P8-S8 planner: raw URL in redactedContentPreview → blocked", () => {
 	);
 	assert.ok(result.blockedLabels.includes("redacted_content_preview_contains_raw_url"));
 	assert.equal(result.plan, undefined);
+});
+
+// ─── P8 full dry-run smoke: end-to-end 8-step sequence ───────────────────────
+// These smoke tests exercise planFlowDeskGitHubDryRunPublicationV1 by building
+// each of the 7 prerequisite records explicitly in order, then calling the
+// planner as the 8th step. They confirm the full pipeline composes correctly.
+
+test("P8 smoke 1: end-to-end 8-step dry-run sequence → dry_run_state=dry_run_recorded", () => {
+	// Step 1: Create publication intent
+	const intentResult = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "smoke-intent-1",
+		requestId: "smoke-request-1",
+		workflowId: "smoke-workflow-1",
+		registryRef: "registry-smoke-1",
+		ledgerEntries: [
+			createFlowDeskAdvisoryScoreLedgerEntryV1({
+				ledgerEntryId: "smoke-ledger-entry-1",
+				workflowId: "smoke-workflow-1",
+				sequence: 0,
+				recordedAt: "2026-06-07T10:00:00.000Z",
+				event: createFlowDeskWorkflowPlanProposalScoreEventV1({
+					scoreEventId: "smoke-score-event-1",
+					workflowId: "smoke-workflow-1",
+					proposalId: "smoke-proposal-1",
+					candidateRef: "smoke-candidate-1",
+					hardFiltersPassed: true,
+					advisoryScore: 80,
+					scoreReasonRef: "smoke-reason-1",
+				}),
+			}),
+		],
+		requestedAt: "2026-06-07T10:00:00.000Z",
+		federatedRegistryPublicationOptIn: true,
+		connectorGateRef: "smoke-connector-gate-ref-1",
+	});
+	assert.equal(intentResult.ok, true, `Step 1 failed: ${intentResult.errors.join("; ")}`);
+	assert.equal(intentResult.intent?.state, "blocked");
+	assert.equal(intentResult.intent?.connector_gate_satisfied, false);
+	assert.equal(intentResult.intent?.remote_write_blocked_by_default, true);
+
+	// Step 2: Create preflight
+	const preflightResult = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		preflightId: "smoke-preflight-1",
+		publicationIntentRef: "pub-intent-ref-smoke-1",
+		capabilityDescriptorRef: "cap-desc-ref-smoke-1",
+		workflowId: "smoke-workflow-1",
+		attemptId: "smoke-attempt-1",
+		registryRef: "registry-smoke-1",
+		connectorKind: "github_issue",
+		targetRef: "target-ref-smoke-1",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		redactionPolicyRef: "redaction-policy-smoke-1",
+		authScopeRef: "auth-scope-smoke-1",
+		contentFormatRef: "format-ref-smoke-1",
+		idempotencyKeyRef: "idempotency-key-smoke-1",
+		preWriteAuditRef: "pre-write-audit-smoke-1",
+		preflightState: "preflight_passed",
+		blockedLabels: [],
+		createdAt: "2026-06-07T10:00:01.000Z",
+	});
+	assert.equal(preflightResult.ok, true, `Step 2 failed: ${preflightResult.errors.join("; ")}`);
+	assert.equal(preflightResult.preflight?.preflight_state, "preflight_passed");
+	assert.equal(preflightResult.preflight?.connector_gate_satisfied, false);
+	assert.equal(preflightResult.preflight?.remote_write_blocked_by_default, true);
+
+	// Step 3: Create capability
+	const capabilityResult = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		capabilityDescriptorId: "smoke-cap-desc-1",
+		capabilityRef: "cap-ref-smoke-1",
+		connectorKind: "github_issue",
+		connectorProfileRef: "profile-ref-smoke-1",
+		registryRef: "registry-smoke-1",
+		authScopeRef: "auth-scope-smoke-1",
+		targetKind: "github_issue",
+		toolRef: "tool-ref-smoke-1",
+		capabilityState: "available",
+		contentFormatRef: "format-ref-smoke-1",
+		dryRunSupported: true,
+		discoveredAt: "2026-06-07T10:00:02.000Z",
+	});
+	assert.equal(capabilityResult.ok, true, `Step 3 failed: ${capabilityResult.errors.join("; ")}`);
+	assert.equal(capabilityResult.capability?.capability_state, "available");
+	assert.equal(capabilityResult.capability?.dry_run_supported, true);
+	assert.equal(capabilityResult.capability?.remote_write_blocked_by_default, true);
+
+	// Step 4: Run gate evaluator — MUST return gate_satisfied: false (blocked-by-default)
+	const gateResult = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "smoke-workflow-1",
+		attemptId: "smoke-attempt-1",
+		capabilityDescriptorRef: "cap-desc-ref-smoke-1",
+		intentRef: "smoke-intent-1",
+	});
+	// gate_satisfied must always be false — structural invariant
+	assert.equal(gateResult.gate_satisfied, false, "Step 4: gate_satisfied must be false (blocked-by-default invariant)");
+	assert.equal(gateResult.connector_gate_promotion_authorized, false);
+	assert.equal(gateResult.remote_write_authority_enabled, false);
+	assert.equal(gateResult.dispatch_authority_enabled, false);
+	assert.equal(gateResult.advisory_only, true);
+	assert.equal(gateResult.non_authorizing, true);
+	assert.ok(
+		gateResult.redacted_block_reasons.includes("connector_gate_promotion_not_yet_authorized"),
+		"Step 4: mandatory block reason must be present",
+	);
+	// Validator confirms the gate result is well-formed
+	assert.equal(validateFlowDeskFederatedGateEvaluationResultV1(gateResult).ok, true, "Step 4: gate result failed schema validation");
+
+	// Step 5: Create consent
+	const consentResult = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "smoke-consent-1",
+		workflowId: "smoke-workflow-1",
+		consentGrantedAt: "2026-06-07T10:00:03.000Z",
+		consentGrantedBy: "operator-config-ref-smoke-1",
+		targetRegistryRef: "registry-smoke-1",
+		revoked: false,
+		consentScope: ["publish_scores"],
+		retentionDays: 30,
+		installationIdHashRef: "hash-installation-smoke-1",
+	});
+	assert.equal(consentResult.ok, true, `Step 5 failed: ${consentResult.errors.join("; ")}`);
+	assert.equal(consentResult.record?.revoked, false);
+	assert.ok(consentResult.record?.consent_scope.includes("publish_scores"), "Step 5: publish_scores must be in consent_scope");
+
+	// Step 6: Create minimization policy
+	const minPolicyResult = createFlowDeskFederatedDataMinimizationPolicyV1({
+		policyId: "smoke-policy-1",
+		workflowId: "smoke-workflow-1",
+		kAnonymityThreshold: 10,
+		createdAt: "2026-06-07T10:00:04.000Z",
+	});
+	assert.equal(minPolicyResult.ok, true, `Step 6 failed: ${minPolicyResult.errors.join("; ")}`);
+	assert.equal(minPolicyResult.policy?.k_anonymity_threshold, 10);
+	assert.equal(minPolicyResult.policy?.strip_workflow_id, true);
+
+	// Step 7: Create canonical workflow ref
+	const canonRefResult = createFlowDeskFederatedCanonicalWorkflowRefV1({
+		canonicalRefId: "smoke-canon-ref-1",
+		sourceHashRef: "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		createdAt: "2026-06-07T10:00:05.000Z",
+	});
+	assert.equal(canonRefResult.ok, true, `Step 7 failed: ${canonRefResult.errors.join("; ")}`);
+	assert.equal(canonRefResult.canonicalRef?.reversible, false);
+	assert.equal(canonRefResult.canonicalRef?.source_workflow_id_exposed, false);
+
+	// Step 8: Run the planner — must return dry_run_state: "dry_run_recorded"
+	const planResult: FlowDeskGitHubDryRunPublicationPlanResultV1 = planFlowDeskGitHubDryRunPublicationV1({
+		intent: intentResult.intent!,
+		capability: capabilityResult.capability!,
+		preflight: preflightResult.preflight!,
+		consent: consentResult.record!,
+		minimizationPolicy: minPolicyResult.policy!,
+		canonicalRef: canonRefResult.canonicalRef!,
+		connectorKind: "github_issue",
+		redactedTargetLabel: "issue #1 in myorg/myrepo",
+		redactedContentPreview: "Smoke test score summary: dimensions scored for smoke-workflow-1",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	});
+
+	// Core assertions for the full pipeline
+	assert.equal(planResult.ok, true, `Step 8 failed: ${planResult.errors.join("; ")}`);
+	assert.ok(planResult.plan !== undefined, "Step 8: plan must be present");
+	const plan = planResult.plan!;
+
+	// Assert dry_run_state = "dry_run_recorded"
+	assert.equal(plan.dry_run_state, "dry_run_recorded", "Step 8: dry_run_state must be dry_run_recorded");
+
+	// Assert github_write_attempted=false, remote_write_attempted=false
+	assert.equal(plan.github_write_attempted, false, "Step 8: github_write_attempted must be false");
+	assert.equal(plan.remote_write_attempted, false, "Step 8: remote_write_attempted must be false");
+
+	// Assert fake_remote_write_attempted=true (dry-run simulation)
+	assert.equal(plan.fake_remote_write_attempted, true, "Step 8: fake_remote_write_attempted must be true");
+
+	// Assert all authority flags remain false
+	assert.equal(plan.remote_write_authority_enabled, false);
+	assert.equal(plan.external_write_authority_enabled, false);
+	assert.equal(plan.dispatch_authority_enabled, false);
+	assert.equal(plan.providerCall, false);
+	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(plan.runtimeExecution, false);
+	assert.equal(plan.connector_write_attempted, false);
+
+	// Confirm gate was blocked (step 4 structural assertion)
+	// The gate evaluator returned gate_satisfied=false — this is a structural invariant
+	// that cannot be changed even when all 7 prerequisite records are present.
+	assert.equal(gateResult.gate_satisfied, false, "Structural: gate must remain blocked even when planner succeeds with dry_run");
+
+	// blocked_labels on the plan must be empty for a successful dry-run
+	assert.equal(planResult.blockedLabels.length, 0, "Step 8: blockedLabels must be empty for successful dry-run");
+
+	// Final plan validates correctly as a well-formed schema record
+	const planValidation = validateFlowDeskGitHubDryRunPublicationResultV1(plan);
+	assert.equal(planValidation.ok, true, `Step 8: plan schema validation failed: ${planValidation.errors.join("; ")}`);
+});
+
+test("P8 smoke 2: gate evaluator gate_satisfied is structurally always false (even with all refs)", () => {
+	// This smoke test confirms the blocked-by-default invariant:
+	// evaluateFlowDeskFederatedRegistryConnectorGateV1 always returns gate_satisfied=false
+	// even when all possible refs are supplied — it is a diagnostic evaluator, not an authorizer.
+
+	// Run gate with NO refs (bare minimum)
+	const gateMinimal = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "smoke2-workflow-1",
+		attemptId: "smoke2-attempt-1",
+	});
+	assert.equal(gateMinimal.gate_satisfied, false, "Bare input: gate_satisfied must be false");
+	assert.equal(gateMinimal.connector_gate_promotion_authorized, false);
+	assert.equal(gateMinimal.dispatch_authority_enabled, false);
+	assert.equal(gateMinimal.remote_write_authority_enabled, false);
+
+	// Run gate with ALL optional refs present
+	const gateFull = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "smoke2-workflow-1",
+		attemptId: "smoke2-attempt-2",
+		capabilityDescriptorRef: "cap-desc-ref-smoke2-1",
+		intentRef: "intent-ref-smoke2-1",
+		threatModelDocRef: "threat-model-ref-smoke2-1",
+		privacyReviewRef: "privacy-review-ref-smoke2-1",
+		securityAuditRef: "security-audit-ref-smoke2-1",
+	});
+	// Still always false — structural, not input-dependent
+	assert.equal(gateFull.gate_satisfied, false, "Full input: gate_satisfied must be false (structural invariant)");
+	assert.equal(gateFull.connector_gate_promotion_authorized, false);
+	assert.equal(gateFull.dispatch_authority_enabled, false);
+	assert.equal(gateFull.remote_write_authority_enabled, false);
+	assert.equal(gateFull.advisory_only, true);
+	assert.equal(gateFull.non_authorizing, true);
+
+	// The mandatory block reason must always be present regardless of input
+	assert.ok(
+		gateMinimal.redacted_block_reasons.includes("connector_gate_promotion_not_yet_authorized"),
+		"Minimal: mandatory block reason must always be present",
+	);
+	assert.ok(
+		gateFull.redacted_block_reasons.includes("connector_gate_promotion_not_yet_authorized"),
+		"Full: mandatory block reason must always be present",
+	);
+
+	// The mandatory missing evidence label must always be present
+	assert.ok(
+		gateMinimal.missing_evidence_labels.includes("flowdesk.federated_registry_connector_capability.v1"),
+		"Minimal: capability missing_evidence_label must always be present",
+	);
+	assert.ok(
+		gateFull.missing_evidence_labels.includes("flowdesk.federated_registry_connector_capability.v1"),
+		"Full: capability missing_evidence_label must always be present",
+	);
+
+	// privacy_review_evidence_missing absent when privacyReviewRef is supplied
+	assert.ok(
+		!gateFull.redacted_block_reasons.includes("privacy_review_evidence_missing"),
+		"Full: privacy_review_evidence_missing must not appear when privacyReviewRef present",
+	);
+
+	// security_audit_evidence_missing absent when securityAuditRef is supplied
+	assert.ok(
+		!gateFull.redacted_block_reasons.includes("security_audit_evidence_missing"),
+		"Full: security_audit_evidence_missing must not appear when securityAuditRef present",
+	);
+
+	// Attempt to smuggle gate_satisfied=true via validator — must be rejected
+	const smuggledGate = validateFlowDeskFederatedGateEvaluationResultV1({
+		...gateFull,
+		gate_satisfied: true,
+	});
+	assert.equal(smuggledGate.ok, false, "Authority smuggling gate_satisfied=true must be rejected by validator");
+	assert.ok(
+		smuggledGate.errors.some((e: string) => /gate_satisfied.*false|authority smuggling/i.test(e)),
+		`Expected gate_satisfied authority error, got: ${smuggledGate.errors.join("; ")}`,
+	);
+
+	// Both gate results validate as well-formed
+	assert.equal(validateFlowDeskFederatedGateEvaluationResultV1(gateMinimal).ok, true, "Minimal gate result must validate");
+	assert.equal(validateFlowDeskFederatedGateEvaluationResultV1(gateFull).ok, true, "Full gate result must validate");
+});
+
+test("P8 smoke 3: consent revoked → planFlowDeskGitHubDryRunPublicationV1 returns ok=false with consent_revoked in errors (full 8-step)", () => {
+	// Build all 7 prerequisite records as before (steps 1-7)
+
+	// Step 1: intent
+	const intentResult = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "smoke3-intent-1",
+		requestId: "smoke3-request-1",
+		workflowId: "smoke3-workflow-1",
+		registryRef: "registry-smoke3-1",
+		ledgerEntries: [
+			createFlowDeskAdvisoryScoreLedgerEntryV1({
+				ledgerEntryId: "smoke3-ledger-entry-1",
+				workflowId: "smoke3-workflow-1",
+				sequence: 0,
+				recordedAt: "2026-06-07T11:00:00.000Z",
+				event: createFlowDeskWorkflowPlanProposalScoreEventV1({
+					scoreEventId: "smoke3-score-event-1",
+					workflowId: "smoke3-workflow-1",
+					proposalId: "smoke3-proposal-1",
+					candidateRef: "smoke3-candidate-1",
+					hardFiltersPassed: true,
+					advisoryScore: 77,
+					scoreReasonRef: "smoke3-reason-1",
+				}),
+			}),
+		],
+		requestedAt: "2026-06-07T11:00:00.000Z",
+		federatedRegistryPublicationOptIn: true,
+	});
+	assert.equal(intentResult.ok, true, `Smoke3 Step 1 failed: ${intentResult.errors.join("; ")}`);
+
+	// Step 2: preflight
+	const preflightResult = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		preflightId: "smoke3-preflight-1",
+		publicationIntentRef: "pub-intent-ref-smoke3-1",
+		capabilityDescriptorRef: "cap-desc-ref-smoke3-1",
+		workflowId: "smoke3-workflow-1",
+		attemptId: "smoke3-attempt-1",
+		registryRef: "registry-smoke3-1",
+		connectorKind: "github_pr_comment",
+		targetRef: "target-ref-smoke3-1",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		redactionPolicyRef: "redaction-policy-smoke3-1",
+		authScopeRef: "auth-scope-smoke3-1",
+		contentFormatRef: "format-ref-smoke3-1",
+		idempotencyKeyRef: "idempotency-key-smoke3-1",
+		preWriteAuditRef: "pre-write-audit-smoke3-1",
+		preflightState: "preflight_passed",
+		blockedLabels: [],
+		createdAt: "2026-06-07T11:00:01.000Z",
+	});
+	assert.equal(preflightResult.ok, true, `Smoke3 Step 2 failed: ${preflightResult.errors.join("; ")}`);
+
+	// Step 3: capability
+	const capabilityResult = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		capabilityDescriptorId: "smoke3-cap-desc-1",
+		capabilityRef: "cap-ref-smoke3-1",
+		connectorKind: "github_pr_comment",
+		connectorProfileRef: "profile-ref-smoke3-1",
+		registryRef: "registry-smoke3-1",
+		authScopeRef: "auth-scope-smoke3-1",
+		targetKind: "github_pr_comment",
+		toolRef: "tool-ref-smoke3-1",
+		capabilityState: "available",
+		contentFormatRef: "format-ref-smoke3-1",
+		dryRunSupported: true,
+		discoveredAt: "2026-06-07T11:00:02.000Z",
+	});
+	assert.equal(capabilityResult.ok, true, `Smoke3 Step 3 failed: ${capabilityResult.errors.join("; ")}`);
+
+	// Step 4: run gate evaluator — structural invariant: gate_satisfied is always false
+	const gateResult = evaluateFlowDeskFederatedRegistryConnectorGateV1({
+		workflowId: "smoke3-workflow-1",
+		attemptId: "smoke3-attempt-1",
+		capabilityDescriptorRef: "cap-desc-ref-smoke3-1",
+	});
+	assert.equal(gateResult.gate_satisfied, false, "Smoke3 Step 4: gate_satisfied must be false (blocked-by-default invariant)");
+
+	// Step 5: REVOKED consent — the key difference in this smoke test
+	const revokedConsentResult = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "smoke3-consent-revoked-1",
+		workflowId: "smoke3-workflow-1",
+		consentGrantedAt: "2026-06-07T11:00:03.000Z",
+		consentGrantedBy: "operator-config-ref-smoke3-1",
+		targetRegistryRef: "registry-smoke3-1",
+		revoked: true,
+		revokedAt: "2026-06-07T12:00:00.000Z",
+		consentScope: ["publish_scores"],
+		retentionDays: 30,
+		installationIdHashRef: "hash-installation-smoke3-1",
+	});
+	assert.equal(revokedConsentResult.ok, true, `Smoke3 Step 5 failed: ${revokedConsentResult.errors.join("; ")}`);
+	assert.equal(revokedConsentResult.record?.revoked, true, "Smoke3 Step 5: consent must be marked revoked");
+
+	// Step 6: minimization policy
+	const minPolicyResult = createFlowDeskFederatedDataMinimizationPolicyV1({
+		policyId: "smoke3-policy-1",
+		workflowId: "smoke3-workflow-1",
+		kAnonymityThreshold: 15,
+		createdAt: "2026-06-07T11:00:04.000Z",
+	});
+	assert.equal(minPolicyResult.ok, true, `Smoke3 Step 6 failed: ${minPolicyResult.errors.join("; ")}`);
+
+	// Step 7: canonical workflow ref
+	const canonRefResult = createFlowDeskFederatedCanonicalWorkflowRefV1({
+		canonicalRefId: "smoke3-canon-ref-1",
+		sourceHashRef: "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		createdAt: "2026-06-07T11:00:05.000Z",
+	});
+	assert.equal(canonRefResult.ok, true, `Smoke3 Step 7 failed: ${canonRefResult.errors.join("; ")}`);
+
+	// Step 8: planFlowDeskGitHubDryRunPublicationV1 — must return ok=false with "consent_revoked"
+	const planResult: FlowDeskGitHubDryRunPublicationPlanResultV1 = planFlowDeskGitHubDryRunPublicationV1({
+		intent: intentResult.intent!,
+		capability: capabilityResult.capability!,
+		preflight: preflightResult.preflight!,
+		consent: revokedConsentResult.record!,  // REVOKED consent
+		minimizationPolicy: minPolicyResult.policy!,
+		canonicalRef: canonRefResult.canonicalRef!,
+		connectorKind: "github_pr_comment",
+		redactedTargetLabel: "PR #99 in myorg/myrepo",
+		redactedContentPreview: "Smoke3 test score summary: revoked consent test",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	});
+
+	// The planner must return ok=false because consent is revoked
+	assert.equal(planResult.ok, false, "Smoke3 Step 8: planner must return ok=false for revoked consent");
+	assert.ok(
+		planResult.errors.includes("consent_revoked"),
+		`Smoke3 Step 8: errors must include "consent_revoked", got: ${planResult.errors.join("; ")}`,
+	);
+	assert.ok(
+		planResult.blockedLabels.includes("consent_revoked"),
+		`Smoke3 Step 8: blockedLabels must include "consent_revoked", got: ${planResult.blockedLabels.join("; ")}`,
+	);
+	// No plan must be produced when blocked
+	assert.equal(planResult.plan, undefined, "Smoke3 Step 8: plan must be undefined when blocked by revoked consent");
+});
+
+// ─── P8-S10: Federated Ledger Idempotency Record tests ──────────────────────
+
+test("P8-S10 federated ledger idempotency: same inputs produce same ledger_entry_id (determinism)", () => {
+	const canonicalRef = "hash-canonical-workflow-ref-abc123";
+	const scoredAtDay = "2026-06-07";
+	const installationHashRef = "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+
+	const r1 = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-record-1a",
+		canonicalWorkflowRef: canonicalRef,
+		scoredAtDay,
+		installationIdHashRef: installationHashRef,
+		idempotencyWindowDays: 7,
+		createdAt: "2026-06-07T10:00:00.000Z",
+	});
+	const r2 = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-record-1b",
+		canonicalWorkflowRef: canonicalRef,
+		scoredAtDay,
+		installationIdHashRef: installationHashRef,
+		idempotencyWindowDays: 7,
+		createdAt: "2026-06-07T12:00:00.000Z", // different timestamp — must NOT affect ledger_entry_id
+	});
+
+	assert.equal(r1.ok, true, r1.errors.join("; "));
+	assert.equal(r2.ok, true, r2.errors.join("; "));
+	// Determinism: same canonical_workflow_ref + scored_at_day → same ledger_entry_id
+	assert.equal(r1.record!.ledger_entry_id, r2.record!.ledger_entry_id);
+	// Both must start with "ledger-entry-"
+	assert.ok(r1.record!.ledger_entry_id.startsWith("ledger-entry-"), `ledger_entry_id must start with "ledger-entry-"`);
+	// Total length <= 64
+	assert.ok(r1.record!.ledger_entry_id.length <= 64, `ledger_entry_id must be <= 64 chars, got ${r1.record!.ledger_entry_id.length}`);
+	// Structure checks
+	assert.equal(r1.record!.schema_version, "flowdesk.federated_ledger_idempotency.v1");
+	assert.equal(r1.record!.deduplication_scope, "global");
+	assert.equal(r1.record!.advisory_only, true);
+	assert.equal(r1.record!.non_authorizing, true);
+	assert.equal(r1.record!.remote_write_authority_enabled, false);
+	assert.equal(r1.record!.dispatch_authority_enabled, false);
+	// Validator round-trip
+	assert.equal(validateFlowDeskFederatedLedgerIdempotencyRecordV1(r1.record).ok, true);
+});
+
+test("P8-S10 federated ledger idempotency: different canonical refs produce different ledger_entry_ids", () => {
+	const day = "2026-06-07";
+	const installationHashRef = "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+
+	const refA = "hash-canonical-workflow-ref-aaa111";
+	const refB = "hash-canonical-workflow-ref-bbb222";
+
+	const idA = computeFederatedLedgerEntryId(refA, day);
+	const idB = computeFederatedLedgerEntryId(refB, day);
+
+	// Different canonical_workflow_ref → different ledger_entry_id
+	assert.notEqual(idA, idB, "Different canonical_workflow_ref must produce different ledger_entry_id");
+
+	// Also verify through creator
+	const ra = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-record-diff-a",
+		canonicalWorkflowRef: refA,
+		scoredAtDay: day,
+		installationIdHashRef: installationHashRef,
+		idempotencyWindowDays: 1,
+		createdAt: "2026-06-07T10:00:00.000Z",
+	});
+	const rb = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-record-diff-b",
+		canonicalWorkflowRef: refB,
+		scoredAtDay: day,
+		installationIdHashRef: installationHashRef,
+		idempotencyWindowDays: 1,
+		createdAt: "2026-06-07T10:00:00.000Z",
+	});
+	assert.equal(ra.ok, true, ra.errors.join("; "));
+	assert.equal(rb.ok, true, rb.errors.join("; "));
+	assert.notEqual(ra.record!.ledger_entry_id, rb.record!.ledger_entry_id);
+});
+
+test("P8-S10 federated ledger idempotency: same inputs on same day produce same ledger_entry_id (cross-installation idempotency)", () => {
+	// Simulates two different installations generating the same idempotency record
+	// for the same canonical_workflow_ref + scored_at_day pair
+	const canonicalRef = "hash-canonical-workflow-ref-shared-workflow";
+	const day = "2026-06-07";
+
+	// Installation A
+	const installationHashA = "sha256-aaaa1234567890abcdef1234567890abcdef1234567890abcdef1234567890aa";
+	const rA = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-install-a-1",
+		canonicalWorkflowRef: canonicalRef,
+		scoredAtDay: day,
+		installationIdHashRef: installationHashA,
+		idempotencyWindowDays: 14,
+		createdAt: "2026-06-07T08:00:00.000Z",
+	});
+
+	// Installation B — different installation_id_hash_ref, but same canonical_workflow_ref + day
+	const installationHashB = "sha256-bbbb1234567890abcdef1234567890abcdef1234567890abcdef1234567890bb";
+	const rB = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-install-b-1",
+		canonicalWorkflowRef: canonicalRef,
+		scoredAtDay: day,
+		installationIdHashRef: installationHashB,
+		idempotencyWindowDays: 14,
+		createdAt: "2026-06-07T09:00:00.000Z",
+	});
+
+	assert.equal(rA.ok, true, rA.errors.join("; "));
+	assert.equal(rB.ok, true, rB.errors.join("; "));
+	// Both installations must produce the same ledger_entry_id for the same canonical ref + day
+	// (ledger_entry_id is NOT installation-specific — it depends only on canonical_workflow_ref + scored_at_day)
+	assert.equal(rA.record!.ledger_entry_id, rB.record!.ledger_entry_id,
+		"Same canonical_workflow_ref + scored_at_day must produce same ledger_entry_id regardless of installation");
+	// Different idempotency_record_id values are allowed (these are per-record, not per-dedup key)
+	assert.notEqual(rA.record!.idempotency_record_id, rB.record!.idempotency_record_id);
+	// Both validate
+	assert.equal(validateFlowDeskFederatedLedgerIdempotencyRecordV1(rA.record).ok, true);
+	assert.equal(validateFlowDeskFederatedLedgerIdempotencyRecordV1(rB.record).ok, true);
+});
+
+test("P8-S10 federated ledger idempotency: idempotency_window_days out of range (0, 31) rejected", () => {
+	const base = {
+		idempotencyRecordId: "idem-range-test-1",
+		canonicalWorkflowRef: "hash-canonical-range-test",
+		scoredAtDay: "2026-06-07",
+		installationIdHashRef: "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		createdAt: "2026-06-07T10:00:00.000Z",
+	};
+
+	// 0 → too low
+	const tooLow = createFlowDeskFederatedLedgerIdempotencyRecordV1({ ...base, idempotencyWindowDays: 0 });
+	assert.equal(tooLow.ok, false, "idempotency_window_days=0 must be rejected");
+	assert.match(tooLow.errors.join("; "), /idempotency_window_days.*1\.\.30/);
+
+	// 31 → too high
+	const tooHigh = createFlowDeskFederatedLedgerIdempotencyRecordV1({ ...base, idempotencyWindowDays: 31 });
+	assert.equal(tooHigh.ok, false, "idempotency_window_days=31 must be rejected");
+	assert.match(tooHigh.errors.join("; "), /idempotency_window_days.*1\.\.30/);
+
+	// Boundary checks: 1 and 30 must be accepted
+	const minBound = createFlowDeskFederatedLedgerIdempotencyRecordV1({ ...base, idempotencyRecordId: "idem-range-min", idempotencyWindowDays: 1 });
+	assert.equal(minBound.ok, true, `idempotency_window_days=1 must be valid: ${minBound.errors.join("; ")}`);
+	const maxBound = createFlowDeskFederatedLedgerIdempotencyRecordV1({ ...base, idempotencyRecordId: "idem-range-max", idempotencyWindowDays: 30 });
+	assert.equal(maxBound.ok, true, `idempotency_window_days=30 must be valid: ${maxBound.errors.join("; ")}`);
+
+	// Validator also rejects out-of-range
+	const validRecord = minBound.record as FlowDeskFederatedLedgerIdempotencyRecordV1;
+	const validatorReject = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...validRecord, idempotency_window_days: 0 });
+	assert.equal(validatorReject.ok, false);
+	assert.match(validatorReject.errors.join("; "), /idempotency_window_days.*1\.\.30/);
+});
+
+test("P8-S10 federated ledger idempotency: authority smuggling rejected (closed schema)", () => {
+	const result = createFlowDeskFederatedLedgerIdempotencyRecordV1({
+		idempotencyRecordId: "idem-auth-test-1",
+		canonicalWorkflowRef: "hash-canonical-auth-test",
+		scoredAtDay: "2026-06-07",
+		installationIdHashRef: "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		idempotencyWindowDays: 5,
+		createdAt: "2026-06-07T10:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const record = result.record as FlowDeskFederatedLedgerIdempotencyRecordV1;
+
+	// dispatch_authority_enabled smuggling
+	const forgedDispatch = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...record, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled.*false|authority smuggling/);
+
+	// remote_write_authority_enabled smuggling
+	const forgedRemote = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...record, remote_write_authority_enabled: true });
+	assert.equal(forgedRemote.ok, false);
+	assert.match(forgedRemote.errors.join("; "), /remote_write_authority_enabled.*false|authority smuggling/);
+
+	// non_authorizing stripped
+	const strippedNonAuth = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...record, non_authorizing: false as true });
+	assert.equal(strippedNonAuth.ok, false);
+	assert.match(strippedNonAuth.errors.join("; "), /non_authorizing.*true/);
+
+	// deduplication_scope spoofed to non-global
+	const badScope = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...record, deduplication_scope: "local" as "global" });
+	assert.equal(badScope.ok, false);
+	assert.match(badScope.errors.join("; "), /deduplication_scope.*global|authority smuggling/);
+
+	// Unknown property injection (closed schema)
+	const unknownProp = validateFlowDeskFederatedLedgerIdempotencyRecordV1({ ...record, providerCall: true });
+	assert.equal(unknownProp.ok, false);
+	assert.match(unknownProp.errors.join("; "), /unknown properties/);
 });
