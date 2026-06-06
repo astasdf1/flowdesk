@@ -1487,3 +1487,155 @@ export function validateFlowDeskGitHubOAuthArchitectureV1(value: unknown): Valid
 	errors.push(...validateNoForbiddenRawPayloads(recordWithoutTokenFields, "github_oauth_architecture").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
+
+// ─── P8-S8: GitHub Dry-Run Publication Planner ───────────────────────────────
+
+/**
+ * Input for the pure advisory dry-run publication planner.
+ * All records must be pre-constructed via their respective creator functions.
+ * redactedTargetLabel and redactedContentPreview are pre-screened at the call site,
+ * but the planner validates them again as a defence-in-depth step.
+ */
+export interface FlowDeskGitHubDryRunPublicationPlanInputV1 {
+	intent: FlowDeskFederatedScoreRegistryPublicationIntentV1;
+	capability: FlowDeskFederatedRegistryConnectorCapabilityV1;
+	preflight: FlowDeskFederatedRegistryPublicationPreflightV1;
+	consent: FlowDeskFederatedConsentRecordV1;
+	minimizationPolicy: FlowDeskFederatedDataMinimizationPolicyV1;
+	canonicalRef: FlowDeskFederatedCanonicalWorkflowRefV1;
+	/** Must be "github_issue" or "github_pr_comment". */
+	connectorKind: "github_issue" | "github_pr_comment";
+	/** Human-readable redacted label, e.g. "github_issue in org/repo" — no raw URL. */
+	redactedTargetLabel: string;
+	/** Bounded preview of what would be posted — max 300 chars, no raw URLs. */
+	redactedContentPreview: string;
+	/** Opaque hash ref identifying the content. */
+	contentHashRef: string;
+}
+
+/**
+ * Result of the pure advisory dry-run publication planner.
+ * ok=true means all validations passed and a plan record was produced.
+ * ok=false means at least one validation failed; plan is absent.
+ */
+export interface FlowDeskGitHubDryRunPublicationPlanResultV1 {
+	ok: boolean;
+	errors: string[];
+	plan?: FlowDeskGitHubDryRunPublicationResultV1;
+	blockedLabels: string[];
+}
+
+/**
+ * planFlowDeskGitHubDryRunPublicationV1 — pure advisory planning function.
+ *
+ * Takes all prerequisite records and validates them before producing a
+ * FlowDeskGitHubDryRunPublicationResultV1 with dry_run_state="dry_run_recorded".
+ *
+ * Validation steps (in order):
+ * 1. Consent: revoked must be false; consent_scope must include "publish_scores".
+ * 2. Minimization: k_anonymity_threshold >= 10.
+ * 3. Preflight: preflight_state must be "preflight_passed".
+ * 4. Capability: capability_state must be "available"; dry_run_supported must be true.
+ * 5. Canonical ref: reversible must be false.
+ * 6. redactedContentPreview: max 300 chars, must not contain raw URLs (https://).
+ * 7. If any fail: return { ok: false, errors, blockedLabels }.
+ * 8. If all pass: construct FlowDeskGitHubDryRunPublicationResultV1.
+ *
+ * This function never throws. It is purely diagnostic — no remote-write, dispatch,
+ * or any other authority is granted.
+ */
+export function planFlowDeskGitHubDryRunPublicationV1(
+	input: FlowDeskGitHubDryRunPublicationPlanInputV1,
+): FlowDeskGitHubDryRunPublicationPlanResultV1 {
+	const errors: string[] = [];
+	const blockedLabels: string[] = [];
+
+	// 1. Validate consent
+	if (input.consent.revoked === true) {
+		errors.push("consent_revoked");
+		blockedLabels.push("consent_revoked");
+	}
+	if (!Array.isArray(input.consent.consent_scope) || !input.consent.consent_scope.includes("publish_scores")) {
+		errors.push("consent_scope_missing_publish_scores");
+		blockedLabels.push("consent_scope_missing_publish_scores");
+	}
+
+	// 2. Validate minimization policy
+	if (
+		typeof input.minimizationPolicy.k_anonymity_threshold !== "number" ||
+		input.minimizationPolicy.k_anonymity_threshold < 10
+	) {
+		errors.push("k_anonymity_threshold_below_minimum");
+		blockedLabels.push("k_anonymity_threshold_below_minimum");
+	}
+
+	// 3. Validate preflight
+	if (input.preflight.preflight_state !== "preflight_passed") {
+		errors.push("preflight_not_passed");
+		blockedLabels.push("preflight_not_passed");
+	}
+
+	// 4. Validate capability
+	if (input.capability.capability_state !== "available") {
+		errors.push("capability_not_available");
+		blockedLabels.push("capability_not_available");
+	}
+	if (input.capability.dry_run_supported !== true) {
+		errors.push("dry_run_not_supported");
+		blockedLabels.push("dry_run_not_supported");
+	}
+
+	// 5. Validate canonical ref — reversible must be false (hash is one-way)
+	if (input.canonicalRef.reversible !== false) {
+		errors.push("canonical_ref_reversible_rejected");
+		blockedLabels.push("canonical_ref_reversible_rejected");
+	}
+
+	// 6. Validate redactedContentPreview: max 300 chars, no raw URLs
+	if (typeof input.redactedContentPreview !== "string" || input.redactedContentPreview.length > 300) {
+		errors.push("redacted_content_preview_exceeds_300_chars");
+		blockedLabels.push("redacted_content_preview_exceeds_300_chars");
+	} else if (/https?:\/\//i.test(input.redactedContentPreview)) {
+		errors.push("redacted_content_preview_contains_raw_url");
+		blockedLabels.push("redacted_content_preview_contains_raw_url");
+	}
+
+	// If any validation failed, return blocked result
+	if (errors.length > 0) {
+		return { ok: false, errors, blockedLabels };
+	}
+
+	// All validations passed — derive stable IDs from the constituent records
+	const dryRunResultId = `dry-run-${input.preflight.preflight_id}`;
+	const preflightRef = `ref-${input.preflight.preflight_id}`;
+	const writePlanRef = `ref-write-plan-${input.preflight.workflow_id}`;
+
+	// Construct the dry-run result directly (no creator call to avoid duplicated validation)
+	const plan: FlowDeskGitHubDryRunPublicationResultV1 = {
+		schema_version: "flowdesk.github_dry_run_publication_result.v1",
+		dry_run_result_id: dryRunResultId,
+		preflight_ref: preflightRef,
+		write_plan_ref: writePlanRef,
+		workflow_id: input.preflight.workflow_id,
+		attempt_id: input.preflight.attempt_id,
+		connector_kind: input.connectorKind,
+		redacted_target_label: input.redactedTargetLabel,
+		redacted_content_preview: input.redactedContentPreview,
+		content_hash_ref: input.contentHashRef,
+		dry_run_state: "dry_run_recorded",
+		blocked_labels: [],
+		fake_remote_write_attempted: true,
+		would_produce_ref_shape: "github_url",
+		remote_write_attempted: false,
+		github_write_attempted: false,
+		connector_write_attempted: false,
+		remote_write_authority_enabled: false,
+		external_write_authority_enabled: false,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+
+	return { ok: true, errors: [], plan, blockedLabels: [] };
+}

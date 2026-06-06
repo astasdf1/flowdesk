@@ -92,6 +92,10 @@ import {
 	createFlowDeskFederatedCanonicalWorkflowRefV1,
 	validateFlowDeskFederatedCanonicalWorkflowRefV1,
 	type FlowDeskFederatedCanonicalWorkflowRefV1,
+	// P8-S8: GitHub dry-run publication planner
+	planFlowDeskGitHubDryRunPublicationV1,
+	type FlowDeskGitHubDryRunPublicationPlanInputV1,
+	type FlowDeskGitHubDryRunPublicationPlanResultV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -4191,4 +4195,236 @@ test("P8-S7 canonical workflow ref: authority smuggling and unknown properties r
 	// Non-object input
 	assert.equal(validateFlowDeskFederatedCanonicalWorkflowRefV1(null).ok, false);
 	assert.equal(validateFlowDeskFederatedCanonicalWorkflowRefV1(42).ok, false);
+});
+
+// ─── P8-S8: planFlowDeskGitHubDryRunPublicationV1 tests ───────────────────────
+
+// Helper: build a complete set of valid prerequisite records for the planner.
+// Uses "workflow-1" throughout to match the existing scoreEvent()/ledgerEntry() helpers.
+function buildValidPlannerInput(): FlowDeskGitHubDryRunPublicationPlanInputV1 {
+	const intentResult = createFlowDeskFederatedScoreRegistryPublicationIntentV1({
+		publicationIntentId: "planner-intent-1",
+		requestId: "planner-request-1",
+		workflowId: "workflow-1",
+		registryRef: "registry-planner-1",
+		ledgerEntries: [ledgerEntry()],
+		requestedAt: "2026-06-07T00:00:00.000Z",
+		federatedRegistryPublicationOptIn: true,
+	});
+	assert.equal(intentResult.ok, true, (intentResult.errors ?? []).join("; "));
+
+	const capabilityResult = createFlowDeskFederatedRegistryConnectorCapabilityV1({
+		capabilityDescriptorId: "planner-cap-1",
+		capabilityRef: "cap-ref-planner-1",
+		connectorKind: "github_issue",
+		connectorProfileRef: "profile-ref-planner-1",
+		registryRef: "registry-planner-1",
+		authScopeRef: "auth-scope-planner-1",
+		targetKind: "github_issue",
+		toolRef: "tool-ref-planner-1",
+		capabilityState: "available",
+		contentFormatRef: "format-ref-planner-1",
+		dryRunSupported: true,
+		discoveredAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(capabilityResult.ok, true, capabilityResult.errors.join("; "));
+
+	const preflightResult = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		preflightId: "planner-preflight-1",
+		publicationIntentRef: "pub-intent-ref-planner-1",
+		capabilityDescriptorRef: "cap-desc-ref-planner-1",
+		workflowId: "workflow-1",
+		attemptId: "planner-attempt-1",
+		registryRef: "registry-planner-1",
+		connectorKind: "github_issue",
+		targetRef: "target-ref-planner-1",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		redactionPolicyRef: "redaction-policy-planner-1",
+		authScopeRef: "auth-scope-planner-1",
+		contentFormatRef: "format-ref-planner-1",
+		idempotencyKeyRef: "idempotency-key-planner-1",
+		preWriteAuditRef: "pre-write-audit-planner-1",
+		preflightState: "preflight_passed",
+		blockedLabels: [],
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(preflightResult.ok, true, preflightResult.errors.join("; "));
+
+	const consentResult = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "planner-consent-1",
+		workflowId: "workflow-1",
+		consentGrantedAt: "2026-06-07T00:00:00.000Z",
+		consentGrantedBy: "operator-config-ref-planner-1",
+		targetRegistryRef: "registry-planner-1",
+		revoked: false,
+		consentScope: ["publish_scores"],
+		retentionDays: 30,
+		installationIdHashRef: "hash-installation-planner-1",
+	});
+	assert.equal(consentResult.ok, true, consentResult.errors.join("; "));
+
+	const minPolicyResult = createFlowDeskFederatedDataMinimizationPolicyV1({
+		policyId: "planner-policy-1",
+		workflowId: "workflow-1",
+		kAnonymityThreshold: 10,
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(minPolicyResult.ok, true, minPolicyResult.errors.join("; "));
+
+	const canonRefResult = createFlowDeskFederatedCanonicalWorkflowRefV1({
+		canonicalRefId: "planner-canon-ref-1",
+		sourceHashRef: "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(canonRefResult.ok, true, canonRefResult.errors.join("; "));
+
+	return {
+		intent: intentResult.intent!,
+		capability: capabilityResult.capability!,
+		preflight: preflightResult.preflight!,
+		consent: consentResult.record!,
+		minimizationPolicy: minPolicyResult.policy!,
+		canonicalRef: canonRefResult.canonicalRef!,
+		connectorKind: "github_issue",
+		redactedTargetLabel: "github_issue in myorg/myrepo",
+		redactedContentPreview: "Score summary: dimension_a=75, dimension_b=50",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	};
+}
+
+test("P8-S8 planner: full happy-path dry-run → dry_run_state=dry_run_recorded", () => {
+	const input = buildValidPlannerInput();
+	const result: FlowDeskGitHubDryRunPublicationPlanResultV1 = planFlowDeskGitHubDryRunPublicationV1(input);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.plan !== undefined);
+	const plan = result.plan!;
+	assert.equal(plan.dry_run_state, "dry_run_recorded");
+	assert.equal(plan.fake_remote_write_attempted, true);
+	assert.equal(plan.connector_kind, "github_issue");
+	assert.equal(plan.redacted_target_label, "github_issue in myorg/myrepo");
+	assert.equal(plan.redacted_content_preview, "Score summary: dimension_a=75, dimension_b=50");
+	// All authority flags must be false
+	assert.equal(plan.remote_write_attempted, false);
+	assert.equal(plan.github_write_attempted, false);
+	assert.equal(plan.remote_write_authority_enabled, false);
+	assert.equal(plan.external_write_authority_enabled, false);
+	assert.equal(plan.dispatch_authority_enabled, false);
+	assert.equal(plan.providerCall, false);
+	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(plan.runtimeExecution, false);
+	// blocked_labels must be empty
+	assert.equal(result.blockedLabels.length, 0);
+	// Plan record validates correctly
+	const validation = validateFlowDeskGitHubDryRunPublicationResultV1(plan);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S8 planner: revoked consent → blocked, errors include consent_revoked", () => {
+	const input = buildValidPlannerInput();
+	// Override with a revoked consent record
+	const revokedConsentResult = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "planner-consent-revoked-1",
+		workflowId: "workflow-1",
+		consentGrantedAt: "2026-06-07T00:00:00.000Z",
+		consentGrantedBy: "operator-config-ref-planner-1",
+		targetRegistryRef: "registry-planner-1",
+		revoked: true,
+		revokedAt: "2026-06-07T01:00:00.000Z",
+		consentScope: ["publish_scores"],
+		retentionDays: 30,
+		installationIdHashRef: "hash-installation-planner-2",
+	});
+	assert.equal(revokedConsentResult.ok, true, revokedConsentResult.errors.join("; "));
+
+	const result = planFlowDeskGitHubDryRunPublicationV1({
+		...input,
+		consent: revokedConsentResult.record!,
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.includes("consent_revoked"), `Expected consent_revoked in errors: ${result.errors.join("; ")}`);
+	assert.ok(result.blockedLabels.includes("consent_revoked"));
+	assert.equal(result.plan, undefined);
+});
+
+test("P8-S8 planner: consent missing publish_scores scope → blocked", () => {
+	const input = buildValidPlannerInput();
+	// Override with consent that only has read_scores, not publish_scores
+	const readOnlyConsentResult = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "planner-consent-readonly-1",
+		workflowId: "workflow-1",
+		consentGrantedAt: "2026-06-07T00:00:00.000Z",
+		consentGrantedBy: "operator-config-ref-planner-1",
+		targetRegistryRef: "registry-planner-1",
+		revoked: false,
+		consentScope: ["read_scores"],
+		retentionDays: 30,
+		installationIdHashRef: "hash-installation-planner-3",
+	});
+	assert.equal(readOnlyConsentResult.ok, true, readOnlyConsentResult.errors.join("; "));
+
+	const result = planFlowDeskGitHubDryRunPublicationV1({
+		...input,
+		consent: readOnlyConsentResult.record!,
+	});
+	assert.equal(result.ok, false);
+	assert.ok(
+		result.errors.includes("consent_scope_missing_publish_scores"),
+		`Expected consent_scope_missing_publish_scores in errors: ${result.errors.join("; ")}`,
+	);
+	assert.ok(result.blockedLabels.includes("consent_scope_missing_publish_scores"));
+	assert.equal(result.plan, undefined);
+});
+
+test("P8-S8 planner: preflight not passed → blocked", () => {
+	const input = buildValidPlannerInput();
+	// Override with a blocked preflight
+	const blockedPreflightResult = createFlowDeskFederatedRegistryPublicationPreflightV1({
+		preflightId: "planner-preflight-blocked-1",
+		publicationIntentRef: "pub-intent-ref-planner-1",
+		capabilityDescriptorRef: "cap-desc-ref-planner-1",
+		workflowId: "workflow-1",
+		attemptId: "planner-attempt-1",
+		registryRef: "registry-planner-1",
+		connectorKind: "github_issue",
+		targetRef: "target-ref-planner-1",
+		contentHashRef: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		redactionPolicyRef: "redaction-policy-planner-1",
+		authScopeRef: "auth-scope-planner-1",
+		contentFormatRef: "format-ref-planner-1",
+		idempotencyKeyRef: "idempotency-key-planner-1",
+		preWriteAuditRef: "pre-write-audit-planner-1",
+		preflightState: "blocked",
+		blockedLabels: ["connector-gate-not-satisfied"],
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(blockedPreflightResult.ok, true, blockedPreflightResult.errors.join("; "));
+
+	const result = planFlowDeskGitHubDryRunPublicationV1({
+		...input,
+		preflight: blockedPreflightResult.preflight!,
+	});
+	assert.equal(result.ok, false);
+	assert.ok(
+		result.errors.includes("preflight_not_passed"),
+		`Expected preflight_not_passed in errors: ${result.errors.join("; ")}`,
+	);
+	assert.ok(result.blockedLabels.includes("preflight_not_passed"));
+	assert.equal(result.plan, undefined);
+});
+
+test("P8-S8 planner: raw URL in redactedContentPreview → blocked", () => {
+	const input = buildValidPlannerInput();
+
+	// Override with a content preview containing a raw URL
+	const result = planFlowDeskGitHubDryRunPublicationV1({
+		...input,
+		redactedContentPreview: "See details at https://github.com/org/repo/issues/42 for more info",
+	});
+	assert.equal(result.ok, false);
+	assert.ok(
+		result.errors.includes("redacted_content_preview_contains_raw_url"),
+		`Expected redacted_content_preview_contains_raw_url in errors: ${result.errors.join("; ")}`,
+	);
+	assert.ok(result.blockedLabels.includes("redacted_content_preview_contains_raw_url"));
+	assert.equal(result.plan, undefined);
 });

@@ -156,6 +156,7 @@ export {
 // P8-S3: federated registry connector capability + preflight contracts
 // P8-S4: connector gate evaluator (always-false, blocked-by-default)
 // P8-S6a: OAuth/consent architecture contracts (advisory-only, no runtime OAuth calls)
+// P8-S8: GitHub dry-run publication planner (pure advisory wiring)
 export {
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 	type FlowDeskFederatedScoreRegistryPublicationIntentV1,
@@ -203,6 +204,10 @@ export {
 	type FlowDeskFederatedCanonicalWorkflowRefResultV1,
 	createFlowDeskFederatedCanonicalWorkflowRefV1,
 	validateFlowDeskFederatedCanonicalWorkflowRefV1,
+	// P8-S8: GitHub dry-run publication planner
+	type FlowDeskGitHubDryRunPublicationPlanInputV1,
+	type FlowDeskGitHubDryRunPublicationPlanResultV1,
+	planFlowDeskGitHubDryRunPublicationV1,
 } from "./federated.js";
 
 // scoring-engine (P7-S14: minimal OI scoring engine)
