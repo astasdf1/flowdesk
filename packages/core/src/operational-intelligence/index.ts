@@ -161,3 +161,10 @@ export {
 	validateFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	validateFlowDeskFederatedScoreRegistryPublicationRequestV1,
 } from "./federated.js";
+
+// scoring-engine (P7-S14: minimal OI scoring engine)
+export {
+	type FlowDeskScoringEngineInputV1,
+	type FlowDeskScoringEngineResultV1,
+	scoreWorkflowProposal,
+} from "./scoring-engine.js";

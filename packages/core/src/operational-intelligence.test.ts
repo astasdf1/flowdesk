@@ -58,6 +58,9 @@ import {
 	validateFlowDeskOIAdvisoryEnvelopeV1,
 	type FlowDeskOIAdvisoryEnvelopeV1,
 	type FlowDeskOIAdvisoryHealthLabelV1,
+	scoreWorkflowProposal,
+	type FlowDeskScoringEngineInputV1,
+	type FlowDeskScoringEngineResultV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -2907,4 +2910,120 @@ test("OI advisory envelope: invalid generation_status rejection and malformed ge
 	const badRef = validateFlowDeskOIAdvisoryEnvelopeV1({ ...base, source_evidence_refs: ["ref with spaces"] });
 	assert.equal(badRef.ok, false);
 	assert.match(badRef.errors.join("; "), /schema-safe|spaces/);
+});
+
+// ─── P7-S14: Minimal OI Scoring Engine tests ─────────────────────────────────
+
+test("scoring engine: valid full input (ok alert) → healthy, score > 70, hard filter passed", () => {
+	const result: FlowDeskScoringEngineResultV1 = scoreWorkflowProposal({
+		workflowId: "workflow-score-ok-1",
+		proposalId: "proposal-score-ok-1",
+		candidateRef: "candidate-score-ok-1",
+		agentRole: "implementation",
+		providerFamily: "claude",
+		usageRemainingPercent: 85,
+		alertLevel: "ok",
+		resetBucketSeconds: 600,
+		activeConurrentLanes: 1,
+		maxConcurrentLanes: 5,
+		requestedLaneCount: 2,
+		contextWindowTokens: 200000,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.healthLabel, "healthy");
+	assert.ok(result.score !== undefined, "score must be present");
+	assert.ok(result.score!.advisory_score > 70, `advisory_score ${result.score!.advisory_score} should be > 70`);
+	assert.equal(result.score!.hard_filter_state, "passed");
+	assert.equal(result.score!.blocked_labels.length, 0);
+	assert.equal(result.score!.advisory_only, true);
+	assert.equal(result.score!.dispatch_authority_enabled, false);
+	assert.equal(result.score!.provider_authority_enabled, false);
+	assert.equal(result.score!.runtime_authority_enabled, false);
+	assert.equal(result.score!.fallback_authority_enabled, false);
+	assert.equal(result.score!.lane_launch_authority_enabled, false);
+	// Validator accepts the produced score
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(result.score!).ok, true);
+});
+
+test("scoring engine: exhausted quota → degraded health, hard filter blocked, blocked_labels includes quota_exhausted", () => {
+	const result: FlowDeskScoringEngineResultV1 = scoreWorkflowProposal({
+		workflowId: "workflow-score-exhausted-1",
+		proposalId: "proposal-score-exhausted-1",
+		candidateRef: "candidate-score-exhausted-1",
+		agentRole: "security",
+		providerFamily: "openai",
+		usageRemainingPercent: 0,
+		alertLevel: "exhausted",
+		resetBucketSeconds: 3600,
+		activeConurrentLanes: 0,
+		maxConcurrentLanes: 5,
+		requestedLaneCount: 1,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.healthLabel, "degraded");
+	assert.ok(result.score !== undefined, "score must be present");
+	assert.equal(result.score!.hard_filter_state, "blocked");
+	assert.ok(result.score!.blocked_labels.includes("quota_exhausted"), `blocked_labels should include quota_exhausted, got: ${JSON.stringify(result.score!.blocked_labels)}`);
+	// Blocked hard filter zeroes the advisory_score
+	assert.equal(result.score!.advisory_score, 0);
+	// Validator accepts the produced score
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(result.score!).ok, true);
+});
+
+test("scoring engine: minimal inputs → partial health, confidence score <= 60", () => {
+	// Only required fields, no optional evidence
+	const result: FlowDeskScoringEngineResultV1 = scoreWorkflowProposal({
+		workflowId: "workflow-score-minimal-1",
+		proposalId: "proposal-score-minimal-1",
+		candidateRef: "candidate-score-minimal-1",
+		agentRole: "implementation",
+		providerFamily: "gemini",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.healthLabel, "partial");
+	assert.ok(result.score !== undefined, "score must be present");
+	// Confidence dimension should be <= 60 due to minimal inputs
+	const confidenceDim = result.score!.score_dimensions.find(d => d.dimension === "confidence");
+	assert.ok(confidenceDim !== undefined, "confidence dimension must exist");
+	assert.ok(confidenceDim!.score <= 60, `confidence score ${confidenceDim!.score} should be <= 60 for minimal inputs`);
+	assert.equal(result.score!.hard_filter_state, "passed");
+	// Validator accepts the produced score
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(result.score!).ok, true);
+});
+
+test("scoring engine: critical quota → cost dimension < 50", () => {
+	const result: FlowDeskScoringEngineResultV1 = scoreWorkflowProposal({
+		workflowId: "workflow-score-critical-1",
+		proposalId: "proposal-score-critical-1",
+		candidateRef: "candidate-score-critical-1",
+		agentRole: "architecture",
+		providerFamily: "claude",
+		usageRemainingPercent: 10,
+		alertLevel: "critical",
+		resetBucketSeconds: 1800,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.score !== undefined, "score must be present");
+	const costDim = result.score!.score_dimensions.find(d => d.dimension === "cost");
+	assert.ok(costDim !== undefined, "cost dimension must exist");
+	assert.ok(costDim!.score < 50, `cost score ${costDim!.score} should be < 50 for critical quota`);
+	// Hard filter should still pass for critical (only exhausted blocks)
+	assert.equal(result.score!.hard_filter_state, "passed");
+	// Validator accepts the produced score
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(result.score!).ok, true);
+});
+
+test("scoring engine: invalid workflowId → ok:false with errors", () => {
+	const result: FlowDeskScoringEngineResultV1 = scoreWorkflowProposal({
+		workflowId: "",  // invalid: empty string
+		proposalId: "proposal-score-invalid-1",
+		candidateRef: "candidate-score-invalid-1",
+		agentRole: "implementation",
+		providerFamily: "claude",
+	});
+	assert.equal(result.ok, false);
+	assert.ok(result.errors.length > 0, "errors must be non-empty");
+	assert.equal(result.score, undefined);
+	// healthLabel should still be returned (unknown on error)
+	assert.equal(result.healthLabel, "unknown");
 });
