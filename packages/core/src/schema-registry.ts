@@ -199,6 +199,8 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.connector_gateway_invocation_plan.v1", "connector-gateway-invocation-plan", "FlowDeskConnectorGatewayInvocationPlanV1", "later_release"),
   artifactEntry("flowdesk.default_managed_dispatch_promotion_readiness.v1", "default-managed-dispatch-promotion-readiness", "FlowDeskDefaultManagedDispatchPromotionReadinessV1", "later_release"),
   artifactEntry("flowdesk.default_managed_dispatch_authorization.v1", "default-managed-dispatch-authorization", "FlowDeskDefaultManagedDispatchAuthorizationV1", "later_release"),
+  artifactEntry("flowdesk.release2_phase6a_closure_evidence.v1", "release2-phase6a-closure-evidence", "FlowDeskRelease2Phase6AClosureEvidenceV1", "later_release"),
+  artifactEntry("flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1", "release2-managed-dispatch-gate-promotion-readiness", "FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1", "later_release"),
   artifactEntry("flowdesk.runtime_lane_launch_request.v1", "runtime-lane-launch-request", "FlowDeskRuntimeLaneLaunchRequestV1", "later_release"),
   artifactEntry("flowdesk.runtime_lane_launch_plan.v1", "runtime-lane-launch-plan", "FlowDeskRuntimeLaneLaunchPlanV1", "later_release"),
   artifactEntry("flowdesk.runtime_lane_lifecycle_projection.v1", "runtime-lane-lifecycle-projection", "FlowDeskRuntimeLaneLifecycleProjectionV1", "later_release"),

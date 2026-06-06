@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { FlowDeskSessionEvidenceReloadResultV1 } from "./index.js";
+import type { FlowDeskRelease2Phase6AClosureEvidenceV1, FlowDeskSessionEvidenceReloadResultV1 } from "./index.js";
 import {
   createFlowDeskConfiguredVerificationResultV1,
   createFlowDeskExternalAuthProviderPolicyResultV1,
@@ -8,9 +8,12 @@ import {
   createFlowDeskSanitizedAuthCaptureResultV1,
   authorizeFlowDeskDefaultManagedDispatchV1,
   evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1,
+  evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1,
   evaluateFlowDeskProductionEnablementV1,
   validateFlowDeskDefaultManagedDispatchAuthorizationV1,
   validateFlowDeskDefaultManagedDispatchPromotionReadinessV1,
+  validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1,
+  validateFlowDeskRelease2Phase6AClosureEvidenceV1,
   validateFlowDeskProductionApprovalDecisionV1
 } from "./index.js";
 
@@ -223,6 +226,36 @@ function candidatePromotionReadiness() {
     sdkClientRef: "sdk-client-1",
     defaultReleaseEnablementRef: "default-release-enable-1"
   });
+}
+
+function phase6AClosure(overrides: Record<string, unknown> = {}): FlowDeskRelease2Phase6AClosureEvidenceV1 {
+  return {
+    schema_version: "flowdesk.release2_phase6a_closure_evidence.v1",
+    closure_ref: "phase6a-closure-1",
+    workflow_id: workflowId,
+    phase: "phase_6a",
+    result: "passed",
+    closed_at: "2026-06-06T00:00:00.000Z",
+    expires_at: "2026-06-07T00:00:00.000Z",
+    closure_labels: [
+      "plugin_sdk_compatibility_closed",
+      "fanout_cap_cache_enforcement_closed",
+      "reviewer_fanout_smoke_closed"
+    ],
+    evidence_refs: [
+      "phase6a-plugin-sdk-compat-1",
+      "phase6a-fanout-cache-1",
+      "phase6a-reviewer-smoke-1"
+    ],
+    dispatch_authority_enabled: false,
+    fallback_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    external_write_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    ...overrides
+  } as FlowDeskRelease2Phase6AClosureEvidenceV1;
 }
 
 test("production enablement reports configured state when all evidence is present but approval is missing", () => {
@@ -616,6 +649,159 @@ test("default managed dispatch authorization rejects forged provider-call author
   assert.ok(validation.errors.some((error) => error.includes("generic dispatch authority")));
   assert.ok(validation.errors.some((error) => error.includes("cannot make provider calls")));
   assert.ok(validation.errors.some((error) => error.includes("unknown properties")));
+});
+
+test("Release 2 managed dispatch gate promotion becomes eligible with Phase 6A closure refs and existing production preconditions", () => {
+  const closure = phase6AClosure();
+  const closureValidation = validateFlowDeskRelease2Phase6AClosureEvidenceV1(
+    closure,
+    workflowId,
+    "phase6a-closure-1"
+  );
+  assert.equal(closureValidation.ok, true, closureValidation.errors.join("; "));
+
+  const result = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    phase6AClosureEvidence: closure,
+    expectedPhase6AClosureRef: "phase6a-closure-1",
+    requiredPhase6AClosureRefs: [
+      "phase6a-plugin-sdk-compat-1",
+      "phase6a-fanout-cache-1",
+      "phase6a-reviewer-smoke-1"
+    ],
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+
+  assert.equal(result.ok, true, result.errors.join("; "));
+  assert.equal(result.state, "eligible");
+  assert.deepEqual(result.blocked_labels, []);
+  assert.equal(result.release2_managed_dispatch_gate_ready, true);
+  assert.equal(result.phase6a_closed, true);
+  assert.equal(result.scoped_explicit_approval_present, true);
+  assert.equal(result.fresh_evidence_present, true);
+  assert.equal(result.phase6a_closure_ref, "phase6a-closure-1");
+  assert.equal(result.dispatch_authority_enabled, false);
+  assert.equal(result.fallback_authority_enabled, false);
+  assert.equal(result.hard_chat_authority_enabled, false);
+  assert.equal(result.external_write_authority_enabled, false);
+  assert.equal(result.providerCall, false);
+  assert.equal(result.actualLaneLaunch, false);
+  assert.equal(result.runtimeExecution, false);
+  const validation = validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1(result, workflowId);
+  assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("Release 2 managed dispatch gate promotion blocks missing, stale, and mismatched Phase 6A closure refs", () => {
+  const missing = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+  assert.equal(missing.state, "blocked");
+  assert.ok(missing.blocked_labels.includes("phase6a_closure_missing"));
+  assert.equal(missing.release2_managed_dispatch_gate_ready, false);
+
+  const stale = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    phase6AClosureEvidence: phase6AClosure({ expires_at: "2026-06-06T00:30:00.000Z" }),
+    expectedPhase6AClosureRef: "phase6a-closure-1",
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+  assert.equal(stale.state, "blocked");
+  assert.ok(stale.blocked_labels.includes("phase6a_closure_stale"));
+  assert.equal(stale.fresh_evidence_present, false);
+
+  const mismatched = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    phase6AClosureEvidence: phase6AClosure({ workflow_id: "workflow-other", closure_ref: "phase6a-closure-other" }),
+    expectedPhase6AClosureRef: "phase6a-closure-1",
+    requiredPhase6AClosureRefs: ["phase6a-plugin-sdk-compat-1", "phase6a-missing-ref-1"],
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+  assert.equal(mismatched.state, "blocked");
+  assert.ok(mismatched.blocked_labels.includes("phase6a_closure_invalid"));
+  assert.ok(mismatched.errors.some((error) => error.includes("workflow_id mismatch")));
+  assert.ok(mismatched.errors.some((error) => error.includes("closure_ref mismatch")));
+});
+
+test("Release 2 managed dispatch gate promotion blocks authority smuggling and never enables fallback, hard-chat, or write authority", () => {
+  const closureValidation = validateFlowDeskRelease2Phase6AClosureEvidenceV1({
+    ...phase6AClosure(),
+    dispatch_authority_enabled: true,
+    fallback_authority_enabled: true,
+    hard_chat_authority_enabled: true,
+    external_write_authority_enabled: true,
+    providerCall: true,
+    noReply: true
+  });
+  assert.equal(closureValidation.ok, false);
+  assert.ok(closureValidation.errors.some((error) => error.includes("cannot enable dispatch authority")));
+  assert.ok(closureValidation.errors.some((error) => error.includes("cannot enable fallback authority")));
+  assert.ok(closureValidation.errors.some((error) => error.includes("cannot enable hard chat authority")));
+  assert.ok(closureValidation.errors.some((error) => error.includes("cannot enable external write authority")));
+  assert.ok(closureValidation.errors.some((error) => error.includes("unknown properties")));
+
+  const result = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    phase6AClosureEvidence: phase6AClosure(),
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+  const forgedReadinessValidation = validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    ...result,
+    dispatch_authority_enabled: true,
+    fallback_authority_enabled: true,
+    hard_chat_authority_enabled: true,
+    external_write_authority_enabled: true,
+    actualLaneLaunch: true,
+    raw_extra: "unsafe"
+  });
+  assert.equal(forgedReadinessValidation.ok, false);
+  assert.ok(forgedReadinessValidation.errors.some((error) => error.includes("generic dispatch authority")));
+  assert.ok(forgedReadinessValidation.errors.some((error) => error.includes("fallback authority")));
+  assert.ok(forgedReadinessValidation.errors.some((error) => error.includes("hard chat authority")));
+  assert.ok(forgedReadinessValidation.errors.some((error) => error.includes("external write authority")));
+  assert.ok(forgedReadinessValidation.errors.some((error) => error.includes("unknown properties")));
+});
+
+test("Release 2 managed dispatch gate promotion does not bypass provider, policy, pre-call, approval, or idempotency checks", () => {
+  const production = approvedProductionEnablement();
+  const fullReload = reloadResult();
+  const approval = createFlowDeskProductionApprovalDecisionV1({
+    approvalId: "approval-1",
+    workflowId,
+    decision: "approve",
+    createdAt: "2026-05-20T00:00:00.000Z",
+    requiredEvidenceRefs: ["usage-authority-1", "runtime-echo-1", "telemetry-1", "audit-1", "verification-1", "sanitized-auth-capture-1", "external-auth-policy-1", "provider-policy-1", "lane-conformance-1"]
+  });
+  const blockedProduction = evaluateFlowDeskProductionEnablementV1({
+    workflowId,
+    evidenceReload: reloadResult({
+      entries: fullReload.entries.filter(
+        (entry) =>
+          entry.evidenceClass !== "provider_health_snapshot" &&
+          entry.evidenceClass !== "pre_dispatch_audit" &&
+          entry.evidenceClass !== "dispatch_idempotency"
+      )
+    }),
+    ...baseRefs(),
+    attemptId: "attempt-prod-1",
+    idempotencyKey: "idempotency-key-1",
+    laneConformanceRefs: ["lane-conformance-1"],
+    approvalDecision: approval
+  });
+  assert.equal(blockedProduction.managed_dispatch_ready, false);
+  assert.ok(blockedProduction.blocker_labels.includes("provider_health_snapshot_missing"));
+  assert.ok(blockedProduction.blocker_labels.includes("pre_dispatch_audit_missing"));
+  assert.ok(blockedProduction.blocker_labels.includes("dispatch_idempotency_missing"));
+
+  const result = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: blockedProduction,
+    phase6AClosureEvidence: phase6AClosure(),
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+  assert.equal(production.state, "dispatch_capable", "control production fixture should remain dispatch capable");
+  assert.equal(result.state, "blocked");
+  assert.equal(result.release2_managed_dispatch_gate_ready, false);
+  assert.ok(result.blocked_labels.includes("production_enablement_not_dispatch_capable"));
 });
 
 test("production enablement reports valid approval diagnostics without dispatch authority", () => {

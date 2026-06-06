@@ -187,6 +187,86 @@ export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_BLOCKER_LABELS = [
 export type FlowDeskDefaultManagedDispatchAuthorizationBlockerLabelV1 =
 	(typeof FLOWDESK_DEFAULT_MANAGED_DISPATCH_AUTHORIZATION_BLOCKER_LABELS)[number];
 
+export const FLOWDESK_RELEASE2_PHASE6A_CLOSURE_LABELS = [
+	"plugin_sdk_compatibility_closed",
+	"fanout_cap_cache_enforcement_closed",
+	"reviewer_fanout_smoke_closed",
+] as const;
+export type FlowDeskRelease2Phase6AClosureLabelV1 =
+	(typeof FLOWDESK_RELEASE2_PHASE6A_CLOSURE_LABELS)[number];
+
+export const FLOWDESK_RELEASE2_MANAGED_DISPATCH_GATE_PROMOTION_STATES = [
+	"blocked",
+	"eligible",
+] as const;
+export type FlowDeskRelease2ManagedDispatchGatePromotionStateV1 =
+	(typeof FLOWDESK_RELEASE2_MANAGED_DISPATCH_GATE_PROMOTION_STATES)[number];
+
+export const FLOWDESK_RELEASE2_MANAGED_DISPATCH_GATE_PROMOTION_BLOCKER_LABELS = [
+	"production_enablement_not_dispatch_capable",
+	"production_enablement_errors_present",
+	"scoped_explicit_approval_missing",
+	"phase6a_closure_missing",
+	"phase6a_closure_invalid",
+	"phase6a_closure_failed",
+	"phase6a_closure_stale",
+	"phase6a_closure_mismatched",
+	"phase6a_required_refs_missing",
+] as const;
+export type FlowDeskRelease2ManagedDispatchGatePromotionBlockerLabelV1 =
+	(typeof FLOWDESK_RELEASE2_MANAGED_DISPATCH_GATE_PROMOTION_BLOCKER_LABELS)[number];
+
+export interface FlowDeskRelease2Phase6AClosureEvidenceV1 {
+	schema_version: "flowdesk.release2_phase6a_closure_evidence.v1";
+	closure_ref: string;
+	workflow_id: string;
+	phase: "phase_6a";
+	result: "passed" | "failed";
+	closed_at: string;
+	expires_at: string;
+	closure_labels: FlowDeskRelease2Phase6AClosureLabelV1[];
+	evidence_refs: string[];
+	dispatch_authority_enabled: false;
+	fallback_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+	external_write_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
+export interface FlowDeskRelease2ManagedDispatchGatePromotionReadinessInputV1 {
+	productionEnablement: FlowDeskProductionEnablementEvaluationV1;
+	phase6AClosureEvidence?: FlowDeskRelease2Phase6AClosureEvidenceV1;
+	expectedPhase6AClosureRef?: string;
+	requiredPhase6AClosureRefs?: string[];
+	now?: number;
+}
+
+export interface FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1
+	extends ValidationResult {
+	schema_version: "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1";
+	workflow_id: string;
+	state: FlowDeskRelease2ManagedDispatchGatePromotionStateV1;
+	blocked_labels: FlowDeskRelease2ManagedDispatchGatePromotionBlockerLabelV1[];
+	evidence_refs: string[];
+	production_enablement_state: FlowDeskProductionEnablementStateV1;
+	managed_dispatch_ready: boolean;
+	phase6a_closed: boolean;
+	scoped_explicit_approval_present: boolean;
+	fresh_evidence_present: boolean;
+	release2_managed_dispatch_gate_ready: boolean;
+	dispatch_authority_enabled: false;
+	fallback_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+	external_write_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+	safe_next_actions: string[];
+	phase6a_closure_ref?: string;
+}
+
 export interface FlowDeskDefaultManagedDispatchPromotionReadinessInputV1 {
 	productionEnablement: FlowDeskProductionEnablementEvaluationV1;
 	durablePrecallRef?: string;
@@ -874,6 +954,247 @@ export function validateFlowDeskDefaultManagedDispatchAuthorizationV1(
 		...validateNoForbiddenRawPayloads(record, "default_managed_dispatch_authorization")
 			.errors,
 	);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+function validateStringArrayOfOpaqueRefs(
+	value: unknown,
+	label: string,
+): ValidationResult {
+	if (!Array.isArray(value)) return invalid(`${label} must be an array`);
+	const errors: string[] = [];
+	for (const [index, ref] of value.entries())
+		errors.push(...validateOpaqueRef(ref, `${label}[${index}]`).errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function validateFlowDeskRelease2Phase6AClosureEvidenceV1(
+	value: unknown,
+	expectedWorkflowId?: string,
+	expectedClosureRef?: string,
+): ValidationResult {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return invalid("Release 2 Phase 6A closure evidence must be an object");
+	const record = value as Partial<FlowDeskRelease2Phase6AClosureEvidenceV1>;
+	const errors: string[] = [];
+	const allowed = new Set([
+		"schema_version",
+		"closure_ref",
+		"workflow_id",
+		"phase",
+		"result",
+		"closed_at",
+		"expires_at",
+		"closure_labels",
+		"evidence_refs",
+		"dispatch_authority_enabled",
+		"fallback_authority_enabled",
+		"hard_chat_authority_enabled",
+		"external_write_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+	]);
+	for (const key of Object.keys(record))
+		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
+	if (record.schema_version !== "flowdesk.release2_phase6a_closure_evidence.v1")
+		errors.push("Phase 6A closure schema_version is invalid");
+	errors.push(
+		...validateOpaqueRef(record.closure_ref, "phase6a closure_ref").errors,
+		...validateOpaqueId(record.workflow_id, "workflow_id").errors,
+	);
+	if (expectedWorkflowId !== undefined && record.workflow_id !== expectedWorkflowId)
+		errors.push("Phase 6A closure workflow_id mismatch");
+	if (expectedClosureRef !== undefined && record.closure_ref !== expectedClosureRef)
+		errors.push("Phase 6A closure_ref mismatch");
+	if (record.phase !== "phase_6a") errors.push("Phase 6A closure phase is invalid");
+	if (record.result !== "passed" && record.result !== "failed")
+		errors.push("Phase 6A closure result is invalid");
+	if (typeof record.closed_at !== "string" || !validDate(record.closed_at))
+		errors.push("Phase 6A closure closed_at must be parseable");
+	if (typeof record.expires_at !== "string" || !validDate(record.expires_at))
+		errors.push("Phase 6A closure expires_at must be parseable");
+	if (!Array.isArray(record.closure_labels))
+		errors.push("Phase 6A closure_labels must be an array");
+	else {
+		for (const label of record.closure_labels)
+			if (!(FLOWDESK_RELEASE2_PHASE6A_CLOSURE_LABELS as readonly string[]).includes(label))
+				errors.push(`Phase 6A closure_label is invalid: ${label}`);
+		for (const required of FLOWDESK_RELEASE2_PHASE6A_CLOSURE_LABELS)
+			if (!record.closure_labels.includes(required))
+				errors.push(`Phase 6A closure_label missing: ${required}`);
+	}
+	errors.push(...validateStringArrayOfOpaqueRefs(record.evidence_refs, "phase6a evidence_refs").errors);
+	if (record.dispatch_authority_enabled !== false)
+		errors.push("Phase 6A closure cannot enable dispatch authority");
+	if (record.fallback_authority_enabled !== false)
+		errors.push("Phase 6A closure cannot enable fallback authority");
+	if (record.hard_chat_authority_enabled !== false)
+		errors.push("Phase 6A closure cannot enable hard chat authority");
+	if (record.external_write_authority_enabled !== false)
+		errors.push("Phase 6A closure cannot enable external write authority");
+	if (record.providerCall !== false)
+		errors.push("Phase 6A closure cannot make provider calls");
+	if (record.actualLaneLaunch !== false)
+		errors.push("Phase 6A closure cannot launch lanes");
+	if (record.runtimeExecution !== false)
+		errors.push("Phase 6A closure cannot execute runtime");
+	errors.push(...validateNoForbiddenRawPayloads(record, "release2_phase6a_closure_evidence").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1(
+	input: FlowDeskRelease2ManagedDispatchGatePromotionReadinessInputV1,
+): FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1 {
+	const errors: string[] = [];
+	const blockedLabels: FlowDeskRelease2ManagedDispatchGatePromotionBlockerLabelV1[] = [];
+	const production = input.productionEnablement;
+	errors.push(...validateOpaqueId(production.workflow_id, "workflow_id").errors);
+	if (!production.ok || production.errors.length > 0)
+		blockedLabels.push("production_enablement_errors_present");
+	if (production.state !== "dispatch_capable" || !production.managed_dispatch_ready)
+		blockedLabels.push("production_enablement_not_dispatch_capable");
+	if (production.approval_decision !== "approve" || production.approval_ref === undefined)
+		blockedLabels.push("scoped_explicit_approval_missing");
+
+	const closure = input.phase6AClosureEvidence;
+	let closureValidation: ValidationResult = invalid("Phase 6A closure evidence is required");
+	if (closure === undefined) {
+		blockedLabels.push("phase6a_closure_missing");
+	} else {
+		closureValidation = validateFlowDeskRelease2Phase6AClosureEvidenceV1(
+			closure,
+			production.workflow_id,
+			input.expectedPhase6AClosureRef,
+		);
+		errors.push(...closureValidation.errors);
+		if (!closureValidation.ok) blockedLabels.push("phase6a_closure_invalid");
+		else {
+			if (closure.result !== "passed") blockedLabels.push("phase6a_closure_failed");
+			if (Date.parse(closure.expires_at) <= (input.now ?? Date.now()))
+				blockedLabels.push("phase6a_closure_stale");
+			if (Date.parse(closure.closed_at) > (input.now ?? Date.now()))
+				blockedLabels.push("phase6a_closure_mismatched");
+			const availableRefs = new Set(closure.evidence_refs);
+			for (const requiredRef of input.requiredPhase6AClosureRefs ?? []) {
+				const refResult = validateOpaqueRef(requiredRef, "required_phase6a_closure_ref");
+				errors.push(...refResult.errors);
+				if (!refResult.ok || !availableRefs.has(requiredRef))
+					blockedLabels.push("phase6a_required_refs_missing");
+			}
+		}
+	}
+
+	const uniqueBlockers = unique(blockedLabels);
+	const eligible = errors.length === 0 && uniqueBlockers.length === 0;
+	const evidenceRefs = unique(
+		[
+			...production.evidence_refs,
+			closureValidation.ok ? closure?.closure_ref : undefined,
+			...(closureValidation.ok ? closure?.evidence_refs ?? [] : []),
+		].filter((ref): ref is string => typeof ref === "string"),
+	);
+	return {
+		schema_version: "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1",
+		workflow_id: production.workflow_id,
+		ok: errors.length === 0,
+		errors,
+		state: eligible ? "eligible" : "blocked",
+		blocked_labels: uniqueBlockers,
+		evidence_refs: evidenceRefs,
+		production_enablement_state: production.state,
+		managed_dispatch_ready: production.managed_dispatch_ready,
+		phase6a_closed: closureValidation.ok && closure?.result === "passed",
+		scoped_explicit_approval_present: production.approval_decision === "approve" && production.approval_ref !== undefined,
+		fresh_evidence_present: closureValidation.ok && closure !== undefined && Date.parse(closure.expires_at) > (input.now ?? Date.now()),
+		release2_managed_dispatch_gate_ready: eligible,
+		dispatch_authority_enabled: false,
+		fallback_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+		external_write_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+		safe_next_actions: eligible
+			? ["/flowdesk-status"]
+			: ["/flowdesk-doctor", "/flowdesk-status"],
+		...(closureValidation.ok && closure !== undefined
+			? { phase6a_closure_ref: closure.closure_ref }
+			: {}),
+	};
+}
+
+export function validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1(
+	value: unknown,
+	expectedWorkflowId?: string,
+): ValidationResult {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return invalid("Release 2 managed dispatch gate promotion readiness must be an object");
+	const record = value as Partial<FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1>;
+	const errors: string[] = [];
+	const allowed = new Set([
+		"schema_version",
+		"workflow_id",
+		"ok",
+		"errors",
+		"state",
+		"blocked_labels",
+		"evidence_refs",
+		"production_enablement_state",
+		"managed_dispatch_ready",
+		"phase6a_closed",
+		"scoped_explicit_approval_present",
+		"fresh_evidence_present",
+		"release2_managed_dispatch_gate_ready",
+		"dispatch_authority_enabled",
+		"fallback_authority_enabled",
+		"hard_chat_authority_enabled",
+		"external_write_authority_enabled",
+		"providerCall",
+		"actualLaneLaunch",
+		"runtimeExecution",
+		"safe_next_actions",
+		"phase6a_closure_ref",
+	]);
+	for (const key of Object.keys(record))
+		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
+	if (record.schema_version !== "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1")
+		errors.push("Release 2 promotion readiness schema_version is invalid");
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	if (expectedWorkflowId !== undefined && record.workflow_id !== expectedWorkflowId)
+		errors.push("Release 2 promotion readiness workflow_id mismatch");
+	if (typeof record.ok !== "boolean") errors.push("ok must be boolean");
+	if (!Array.isArray(record.errors)) errors.push("errors must be an array");
+	if (!(FLOWDESK_RELEASE2_MANAGED_DISPATCH_GATE_PROMOTION_STATES as readonly string[]).includes(String(record.state)))
+		errors.push("Release 2 promotion readiness state is invalid");
+	if (!Array.isArray(record.blocked_labels)) errors.push("blocked_labels must be an array");
+	else
+		for (const label of record.blocked_labels)
+			if (!(FLOWDESK_RELEASE2_MANAGED_DISPATCH_GATE_PROMOTION_BLOCKER_LABELS as readonly string[]).includes(label))
+				errors.push(`Release 2 promotion blocked_label is invalid: ${label}`);
+	errors.push(...validateStringArrayOfOpaqueRefs(record.evidence_refs, "evidence_refs").errors);
+	if (!(FLOWDESK_PRODUCTION_ENABLEMENT_STATES as readonly string[]).includes(String(record.production_enablement_state)))
+		errors.push("production_enablement_state is invalid");
+	for (const key of ["managed_dispatch_ready", "phase6a_closed", "scoped_explicit_approval_present", "fresh_evidence_present", "release2_managed_dispatch_gate_ready"] as const)
+		if (typeof record[key] !== "boolean") errors.push(`${key} must be boolean`);
+	if (record.dispatch_authority_enabled !== false)
+		errors.push("Release 2 promotion readiness cannot enable generic dispatch authority");
+	if (record.fallback_authority_enabled !== false)
+		errors.push("Release 2 promotion readiness cannot enable fallback authority");
+	if (record.hard_chat_authority_enabled !== false)
+		errors.push("Release 2 promotion readiness cannot enable hard chat authority");
+	if (record.external_write_authority_enabled !== false)
+		errors.push("Release 2 promotion readiness cannot enable external write authority");
+	if (record.providerCall !== false)
+		errors.push("Release 2 promotion readiness cannot make provider calls");
+	if (record.actualLaneLaunch !== false)
+		errors.push("Release 2 promotion readiness cannot launch lanes");
+	if (record.runtimeExecution !== false)
+		errors.push("Release 2 promotion readiness cannot execute runtime");
+	if (!Array.isArray(record.safe_next_actions)) errors.push("safe_next_actions must be an array");
+	if (record.phase6a_closure_ref !== undefined)
+		errors.push(...validateOpaqueRef(record.phase6a_closure_ref, "phase6a_closure_ref").errors);
+	errors.push(...validateNoForbiddenRawPayloads(record, "release2_managed_dispatch_gate_promotion_readiness").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
