@@ -20,6 +20,7 @@ import {
 import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
+import { createOISessionAccumulator, type FlowDeskOISessionAccumulatorV1 } from "./oi-session-accumulator.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
@@ -63,6 +64,16 @@ export interface FlowDeskAgentTaskInputV1 {
 	_heavyFirstTokenGraceMs?: number;
 	/** Internal: true when this is already a fallback retry (prevents infinite retry) */
 	_isFallbackRetry?: boolean;
+	/**
+	 * When false, OI session summary is written with generation_status "disabled_by_config"
+	 * and all counts zero. Defaults to true (OI enabled).
+	 */
+	oiEnabled?: boolean;
+	/**
+	 * Optional pre-constructed OI accumulator to carry counts into this call.
+	 * When absent, a fresh accumulator is created internally.
+	 */
+	_oiAccumulator?: FlowDeskOISessionAccumulatorV1;
 }
 
 export type FlowDeskAgentTaskResultV1 =
@@ -1346,6 +1357,34 @@ export async function executeFlowDeskAgentTaskV1(
 		workflowId: input.workflowId,
 		observedAt,
 	});
+
+	// ── OI session summary write (advisory-only, non-blocking) ───────────────
+	// Write AFTER task_result is confirmed written. Failures here must NEVER
+	// affect the task_completed return value or the task_result evidence.
+	const oiEnabled = input.oiEnabled !== false; // default true
+	const oiAccumulator = input._oiAccumulator ?? createOISessionAccumulator();
+	try {
+		const oiCapturedAt = new Date().toISOString();
+		const oiSummaryId = `oi-summary-${input.taskId}-${token}`;
+		const oiSessionRef = parentSessionRef;
+		const oiResult = oiAccumulator.toSummary({
+			summaryId: oiSummaryId,
+			sessionRef: oiSessionRef,
+			workflowId: input.workflowId,
+			capturedAt: oiCapturedAt,
+			oiEnabled,
+		});
+		if (oiResult.ok && oiResult.summary !== undefined) {
+			writeSessionEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				evidenceId: oiSummaryId,
+				record: oiResult.summary as unknown as Record<string, unknown>,
+			});
+		}
+	} catch {
+		// OI summary write failure must not propagate — task_result stands.
+	}
 
 	return {
 		status: "task_completed",
