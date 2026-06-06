@@ -354,6 +354,63 @@ test("availability cache refresh plan distinguishes cache hit, missing, and drif
 	assert.equal(drift.refresh_attempted, false);
 });
 
+test("same-day cache hit is reusable for assignment while stale daily cache plans refresh", () => {
+	const sameDayRefresh = cacheHitRefreshPlan();
+	const sameDayAcquisition = planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+		refreshPlan: sameDayRefresh,
+	});
+	const sameDayRevalidation = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+		cache: cache(),
+		cacheRefreshPlan: sameDayRefresh,
+		localDate: "2026-05-21",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(sameDayRefresh.state, "cache_hit");
+	assert.equal(sameDayAcquisition.state, "acquisition_not_needed");
+	assert.equal(sameDayAcquisition.providerCall, false);
+	assert.equal(sameDayRevalidation.state, "revalidated");
+	assert.equal(sameDayRevalidation.providerCall, false);
+
+	const staleRefresh = planFlowDeskExactModelAvailabilityCacheRefreshV1({
+		cache: cache(),
+		localDate: "2026-05-22",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	const staleAcquisition = planFlowDeskExactModelAvailabilityCacheAcquisitionV1({
+		refreshPlan: staleRefresh,
+	});
+	const staleRevalidation = revalidateFlowDeskReviewerAssignmentsFromCacheEvidenceV1({
+		cache: cache(),
+		cacheRefreshPlan: staleRefresh,
+		localDate: "2026-05-22",
+		activeProfileRef: "profile-1",
+		opencodeVersionRef: "opencode-1.15.6",
+		flowdeskPackageVersionRef: "flowdesk-0.1.1",
+		registryHash: "hash-registry-1",
+		policyPackHash: "hash-policy-1",
+		authAccountBoundaryRef: "account-1",
+	});
+	assert.equal(staleRefresh.state, "refresh_required");
+	assert.ok(staleRefresh.refresh_reason_labels.includes("cache_not_same_day"));
+	assert.equal(staleRefresh.cache_usable_for_assignment, false);
+	assert.equal(staleAcquisition.state, "acquisition_planned");
+	assert.equal(staleAcquisition.providerCall, false);
+	assert.equal(staleRevalidation.state, "blocked");
+	assert.ok(staleRevalidation.blocked_labels.includes("cache_not_same_day"));
+	assert.ok(staleRevalidation.blocked_labels.includes("cache_refresh_not_cache_hit"));
+	assert.deepEqual(staleRevalidation.eligible_bindings, []);
+});
+
 test("availability cache refresh plan blocks invalid cache and authority smuggling", () => {
 	const invalidCache = planFlowDeskExactModelAvailabilityCacheRefreshV1({
 		cache: cache({
@@ -951,6 +1008,57 @@ test("reviewer fanout spreads distinct models and only staggers repeated models"
 		[0, 0, 0],
 	);
 	assert.equal(validateFlowDeskReviewerFanoutPlanV1(plan).ok, true);
+});
+
+test("reviewer fanout enforces top-tier cap and preserves non-dispatch authority", () => {
+	const tooManyPerspectives = [
+		"policy_security",
+		"architecture",
+		"verification_implementation",
+		"policy_security",
+		"architecture",
+		"verification_implementation",
+	] as unknown as Parameters<typeof planFlowDeskReviewerFanoutV1>[0]["requestedPerspectives"];
+	const blocked = planFlowDeskReviewerFanoutV1({
+		revalidation: revalidation(),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		parentSessionRef: "ses-parent-1",
+		agentRef: "agent-reviewer",
+		requestedAt: "2026-05-21T00:00:00.000Z",
+		requestedPerspectives: tooManyPerspectives,
+		maxConcurrentLaneCount: 6,
+	});
+	assert.equal(blocked.state, "blocked");
+	assert.ok(blocked.blocked_labels.includes("top_tier_fanout_cap_exceeded"));
+	assert.match(blocked.errors.join("|"), /top-tier fan-out cap 5/);
+	assert.deepEqual(blocked.runtime_lane_launch_requests, []);
+	assert.equal(blocked.providerCall, false);
+	assert.equal(blocked.actualLaneLaunch, false);
+
+	const base = planFlowDeskReviewerFanoutV1({
+		revalidation: revalidation(),
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		parentSessionRef: "ses-parent-1",
+		agentRef: "agent-reviewer",
+		requestedAt: "2026-05-21T00:00:00.000Z",
+	});
+	const forged = validateFlowDeskReviewerFanoutPlanV1({
+		...base,
+		runtime_lane_launch_requests: [
+			...base.runtime_lane_launch_requests,
+			...base.runtime_lane_launch_requests,
+		],
+		lane_launch_schedule: [
+			...base.lane_launch_schedule,
+			...base.lane_launch_schedule,
+		],
+		max_concurrent_lane_count: 6,
+	});
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("|"), /runtime_lane_launch_requests cannot exceed top-tier fan-out cap 5/);
+	assert.match(forged.errors.join("|"), /max_concurrent_lane_count.*top-tier fan-out cap 5/);
 });
 
 test("reviewer fanout plan blocks missing perspectives and authority smuggling", () => {

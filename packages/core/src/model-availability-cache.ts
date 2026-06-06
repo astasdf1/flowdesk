@@ -231,6 +231,8 @@ const perspectives: FlowDeskTopTierReviewPerspective[] = [
 	"verification_implementation",
 ];
 
+const TOP_TIER_REVIEWER_FANOUT_LANE_CAP = 5;
+
 const disabledReviewerRuntimeAuthority = {
 	dispatch_authority_enabled: false as const,
 	providerCall: false as const,
@@ -1282,9 +1284,18 @@ export function planFlowDeskReviewerFanoutV1(input: {
 		errors.push("requested_at must be a parseable timestamp");
 	const requiredPerspectives = input.requestedPerspectives ?? perspectives;
 	errors.push(...validatePerspectiveArray(requiredPerspectives, "required_perspectives").errors);
+	if (requiredPerspectives.length > TOP_TIER_REVIEWER_FANOUT_LANE_CAP) {
+		errors.push(`required_perspectives cannot exceed top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
+		blockedLabels.push("top_tier_fanout_cap_exceeded");
+	}
 	const requestedMaxConcurrentLaneCount = input.maxConcurrentLaneCount ?? Math.min(3, requiredPerspectives.length);
-	if (!Number.isInteger(requestedMaxConcurrentLaneCount) || requestedMaxConcurrentLaneCount < 1 || requestedMaxConcurrentLaneCount > requiredPerspectives.length)
-		errors.push("max_concurrent_lane_count must be a bounded positive integer");
+	if (
+		!Number.isInteger(requestedMaxConcurrentLaneCount) ||
+		requestedMaxConcurrentLaneCount < 1 ||
+		requestedMaxConcurrentLaneCount > requiredPerspectives.length ||
+		requestedMaxConcurrentLaneCount > TOP_TIER_REVIEWER_FANOUT_LANE_CAP
+	)
+		errors.push(`max_concurrent_lane_count must be a bounded positive integer not exceeding top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
 	const timeoutMs = input.timeoutMs ?? 30000;
 	const orphanMaxAgeMs = input.orphanMaxAgeMs ?? 60000;
 	const retryBudget = input.retryBudget ?? 1;
@@ -1416,8 +1427,21 @@ export function validateFlowDeskReviewerFanoutPlanV1(value: unknown): Validation
 		for (const [index, request] of record.runtime_lane_launch_requests.entries())
 			errors.push(...validateFlowDeskRuntimeLaneLaunchRequestV1(request).errors.map((error) => `runtime_lane_launch_requests[${index}].${error}`));
 	}
-	if (typeof record.max_concurrent_lane_count !== "number" || !Number.isInteger(record.max_concurrent_lane_count) || record.max_concurrent_lane_count < 1)
-		errors.push("max_concurrent_lane_count must be a positive integer");
+	if (
+		typeof record.max_concurrent_lane_count !== "number" ||
+		!Number.isInteger(record.max_concurrent_lane_count) ||
+		record.max_concurrent_lane_count < 1 ||
+		record.max_concurrent_lane_count > TOP_TIER_REVIEWER_FANOUT_LANE_CAP
+	)
+		errors.push(`max_concurrent_lane_count must be a positive integer not exceeding top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
+	if ((record.required_perspectives?.length ?? 0) > TOP_TIER_REVIEWER_FANOUT_LANE_CAP)
+		errors.push(`required_perspectives cannot exceed top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
+	if ((record.planned_perspectives?.length ?? 0) > TOP_TIER_REVIEWER_FANOUT_LANE_CAP)
+		errors.push(`planned_perspectives cannot exceed top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
+	if ((record.runtime_lane_launch_requests?.length ?? 0) > TOP_TIER_REVIEWER_FANOUT_LANE_CAP)
+		errors.push(`runtime_lane_launch_requests cannot exceed top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
+	if ((record.lane_launch_schedule?.length ?? 0) > TOP_TIER_REVIEWER_FANOUT_LANE_CAP)
+		errors.push(`lane_launch_schedule cannot exceed top-tier fan-out cap ${TOP_TIER_REVIEWER_FANOUT_LANE_CAP}`);
 	errors.push(...boundedInt(record.same_model_stagger_ms, "same_model_stagger_ms", 0, 60000).errors);
 	if (!Array.isArray(record.lane_launch_schedule)) errors.push("lane_launch_schedule must be an array");
 	else {
