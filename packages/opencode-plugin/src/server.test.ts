@@ -712,7 +712,17 @@ test("server plugin defaults to safe local command-backed chat mode", async () =
 				? [entry.toolName, flowdeskCheckToolName]
 				: entry.toolName === "flowdesk_plan"
 					? [entry.toolName, flowdeskPlanShortToolName]
-				: [entry.toolName],
+					: entry.toolName === "flowdesk_run"
+						? [entry.toolName, flowdeskRunShortToolName]
+						: entry.toolName === "flowdesk_resume"
+							? [entry.toolName, flowdeskResumeStatusToolName]
+							: entry.toolName === "flowdesk_retry"
+								? [entry.toolName, flowdeskRetryDiagToolName]
+								: entry.toolName === "flowdesk_abort"
+									? [entry.toolName, flowdeskAbortCmdToolName]
+									: entry.toolName === "flowdesk_export_debug"
+										? [entry.toolName, flowdeskDebugToolName]
+										: [entry.toolName],
 		),
 		flowdeskChatIntakeToolName,
 	]);
@@ -3856,9 +3866,17 @@ test("server plugin can expose local non-dispatch command-backed tools", async (
 				? [entry.toolName, flowdeskCheckToolName]
 				: entry.toolName === "flowdesk_plan"
 					? [entry.toolName, flowdeskPlanShortToolName]
-				: entry.toolName === "flowdesk_export_debug"
-					? [entry.toolName, flowdeskDebugToolName]
-					: [entry.toolName],
+					: entry.toolName === "flowdesk_run"
+						? [entry.toolName, flowdeskRunShortToolName]
+						: entry.toolName === "flowdesk_resume"
+							? [entry.toolName, flowdeskResumeStatusToolName]
+							: entry.toolName === "flowdesk_retry"
+								? [entry.toolName, flowdeskRetryDiagToolName]
+								: entry.toolName === "flowdesk_abort"
+									? [entry.toolName, flowdeskAbortCmdToolName]
+									: entry.toolName === "flowdesk_export_debug"
+										? [entry.toolName, flowdeskDebugToolName]
+										: [entry.toolName],
 		),
 	);
 

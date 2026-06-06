@@ -68,14 +68,21 @@ import {
 	prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1,
 } from "./managed-dispatch-adapter.js";
 import flowdeskOpenCodeServerPlugin, {
+	flowdeskAbortCmdToolName,
 	flowdeskChatIntakeToolName,
+	flowdeskCheckToolName,
+	flowdeskDebugToolName,
 	flowdeskDefaultManagedDispatchAuthorizationOption,
 	flowdeskDurableStateRootOption,
 	flowdeskLocalNonDispatchAdapterOption,
 	flowdeskManagedDispatchBetaAdapterOption,
 	flowdeskManagedDispatchBetaToolName,
+	flowdeskPlanShortToolName,
 	flowdeskPreSpikeDoctorToolName,
 	flowdeskProductionEnablementOption,
+	flowdeskResumeStatusToolName,
+	flowdeskRetryDiagToolName,
+	flowdeskRunShortToolName,
 } from "./server.js";
 import { persistTerminalEvidence } from "./terminal-evidence-writer.js";
 
@@ -3579,7 +3586,23 @@ test("default server and plugin scaffold remain Release 1 non-dispatch", async (
 	const hooks = await flowdeskOpenCodeServerPlugin.server(undefined as never);
 	assert.deepEqual(Object.keys(hooks.tool ?? {}), [
 		flowdeskPreSpikeDoctorToolName,
-		...FLOWDESK_RELEASE_1_COMMAND_MANIFEST.map((entry) => entry.toolName),
+		...FLOWDESK_RELEASE_1_COMMAND_MANIFEST.flatMap((entry) =>
+			entry.toolName === "flowdesk_doctor"
+				? [entry.toolName, flowdeskCheckToolName]
+				: entry.toolName === "flowdesk_plan"
+					? [entry.toolName, flowdeskPlanShortToolName]
+					: entry.toolName === "flowdesk_run"
+						? [entry.toolName, flowdeskRunShortToolName]
+						: entry.toolName === "flowdesk_resume"
+							? [entry.toolName, flowdeskResumeStatusToolName]
+							: entry.toolName === "flowdesk_retry"
+								? [entry.toolName, flowdeskRetryDiagToolName]
+								: entry.toolName === "flowdesk_abort"
+									? [entry.toolName, flowdeskAbortCmdToolName]
+									: entry.toolName === "flowdesk_export_debug"
+										? [entry.toolName, flowdeskDebugToolName]
+										: [entry.toolName],
+		),
 		flowdeskChatIntakeToolName,
 	]);
 	assert.equal(
