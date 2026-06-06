@@ -8,6 +8,7 @@ import {
 	createFlowDeskOperationalIntelligenceScoreV1,
 	createFlowDeskWorkflowPlanProposalScoreEventV1,
 	createFlowDeskWorkflowPlanProposalV1,
+	createFlowDeskWorkflowPlanProposalSetV1,
 	decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
 	encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
 	validateFlowDeskAdvisoryScoreLedgerEntryV1,
@@ -20,7 +21,10 @@ import {
 	createFlowDeskCategoryFitSnapshotV1,
 	validateFlowDeskWorkflowPlanProposalScoreEventV1,
 	validateFlowDeskWorkflowPlanProposalV1,
+	validateFlowDeskWorkflowPlanProposalSetV1,
 	type FlowDeskReferencePackV1,
+	type FlowDeskWorkflowPlanProposalV1,
+	type FlowDeskWorkflowPlanProposalSetV1,
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 } from "./index.js";
 
@@ -119,6 +123,108 @@ test("operational intelligence blocks scoring authority when hard filters fail",
 	const impossiblePassed = validateFlowDeskOperationalIntelligenceScoreV1({ ...score, hard_filter_state: "passed", advisory_score: 90 });
 	assert.equal(impossiblePassed.ok, false);
 	assert.match(impossiblePassed.errors.join("; "), /cannot carry blocked_labels/);
+});
+
+test("workflow plan proposal sets with all variants are valid", () => {
+	const createProposal = (variant: "simple" | "standard" | "detailed" | "high_assurance"): FlowDeskWorkflowPlanProposalV1 => createFlowDeskWorkflowPlanProposalV1({
+		proposalId: `proposal-${variant}`,
+		workflowId: "workflow-1",
+		proposalLabel: `Advisory plan proposal ${variant}`,
+		advisorySummaryRef: `summary-${variant}`,
+		candidates: [{ candidateRef: `candidate-${variant}`, candidateLabel: `Candidate ${variant}`, candidateSummaryRef: `candidate-summary-${variant}`, hardFiltersPassed: true }],
+		createdAt: "2026-06-06T12:00:00.000Z",
+		source: "flowdesk-main",
+		variant,
+		stepSummary: `step summary ${variant}`,
+		writeSummary: `write summary ${variant}`,
+		verificationSummary: `verification summary ${variant}`,
+		rollbackSummary: `rollback summary ${variant}`,
+		safeNextActions: ["flowdesk-status"]
+	});
+
+	const proposalSet = createFlowDeskWorkflowPlanProposalSetV1({
+		proposalSetId: "proposal-set-1",
+		workflowId: "workflow-1",
+		createdAt: "2026-06-06T12:00:00.000Z",
+		simpleProposal: createProposal("simple"),
+		standardProposal: createProposal("standard"),
+		detailedProposal: createProposal("detailed"),
+		highAssuranceProposal: createProposal("high_assurance"),
+		metadataRefs: ["ref-metadata-1"],
+		evidenceRefs: ["ref-evidence-1"],
+	});
+
+	const val = validateFlowDeskWorkflowPlanProposalSetV1(proposalSet);
+	assert.equal(val.ok, true, val.errors.join("; "));
+	assert.equal(proposalSet.advisory_only, true);
+	assert.equal(proposalSet.dispatch_authority_enabled, false);
+	assert.equal(proposalSet.approval_authority_enabled, false);
+});
+
+test("workflow plan proposal sets reject missing variants or duplicate variants", () => {
+	const createProposal = (variant: "simple" | "standard" | "detailed" | "high_assurance"): FlowDeskWorkflowPlanProposalV1 => createFlowDeskWorkflowPlanProposalV1({
+		proposalId: `proposal-${variant}`,
+		workflowId: "workflow-1",
+		proposalLabel: `Advisory plan proposal ${variant}`,
+		advisorySummaryRef: `summary-${variant}`,
+		candidates: [{ candidateRef: `candidate-${variant}`, candidateLabel: `Candidate ${variant}`, candidateSummaryRef: `candidate-summary-${variant}`, hardFiltersPassed: true }],
+		createdAt: "2026-06-06T12:00:00.000Z",
+		source: "flowdesk-main",
+		variant,
+	});
+
+	const proposalSet = createFlowDeskWorkflowPlanProposalSetV1({
+		proposalSetId: "proposal-set-1",
+		workflowId: "workflow-1",
+		createdAt: "2026-06-06T12:00:00.000Z",
+		simpleProposal: createProposal("simple"),
+		standardProposal: createProposal("standard"),
+		detailedProposal: createProposal("detailed"),
+		highAssuranceProposal: createProposal("high_assurance"),
+	});
+
+	const missingVariant = { ...proposalSet, standard_proposal: undefined };
+	const valMissing = validateFlowDeskWorkflowPlanProposalSetV1(missingVariant);
+	assert.equal(valMissing.ok, false);
+	assert.match(valMissing.errors.join("; "), /standard_proposal is missing/);
+
+	const duplicateVariant = { ...proposalSet, standard_proposal: createProposal("simple") };
+	const valDuplicate = validateFlowDeskWorkflowPlanProposalSetV1(duplicateVariant);
+	assert.equal(valDuplicate.ok, false);
+	assert.match(valDuplicate.errors.join("; "), /standard_proposal must have variant 'standard'/);
+});
+
+test("workflow plan proposal sets reject authority and raw marker", () => {
+	const createProposal = (variant: "simple" | "standard" | "detailed" | "high_assurance"): FlowDeskWorkflowPlanProposalV1 => createFlowDeskWorkflowPlanProposalV1({
+		proposalId: `proposal-${variant}`,
+		workflowId: "workflow-1",
+		proposalLabel: `Advisory plan proposal ${variant}`,
+		advisorySummaryRef: `summary-${variant}`,
+		candidates: [{ candidateRef: `candidate-${variant}`, candidateLabel: `Candidate ${variant}`, candidateSummaryRef: `candidate-summary-${variant}`, hardFiltersPassed: true }],
+		createdAt: "2026-06-06T12:00:00.000Z",
+		variant,
+	});
+
+	const proposalSet = createFlowDeskWorkflowPlanProposalSetV1({
+		proposalSetId: "proposal-set-1",
+		workflowId: "workflow-1",
+		createdAt: "2026-06-06T12:00:00.000Z",
+		simpleProposal: createProposal("simple"),
+		standardProposal: createProposal("standard"),
+		detailedProposal: createProposal("detailed"),
+		highAssuranceProposal: createProposal("high_assurance"),
+	});
+
+	const badAuthority = { ...proposalSet, dispatch_authority_enabled: true };
+	const valAuthority = validateFlowDeskWorkflowPlanProposalSetV1(badAuthority);
+	assert.equal(valAuthority.ok, false);
+	assert.match(valAuthority.errors.join("; "), /advisory-only/);
+
+	const badRawMarker = { ...proposalSet, simple_proposal: createProposal("simple") };
+	badRawMarker.simple_proposal.proposal_label = "raw path /Users/example/secret";
+	const valRawMarker = validateFlowDeskWorkflowPlanProposalSetV1(badRawMarker);
+	assert.equal(valRawMarker.ok, false);
+	assert.match(valRawMarker.errors.join("; "), /credential-shaped/);
 });
 
 test("workflow plan proposals represent bounded advisory-only candidates", () => {

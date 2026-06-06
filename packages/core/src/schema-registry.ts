@@ -214,6 +214,8 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.advisory_output_firewall.v1", "advisory-output-firewall", "FlowDeskAdvisoryOutputFirewallV1", "later_release"),
   artifactEntry("flowdesk.federated_registry_state.v1", "federated-registry-state", "FlowDeskFederatedRegistryStateV1", "later_release"),
   artifactEntry("flowdesk.category_fit_snapshot.v1", "category-fit-snapshot", "FlowDeskCategoryFitSnapshotV1", "later_release"),
+  artifactEntry("flowdesk.workflow_plan_proposal.v1", "workflow-plan-proposal", "FlowDeskWorkflowPlanProposalV1", "later_release"),
+  artifactEntry("flowdesk.workflow_plan_proposal_set.v1", "workflow-plan-proposal-set", "FlowDeskWorkflowPlanProposalSetV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
