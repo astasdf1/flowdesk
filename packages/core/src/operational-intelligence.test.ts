@@ -40,6 +40,9 @@ import {
 	createFlowDeskLocalLedgerSnapshotV1,
 	validateFlowDeskLocalLedgerSnapshotV1,
 	type FlowDeskLocalLedgerSnapshotV1,
+	createFlowDeskScoreReferencePackV1,
+	validateFlowDeskScoreReferencePackV1,
+	type FlowDeskScoreReferencePackV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -1723,4 +1726,201 @@ test("local ledger snapshot rejects inconsistent state (zero entries with refs)"
 	const mutated = validateFlowDeskLocalLedgerSnapshotV1({ ...validResult.snapshot!, entry_count: 0 });
 	assert.equal(mutated.ok, false);
 	assert.match(mutated.errors.join("; "), /oldest_entry_ref must be absent when entry_count is 0/);
+});
+
+// ─── P7-S9: Score Reference Pack tests ──────────────────────────────────────
+
+test("score reference pack creates valid pack with required and optional refs", () => {
+	const result = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-1",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		scoreRefs: ["score-ref-1", "score-ref-2"],
+		snapshotRefs: ["snapshot-ref-1"],
+		gateDecisionRefs: ["gate-decision-ref-1"],
+		capturedAt: "2026-06-06T15:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const pack = result.pack as FlowDeskScoreReferencePackV1;
+	assert.equal(pack.schema_version, "flowdesk.score_reference_pack.v1");
+	assert.equal(pack.reference_pack_id, "ref-pack-1");
+	assert.equal(pack.workflow_id, "workflow-1");
+	assert.equal(pack.task_signature_ref, "task-sig-1");
+	assert.deepEqual(pack.score_refs, ["score-ref-1", "score-ref-2"]);
+	assert.deepEqual(pack.snapshot_refs, ["snapshot-ref-1"]);
+	assert.deepEqual(pack.gate_decision_refs, ["gate-decision-ref-1"]);
+	assert.equal(pack.captured_at, "2026-06-06T15:00:00.000Z");
+	assert.equal(pack.advisory_only, true);
+	assert.equal(pack.non_authorizing, true);
+	assert.equal(pack.dispatch_authority_enabled, false);
+	assert.equal(pack.approval_authority_enabled, false);
+	assert.equal(pack.provider_authority_enabled, false);
+	assert.equal(pack.runtime_authority_enabled, false);
+	assert.equal(pack.external_write_authority_enabled, false);
+	assert.equal(pack.remote_write_authority_enabled, false);
+	assert.equal(pack.fallback_authority_enabled, false);
+	assert.equal(pack.lane_launch_authority_enabled, false);
+	assert.equal(pack.write_authority_enabled, false);
+	assert.equal(pack.hard_chat_authority_enabled, false);
+	// Validator also passes
+	assert.equal(validateFlowDeskScoreReferencePackV1(pack).ok, true);
+});
+
+test("score reference pack rejects authority smuggling", () => {
+	const result = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-2",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		scoreRefs: ["score-ref-1"],
+		capturedAt: "2026-06-06T15:01:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	const pack = result.pack as FlowDeskScoreReferencePackV1;
+
+	// dispatch authority smuggling
+	const forgedDispatch = validateFlowDeskScoreReferencePackV1({ ...pack, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+
+	// runtime authority smuggling
+	const forgedRuntime = validateFlowDeskScoreReferencePackV1({ ...pack, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only non-authorizing/);
+
+	// non_authorizing stripped
+	const strippedNonAuth = validateFlowDeskScoreReferencePackV1({ ...pack, non_authorizing: false as true });
+	assert.equal(strippedNonAuth.ok, false);
+	assert.match(strippedNonAuth.errors.join("; "), /advisory-only non-authorizing/);
+
+	// unknown property injection
+	const unknown = validateFlowDeskScoreReferencePackV1({ ...pack, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("score reference pack rejects malformed and over-limit inputs", () => {
+	// Empty score_refs
+	const emptyScoreRefs = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-3a",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		scoreRefs: [],
+		capturedAt: "2026-06-06T15:02:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(emptyScoreRefs.ok, false);
+	assert.match(emptyScoreRefs.errors.join("; "), /score_refs must be a non-empty bounded array/);
+
+	// Over-limit score_refs (21 entries)
+	const tooManyScoreRefs = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-3b",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		scoreRefs: Array.from({ length: 21 }, (_, i) => `score-ref-${i + 1}`),
+		capturedAt: "2026-06-06T15:02:10.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(tooManyScoreRefs.ok, false);
+	assert.match(tooManyScoreRefs.errors.join("; "), /score_refs must be a non-empty bounded array/);
+
+	// Over-limit snapshot_refs (11 entries)
+	const tooManySnapshots = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-3c",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		scoreRefs: ["score-ref-1"],
+		snapshotRefs: Array.from({ length: 11 }, (_, i) => `snapshot-ref-${i + 1}`),
+		capturedAt: "2026-06-06T15:02:20.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(tooManySnapshots.ok, false);
+	assert.match(tooManySnapshots.errors.join("; "), /snapshot_refs must be a bounded array/);
+
+	// Over-limit gate_decision_refs (11 entries)
+	const tooManyGates = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-3d",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		scoreRefs: ["score-ref-1"],
+		gateDecisionRefs: Array.from({ length: 11 }, (_, i) => `gate-ref-${i + 1}`),
+		capturedAt: "2026-06-06T15:02:30.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(tooManyGates.ok, false);
+	assert.match(tooManyGates.errors.join("; "), /gate_decision_refs must be a bounded array/);
+
+	// Malformed task_signature_ref (raw path marker)
+	const rawPath = createFlowDeskScoreReferencePackV1({
+		referencePackId: "ref-pack-3e",
+		workflowId: "workflow-1",
+		taskSignatureRef: "/Users/foo/task-sig",
+		scoreRefs: ["score-ref-1"],
+		capturedAt: "2026-06-06T15:02:40.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(rawPath.ok, false);
+	assert.match(rawPath.errors.join("; "), /schema-safe|raw path marker|traversal/);
+});
+
+test("score reference pack rejects empty or missing required arrays via validator", () => {
+	// Validator rejects object with score_refs as empty array
+	const noScoreRefs = validateFlowDeskScoreReferencePackV1({
+		schema_version: "flowdesk.score_reference_pack.v1",
+		reference_pack_id: "ref-pack-4a",
+		workflow_id: "workflow-1",
+		task_signature_ref: "task-sig-1",
+		score_refs: [],
+		snapshot_refs: [],
+		gate_decision_refs: [],
+		captured_at: "2026-06-06T15:03:00.000Z",
+		safe_next_actions: ["flowdesk-status"],
+		advisory_only: true,
+		non_authorizing: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	});
+	assert.equal(noScoreRefs.ok, false);
+	assert.match(noScoreRefs.errors.join("; "), /score_refs must be a non-empty bounded array/);
+
+	// Validator rejects missing safe_next_actions
+	const noActions = validateFlowDeskScoreReferencePackV1({
+		schema_version: "flowdesk.score_reference_pack.v1",
+		reference_pack_id: "ref-pack-4b",
+		workflow_id: "workflow-1",
+		task_signature_ref: "task-sig-1",
+		score_refs: ["score-ref-1"],
+		snapshot_refs: [],
+		gate_decision_refs: [],
+		captured_at: "2026-06-06T15:03:10.000Z",
+		safe_next_actions: [],
+		advisory_only: true,
+		non_authorizing: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	});
+	assert.equal(noActions.ok, false);
+	assert.match(noActions.errors.join("; "), /safe_next_actions must be a non-empty bounded array/);
+
+	// Validator rejects non-object
+	assert.equal(validateFlowDeskScoreReferencePackV1(null).ok, false);
+	assert.equal(validateFlowDeskScoreReferencePackV1(42).ok, false);
+	assert.equal(validateFlowDeskScoreReferencePackV1([]).ok, false);
 });
