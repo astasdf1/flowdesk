@@ -3,7 +3,9 @@
  * P7-S13.5 submodule: federated (Phase 8 scaffold)
  * P8-S3: federated registry connector capability + preflight contracts
  * P8-S4: federated registry connector gate evaluator (always-false, blocked-by-default)
+ * P8-S10: federated ledger idempotency record (global uniqueness contract)
  */
+import { createHash } from "node:crypto";
 import {
 	type ValidationResult,
 	valid,
@@ -1638,4 +1640,181 @@ export function planFlowDeskGitHubDryRunPublicationV1(
 	};
 
 	return { ok: true, errors: [], plan, blockedLabels: [] };
+}
+
+// ─── P8-S10: Federated Ledger Idempotency Record ─────────────────────────────
+
+/**
+ * Prefix length for ledger_entry_id. The prefix "ledger-entry-" is 13 chars.
+ * Total max length is 64, so the hash slice is 64 - 13 = 51 hex chars.
+ */
+const LEDGER_ENTRY_ID_PREFIX = "ledger-entry-";
+const LEDGER_ENTRY_HASH_SLICE_LEN = 51; // 13 + 51 = 64 total chars
+
+/**
+ * Compute a deterministic ledger_entry_id from canonicalWorkflowRef and scoredAtDay.
+ * ledger_entry_id = "ledger-entry-" + sha256(canonicalWorkflowRef + "|" + scoredAtDay).slice(0, 51)
+ * Uses node:crypto for deterministic SHA-256 — no randomness.
+ */
+export function computeFederatedLedgerEntryId(canonicalWorkflowRef: string, scoredAtDay: string): string {
+	const input = `${canonicalWorkflowRef}|${scoredAtDay}`;
+	const hash = createHash("sha256").update(input, "utf8").digest("hex");
+	return `${LEDGER_ENTRY_ID_PREFIX}${hash.slice(0, LEDGER_ENTRY_HASH_SLICE_LEN)}`;
+}
+
+/**
+ * Advisory-only idempotency record for globally-unique ledger entry deduplication.
+ * ledger_entry_id is deterministically derived from canonical_workflow_ref + scored_at_day
+ * so the same workflow × day pair always produces the same id across all installations.
+ * All authority flags are structural false literals enforced at validation time.
+ */
+export interface FlowDeskFederatedLedgerIdempotencyRecordV1 {
+	schema_version: "flowdesk.federated_ledger_idempotency.v1";
+	idempotency_record_id: string;
+	/** From FlowDeskFederatedCanonicalWorkflowRefV1.source_hash_ref — opaque, never raw workflow id. */
+	canonical_workflow_ref: string;
+	/** YYYY-MM-DD format only — day resolution per minimization policy. */
+	scored_at_day: string;
+	/** From consent record — opaque hash ref, never raw installation id. */
+	installation_id_hash_ref: string;
+	/**
+	 * SHA-256(canonical_workflow_ref + "|" + scored_at_day) truncated to 51 hex chars,
+	 * prefixed with "ledger-entry-" for schema safety. Total length <= 64 chars.
+	 */
+	ledger_entry_id: string;
+	/** "global" — cross-installation deduplication scope. */
+	deduplication_scope: "global";
+	/** 1..30 days. */
+	idempotency_window_days: number;
+	created_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	remote_write_authority_enabled: false;
+	dispatch_authority_enabled: false;
+}
+
+export interface FlowDeskFederatedLedgerIdempotencyRecordResultV1 {
+	ok: boolean;
+	errors: string[];
+	record?: FlowDeskFederatedLedgerIdempotencyRecordV1;
+}
+
+/** Validates scored_at_day is in YYYY-MM-DD format. */
+function validateScoredAtDay(value: unknown, label: string): ValidationResult {
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+		return invalid(`${label} must be in YYYY-MM-DD format`);
+	}
+	// Basic calendar sanity: month 01-12, day 01-31
+	const [, mm, dd] = value.split("-");
+	const month = parseInt(mm, 10);
+	const day = parseInt(dd, 10);
+	if (month < 1 || month > 12 || day < 1 || day > 31) {
+		return invalid(`${label} has invalid calendar values`);
+	}
+	return valid();
+}
+
+/** Validates a ledger_entry_id starts with "ledger-entry-" and is schema-safe opaque. */
+function validateLedgerEntryIdShape(value: unknown, label: string): ValidationResult {
+	if (typeof value !== "string") return invalid(`${label} must be a string`);
+	if (!value.startsWith(LEDGER_ENTRY_ID_PREFIX)) {
+		return invalid(`${label} must start with "${LEDGER_ENTRY_ID_PREFIX}" prefix`);
+	}
+	const hashPart = value.slice(LEDGER_ENTRY_ID_PREFIX.length);
+	if (hashPart.length === 0 || hashPart.length > 51) {
+		return invalid(`${label} hash portion must be 1..51 chars`);
+	}
+	// Hex-only check for the hash portion (deterministic SHA-256 slice)
+	if (!/^[a-f0-9]+$/.test(hashPart)) {
+		return invalid(`${label} hash portion must be lowercase hex`);
+	}
+	// Full schema-safe opaque ref check on the complete id
+	return validateOpaqueRef(value, label);
+}
+
+export function createFlowDeskFederatedLedgerIdempotencyRecordV1(input: {
+	idempotencyRecordId: string;
+	canonicalWorkflowRef: string;
+	scoredAtDay: string;
+	installationIdHashRef: string;
+	idempotencyWindowDays: number;
+	createdAt?: string;
+}): FlowDeskFederatedLedgerIdempotencyRecordResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.idempotencyRecordId, "idempotency_record_id").errors);
+	errors.push(...validateOpaqueRef(input.canonicalWorkflowRef, "canonical_workflow_ref").errors);
+	errors.push(...validateScoredAtDay(input.scoredAtDay, "scored_at_day").errors);
+	errors.push(...validateHashRef(input.installationIdHashRef, "installation_id_hash_ref").errors);
+	if (typeof input.idempotencyWindowDays !== "number" || !Number.isInteger(input.idempotencyWindowDays) || input.idempotencyWindowDays < 1 || input.idempotencyWindowDays > 30) {
+		errors.push("idempotency_window_days must be an integer in 1..30");
+	}
+	const createdAt = input.createdAt ?? new Date().toISOString();
+	errors.push(...validateTimestamp(createdAt, "created_at").errors);
+	if (errors.length > 0) return { ok: false, errors };
+
+	const ledgerEntryId = computeFederatedLedgerEntryId(input.canonicalWorkflowRef, input.scoredAtDay);
+	return {
+		ok: true,
+		errors: [],
+		record: {
+			schema_version: "flowdesk.federated_ledger_idempotency.v1",
+			idempotency_record_id: input.idempotencyRecordId,
+			canonical_workflow_ref: input.canonicalWorkflowRef,
+			scored_at_day: input.scoredAtDay,
+			installation_id_hash_ref: input.installationIdHashRef,
+			ledger_entry_id: ledgerEntryId,
+			deduplication_scope: "global",
+			idempotency_window_days: input.idempotencyWindowDays,
+			created_at: createdAt,
+			advisory_only: true,
+			non_authorizing: true,
+			remote_write_authority_enabled: false,
+			dispatch_authority_enabled: false,
+		},
+	};
+}
+
+export function validateFlowDeskFederatedLedgerIdempotencyRecordV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("federated ledger idempotency record must be an object");
+	const record = value as Partial<FlowDeskFederatedLedgerIdempotencyRecordV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"idempotency_record_id",
+		"canonical_workflow_ref",
+		"scored_at_day",
+		"installation_id_hash_ref",
+		"ledger_entry_id",
+		"deduplication_scope",
+		"idempotency_window_days",
+		"created_at",
+		"advisory_only",
+		"non_authorizing",
+		"remote_write_authority_enabled",
+		"dispatch_authority_enabled",
+	], "federated ledger idempotency record").errors);
+	if (record.schema_version !== "flowdesk.federated_ledger_idempotency.v1") {
+		errors.push("federated ledger idempotency record schema_version is invalid");
+	}
+	errors.push(...validateOpaqueId(record.idempotency_record_id, "idempotency_record_id").errors);
+	errors.push(...validateOpaqueRef(record.canonical_workflow_ref, "canonical_workflow_ref").errors);
+	errors.push(...validateScoredAtDay(record.scored_at_day, "scored_at_day").errors);
+	errors.push(...validateHashRef(record.installation_id_hash_ref, "installation_id_hash_ref").errors);
+	errors.push(...validateLedgerEntryIdShape(record.ledger_entry_id, "ledger_entry_id").errors);
+	// deduplication_scope must be the literal "global"
+	if (record.deduplication_scope !== "global") {
+		errors.push("deduplication_scope must be \"global\" (cross-installation dedup; authority smuggling rejected)");
+	}
+	// idempotency_window_days: 1..30
+	if (typeof record.idempotency_window_days !== "number" || !Number.isInteger(record.idempotency_window_days) || record.idempotency_window_days < 1 || record.idempotency_window_days > 30) {
+		errors.push("idempotency_window_days must be an integer in 1..30");
+	}
+	errors.push(...validateTimestamp(record.created_at, "created_at").errors);
+	// Authority literal invariants — closed schema, authority smuggling rejected
+	if (record.advisory_only !== true) errors.push("advisory_only must be true");
+	if (record.non_authorizing !== true) errors.push("non_authorizing must be true");
+	if (record.remote_write_authority_enabled !== false) errors.push("remote_write_authority_enabled must be false (authority smuggling rejected)");
+	if (record.dispatch_authority_enabled !== false) errors.push("dispatch_authority_enabled must be false (authority smuggling rejected)");
+	errors.push(...validateNoForbiddenRawPayloads(record, "federated_ledger_idempotency_record").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
 }

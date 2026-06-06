@@ -16,7 +16,7 @@
  *   session-summary.ts → shared.ts
  *   specialist.ts → shared.ts
  *   mcp-advisory.ts → shared.ts
- *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run)
+ *   federated.ts → shared.ts, evaluation-events.ts (P8-S3: +connector capability, preflight, dry-run; P8-S10: +ledger idempotency)
  */
 
 // shared public types (P7-S13.6a: common OI advisory envelope + health label taxonomy)
@@ -208,6 +208,12 @@ export {
 	type FlowDeskGitHubDryRunPublicationPlanInputV1,
 	type FlowDeskGitHubDryRunPublicationPlanResultV1,
 	planFlowDeskGitHubDryRunPublicationV1,
+	// P8-S10: federated ledger idempotency record (global uniqueness contract)
+	type FlowDeskFederatedLedgerIdempotencyRecordV1,
+	type FlowDeskFederatedLedgerIdempotencyRecordResultV1,
+	createFlowDeskFederatedLedgerIdempotencyRecordV1,
+	validateFlowDeskFederatedLedgerIdempotencyRecordV1,
+	computeFederatedLedgerEntryId,
 } from "./federated.js";
 
 // scoring-engine (P7-S14: minimal OI scoring engine)

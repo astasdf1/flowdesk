@@ -232,6 +232,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.github_dry_run_publication_result.v1", "github-dry-run-publication-result", "FlowDeskGitHubDryRunPublicationResultV1", "later_release"),
   artifactEntry("flowdesk.federated_consent_record.v1", "federated-consent-record", "FlowDeskFederatedConsentRecordV1", "later_release"),
   artifactEntry("flowdesk.github_oauth_architecture.v1", "github-oauth-architecture", "FlowDeskGitHubOAuthArchitectureV1", "later_release"),
+  artifactEntry("flowdesk.federated_ledger_idempotency.v1", "federated-ledger-idempotency", "FlowDeskFederatedLedgerIdempotencyRecordV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
