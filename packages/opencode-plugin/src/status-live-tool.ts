@@ -184,6 +184,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestTaskResultExcerpts?: readonly FlowDeskStatusLiveTaskResultExcerptV1[];
 	latestWorkflowDispatchPlanRevisionId?: string;
 	latestWorkflowDispatchPlanTaskCount?: number;
+	latestOIAdvisoryHealthLabel?: string;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
 	stalledLaneCount?: number;
@@ -712,6 +713,8 @@ function summarizeWorkflow(
 	let latestTaskResultExcerpts: FlowDeskStatusLiveTaskResultExcerptV1[] | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
+	let oiAdvisoryHealthLabel: string | undefined;
+	let oiAdvisoryHealthLabelCapturedAtMs = -1;
 	const toolRunOverdueLaneIds = new Set<string>();
 
 	for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
@@ -829,6 +832,21 @@ function summarizeWorkflow(
 				if (laneId !== undefined) toolRunOverdueLaneIds.add(laneId);
 			}
 		}
+		if (evidenceClass === "oi_session_summary") {
+			// Find the most recent oi_session_summary by captured_at timestamp.
+			for (const entry of classEntries) {
+				const capturedAt = getStringField(entry.record, "captured_at");
+				const capturedAtMs = capturedAt === undefined ? 0 : Date.parse(capturedAt);
+				if (!Number.isFinite(capturedAtMs)) continue;
+				if (capturedAtMs > oiAdvisoryHealthLabelCapturedAtMs) {
+					const label = getStringField(entry.record, "advisory_health_label");
+					if (label !== undefined) {
+						oiAdvisoryHealthLabel = label;
+						oiAdvisoryHealthLabelCapturedAtMs = capturedAtMs;
+					}
+				}
+			}
+		}
 	}
 
 	const providerUsageSummary = summarizeLatestProviderUsageSnapshot(
@@ -908,6 +926,9 @@ function summarizeWorkflow(
 			: {}),
 		...(workflowDispatchPlanTaskCount !== undefined
 			? { latestWorkflowDispatchPlanTaskCount: workflowDispatchPlanTaskCount }
+			: {}),
+		...(oiAdvisoryHealthLabel !== undefined
+			? { latestOIAdvisoryHealthLabel: oiAdvisoryHealthLabel }
 			: {}),
 		...(toolRunOverdueLaneIds.size > 0
 			? { toolRunOverdueObservedLaneCount: toolRunOverdueLaneIds.size }
@@ -1639,7 +1660,10 @@ function buildStatusLiveSummaryForUser(input: {
 			.map((excerpt) => `${excerpt.taskId}${excerpt.truncated || excerpt.sourceResultTextTruncated ? " (truncated)" : ""}:\n${excerpt.resultText.length > STATUS_TASK_RESULT_SUMMARY_MAX_CHARS ? `${excerpt.resultText.slice(0, STATUS_TASK_RESULT_SUMMARY_MAX_CHARS - 1)}…` : excerpt.resultText}`)
 			.join("\n");
 		const taskResultText = taskResultPreview.length > 0 ? `\n  task_result_excerpt:\n${taskResultPreview}` : "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${taskResultText}`;
+		const oiHealthText = workflow.latestOIAdvisoryHealthLabel !== undefined
+			? `, oi_health=${workflow.latestOIAdvisoryHealthLabel}`
+			: "";
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${oiHealthText}${taskResultText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

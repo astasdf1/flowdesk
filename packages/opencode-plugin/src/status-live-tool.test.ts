@@ -1083,6 +1083,145 @@ test("status live reports effective nudge count and last activity from progress"
 	}
 });
 
+test("OI advisory_health_label from oi_session_summary appears in status-live workflow summary", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-oi-health-present-"));
+	try {
+		const workflowId = "workflow-oi-health-present-1";
+		writeStatusRecord(rootDir, workflowId, "oi_session_summary", "oi-session-summary-healthy-1", {
+			schema_version: "flowdesk.oi_session_summary.v1",
+			summary_id: "oi-session-summary-healthy-1",
+			session_ref: "ses-oi-health-present-1",
+			workflow_id: workflowId,
+			proposals_scored: 3,
+			reuse_gates_checked: 2,
+			fanout_gates_evaluated: 1,
+			ledger_entries_total: 6,
+			advisory_health_label: "healthy",
+			captured_at: "2026-05-27T00:01:00.000Z",
+			safe_next_actions: ["flowdesk-status"],
+			advisory_only: true,
+			non_authorizing: true,
+			dispatch_authority_enabled: false,
+			approval_authority_enabled: false,
+			provider_authority_enabled: false,
+			runtime_authority_enabled: false,
+			external_write_authority_enabled: false,
+			remote_write_authority_enabled: false,
+			fallback_authority_enabled: false,
+			lane_launch_authority_enabled: false,
+			write_authority_enabled: false,
+			hard_chat_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:02:00.000Z"),
+		});
+
+		assert.equal(result.status, "status_live_collected");
+		assert.equal(result.workflows[0].latestOIAdvisoryHealthLabel, "healthy");
+		assert.match(result.summaryForUser ?? "", /oi_health=healthy/);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("advisory_health_label from most recent oi_session_summary wins when multiple exist", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-oi-health-latest-"));
+	try {
+		const workflowId = "workflow-oi-health-latest-1";
+		const baseRecord = (summaryId: string, healthLabel: string, capturedAt: string) => ({
+			schema_version: "flowdesk.oi_session_summary.v1",
+			summary_id: summaryId,
+			session_ref: "ses-oi-health-latest-1",
+			workflow_id: workflowId,
+			proposals_scored: 1,
+			reuse_gates_checked: 0,
+			fanout_gates_evaluated: 0,
+			ledger_entries_total: 1,
+			advisory_health_label: healthLabel,
+			captured_at: capturedAt,
+			safe_next_actions: ["flowdesk-status"],
+			advisory_only: true,
+			non_authorizing: true,
+			dispatch_authority_enabled: false,
+			approval_authority_enabled: false,
+			provider_authority_enabled: false,
+			runtime_authority_enabled: false,
+			external_write_authority_enabled: false,
+			remote_write_authority_enabled: false,
+			fallback_authority_enabled: false,
+			lane_launch_authority_enabled: false,
+			write_authority_enabled: false,
+			hard_chat_authority_enabled: false,
+		});
+		// Older record: "stale"
+		writeStatusRecord(rootDir, workflowId, "oi_session_summary", "oi-session-summary-older-1", baseRecord("oi-session-summary-older-1", "stale", "2026-05-27T00:00:00.000Z"));
+		// Newer record: "degraded" — this should win
+		writeStatusRecord(rootDir, workflowId, "oi_session_summary", "oi-session-summary-newer-1", baseRecord("oi-session-summary-newer-1", "degraded", "2026-05-27T00:01:30.000Z"));
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:02:00.000Z"),
+		});
+
+		assert.equal(result.status, "status_live_collected");
+		assert.equal(result.workflows[0].latestOIAdvisoryHealthLabel, "degraded");
+		assert.match(result.summaryForUser ?? "", /oi_health=degraded/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /oi_health=stale/);
+		assert.equal(result.authority.providerCall, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live workflow without oi_session_summary evidence omits latestOIAdvisoryHealthLabel without error", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-oi-health-absent-"));
+	try {
+		const workflowId = "workflow-oi-health-absent-1";
+		// Write only a workflow_dispatch_plan record — no oi_session_summary at all
+		writeStatusRecord(rootDir, workflowId, "workflow_dispatch_plan", "workflow-plan-oi-absent-1", {
+			schema_version: "flowdesk.workflow_dispatch_plan.v1",
+			workflow_id: workflowId,
+			plan_revision_id: "plan-revision-oi-absent-1",
+			requested_goal_summary: "A bounded plan with no OI evidence",
+			selected_agent_roles: [],
+			tasks: [],
+			task_graph_summary: "No tasks",
+			model_selection_diagnostics: {
+				diagnostic_refs: [],
+				diagnostic_labels: [],
+				scoring_authority_enabled: false,
+				fallback_or_reselection_allowed: false,
+			},
+			release_gate: "release1_planning_only",
+			dispatch_authority_enabled: false,
+			provider_call_made: false,
+			runtime_execution: false,
+			actual_lane_launch: false,
+			redaction_version: "v1",
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:02:00.000Z"),
+		});
+
+		assert.equal(result.status, "status_live_collected");
+		// Field must be absent (not "unknown") when no oi_session_summary evidence is present
+		assert.equal(result.workflows[0].latestOIAdvisoryHealthLabel, undefined);
+		assert.doesNotMatch(result.summaryForUser ?? "", /oi_health=/);
+		assert.equal(result.authority.providerCall, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 function writeStatusRecord(
 	rootDir: string,
 	workflowId: string,
