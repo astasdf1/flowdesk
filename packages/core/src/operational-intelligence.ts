@@ -148,6 +148,35 @@ export interface FlowDeskWorkflowPlanProposalScoreEventV1 {
 	lane_launch_authority_enabled: false;
 }
 
+export type FlowDeskOptimizerScoreDimensionNameV1 = "goal_fit" | "safety" | "simplicity_fit" | "detail_fit" | "taxonomy_fit" | "verification_coverage" | "risk" | "dependency_impact" | "confidence" | "cost" | "latency" | "model_diversity";
+
+export interface FlowDeskOptimizerScoreDimensionV1 {
+	dimension: FlowDeskOptimizerScoreDimensionNameV1;
+	score: number;
+	weight: number;
+	reason_ref: string;
+}
+
+export interface FlowDeskOptimizerProposalScoreV1 {
+	schema_version: "flowdesk.optimizer_proposal_score.v1";
+	score_id: string;
+	workflow_id: string;
+	proposal_id: string;
+	candidate_ref: string;
+	hard_filter_state: "passed" | "blocked";
+	blocked_labels: string[];
+	score_dimensions: FlowDeskOptimizerScoreDimensionV1[];
+	advisory_score: number;
+	advisory_only: true;
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+}
+
 export interface FlowDeskAdvisoryScoreLedgerEntryV1 {
 	schema_version: "flowdesk.advisory_score_ledger_entry.v1";
 	ledger_entry_id: string;
@@ -632,6 +661,37 @@ export function createFlowDeskWorkflowPlanProposalScoreEventV1(input: {
 	};
 }
 
+export function createFlowDeskOptimizerProposalScoreV1(input: {
+	scoreId: string;
+	workflowId: string;
+	proposalId: string;
+	candidateRef: string;
+	hardFiltersPassed: boolean;
+	blockedLabels?: string[];
+	scoreDimensions: FlowDeskOptimizerScoreDimensionV1[];
+	advisoryScore: number;
+}): FlowDeskOptimizerProposalScoreV1 {
+	return {
+		schema_version: "flowdesk.optimizer_proposal_score.v1",
+		score_id: input.scoreId,
+		workflow_id: input.workflowId,
+		proposal_id: input.proposalId,
+		candidate_ref: input.candidateRef,
+		hard_filter_state: input.hardFiltersPassed ? "passed" : "blocked",
+		blocked_labels: [...(input.blockedLabels ?? [])],
+		score_dimensions: input.scoreDimensions.map(d => ({ ...d })),
+		advisory_score: input.hardFiltersPassed ? input.advisoryScore : 0,
+		advisory_only: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+	};
+}
+
 export function createFlowDeskEvaluationEventV1(input: {
 	evaluationEventId: string;
 	workflowId: string;
@@ -1000,6 +1060,66 @@ export function validateFlowDeskWorkflowPlanProposalScoreEventV1(value: unknown)
 	errors.push(...validateHardFilterFields(record, "workflow plan proposal score event").errors);
 	errors.push(...validateAdvisoryAuthorityFlags(record, "workflow plan proposal score event").errors);
 	errors.push(...validateNoForbiddenRawPayloads(record, "workflow_plan_proposal_score_event").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+const optimizerDimensionNames = [
+	"goal_fit", "safety", "simplicity_fit", "detail_fit", "taxonomy_fit", "verification_coverage", "risk", "dependency_impact", "confidence", "cost", "latency", "model_diversity"
+] as const;
+
+function validateOptimizerScoreDimensions(value: unknown, label: string): ValidationResult {
+	if (!Array.isArray(value)) return invalid(`${label} must be an array`);
+	if (value.length === 0 || value.length > 12) return invalid(`${label} must be a non-empty bounded array`);
+	const errors: string[] = [];
+	const seen = new Set<string>();
+	for (const [index, dimension] of value.entries()) {
+		if (!isRecord(dimension)) {
+			errors.push(`${label}[${index}] must be an object`);
+			continue;
+		}
+		errors.push(...rejectUnknownProperties(dimension, ["dimension", "score", "weight", "reason_ref"], `${label}[${index}]`).errors);
+		if (typeof dimension.dimension !== "string" || !(optimizerDimensionNames as readonly string[]).includes(dimension.dimension)) errors.push(`${label}[${index}].dimension is invalid`);
+		else if (seen.has(dimension.dimension)) errors.push(`${label}[${index}].dimension must not duplicate ${dimension.dimension}`);
+		else seen.add(dimension.dimension);
+		if (typeof dimension.score !== "number" || !Number.isFinite(dimension.score) || dimension.score < 0 || dimension.score > 100) errors.push(`${label}[${index}].score must be 0..100`);
+		if (typeof dimension.weight !== "number" || !Number.isFinite(dimension.weight) || dimension.weight < 0 || dimension.weight > 1) errors.push(`${label}[${index}].weight must be 0..1`);
+		errors.push(...validateOpaqueRef(dimension.reason_ref, `${label}[${index}].reason_ref`).errors);
+	}
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function validateFlowDeskOptimizerProposalScoreV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("optimizer proposal score must be an object");
+	const record = value as Partial<FlowDeskOptimizerProposalScoreV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"score_id",
+		"workflow_id",
+		"proposal_id",
+		"candidate_ref",
+		"hard_filter_state",
+		"blocked_labels",
+		"score_dimensions",
+		"advisory_score",
+		"advisory_only",
+		"dispatch_authority_enabled",
+		"approval_authority_enabled",
+		"provider_authority_enabled",
+		"runtime_authority_enabled",
+		"external_write_authority_enabled",
+		"fallback_authority_enabled",
+		"lane_launch_authority_enabled",
+	], "optimizer proposal score").errors);
+	errors.push(...validateOpaqueId(record.score_id, "score_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueId(record.proposal_id, "proposal_id").errors);
+	errors.push(...validateOpaqueRef(record.candidate_ref, "candidate_ref").errors);
+	if (record.schema_version !== "flowdesk.optimizer_proposal_score.v1") errors.push("optimizer proposal score schema_version is invalid");
+	errors.push(...validateHardFilterFields(record, "optimizer proposal score").errors);
+	errors.push(...validateOptimizerScoreDimensions(record.score_dimensions, "score_dimensions").errors);
+	errors.push(...validateAdvisoryAuthorityFlags(record, "optimizer proposal score").errors);
+	errors.push(...validateNoForbiddenRawPayloads(record, "optimizer_proposal_score").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
@@ -1378,6 +1498,214 @@ export function validateFlowDeskFederatedScoreRegistryPublicationRequestV1(value
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
+// ─── P7-S5: Normalized Score Aggregation ────────────────────────────────────
+
+/**
+ * Aggregated normalized score produced from a set of `FlowDeskOptimizerProposalScoreV1`
+ * score-dimension entries.  The resulting `normalized_score` is bounded 0..100 and is
+ * computed by a weighted-average of the input dimensions, subject to a strict-minimum
+ * rule that pins the aggregation to 0 when any dimension score falls below its declared
+ * minimum threshold.
+ *
+ * All authority flags are disabled.  This contract is advisory-only and does not grant
+ * dispatch, provider, runtime, lane-launch, fallback, write, or hard-chat authority.
+ */
+export interface FlowDeskNormalizedScoreAggregationV1 {
+	schema_version: "flowdesk.normalized_score_aggregation.v1";
+	aggregation_id: string;
+	workflow_id: string;
+	source_score_id: string;
+	/** Dimension-level entries contributing to the aggregation. */
+	dimension_scores: FlowDeskOptimizerScoreDimensionV1[];
+	/** Weighted-average normalized score, 0..100.  Zeroed when any strict minimum is breached. */
+	normalized_score: number;
+	/** Total weight sum used for the weighted average (must be > 0). */
+	total_weight: number;
+	/** True when at least one dimension breached its strict minimum threshold. */
+	strict_minimum_breached: boolean;
+	/** Hard-filter pass/block state mirrored from the source score. */
+	hard_filter_state: "passed" | "blocked";
+	/** Human-readable rationale ref for why the aggregation produced this score. */
+	aggregation_reason_ref: string;
+	/** ISO 8601 timestamp at which the aggregation was computed. */
+	aggregated_at: string;
+	advisory_only: true;
+	release_gate: "operational_intelligence_later_gate";
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
+export interface FlowDeskNormalizedScoreAggregationResultV1 {
+	ok: boolean;
+	errors: string[];
+	aggregation?: FlowDeskNormalizedScoreAggregationV1;
+}
+
+/**
+ * Compute a weighted-average normalized score from a set of optimizer dimension scores.
+ *
+ * Strict minimum: if `strictMinimumThreshold` is supplied and any dimension score
+ * is strictly below that threshold, the aggregated `normalized_score` is zeroed and
+ * `strict_minimum_breached` is set to `true`.
+ */
+export function createFlowDeskNormalizedScoreAggregationV1(input: {
+	aggregationId: string;
+	workflowId: string;
+	sourceScoreId: string;
+	dimensionScores: FlowDeskOptimizerScoreDimensionV1[];
+	hardFilterState: "passed" | "blocked";
+	aggregationReasonRef: string;
+	aggregatedAt: string;
+	/** Optional per-dimension strict minimum (0..100).  Any dimension below this zeroes the score. */
+	strictMinimumThreshold?: number;
+}): FlowDeskNormalizedScoreAggregationResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.aggregationId, "aggregation_id").errors);
+	errors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	errors.push(...validateOpaqueId(input.sourceScoreId, "source_score_id").errors);
+	errors.push(...validateOpaqueRef(input.aggregationReasonRef, "aggregation_reason_ref").errors);
+	errors.push(...validateTimestamp(input.aggregatedAt, "aggregated_at").errors);
+	errors.push(...validateOptimizerScoreDimensions(input.dimensionScores, "dimension_scores").errors);
+	if (input.hardFilterState !== "passed" && input.hardFilterState !== "blocked") errors.push("hard_filter_state must be 'passed' or 'blocked'");
+	if (input.strictMinimumThreshold !== undefined && (typeof input.strictMinimumThreshold !== "number" || !Number.isFinite(input.strictMinimumThreshold) || input.strictMinimumThreshold < 0 || input.strictMinimumThreshold > 100)) errors.push("strictMinimumThreshold must be 0..100");
+	if (errors.length > 0) return { ok: false, errors };
+
+	const totalWeight = input.dimensionScores.reduce((sum, d) => sum + d.weight, 0);
+	if (totalWeight <= 0) return { ok: false, errors: ["total weight of dimension_scores must be > 0"] };
+
+	// Weighted-average aggregation
+	const rawScore = input.dimensionScores.reduce((sum, d) => sum + d.score * (d.weight / totalWeight), 0);
+	const clampedScore = Math.min(100, Math.max(0, rawScore));
+
+	// Strict-minimum rule
+	const threshold = input.strictMinimumThreshold ?? 0;
+	const strictMinimumBreached = input.dimensionScores.some((d) => d.score < threshold);
+
+	// Hard-filter block also zeroes the score
+	const normalizedScore = (strictMinimumBreached || input.hardFilterState === "blocked") ? 0 : Math.round(clampedScore * 100) / 100;
+
+	const aggregation: FlowDeskNormalizedScoreAggregationV1 = {
+		schema_version: "flowdesk.normalized_score_aggregation.v1",
+		aggregation_id: input.aggregationId,
+		workflow_id: input.workflowId,
+		source_score_id: input.sourceScoreId,
+		dimension_scores: input.dimensionScores.map((d) => ({ ...d })),
+		normalized_score: normalizedScore,
+		total_weight: Math.round(totalWeight * 1e9) / 1e9,
+		strict_minimum_breached: strictMinimumBreached,
+		hard_filter_state: input.hardFilterState,
+		aggregation_reason_ref: input.aggregationReasonRef,
+		aggregated_at: input.aggregatedAt,
+		advisory_only: true,
+		release_gate: "operational_intelligence_later_gate",
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+	return { ok: true, errors: [], aggregation };
+}
+
+const normalizedScoreAggregationAllowedProperties = [
+	"schema_version",
+	"aggregation_id",
+	"workflow_id",
+	"source_score_id",
+	"dimension_scores",
+	"normalized_score",
+	"total_weight",
+	"strict_minimum_breached",
+	"hard_filter_state",
+	"aggregation_reason_ref",
+	"aggregated_at",
+	"advisory_only",
+	"release_gate",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+] as const;
+
+export function validateFlowDeskNormalizedScoreAggregationV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("normalized score aggregation must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, normalizedScoreAggregationAllowedProperties, "normalized score aggregation").errors);
+
+	if (record.schema_version !== "flowdesk.normalized_score_aggregation.v1") errors.push("normalized score aggregation schema_version is invalid");
+	if (record.release_gate !== "operational_intelligence_later_gate") errors.push("normalized score aggregation release_gate is invalid");
+
+	errors.push(...validateOpaqueId(record.aggregation_id, "aggregation_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueId(record.source_score_id, "source_score_id").errors);
+	errors.push(...validateOpaqueRef(record.aggregation_reason_ref, "aggregation_reason_ref").errors);
+	errors.push(...validateTimestamp(record.aggregated_at, "aggregated_at").errors);
+
+	// Validate dimension_scores
+	errors.push(...validateOptimizerScoreDimensions(record.dimension_scores, "dimension_scores").errors);
+
+	// Validate normalized_score: bounded 0..100
+	if (typeof record.normalized_score !== "number" || !Number.isFinite(record.normalized_score) || record.normalized_score < 0 || record.normalized_score > 100) {
+		errors.push("normalized_score must be a finite number 0..100");
+	}
+
+	// Validate total_weight: must be > 0
+	if (typeof record.total_weight !== "number" || !Number.isFinite(record.total_weight) || record.total_weight <= 0) {
+		errors.push("total_weight must be a positive finite number");
+	}
+
+	// Validate strict_minimum_breached
+	if (typeof record.strict_minimum_breached !== "boolean") {
+		errors.push("strict_minimum_breached must be a boolean");
+	}
+
+	// Validate hard_filter_state
+	if (record.hard_filter_state !== "passed" && record.hard_filter_state !== "blocked") {
+		errors.push("hard_filter_state must be 'passed' or 'blocked'");
+	}
+
+	// Consistency: blocked hard filter or strict_minimum_breached must zero the score
+	if ((record.hard_filter_state === "blocked" || record.strict_minimum_breached === true) && record.normalized_score !== 0) {
+		errors.push("normalized_score must be 0 when hard_filter_state is 'blocked' or strict_minimum_breached is true");
+	}
+
+	// Authority flags — all explicitly disabled, advisory_only required
+	if (record.advisory_only !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) {
+		errors.push("normalized score aggregation must remain advisory-only with no dispatch, approval, provider, runtime, external-write, fallback, lane-launch, write, or hard-chat authority");
+	}
+
+	errors.push(...validateNoForbiddenRawPayloads(record, "normalized_score_aggregation").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
 export function validateFlowDeskReferencePackV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("reference pack must be an object");
 	const record = value as Partial<FlowDeskReferencePackV1>;
@@ -1401,5 +1729,818 @@ export function validateFlowDeskReferencePackV1(value: unknown): ValidationResul
 	if (record.schema_version !== "flowdesk.reference_pack.v1") errors.push("reference pack schema_version is invalid");
 	if (record.specialist_signoff !== false || record.professional_advice !== false || record.advisory_only !== true || record.external_write_authority_enabled !== false) errors.push("reference pack cannot act as signoff or external write authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "reference_pack").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+// ─── P7-S6: Score Reuse Threshold Gate ──────────────────────────────────────
+
+/**
+ * Advisory decision label for whether an existing score/aggregation can be
+ * reused, must be recomputed, or is blocked from any use.
+ *
+ * - `reuse`: the existing score is fresh enough and context-consistent; consumers
+ *   MAY reuse it without recomputing.
+ * - `recompute`: the existing score is stale or context has drifted; consumers
+ *   SHOULD trigger a recomputation before relying on the score.
+ * - `blocked`: the gate cannot reach a reuse/recompute decision (e.g., missing
+ *   required inputs, hard-filter failure).  Consumers MUST treat the score as
+ *   unusable.
+ */
+export type FlowDeskScoreReuseDecisionLabelV1 = "reuse" | "recompute" | "blocked";
+
+/**
+ * Advisory-only contract encoding a bounded reuse vs recompute decision for an
+ * existing `FlowDeskOptimizerProposalScoreV1` or
+ * `FlowDeskNormalizedScoreAggregationV1`.
+ *
+ * All authority flags are disabled.  This record never grants dispatch, provider,
+ * runtime, lane-launch, fallback, write, remote-write, or hard-chat authority.
+ */
+export interface FlowDeskScoreReuseThresholdGateV1 {
+	schema_version: "flowdesk.score_reuse_threshold_gate.v1";
+	gate_id: string;
+	workflow_id: string;
+	/** Opaque reference to the score being evaluated for reuse. */
+	previous_score_ref: string;
+	/** Hash of the context at the time the previous score was computed. */
+	previous_context_hash: string;
+	/** Hash of the context at the time this gate is evaluated. */
+	current_context_hash: string;
+	/** Age of the previous score in seconds at gate evaluation time.  Must be >= 0. */
+	score_age_seconds: number;
+	/** Maximum acceptable age in seconds for score reuse.  Must be > 0. */
+	max_age_threshold_seconds: number;
+	/** Minimum advisory score required for the "reuse" decision (0..100).  Default 0. */
+	min_score_threshold: number;
+	/** Advisory score of the previous score record (0..100). */
+	previous_advisory_score: number;
+	/** True when the context hashes match (no context drift). */
+	context_match: boolean;
+	/** True when score_age_seconds <= max_age_threshold_seconds. */
+	within_age_threshold: boolean;
+	/** True when previous_advisory_score >= min_score_threshold. */
+	above_min_score: boolean;
+	/** The gate decision. */
+	gate_decision: FlowDeskScoreReuseDecisionLabelV1;
+	/** Human-readable rationale refs for the gate decision.  Non-empty. */
+	reason_refs: string[];
+	/** ISO 8601 timestamp at which this gate was evaluated. */
+	evaluated_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	release_gate: "operational_intelligence_later_gate";
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
+export interface FlowDeskScoreReuseThresholdGateResultV1 {
+	ok: boolean;
+	errors: string[];
+	gate?: FlowDeskScoreReuseThresholdGateV1;
+}
+
+/**
+ * Evaluate whether an existing advisory score can be reused.
+ *
+ * Decision rules (evaluated in order):
+ * 1. If `blocked` (any input validation error or previousAdvisoryScore is on a
+ *    blocked hard filter, or contextMatch is forced false due to hash mismatch
+ *    and context is explicitly provided as mismatched): decision = "blocked".
+ * 2. If context hashes differ OR score age exceeds threshold OR advisory score
+ *    is below min threshold: decision = "recompute".
+ * 3. Otherwise: decision = "reuse".
+ */
+export function createFlowDeskScoreReuseThresholdGateV1(input: {
+	gateId: string;
+	workflowId: string;
+	previousScoreRef: string;
+	previousContextHash: string;
+	currentContextHash: string;
+	scoreAgeSeconds: number;
+	maxAgeThresholdSeconds: number;
+	minScoreThreshold?: number;
+	previousAdvisoryScore: number;
+	reasonRefs: string[];
+	evaluatedAt: string;
+}): FlowDeskScoreReuseThresholdGateResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.gateId, "gate_id").errors);
+	errors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(input.previousScoreRef, "previous_score_ref").errors);
+	errors.push(...validateHashRef(input.previousContextHash, "previous_context_hash").errors);
+	errors.push(...validateHashRef(input.currentContextHash, "current_context_hash").errors);
+	errors.push(...validateTimestamp(input.evaluatedAt, "evaluated_at").errors);
+	if (typeof input.scoreAgeSeconds !== "number" || !Number.isFinite(input.scoreAgeSeconds) || input.scoreAgeSeconds < 0) errors.push("score_age_seconds must be a non-negative finite number");
+	if (typeof input.maxAgeThresholdSeconds !== "number" || !Number.isFinite(input.maxAgeThresholdSeconds) || input.maxAgeThresholdSeconds <= 0) errors.push("max_age_threshold_seconds must be a positive finite number");
+	const minScoreThreshold = input.minScoreThreshold ?? 0;
+	if (typeof minScoreThreshold !== "number" || !Number.isFinite(minScoreThreshold) || minScoreThreshold < 0 || minScoreThreshold > 100) errors.push("min_score_threshold must be 0..100");
+	if (typeof input.previousAdvisoryScore !== "number" || !Number.isFinite(input.previousAdvisoryScore) || input.previousAdvisoryScore < 0 || input.previousAdvisoryScore > 100) errors.push("previous_advisory_score must be 0..100");
+	if (!Array.isArray(input.reasonRefs) || input.reasonRefs.length === 0) errors.push("reason_refs must be a non-empty array");
+	else for (const [index, ref] of input.reasonRefs.entries()) errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+	if (errors.length > 0) return { ok: false, errors };
+
+	const contextMatch = input.previousContextHash === input.currentContextHash;
+	const withinAgeThreshold = input.scoreAgeSeconds <= input.maxAgeThresholdSeconds;
+	const aboveMinScore = input.previousAdvisoryScore >= minScoreThreshold;
+
+	let gateDecision: FlowDeskScoreReuseDecisionLabelV1;
+	if (!contextMatch || !withinAgeThreshold || !aboveMinScore) {
+		gateDecision = "recompute";
+	} else {
+		gateDecision = "reuse";
+	}
+
+	const gate: FlowDeskScoreReuseThresholdGateV1 = {
+		schema_version: "flowdesk.score_reuse_threshold_gate.v1",
+		gate_id: input.gateId,
+		workflow_id: input.workflowId,
+		previous_score_ref: input.previousScoreRef,
+		previous_context_hash: input.previousContextHash,
+		current_context_hash: input.currentContextHash,
+		score_age_seconds: input.scoreAgeSeconds,
+		max_age_threshold_seconds: input.maxAgeThresholdSeconds,
+		min_score_threshold: minScoreThreshold,
+		previous_advisory_score: input.previousAdvisoryScore,
+		context_match: contextMatch,
+		within_age_threshold: withinAgeThreshold,
+		above_min_score: aboveMinScore,
+		gate_decision: gateDecision,
+		reason_refs: [...input.reasonRefs],
+		evaluated_at: input.evaluatedAt,
+		advisory_only: true,
+		non_authorizing: true,
+		release_gate: "operational_intelligence_later_gate",
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+	return { ok: true, errors: [], gate };
+}
+
+const scoreReuseThresholdGateAllowedProperties = [
+	"schema_version",
+	"gate_id",
+	"workflow_id",
+	"previous_score_ref",
+	"previous_context_hash",
+	"current_context_hash",
+	"score_age_seconds",
+	"max_age_threshold_seconds",
+	"min_score_threshold",
+	"previous_advisory_score",
+	"context_match",
+	"within_age_threshold",
+	"above_min_score",
+	"gate_decision",
+	"reason_refs",
+	"evaluated_at",
+	"advisory_only",
+	"non_authorizing",
+	"release_gate",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"remote_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+] as const;
+
+const scoreReuseDecisionLabels: readonly string[] = ["reuse", "recompute", "blocked"];
+
+export function validateFlowDeskScoreReuseThresholdGateV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("score reuse threshold gate must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, scoreReuseThresholdGateAllowedProperties, "score reuse threshold gate").errors);
+
+	if (record.schema_version !== "flowdesk.score_reuse_threshold_gate.v1") errors.push("score reuse threshold gate schema_version is invalid");
+	if (record.release_gate !== "operational_intelligence_later_gate") errors.push("score reuse threshold gate release_gate is invalid");
+
+	errors.push(...validateOpaqueId(record.gate_id, "gate_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(record.previous_score_ref, "previous_score_ref").errors);
+	errors.push(...validateHashRef(record.previous_context_hash, "previous_context_hash").errors);
+	errors.push(...validateHashRef(record.current_context_hash, "current_context_hash").errors);
+	errors.push(...validateTimestamp(record.evaluated_at, "evaluated_at").errors);
+
+	// Numeric range checks
+	if (typeof record.score_age_seconds !== "number" || !Number.isFinite(record.score_age_seconds) || record.score_age_seconds < 0) errors.push("score_age_seconds must be a non-negative finite number");
+	if (typeof record.max_age_threshold_seconds !== "number" || !Number.isFinite(record.max_age_threshold_seconds) || record.max_age_threshold_seconds <= 0) errors.push("max_age_threshold_seconds must be a positive finite number");
+	if (typeof record.min_score_threshold !== "number" || !Number.isFinite(record.min_score_threshold) || record.min_score_threshold < 0 || record.min_score_threshold > 100) errors.push("min_score_threshold must be 0..100");
+	if (typeof record.previous_advisory_score !== "number" || !Number.isFinite(record.previous_advisory_score) || record.previous_advisory_score < 0 || record.previous_advisory_score > 100) errors.push("previous_advisory_score must be 0..100");
+
+	// Boolean fields
+	if (typeof record.context_match !== "boolean") errors.push("context_match must be a boolean");
+	if (typeof record.within_age_threshold !== "boolean") errors.push("within_age_threshold must be a boolean");
+	if (typeof record.above_min_score !== "boolean") errors.push("above_min_score must be a boolean");
+
+	// gate_decision
+	if (typeof record.gate_decision !== "string" || !scoreReuseDecisionLabels.includes(record.gate_decision)) errors.push("gate_decision must be 'reuse', 'recompute', or 'blocked'");
+
+	// reason_refs
+	if (!Array.isArray(record.reason_refs) || record.reason_refs.length === 0) errors.push("reason_refs must be a non-empty array");
+	else for (const [index, ref] of record.reason_refs.entries()) errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+
+	// Consistency: reuse decision requires all three sub-conditions to be true
+	if (record.gate_decision === "reuse" && (record.context_match !== true || record.within_age_threshold !== true || record.above_min_score !== true)) {
+		errors.push("gate_decision 'reuse' requires context_match, within_age_threshold, and above_min_score to all be true");
+	}
+
+	// Consistency: blocked decision is reserved for validation failures; a fully
+	// valid record produced by the creator can only be "reuse" or "recompute".
+	// Validators must reject "blocked" when all three sub-conditions are actually
+	// evaluable (i.e., this is a well-formed record — the creator never emits "blocked").
+	// We enforce: if gate_decision=blocked then at least one sub-condition must
+	// also be false (or the record is inconsistent, since blocked means unusable inputs).
+	if (record.gate_decision === "blocked"
+		&& record.context_match === true
+		&& record.within_age_threshold === true
+		&& record.above_min_score === true) {
+		errors.push("gate_decision 'blocked' is inconsistent: all sub-conditions are true but gate claims blocked");
+	}
+
+	// Authority flags — all explicitly disabled
+	if (record.advisory_only !== true
+		|| record.non_authorizing !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) {
+		errors.push("score reuse threshold gate must remain advisory-only non-authorizing with no dispatch, approval, provider, runtime, external-write, remote-write, fallback, lane-launch, write, or hard-chat authority");
+	}
+
+	errors.push(...validateNoForbiddenRawPayloads(record, "score_reuse_threshold_gate").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+// ─── P7-S7: Fanout Cadence Gate ──────────────────────────────────────────────
+
+/**
+ * Advisory decision label for whether a proposed multi-lane fanout/cadence is
+ * within safe bounds.
+ *
+ * - `allow`:   Proposed fanout is within all declared constraints; consumers MAY
+ *              proceed as requested.
+ * - `reduce`:  Proposed lane count or cadence exceeds a soft advisory bound;
+ *              consumers SHOULD reduce concurrency or widen the cadence window.
+ * - `hold`:    The gate cannot safely advise proceed or reduce (e.g., active lane
+ *              count or cooldown constraint is violated); consumers MUST pause.
+ * - `blocked`: A hard constraint is violated (e.g., requested count > max) or
+ *              input validation failed; consumers MUST NOT proceed.
+ */
+export type FlowDeskFanoutCadenceDecisionLabelV1 = "allow" | "reduce" | "hold" | "blocked";
+
+/**
+ * Advisory-only contract encoding a bounded fanout/cadence gate decision for a
+ * proposed multi-lane execution.
+ *
+ * All authority flags are disabled.  This record never grants dispatch, provider,
+ * runtime, lane-launch, fallback, write, remote-write, or hard-chat authority.
+ */
+export interface FlowDeskFanoutCadenceGateV1 {
+	schema_version: "flowdesk.fanout_cadence_gate.v1";
+	gate_id: string;
+	workflow_id: string;
+	/** Number of lanes proposed for the next fanout burst.  Must be >= 1. */
+	requested_lane_count: number;
+	/** Advisory maximum concurrent lanes permitted.  Must be >= 1. */
+	max_concurrent_lanes: number;
+	/** Number of lanes currently active at gate evaluation time.  Must be >= 0. */
+	active_lane_count: number;
+	/** Cadence window in seconds within which the cooldown applies.  Must be >= 0. */
+	cadence_window_seconds: number;
+	/** Minimum required cooldown in seconds between fanout bursts.  Must be >= 0. */
+	cooldown_seconds: number;
+	/** Seconds elapsed since the last fanout burst was initiated.  Must be >= 0. */
+	seconds_since_last_burst: number;
+	/** Advisory risk labels for the proposed fanout (may be empty). */
+	risk_labels: string[];
+	/** Opaque references to the dependency records influencing this gate (may be empty). */
+	dependency_refs: string[];
+	/** Human-readable rationale refs for the gate decision.  Non-empty. */
+	reason_refs: string[];
+	/** The gate decision. */
+	gate_decision: FlowDeskFanoutCadenceDecisionLabelV1;
+	/** ISO 8601 timestamp at which this gate was evaluated. */
+	evaluated_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	release_gate: "operational_intelligence_later_gate";
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
+export interface FlowDeskFanoutCadenceGateResultV1 {
+	ok: boolean;
+	errors: string[];
+	gate?: FlowDeskFanoutCadenceGateV1;
+}
+
+/**
+ * Evaluate whether a proposed multi-lane fanout is within safe advisory bounds.
+ *
+ * Decision rules (evaluated in priority order):
+ * 1. `blocked`:  requested_lane_count > max_concurrent_lanes, OR any input
+ *                validation error.
+ * 2. `hold`:     active_lane_count + requested_lane_count > max_concurrent_lanes
+ *                (would exceed max if launched now), OR seconds_since_last_burst <
+ *                cooldown_seconds (cooldown not yet elapsed).
+ * 3. `reduce`:   requested_lane_count > (max_concurrent_lanes / 2) — soft advisory
+ *                half-capacity bound.
+ * 4. `allow`:    All constraints pass.
+ */
+export function createFlowDeskFanoutCadenceGateV1(input: {
+	gateId: string;
+	workflowId: string;
+	requestedLaneCount: number;
+	maxConcurrentLanes: number;
+	activeLaneCount: number;
+	cadenceWindowSeconds: number;
+	cooldownSeconds: number;
+	secondsSinceLastBurst: number;
+	riskLabels?: string[];
+	dependencyRefs?: string[];
+	reasonRefs: string[];
+	evaluatedAt: string;
+}): FlowDeskFanoutCadenceGateResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.gateId, "gate_id").errors);
+	errors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	errors.push(...validateTimestamp(input.evaluatedAt, "evaluated_at").errors);
+
+	// Numeric range checks
+	if (typeof input.requestedLaneCount !== "number" || !Number.isInteger(input.requestedLaneCount) || input.requestedLaneCount < 1) errors.push("requested_lane_count must be a positive integer >= 1");
+	if (typeof input.maxConcurrentLanes !== "number" || !Number.isInteger(input.maxConcurrentLanes) || input.maxConcurrentLanes < 1) errors.push("max_concurrent_lanes must be a positive integer >= 1");
+	if (typeof input.activeLaneCount !== "number" || !Number.isInteger(input.activeLaneCount) || input.activeLaneCount < 0) errors.push("active_lane_count must be a non-negative integer");
+	if (typeof input.cadenceWindowSeconds !== "number" || !Number.isFinite(input.cadenceWindowSeconds) || input.cadenceWindowSeconds < 0) errors.push("cadence_window_seconds must be a non-negative finite number");
+	if (typeof input.cooldownSeconds !== "number" || !Number.isFinite(input.cooldownSeconds) || input.cooldownSeconds < 0) errors.push("cooldown_seconds must be a non-negative finite number");
+	if (typeof input.secondsSinceLastBurst !== "number" || !Number.isFinite(input.secondsSinceLastBurst) || input.secondsSinceLastBurst < 0) errors.push("seconds_since_last_burst must be a non-negative finite number");
+
+	// risk_labels: optional; if provided each entry must be a bounded opaque label
+	const riskLabels = input.riskLabels ?? [];
+	if (!Array.isArray(riskLabels)) errors.push("risk_labels must be an array");
+	else for (const [index, label] of riskLabels.entries()) errors.push(...validateOpaqueRef(label, `risk_labels[${index}]`).errors);
+
+	// dependency_refs: optional; if provided each entry must be an opaque ref
+	const dependencyRefs = input.dependencyRefs ?? [];
+	if (!Array.isArray(dependencyRefs)) errors.push("dependency_refs must be an array");
+	else for (const [index, ref] of dependencyRefs.entries()) errors.push(...validateOpaqueRef(ref, `dependency_refs[${index}]`).errors);
+
+	// reason_refs: required non-empty array of opaque refs
+	if (!Array.isArray(input.reasonRefs) || input.reasonRefs.length === 0) errors.push("reason_refs must be a non-empty array");
+	else for (const [index, ref] of input.reasonRefs.entries()) errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+
+	if (errors.length > 0) return { ok: false, errors };
+
+	// Decision logic
+	let gateDecision: FlowDeskFanoutCadenceDecisionLabelV1;
+
+	// Rule 1: Hard blocked — requested exceeds absolute maximum
+	if (input.requestedLaneCount > input.maxConcurrentLanes) {
+		gateDecision = "blocked";
+	}
+	// Rule 2: Hold — would exceed capacity when added to active, or cooldown not elapsed
+	else if (
+		(input.activeLaneCount + input.requestedLaneCount) > input.maxConcurrentLanes ||
+		(input.cooldownSeconds > 0 && input.secondsSinceLastBurst < input.cooldownSeconds)
+	) {
+		gateDecision = "hold";
+	}
+	// Rule 3: Reduce — soft advisory half-capacity bound
+	else if (input.requestedLaneCount > Math.floor(input.maxConcurrentLanes / 2)) {
+		gateDecision = "reduce";
+	}
+	// Rule 4: All clear
+	else {
+		gateDecision = "allow";
+	}
+
+	const gate: FlowDeskFanoutCadenceGateV1 = {
+		schema_version: "flowdesk.fanout_cadence_gate.v1",
+		gate_id: input.gateId,
+		workflow_id: input.workflowId,
+		requested_lane_count: input.requestedLaneCount,
+		max_concurrent_lanes: input.maxConcurrentLanes,
+		active_lane_count: input.activeLaneCount,
+		cadence_window_seconds: input.cadenceWindowSeconds,
+		cooldown_seconds: input.cooldownSeconds,
+		seconds_since_last_burst: input.secondsSinceLastBurst,
+		risk_labels: [...riskLabels],
+		dependency_refs: [...dependencyRefs],
+		reason_refs: [...input.reasonRefs],
+		gate_decision: gateDecision,
+		evaluated_at: input.evaluatedAt,
+		advisory_only: true,
+		non_authorizing: true,
+		release_gate: "operational_intelligence_later_gate",
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+	return { ok: true, errors: [], gate };
+}
+
+const fanoutCadenceGateAllowedProperties = [
+	"schema_version",
+	"gate_id",
+	"workflow_id",
+	"requested_lane_count",
+	"max_concurrent_lanes",
+	"active_lane_count",
+	"cadence_window_seconds",
+	"cooldown_seconds",
+	"seconds_since_last_burst",
+	"risk_labels",
+	"dependency_refs",
+	"reason_refs",
+	"gate_decision",
+	"evaluated_at",
+	"advisory_only",
+	"non_authorizing",
+	"release_gate",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"remote_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+] as const;
+
+const fanoutCadenceDecisionLabels: readonly string[] = ["allow", "reduce", "hold", "blocked"];
+
+export function validateFlowDeskFanoutCadenceGateV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("fanout cadence gate must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, fanoutCadenceGateAllowedProperties, "fanout cadence gate").errors);
+
+	if (record.schema_version !== "flowdesk.fanout_cadence_gate.v1") errors.push("fanout cadence gate schema_version is invalid");
+	if (record.release_gate !== "operational_intelligence_later_gate") errors.push("fanout cadence gate release_gate is invalid");
+
+	errors.push(...validateOpaqueId(record.gate_id, "gate_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateTimestamp(record.evaluated_at, "evaluated_at").errors);
+
+	// Numeric range checks
+	if (typeof record.requested_lane_count !== "number" || !Number.isInteger(record.requested_lane_count) || record.requested_lane_count < 1) errors.push("requested_lane_count must be a positive integer >= 1");
+	if (typeof record.max_concurrent_lanes !== "number" || !Number.isInteger(record.max_concurrent_lanes) || record.max_concurrent_lanes < 1) errors.push("max_concurrent_lanes must be a positive integer >= 1");
+	if (typeof record.active_lane_count !== "number" || !Number.isInteger(record.active_lane_count) || record.active_lane_count < 0) errors.push("active_lane_count must be a non-negative integer");
+	if (typeof record.cadence_window_seconds !== "number" || !Number.isFinite(record.cadence_window_seconds) || record.cadence_window_seconds < 0) errors.push("cadence_window_seconds must be a non-negative finite number");
+	if (typeof record.cooldown_seconds !== "number" || !Number.isFinite(record.cooldown_seconds) || record.cooldown_seconds < 0) errors.push("cooldown_seconds must be a non-negative finite number");
+	if (typeof record.seconds_since_last_burst !== "number" || !Number.isFinite(record.seconds_since_last_burst) || record.seconds_since_last_burst < 0) errors.push("seconds_since_last_burst must be a non-negative finite number");
+
+	// risk_labels: array, each entry opaque ref
+	if (!Array.isArray(record.risk_labels)) errors.push("risk_labels must be an array");
+	else for (const [index, label] of record.risk_labels.entries()) errors.push(...validateOpaqueRef(label, `risk_labels[${index}]`).errors);
+
+	// dependency_refs: array, each entry opaque ref
+	if (!Array.isArray(record.dependency_refs)) errors.push("dependency_refs must be an array");
+	else for (const [index, ref] of record.dependency_refs.entries()) errors.push(...validateOpaqueRef(ref, `dependency_refs[${index}]`).errors);
+
+	// reason_refs: non-empty array of opaque refs
+	if (!Array.isArray(record.reason_refs) || record.reason_refs.length === 0) errors.push("reason_refs must be a non-empty array");
+	else for (const [index, ref] of (record.reason_refs as unknown[]).entries()) errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+
+	// gate_decision
+	if (typeof record.gate_decision !== "string" || !fanoutCadenceDecisionLabels.includes(record.gate_decision)) {
+		errors.push("gate_decision must be 'allow', 'reduce', 'hold', or 'blocked'");
+	}
+
+	// Consistency: allow decision requires requested <= max, active+requested <= max, cooldown elapsed
+	if (record.gate_decision === "allow") {
+		if (typeof record.requested_lane_count === "number" && typeof record.max_concurrent_lanes === "number" &&
+			record.requested_lane_count > record.max_concurrent_lanes) {
+			errors.push("gate_decision 'allow' is inconsistent: requested_lane_count exceeds max_concurrent_lanes");
+		}
+		if (typeof record.active_lane_count === "number" && typeof record.requested_lane_count === "number" &&
+			typeof record.max_concurrent_lanes === "number" &&
+			(record.active_lane_count + record.requested_lane_count) > record.max_concurrent_lanes) {
+			errors.push("gate_decision 'allow' is inconsistent: active_lane_count + requested_lane_count exceeds max_concurrent_lanes");
+		}
+		if (typeof record.cooldown_seconds === "number" && record.cooldown_seconds > 0 &&
+			typeof record.seconds_since_last_burst === "number" &&
+			record.seconds_since_last_burst < record.cooldown_seconds) {
+			errors.push("gate_decision 'allow' is inconsistent: cooldown has not yet elapsed");
+		}
+	}
+
+	// Consistency: blocked decision requires requested > max
+	if (record.gate_decision === "blocked") {
+		if (typeof record.requested_lane_count === "number" && typeof record.max_concurrent_lanes === "number" &&
+			record.requested_lane_count <= record.max_concurrent_lanes &&
+			typeof record.active_lane_count === "number" &&
+			(record.active_lane_count + record.requested_lane_count) <= record.max_concurrent_lanes &&
+			typeof record.cooldown_seconds === "number" &&
+			typeof record.seconds_since_last_burst === "number" &&
+			(record.cooldown_seconds === 0 || record.seconds_since_last_burst >= record.cooldown_seconds)) {
+			errors.push("gate_decision 'blocked' is inconsistent: all constraints pass but gate claims blocked");
+		}
+	}
+
+	// Authority flags — all explicitly disabled, advisory_only and non_authorizing required
+	if (record.advisory_only !== true
+		|| record.non_authorizing !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) {
+		errors.push("fanout cadence gate must remain advisory-only non-authorizing with no dispatch, approval, provider, runtime, external-write, remote-write, fallback, lane-launch, write, or hard-chat authority");
+	}
+
+	errors.push(...validateNoForbiddenRawPayloads(record, "fanout_cadence_gate").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+// ─── P7-S8: Local Ledger Snapshot ────────────────────────────────────────────
+
+/**
+ * Pure advisory snapshot of the local operational-intelligence ledger state.
+ *
+ * Captures bounded metadata about the in-memory or durable ledger (entry count,
+ * oldest/newest entry refs, staleness, content hash summary) **without** performing
+ * actual I/O, runtime ledger access, or persistence.
+ *
+ * All authority flags are disabled.  This contract is advisory-only, non-authorizing,
+ * and never grants dispatch, provider, runtime, lane-launch, fallback, write,
+ * remote-write, or hard-chat authority.
+ */
+export interface FlowDeskLocalLedgerSnapshotV1 {
+	schema_version: "flowdesk.local_ledger_snapshot.v1";
+	snapshot_id: string;
+	workflow_id: string;
+	/** ISO 8601 timestamp at which this snapshot was captured. */
+	captured_at: string;
+	/** Number of ledger entries at capture time. Must be >= 0. */
+	entry_count: number;
+	/** Opaque reference to the oldest entry in the ledger (absent when entry_count=0). */
+	oldest_entry_ref?: string;
+	/** Opaque reference to the newest entry in the ledger (absent when entry_count=0). */
+	newest_entry_ref?: string;
+	/** sha256-<hex> content hash summary of all ledger entries (absent when entry_count=0). */
+	content_hash_summary?: string;
+	/** Staleness of the snapshot in seconds relative to its captured_at time. Must be >= 0. */
+	staleness_seconds: number;
+	/** Advisory safe next actions for consumers of this snapshot. */
+	safe_next_actions: string[];
+	advisory_only: true;
+	non_authorizing: true;
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
+export interface FlowDeskLocalLedgerSnapshotResultV1 {
+	ok: boolean;
+	errors: string[];
+	snapshot?: FlowDeskLocalLedgerSnapshotV1;
+}
+
+/**
+ * Create an advisory local ledger snapshot.
+ *
+ * No I/O is performed.  The caller supplies all field values derived from
+ * whatever in-memory or already-decoded ledger state they have available.
+ *
+ * Consistency rules enforced:
+ * - `oldest_entry_ref` and `newest_entry_ref` must both be absent when
+ *   `entry_count` is 0 (you cannot have refs with an empty ledger).
+ * - `content_hash_summary` must be absent when `entry_count` is 0.
+ * - `oldest_entry_ref` and `newest_entry_ref` must both be present or both absent.
+ */
+export function createFlowDeskLocalLedgerSnapshotV1(input: {
+	snapshotId: string;
+	workflowId: string;
+	capturedAt: string;
+	entryCount: number;
+	oldestEntryRef?: string;
+	newestEntryRef?: string;
+	contentHashSummary?: string;
+	stalenessSeconds: number;
+	safeNextActions: string[];
+}): FlowDeskLocalLedgerSnapshotResultV1 {
+	const errors: string[] = [];
+	errors.push(...validateOpaqueId(input.snapshotId, "snapshot_id").errors);
+	errors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	errors.push(...validateTimestamp(input.capturedAt, "captured_at").errors);
+
+	if (typeof input.entryCount !== "number" || !Number.isInteger(input.entryCount) || input.entryCount < 0) {
+		errors.push("entry_count must be a non-negative integer");
+	}
+	if (typeof input.stalenessSeconds !== "number" || !Number.isFinite(input.stalenessSeconds) || input.stalenessSeconds < 0) {
+		errors.push("staleness_seconds must be a non-negative finite number");
+	}
+
+	if (input.oldestEntryRef !== undefined) errors.push(...validateOpaqueRef(input.oldestEntryRef, "oldest_entry_ref").errors);
+	if (input.newestEntryRef !== undefined) errors.push(...validateOpaqueRef(input.newestEntryRef, "newest_entry_ref").errors);
+
+	if (input.contentHashSummary !== undefined) {
+		errors.push(...validateHashRef(input.contentHashSummary, "content_hash_summary").errors);
+	}
+
+	if (!Array.isArray(input.safeNextActions) || input.safeNextActions.length === 0 || input.safeNextActions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of input.safeNextActions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	// Consistency: entry_count=0 must not carry entry refs or content hash
+	const entryCountZero = typeof input.entryCount === "number" && input.entryCount === 0;
+	if (entryCountZero && input.oldestEntryRef !== undefined) errors.push("oldest_entry_ref must be absent when entry_count is 0");
+	if (entryCountZero && input.newestEntryRef !== undefined) errors.push("newest_entry_ref must be absent when entry_count is 0");
+	if (entryCountZero && input.contentHashSummary !== undefined) errors.push("content_hash_summary must be absent when entry_count is 0");
+
+	// Consistency: entry refs must appear together (both present or both absent)
+	const hasOldest = input.oldestEntryRef !== undefined;
+	const hasNewest = input.newestEntryRef !== undefined;
+	if (hasOldest !== hasNewest) errors.push("oldest_entry_ref and newest_entry_ref must both be present or both absent");
+
+	if (errors.length > 0) return { ok: false, errors };
+
+	const snapshot: FlowDeskLocalLedgerSnapshotV1 = {
+		schema_version: "flowdesk.local_ledger_snapshot.v1",
+		snapshot_id: input.snapshotId,
+		workflow_id: input.workflowId,
+		captured_at: input.capturedAt,
+		entry_count: input.entryCount,
+		...(input.oldestEntryRef !== undefined ? { oldest_entry_ref: input.oldestEntryRef } : {}),
+		...(input.newestEntryRef !== undefined ? { newest_entry_ref: input.newestEntryRef } : {}),
+		...(input.contentHashSummary !== undefined ? { content_hash_summary: input.contentHashSummary } : {}),
+		staleness_seconds: input.stalenessSeconds,
+		safe_next_actions: [...input.safeNextActions],
+		advisory_only: true,
+		non_authorizing: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+	return { ok: true, errors: [], snapshot };
+}
+
+const localLedgerSnapshotAllowedProperties = [
+	"schema_version",
+	"snapshot_id",
+	"workflow_id",
+	"captured_at",
+	"entry_count",
+	"oldest_entry_ref",
+	"newest_entry_ref",
+	"content_hash_summary",
+	"staleness_seconds",
+	"safe_next_actions",
+	"advisory_only",
+	"non_authorizing",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"remote_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+] as const;
+
+export function validateFlowDeskLocalLedgerSnapshotV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("local ledger snapshot must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, localLedgerSnapshotAllowedProperties, "local ledger snapshot").errors);
+
+	if (record.schema_version !== "flowdesk.local_ledger_snapshot.v1") errors.push("local ledger snapshot schema_version is invalid");
+
+	errors.push(...validateOpaqueId(record.snapshot_id, "snapshot_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateTimestamp(record.captured_at, "captured_at").errors);
+
+	// entry_count: non-negative integer
+	if (typeof record.entry_count !== "number" || !Number.isInteger(record.entry_count) || record.entry_count < 0) {
+		errors.push("entry_count must be a non-negative integer");
+	}
+
+	// staleness_seconds: non-negative finite number
+	if (typeof record.staleness_seconds !== "number" || !Number.isFinite(record.staleness_seconds) || record.staleness_seconds < 0) {
+		errors.push("staleness_seconds must be a non-negative finite number");
+	}
+
+	// Optional opaque refs
+	if (record.oldest_entry_ref !== undefined) errors.push(...validateOpaqueRef(record.oldest_entry_ref, "oldest_entry_ref").errors);
+	if (record.newest_entry_ref !== undefined) errors.push(...validateOpaqueRef(record.newest_entry_ref, "newest_entry_ref").errors);
+
+	// Optional content hash summary
+	if (record.content_hash_summary !== undefined) {
+		errors.push(...validateHashRef(record.content_hash_summary, "content_hash_summary").errors);
+	}
+
+	// safe_next_actions: non-empty bounded array of opaque refs
+	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of record.safe_next_actions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	// Consistency: entry_count=0 must not carry entry refs or content hash
+	if (typeof record.entry_count === "number" && record.entry_count === 0) {
+		if (record.oldest_entry_ref !== undefined) errors.push("oldest_entry_ref must be absent when entry_count is 0");
+		if (record.newest_entry_ref !== undefined) errors.push("newest_entry_ref must be absent when entry_count is 0");
+		if (record.content_hash_summary !== undefined) errors.push("content_hash_summary must be absent when entry_count is 0");
+	}
+
+	// Consistency: entry refs must appear together (both present or both absent)
+	const hasOldest = record.oldest_entry_ref !== undefined;
+	const hasNewest = record.newest_entry_ref !== undefined;
+	if (hasOldest !== hasNewest) errors.push("oldest_entry_ref and newest_entry_ref must both be present or both absent");
+
+	// Authority flags — all explicitly disabled, advisory_only and non_authorizing required
+	if (record.advisory_only !== true
+		|| record.non_authorizing !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) {
+		errors.push("local ledger snapshot must remain advisory-only non-authorizing with no dispatch, approval, provider, runtime, external-write, remote-write, fallback, lane-launch, write, or hard-chat authority");
+	}
+
+	errors.push(...validateNoForbiddenRawPayloads(record, "local_ledger_snapshot").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }

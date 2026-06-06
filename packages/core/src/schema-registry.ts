@@ -216,6 +216,11 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.category_fit_snapshot.v1", "category-fit-snapshot", "FlowDeskCategoryFitSnapshotV1", "later_release"),
   artifactEntry("flowdesk.workflow_plan_proposal.v1", "workflow-plan-proposal", "FlowDeskWorkflowPlanProposalV1", "later_release"),
   artifactEntry("flowdesk.workflow_plan_proposal_set.v1", "workflow-plan-proposal-set", "FlowDeskWorkflowPlanProposalSetV1", "later_release"),
+  artifactEntry("flowdesk.optimizer_proposal_score.v1", "optimizer-proposal-score", "FlowDeskOptimizerProposalScoreV1", "later_release"),
+  artifactEntry("flowdesk.normalized_score_aggregation.v1", "normalized-score-aggregation", "FlowDeskNormalizedScoreAggregationV1", "later_release"),
+  artifactEntry("flowdesk.score_reuse_threshold_gate.v1", "score-reuse-threshold-gate", "FlowDeskScoreReuseThresholdGateV1", "later_release"),
+  artifactEntry("flowdesk.fanout_cadence_gate.v1", "fanout-cadence-gate", "FlowDeskFanoutCadenceGateV1", "later_release"),
+  artifactEntry("flowdesk.local_ledger_snapshot.v1", "local-ledger-snapshot", "FlowDeskLocalLedgerSnapshotV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",

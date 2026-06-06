@@ -5,6 +5,7 @@ import {
 	createFlowDeskAdvisoryScoreLedgerEntryV1,
 	createFlowDeskEvaluationEventV1,
 	createFlowDeskFederatedScoreRegistryPublicationIntentV1,
+	createFlowDeskOptimizerProposalScoreV1,
 	createFlowDeskOperationalIntelligenceScoreV1,
 	createFlowDeskWorkflowPlanProposalScoreEventV1,
 	createFlowDeskWorkflowPlanProposalV1,
@@ -15,6 +16,7 @@ import {
 	validateFlowDeskEvaluationEventV1,
 	validateFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	validateFlowDeskFederatedScoreRegistryPublicationRequestV1,
+	validateFlowDeskOptimizerProposalScoreV1,
 	validateFlowDeskOperationalIntelligenceScoreV1,
 	validateFlowDeskReferencePackV1,
 	validateFlowDeskCategoryFitSnapshotV1,
@@ -26,6 +28,18 @@ import {
 	type FlowDeskWorkflowPlanProposalV1,
 	type FlowDeskWorkflowPlanProposalSetV1,
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
+	createFlowDeskNormalizedScoreAggregationV1,
+	validateFlowDeskNormalizedScoreAggregationV1,
+	type FlowDeskNormalizedScoreAggregationV1,
+	createFlowDeskScoreReuseThresholdGateV1,
+	validateFlowDeskScoreReuseThresholdGateV1,
+	type FlowDeskScoreReuseThresholdGateV1,
+	createFlowDeskFanoutCadenceGateV1,
+	validateFlowDeskFanoutCadenceGateV1,
+	type FlowDeskFanoutCadenceGateV1,
+	createFlowDeskLocalLedgerSnapshotV1,
+	validateFlowDeskLocalLedgerSnapshotV1,
+	type FlowDeskLocalLedgerSnapshotV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -84,6 +98,80 @@ function evaluationEvent(overrides: Partial<ReturnType<typeof createFlowDeskEval
 		...overrides,
 	};
 }
+
+test("optimizer proposal score handles valid dimensions and hard filters", () => {
+	const score = createFlowDeskOptimizerProposalScoreV1({
+		scoreId: "opt-1",
+		workflowId: "workflow-1",
+		proposalId: "proposal-1",
+		candidateRef: "candidate-1",
+		hardFiltersPassed: true,
+		scoreDimensions: [
+			{ dimension: "goal_fit", score: 90, weight: 0.5, reason_ref: "reason-1" },
+			{ dimension: "safety", score: 100, weight: 0.5, reason_ref: "reason-2" }
+		],
+		advisoryScore: 95
+	});
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(score).ok, true);
+	assert.equal(score.advisory_score, 95);
+	assert.equal(score.hard_filter_state, "passed");
+});
+
+test("optimizer proposal score blocked hard filter zeroes score", () => {
+	const score = createFlowDeskOptimizerProposalScoreV1({
+		scoreId: "opt-2",
+		workflowId: "workflow-1",
+		proposalId: "proposal-1",
+		candidateRef: "candidate-2",
+		hardFiltersPassed: false,
+		blockedLabels: ["blocked-by-policy"],
+		scoreDimensions: [
+			{ dimension: "goal_fit", score: 90, weight: 0.5, reason_ref: "reason-1" }
+		],
+		advisoryScore: 95
+	});
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(score).ok, true);
+	assert.equal(score.advisory_score, 0);
+	assert.equal(score.hard_filter_state, "blocked");
+});
+
+test("optimizer proposal score rejects invalid dimensions", () => {
+	const score = createFlowDeskOptimizerProposalScoreV1({
+		scoreId: "opt-3",
+		workflowId: "workflow-1",
+		proposalId: "proposal-1",
+		candidateRef: "candidate-3",
+		hardFiltersPassed: true,
+		scoreDimensions: [
+			{ dimension: "unknown_fit" as "goal_fit", score: 90, weight: 0.5, reason_ref: "reason-1" }
+		],
+		advisoryScore: 95
+	});
+	const result = validateFlowDeskOptimizerProposalScoreV1(score);
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /dimension is invalid/);
+});
+
+test("optimizer proposal score rejects authority smuggling and raw markers", () => {
+	const score = createFlowDeskOptimizerProposalScoreV1({
+		scoreId: "opt-4",
+		workflowId: "workflow-1",
+		proposalId: "proposal-1",
+		candidateRef: "candidate-4",
+		hardFiltersPassed: true,
+		scoreDimensions: [
+			{ dimension: "goal_fit", score: 90, weight: 0.5, reason_ref: "reason-1" }
+		],
+		advisoryScore: 95
+	});
+	const forgedRuntime = validateFlowDeskOptimizerProposalScoreV1({ ...score, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only/);
+
+	const rawMarker = validateFlowDeskOptimizerProposalScoreV1({ ...score, hard_filter_state: "blocked", advisory_score: 0, blocked_labels: ["raw path /Users/foo"] });
+	assert.equal(rawMarker.ok, false);
+	assert.match(rawMarker.errors.join("; "), /schema-safe|raw path marker/);
+});
 
 test("operational intelligence scores remain advisory after hard filters", () => {
 	const score = createFlowDeskOperationalIntelligenceScoreV1({
@@ -792,4 +880,847 @@ test("category fit snapshots reject malformed hashes and fail-closed validation"
 	assert.match(result.errors.join("; "), /fitness_score must be 0\.\.100/);
 	assert.match(result.errors.join("; "), /freshness_timestamp must be a parseable timestamp/);
 	assert.match(result.errors.join("; "), /schema-safe/);
+});
+
+// ─── P7-S5b: FlowDeskNormalizedScoreAggregationV1 tests ─────────────────────
+
+test("normalized score aggregation creates valid weighted-average result", () => {
+	const result = createFlowDeskNormalizedScoreAggregationV1({
+		aggregationId: "agg-1",
+		workflowId: "workflow-1",
+		sourceScoreId: "opt-score-1",
+		dimensionScores: [
+			{ dimension: "goal_fit", score: 80, weight: 0.6, reason_ref: "reason-1" },
+			{ dimension: "safety", score: 100, weight: 0.4, reason_ref: "reason-2" },
+		],
+		hardFilterState: "passed",
+		aggregationReasonRef: "reason-agg-1",
+		aggregatedAt: "2026-06-06T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.aggregation, "aggregation must be present");
+	const agg = result.aggregation!;
+	// weighted average: 80*0.6 + 100*0.4 = 48 + 40 = 88 (over total weight 1.0)
+	assert.equal(agg.normalized_score, 88);
+	assert.equal(agg.strict_minimum_breached, false);
+	assert.equal(agg.hard_filter_state, "passed");
+	assert.equal(agg.schema_version, "flowdesk.normalized_score_aggregation.v1");
+	assert.equal(agg.release_gate, "operational_intelligence_later_gate");
+	assert.equal(agg.advisory_only, true);
+	assert.equal(agg.dispatch_authority_enabled, false);
+	assert.equal(agg.provider_authority_enabled, false);
+	assert.equal(agg.runtime_authority_enabled, false);
+	assert.equal(agg.fallback_authority_enabled, false);
+	assert.equal(agg.lane_launch_authority_enabled, false);
+	assert.equal(agg.write_authority_enabled, false);
+	assert.equal(agg.hard_chat_authority_enabled, false);
+	assert.equal(agg.external_write_authority_enabled, false);
+	// validator passes on the freshly created aggregation
+	assert.equal(validateFlowDeskNormalizedScoreAggregationV1(agg).ok, true);
+});
+
+test("normalized score aggregation zeroes score on strict_minimum_breached and blocked hard_filter_state", () => {
+	// Strict minimum threshold set at 90; safety score 70 < 90 → breach → zero
+	const breached = createFlowDeskNormalizedScoreAggregationV1({
+		aggregationId: "agg-2",
+		workflowId: "workflow-1",
+		sourceScoreId: "opt-score-2",
+		dimensionScores: [
+			{ dimension: "goal_fit", score: 95, weight: 0.5, reason_ref: "reason-1" },
+			{ dimension: "safety", score: 70, weight: 0.5, reason_ref: "reason-2" },
+		],
+		hardFilterState: "passed",
+		aggregationReasonRef: "reason-agg-2",
+		aggregatedAt: "2026-06-06T12:01:00.000Z",
+		strictMinimumThreshold: 90,
+	});
+	assert.equal(breached.ok, true, breached.errors.join("; "));
+	assert.equal(breached.aggregation!.strict_minimum_breached, true);
+	assert.equal(breached.aggregation!.normalized_score, 0);
+	assert.equal(validateFlowDeskNormalizedScoreAggregationV1(breached.aggregation!).ok, true);
+
+	// Blocked hard_filter_state also zeroes the score
+	const blocked = createFlowDeskNormalizedScoreAggregationV1({
+		aggregationId: "agg-3",
+		workflowId: "workflow-1",
+		sourceScoreId: "opt-score-3",
+		dimensionScores: [
+			{ dimension: "goal_fit", score: 90, weight: 1.0, reason_ref: "reason-3" },
+		],
+		hardFilterState: "blocked",
+		aggregationReasonRef: "reason-agg-3",
+		aggregatedAt: "2026-06-06T12:02:00.000Z",
+	});
+	assert.equal(blocked.ok, true, blocked.errors.join("; "));
+	assert.equal(blocked.aggregation!.hard_filter_state, "blocked");
+	assert.equal(blocked.aggregation!.normalized_score, 0);
+	assert.equal(validateFlowDeskNormalizedScoreAggregationV1(blocked.aggregation!).ok, true);
+});
+
+test("normalized score aggregation rejects authority smuggling", () => {
+	const result = createFlowDeskNormalizedScoreAggregationV1({
+		aggregationId: "agg-4",
+		workflowId: "workflow-1",
+		sourceScoreId: "opt-score-4",
+		dimensionScores: [
+			{ dimension: "goal_fit", score: 75, weight: 1.0, reason_ref: "reason-4" },
+		],
+		hardFilterState: "passed",
+		aggregationReasonRef: "reason-agg-4",
+		aggregatedAt: "2026-06-06T12:03:00.000Z",
+	});
+	assert.equal(result.ok, true);
+	const agg = result.aggregation!;
+
+	// dispatch authority smuggling
+	const forgedDispatch = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only/);
+
+	// external_write_authority smuggling
+	const forgedWrite = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, external_write_authority_enabled: true });
+	assert.equal(forgedWrite.ok, false);
+	assert.match(forgedWrite.errors.join("; "), /advisory-only/);
+
+	// hard_chat_authority smuggling
+	const forgedHardChat = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, hard_chat_authority_enabled: true });
+	assert.equal(forgedHardChat.ok, false);
+	assert.match(forgedHardChat.errors.join("; "), /advisory-only/);
+
+	// write_authority smuggling
+	const forgedWriteAuth = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, write_authority_enabled: true });
+	assert.equal(forgedWriteAuth.ok, false);
+	assert.match(forgedWriteAuth.errors.join("; "), /advisory-only/);
+});
+
+test("normalized score aggregation rejects malformed and invalid input", () => {
+	// Score out of 0..100 range during creation
+	const outOfRange = createFlowDeskNormalizedScoreAggregationV1({
+		aggregationId: "agg-5",
+		workflowId: "workflow-1",
+		sourceScoreId: "opt-score-5",
+		dimensionScores: [
+			{ dimension: "goal_fit", score: 150, weight: 1.0, reason_ref: "reason-5" },
+		],
+		hardFilterState: "passed",
+		aggregationReasonRef: "reason-agg-5",
+		aggregatedAt: "2026-06-06T12:04:00.000Z",
+	});
+	assert.equal(outOfRange.ok, false);
+	assert.match(outOfRange.errors.join("; "), /score must be 0/);
+
+	// Unknown property injection
+	const result = createFlowDeskNormalizedScoreAggregationV1({
+		aggregationId: "agg-6",
+		workflowId: "workflow-1",
+		sourceScoreId: "opt-score-6",
+		dimensionScores: [
+			{ dimension: "safety", score: 80, weight: 1.0, reason_ref: "reason-6" },
+		],
+		hardFilterState: "passed",
+		aggregationReasonRef: "reason-agg-6",
+		aggregatedAt: "2026-06-06T12:05:00.000Z",
+	});
+	assert.equal(result.ok, true);
+	const agg = result.aggregation!;
+
+	// Unknown property
+	const unknown = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, providerDispatchTarget: "openai" });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+
+	// Missing required field (aggregation_id stripped)
+	const { aggregation_id: _removed, ...aggWithoutId } = agg as FlowDeskNormalizedScoreAggregationV1;
+	const missingId = validateFlowDeskNormalizedScoreAggregationV1(aggWithoutId);
+	assert.equal(missingId.ok, false);
+
+	// Consistency violation: strict_minimum_breached=true but normalized_score > 0
+	const inconsistent = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, strict_minimum_breached: true, normalized_score: 50 });
+	assert.equal(inconsistent.ok, false);
+	assert.match(inconsistent.errors.join("; "), /normalized_score must be 0/);
+
+	// normalized_score out of range in validator
+	const badScore = validateFlowDeskNormalizedScoreAggregationV1({ ...agg, normalized_score: 150 });
+	assert.equal(badScore.ok, false);
+	assert.match(badScore.errors.join("; "), /finite number/);
+});
+
+// ─── P7-S6: FlowDeskScoreReuseThresholdGateV1 tests ─────────────────────────
+
+const ctxHash = "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+const ctxHash2 = "sha256-1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+
+test("score reuse threshold gate produces reuse decision when all conditions pass", () => {
+	const result = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-1",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-1",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 30,
+		maxAgeThresholdSeconds: 300,
+		minScoreThreshold: 60,
+		previousAdvisoryScore: 85,
+		reasonRefs: ["reason-gate-1"],
+		evaluatedAt: "2026-06-06T12:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const gate = result.gate!;
+	assert.equal(gate.gate_decision, "reuse");
+	assert.equal(gate.context_match, true);
+	assert.equal(gate.within_age_threshold, true);
+	assert.equal(gate.above_min_score, true);
+	assert.equal(gate.schema_version, "flowdesk.score_reuse_threshold_gate.v1");
+	assert.equal(gate.release_gate, "operational_intelligence_later_gate");
+	assert.equal(gate.advisory_only, true);
+	assert.equal(gate.non_authorizing, true);
+	assert.equal(gate.dispatch_authority_enabled, false);
+	assert.equal(gate.provider_authority_enabled, false);
+	assert.equal(gate.runtime_authority_enabled, false);
+	assert.equal(gate.fallback_authority_enabled, false);
+	assert.equal(gate.lane_launch_authority_enabled, false);
+	assert.equal(gate.write_authority_enabled, false);
+	assert.equal(gate.remote_write_authority_enabled, false);
+	assert.equal(gate.hard_chat_authority_enabled, false);
+	assert.equal(validateFlowDeskScoreReuseThresholdGateV1(gate).ok, true);
+});
+
+test("score reuse threshold gate produces recompute decision on context drift", () => {
+	// Mismatched context hashes → recompute
+	const drifted = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-2",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-2",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash2,
+		scoreAgeSeconds: 10,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 90,
+		reasonRefs: ["reason-gate-2"],
+		evaluatedAt: "2026-06-06T12:01:00.000Z",
+	});
+	assert.equal(drifted.ok, true, drifted.errors.join("; "));
+	assert.equal(drifted.gate!.gate_decision, "recompute");
+	assert.equal(drifted.gate!.context_match, false);
+	assert.equal(validateFlowDeskScoreReuseThresholdGateV1(drifted.gate!).ok, true);
+
+	// Stale score (age > threshold) → recompute
+	const stale = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-3",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-3",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 600,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 90,
+		reasonRefs: ["reason-gate-3"],
+		evaluatedAt: "2026-06-06T12:02:00.000Z",
+	});
+	assert.equal(stale.ok, true, stale.errors.join("; "));
+	assert.equal(stale.gate!.gate_decision, "recompute");
+	assert.equal(stale.gate!.within_age_threshold, false);
+
+	// Score below minimum threshold → recompute
+	const belowMin = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-4",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-4",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 10,
+		maxAgeThresholdSeconds: 300,
+		minScoreThreshold: 80,
+		previousAdvisoryScore: 50,
+		reasonRefs: ["reason-gate-4"],
+		evaluatedAt: "2026-06-06T12:03:00.000Z",
+	});
+	assert.equal(belowMin.ok, true, belowMin.errors.join("; "));
+	assert.equal(belowMin.gate!.gate_decision, "recompute");
+	assert.equal(belowMin.gate!.above_min_score, false);
+});
+
+test("score reuse threshold gate rejects authority smuggling", () => {
+	const result = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-5",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-5",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 0,
+		maxAgeThresholdSeconds: 60,
+		previousAdvisoryScore: 75,
+		reasonRefs: ["reason-gate-5"],
+		evaluatedAt: "2026-06-06T12:04:00.000Z",
+	});
+	assert.equal(result.ok, true);
+	const gate = result.gate!;
+
+	const forgedDispatch = validateFlowDeskScoreReuseThresholdGateV1({ ...gate, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedRuntime = validateFlowDeskScoreReuseThresholdGateV1({ ...gate, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedFallback = validateFlowDeskScoreReuseThresholdGateV1({ ...gate, fallback_authority_enabled: true });
+	assert.equal(forgedFallback.ok, false);
+	assert.match(forgedFallback.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedRemoteWrite = validateFlowDeskScoreReuseThresholdGateV1({ ...gate, remote_write_authority_enabled: true });
+	assert.equal(forgedRemoteWrite.ok, false);
+	assert.match(forgedRemoteWrite.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedWrite = validateFlowDeskScoreReuseThresholdGateV1({ ...gate, write_authority_enabled: true });
+	assert.equal(forgedWrite.ok, false);
+	assert.match(forgedWrite.errors.join("; "), /advisory-only non-authorizing/);
+});
+
+test("score reuse threshold gate rejects malformed and out-of-range inputs", () => {
+	// Negative score_age_seconds
+	const negAge = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-6",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-6",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: -1,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 80,
+		reasonRefs: ["reason-gate-6"],
+		evaluatedAt: "2026-06-06T12:05:00.000Z",
+	});
+	assert.equal(negAge.ok, false);
+	assert.match(negAge.errors.join("; "), /score_age_seconds must be a non-negative/);
+
+	// Zero max_age_threshold (must be > 0)
+	const zeroMax = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-7",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-7",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 10,
+		maxAgeThresholdSeconds: 0,
+		previousAdvisoryScore: 80,
+		reasonRefs: ["reason-gate-7"],
+		evaluatedAt: "2026-06-06T12:06:00.000Z",
+	});
+	assert.equal(zeroMax.ok, false);
+	assert.match(zeroMax.errors.join("; "), /max_age_threshold_seconds must be a positive/);
+
+	// previous_advisory_score out of 0..100
+	const badScore = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-8",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-8",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 10,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 150,
+		reasonRefs: ["reason-gate-8"],
+		evaluatedAt: "2026-06-06T12:07:00.000Z",
+	});
+	assert.equal(badScore.ok, false);
+	assert.match(badScore.errors.join("; "), /previous_advisory_score must be 0..100/);
+
+	// Malformed hash ref
+	const badHash = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-9",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-9",
+		previousContextHash: "not-a-valid-hash",
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 10,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 80,
+		reasonRefs: ["reason-gate-9"],
+		evaluatedAt: "2026-06-06T12:08:00.000Z",
+	});
+	assert.equal(badHash.ok, false);
+	assert.match(badHash.errors.join("; "), /previous_context_hash.*sha256|hash-<schema-safe/);
+
+	// Unknown property injection via validator
+	const result = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-10",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-10",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 5,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 80,
+		reasonRefs: ["reason-gate-10"],
+		evaluatedAt: "2026-06-06T12:09:00.000Z",
+	});
+	assert.equal(result.ok, true);
+	const unknown = validateFlowDeskScoreReuseThresholdGateV1({ ...result.gate!, providerDispatchTarget: "openai" });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("score reuse threshold gate rejects inconsistent decisions", () => {
+	const result = createFlowDeskScoreReuseThresholdGateV1({
+		gateId: "gate-11",
+		workflowId: "workflow-1",
+		previousScoreRef: "score-ref-11",
+		previousContextHash: ctxHash,
+		currentContextHash: ctxHash,
+		scoreAgeSeconds: 5,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 80,
+		reasonRefs: ["reason-gate-11"],
+		evaluatedAt: "2026-06-06T12:10:00.000Z",
+	});
+	assert.equal(result.ok, true);
+	const gate = result.gate!;
+
+	// "reuse" decision but context_match=false is inconsistent
+	const badReuseNoContext = validateFlowDeskScoreReuseThresholdGateV1({
+		...gate,
+		gate_decision: "reuse",
+		context_match: false,
+	});
+	assert.equal(badReuseNoContext.ok, false);
+	assert.match(badReuseNoContext.errors.join("; "), /reuse.*requires/);
+
+	// "reuse" decision but within_age_threshold=false is inconsistent
+	const badReuseStale = validateFlowDeskScoreReuseThresholdGateV1({
+		...gate,
+		gate_decision: "reuse",
+		within_age_threshold: false,
+	});
+	assert.equal(badReuseStale.ok, false);
+	assert.match(badReuseStale.errors.join("; "), /reuse.*requires/);
+
+	// "blocked" decision but all sub-conditions true is inconsistent
+	const badBlocked = validateFlowDeskScoreReuseThresholdGateV1({
+		...gate,
+		gate_decision: "blocked",
+		context_match: true,
+		within_age_threshold: true,
+		above_min_score: true,
+	});
+	assert.equal(badBlocked.ok, false);
+	assert.match(badBlocked.errors.join("; "), /blocked.*inconsistent/);
+
+	// Invalid gate_decision value
+	const badDecision = validateFlowDeskScoreReuseThresholdGateV1({
+		...gate,
+		gate_decision: "dispatch" as "reuse",
+	});
+	assert.equal(badDecision.ok, false);
+	assert.match(badDecision.errors.join("; "), /gate_decision must be/);
+});
+
+// ─── P7-S7: Fanout Cadence Gate tests ────────────────────────────────────────
+
+test("fanout cadence gate allows, reduces, and holds within safe bounds", () => {
+	// allow: 2 requested, max=8, active=0, no cooldown pressure
+	const allow = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-1",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 120,
+		reasonRefs: ["reason-fcg-allow-1"],
+		evaluatedAt: "2026-06-06T13:00:00.000Z",
+	});
+	assert.equal(allow.ok, true, allow.errors.join("; "));
+	assert.equal(allow.gate!.gate_decision, "allow");
+	assert.equal(allow.gate!.advisory_only, true);
+	assert.equal(allow.gate!.dispatch_authority_enabled, false);
+	assert.equal(allow.gate!.lane_launch_authority_enabled, false);
+
+	// reduce: 5 requested, max=8 → 5 > floor(8/2)=4 → reduce
+	const reduce = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-2",
+		workflowId: "workflow-1",
+		requestedLaneCount: 5,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 120,
+		reasonRefs: ["reason-fcg-reduce-1"],
+		evaluatedAt: "2026-06-06T13:01:00.000Z",
+	});
+	assert.equal(reduce.ok, true, reduce.errors.join("; "));
+	assert.equal(reduce.gate!.gate_decision, "reduce");
+
+	// hold: active=6, requested=4, max=8 → 6+4=10 > 8 → hold
+	const hold = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-3",
+		workflowId: "workflow-1",
+		requestedLaneCount: 4,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 6,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 120,
+		reasonRefs: ["reason-fcg-hold-1"],
+		evaluatedAt: "2026-06-06T13:02:00.000Z",
+	});
+	assert.equal(hold.ok, true, hold.errors.join("; "));
+	assert.equal(hold.gate!.gate_decision, "hold");
+
+	// hold via cooldown: cooldown=30, seconds_since_last_burst=10
+	const holdCooldown = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-4",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 30,
+		secondsSinceLastBurst: 10,
+		reasonRefs: ["reason-fcg-hold-cooldown-1"],
+		evaluatedAt: "2026-06-06T13:03:00.000Z",
+	});
+	assert.equal(holdCooldown.ok, true, holdCooldown.errors.join("; "));
+	assert.equal(holdCooldown.gate!.gate_decision, "hold");
+});
+
+test("fanout cadence gate rejects authority smuggling", () => {
+	const result = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-5",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 120,
+		reasonRefs: ["reason-fcg-5"],
+		evaluatedAt: "2026-06-06T13:04:00.000Z",
+	});
+	assert.equal(result.ok, true);
+	const gate = result.gate!;
+
+	const forgedDispatch = validateFlowDeskFanoutCadenceGateV1({ ...gate, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedLaneLaunch = validateFlowDeskFanoutCadenceGateV1({ ...gate, lane_launch_authority_enabled: true });
+	assert.equal(forgedLaneLaunch.ok, false);
+	assert.match(forgedLaneLaunch.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedFallback = validateFlowDeskFanoutCadenceGateV1({ ...gate, fallback_authority_enabled: true });
+	assert.equal(forgedFallback.ok, false);
+	assert.match(forgedFallback.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedWrite = validateFlowDeskFanoutCadenceGateV1({ ...gate, write_authority_enabled: true });
+	assert.equal(forgedWrite.ok, false);
+	assert.match(forgedWrite.errors.join("; "), /advisory-only non-authorizing/);
+
+	const forgedRuntime = validateFlowDeskFanoutCadenceGateV1({ ...gate, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only non-authorizing/);
+});
+
+test("fanout cadence gate rejects malformed and out-of-range inputs", () => {
+	// Negative active_lane_count
+	const negActive = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-6",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: -1,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 0,
+		reasonRefs: ["reason-fcg-6"],
+		evaluatedAt: "2026-06-06T13:05:00.000Z",
+	});
+	assert.equal(negActive.ok, false);
+	assert.match(negActive.errors.join("; "), /active_lane_count must be a non-negative/);
+
+	// Zero max_concurrent_lanes (must be >= 1)
+	const zeroMax = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-7",
+		workflowId: "workflow-1",
+		requestedLaneCount: 1,
+		maxConcurrentLanes: 0,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 0,
+		reasonRefs: ["reason-fcg-7"],
+		evaluatedAt: "2026-06-06T13:06:00.000Z",
+	});
+	assert.equal(zeroMax.ok, false);
+	assert.match(zeroMax.errors.join("; "), /max_concurrent_lanes must be a positive/);
+
+	// Unknown property injection
+	const validResult = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-8",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 0,
+		reasonRefs: ["reason-fcg-8"],
+		evaluatedAt: "2026-06-06T13:07:00.000Z",
+	});
+	assert.equal(validResult.ok, true);
+	const unknownProp = validateFlowDeskFanoutCadenceGateV1({ ...validResult.gate!, providerDispatchTarget: "openai" });
+	assert.equal(unknownProp.ok, false);
+	assert.match(unknownProp.errors.join("; "), /unknown properties/);
+
+	// Malformed reason_refs — empty array
+	const emptyReasons = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-9",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 0,
+		reasonRefs: [],
+		evaluatedAt: "2026-06-06T13:08:00.000Z",
+	});
+	assert.equal(emptyReasons.ok, false);
+	assert.match(emptyReasons.errors.join("; "), /reason_refs must be a non-empty/);
+});
+
+test("fanout cadence gate rejects inconsistent decisions", () => {
+	const validResult = createFlowDeskFanoutCadenceGateV1({
+		gateId: "fcg-10",
+		workflowId: "workflow-1",
+		requestedLaneCount: 2,
+		maxConcurrentLanes: 8,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 120,
+		reasonRefs: ["reason-fcg-10"],
+		evaluatedAt: "2026-06-06T13:09:00.000Z",
+	});
+	assert.equal(validResult.ok, true);
+	const gate = validResult.gate!;
+
+	// allow=true but requested > max → inconsistent
+	const badAllow = validateFlowDeskFanoutCadenceGateV1({
+		...gate,
+		gate_decision: "allow",
+		requested_lane_count: 10,
+		max_concurrent_lanes: 8,
+	});
+	assert.equal(badAllow.ok, false);
+	assert.match(badAllow.errors.join("; "), /allow.*inconsistent/);
+
+	// blocked but all constraints pass → inconsistent
+	const badBlocked = validateFlowDeskFanoutCadenceGateV1({
+		...gate,
+		gate_decision: "blocked",
+		requested_lane_count: 2,
+		max_concurrent_lanes: 8,
+		active_lane_count: 0,
+		cooldown_seconds: 0,
+		seconds_since_last_burst: 120,
+	});
+	assert.equal(badBlocked.ok, false);
+	assert.match(badBlocked.errors.join("; "), /blocked.*inconsistent/);
+
+	// Invalid gate_decision value
+	const badDecision = validateFlowDeskFanoutCadenceGateV1({
+		...gate,
+		gate_decision: "dispatch" as "allow",
+	});
+	assert.equal(badDecision.ok, false);
+	assert.match(badDecision.errors.join("; "), /gate_decision must be/);
+});
+
+// ─── P7-S8: Local Ledger Snapshot tests ──────────────────────────────────────
+
+const snapshotHash = "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+
+test("local ledger snapshot creates valid advisory-only record with entries", () => {
+	const result = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-1",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:00:00.000Z",
+		entryCount: 5,
+		oldestEntryRef: "ledger-entry-oldest-1",
+		newestEntryRef: "ledger-entry-newest-1",
+		contentHashSummary: snapshotHash,
+		stalenessSeconds: 12,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const snap = result.snapshot!;
+	assert.equal(snap.schema_version, "flowdesk.local_ledger_snapshot.v1");
+	assert.equal(snap.entry_count, 5);
+	assert.equal(snap.oldest_entry_ref, "ledger-entry-oldest-1");
+	assert.equal(snap.newest_entry_ref, "ledger-entry-newest-1");
+	assert.equal(snap.content_hash_summary, snapshotHash);
+	assert.equal(snap.staleness_seconds, 12);
+	assert.equal(snap.advisory_only, true);
+	assert.equal(snap.non_authorizing, true);
+	assert.equal(snap.dispatch_authority_enabled, false);
+	assert.equal(snap.approval_authority_enabled, false);
+	assert.equal(snap.provider_authority_enabled, false);
+	assert.equal(snap.runtime_authority_enabled, false);
+	assert.equal(snap.external_write_authority_enabled, false);
+	assert.equal(snap.remote_write_authority_enabled, false);
+	assert.equal(snap.fallback_authority_enabled, false);
+	assert.equal(snap.lane_launch_authority_enabled, false);
+	assert.equal(snap.write_authority_enabled, false);
+	assert.equal(snap.hard_chat_authority_enabled, false);
+	// Validator also passes
+	assert.equal(validateFlowDeskLocalLedgerSnapshotV1(snap).ok, true);
+});
+
+test("local ledger snapshot rejects authority smuggling", () => {
+	const result = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-2",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:01:00.000Z",
+		entryCount: 0,
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	const snap = result.snapshot!;
+
+	// dispatch authority smuggling
+	const forgedDispatch = validateFlowDeskLocalLedgerSnapshotV1({ ...snap, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+
+	// runtime authority smuggling
+	const forgedRuntime = validateFlowDeskLocalLedgerSnapshotV1({ ...snap, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only non-authorizing/);
+
+	// non_authorizing stripped
+	const strippedNonAuth = validateFlowDeskLocalLedgerSnapshotV1({ ...snap, non_authorizing: false as true });
+	assert.equal(strippedNonAuth.ok, false);
+	assert.match(strippedNonAuth.errors.join("; "), /advisory-only non-authorizing/);
+
+	// unknown property injection
+	const unknown = validateFlowDeskLocalLedgerSnapshotV1({ ...snap, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("local ledger snapshot rejects malformed and invalid inputs", () => {
+	// Negative entry_count
+	const negCount = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-3",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:02:00.000Z",
+		entryCount: -1,
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(negCount.ok, false);
+	assert.match(negCount.errors.join("; "), /entry_count must be a non-negative integer/);
+
+	// Negative staleness_seconds
+	const negStaleness = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-4",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:03:00.000Z",
+		entryCount: 0,
+		stalenessSeconds: -5,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(negStaleness.ok, false);
+	assert.match(negStaleness.errors.join("; "), /staleness_seconds must be a non-negative finite/);
+
+	// Malformed content_hash_summary
+	const badHash = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-5",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:04:00.000Z",
+		entryCount: 3,
+		oldestEntryRef: "ledger-entry-1",
+		newestEntryRef: "ledger-entry-3",
+		contentHashSummary: "not-a-valid-hash",
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badHash.ok, false);
+	assert.match(badHash.errors.join("; "), /content_hash_summary.*sha256|hash-<schema-safe/);
+
+	// Raw path marker in snapshot_id
+	const rawPath = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "/Users/foo/ledger",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:05:00.000Z",
+		entryCount: 0,
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(rawPath.ok, false);
+	assert.match(rawPath.errors.join("; "), /schema-safe|raw path marker|traversal/);
+});
+
+test("local ledger snapshot rejects inconsistent state (zero entries with refs)", () => {
+	// entry_count=0 but oldest_entry_ref is present → inconsistency
+	const zeroWithOldest = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-6",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:06:00.000Z",
+		entryCount: 0,
+		oldestEntryRef: "ledger-entry-1",
+		newestEntryRef: "ledger-entry-1",
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(zeroWithOldest.ok, false);
+	assert.match(zeroWithOldest.errors.join("; "), /oldest_entry_ref must be absent when entry_count is 0/);
+
+	// entry_count=0 but content_hash_summary is present → inconsistency
+	const zeroWithHash = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-7",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:07:00.000Z",
+		entryCount: 0,
+		contentHashSummary: snapshotHash,
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(zeroWithHash.ok, false);
+	assert.match(zeroWithHash.errors.join("; "), /content_hash_summary must be absent when entry_count is 0/);
+
+	// oldest_entry_ref without newest_entry_ref → ref pair inconsistency
+	const mismatchedRefs = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-8",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:08:00.000Z",
+		entryCount: 3,
+		oldestEntryRef: "ledger-entry-oldest-1",
+		// newest_entry_ref intentionally absent
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(mismatchedRefs.ok, false);
+	assert.match(mismatchedRefs.errors.join("; "), /oldest_entry_ref and newest_entry_ref must both be present or both absent/);
+
+	// Validator also detects inconsistency: valid snapshot then mutated
+	const validResult = createFlowDeskLocalLedgerSnapshotV1({
+		snapshotId: "snap-ledger-9",
+		workflowId: "workflow-1",
+		capturedAt: "2026-06-06T14:09:00.000Z",
+		entryCount: 2,
+		oldestEntryRef: "ledger-entry-oldest-1",
+		newestEntryRef: "ledger-entry-newest-1",
+		stalenessSeconds: 0,
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(validResult.ok, true);
+	// Mutate to entry_count=0 while keeping refs — validator must reject
+	const mutated = validateFlowDeskLocalLedgerSnapshotV1({ ...validResult.snapshot!, entry_count: 0 });
+	assert.equal(mutated.ok, false);
+	assert.match(mutated.errors.join("; "), /oldest_entry_ref must be absent when entry_count is 0/);
 });
