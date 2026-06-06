@@ -4188,7 +4188,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 			`agent: ${input.agentName}`,
 			`model: ${input.providerQualifiedModelId}`,
 		];
-		if (input.asyncMode === true) lines.push("progress: use /flowdesk-status or flowdesk_status_live to follow durable lane evidence");
+		if (input.asyncMode === true) lines.push("progress: use /flowdesk-status or flowdesk_now to follow durable lane evidence");
 		if (input.resultText !== undefined) lines.push(`result: ${promptPreview(input.resultText, 200)}`);
 		if (input.failureCategory !== undefined) lines.push(`failure: ${input.failureCategory}${input.redactedReason === undefined ? "" : ` (${input.redactedReason})`}`);
 		return lines.join("\n");
@@ -4214,7 +4214,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					: "Milliseconds of silence before sending a nudge prompt. Default 10000ms (10s). Recommended: always pass 10000. At 10s silence → nudge 1, 20s → nudge 2, 30s+ → lane fails and watchdog retries."),
 				asyncMode: tool.schema.boolean().optional().describe(input.compactArgs === true
 					? "Optional async launch mode; defaults to true for flowdesk_task."
-					: "When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 10s/20s, and aborts at 30s+. Coordinator uses flowdesk_status_live to detect completion. Recommended for all orchestration calls."),
+					: "When true, return laneId immediately after launch. Watchdog polls child session, sends noReply nudges at 10s/20s, and aborts at 30s+. Coordinator uses flowdesk_now to detect completion. Recommended for all orchestration calls."),
 			},
 			async execute(args, ctx) {
 				if (!client)
@@ -4313,7 +4313,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				"Requires developerModeAcknowledged=true and allowProviderCall=true per call.",
 				"WHEN TO USE: user asks to delegate a specific task to a specific model/agent.",
 				"WHEN NOT TO USE: multi-step workflows (use flowdesk_workflow_dispatch).",
-				"After calling, use flowdesk_status_live to check the lane status.",
+				"After calling, use flowdesk_now to check the lane status.",
 			].join(" "),
 			defaultAsyncMode: false,
 		}),
@@ -4634,7 +4634,7 @@ export function createFlowDeskQuickFallbackRunOptInTools(
 			description: [
 				"Plan a FlowDesk fallback regate from one provider to another by auto-building a developer-mode synthetic fallback decision and consumed fallback_reselection approval, then running the FlowDesk fallback regate orchestrator to produce a redacted regate plan. This tool plans, it does not switch providers or dispatch real lanes; FlowDesk default dispatch authority remains disabled.",
 				"WHEN TO USE: the user explicitly says one provider is blocked, exhausted, slow, or otherwise unwanted and asks to retry the work on a different provider. Trigger on English phrases such as 'fallback to', 'switch to', 'retry with', 'try with another provider', 'use a different provider', 'this provider is blocked', and on Korean phrases such as '막혔어', '다른 걸로 다시', '다른 provider 로', '다른 모델로 재시도', '재시도 해줘', '바꿔서 다시', 'fallback 해줘', '다른 곳으로 돌려', 'OpenAI 로 다시', 'Claude 로 다시', 'Gemini 로 다시'.",
-				"WHEN NOT TO USE: general usage/quota questions (use flowdesk_provider_usage_live), code review/audit requests (use flowdesk_quick_reviewer_run), workflow status questions (use flowdesk_status_live), or any request that does not explicitly ask to retry on a different provider.",
+				"WHEN NOT TO USE: general usage/quota questions (use flowdesk_quota), code review/audit requests (use explicit flowdesk_task reviewer lanes), workflow status questions (use flowdesk_now), or any request that does not explicitly ask to retry on a different provider.",
 				"INVOKE WITH: fromProvider (concrete provider-qualified model id, e.g. 'claude/sonnet-4'), toProvider (concrete provider-qualified model id, e.g. 'openai/gpt-5.5'), optional reason ('provider_unhealthy', 'quota_exhausted', 'runtime_incompatible', 'policy_ineligible', or 'manual_reselection_requested'; defaults to 'manual_reselection_requested'), optional workflowId (auto-generated otherwise), and developerModeAcknowledged=true. The plugin user has already opted into this tool at configuration time, so the assistant should set developerModeAcknowledged=true automatically and call the tool directly without per-call confirmation. Optionally set persistRegatePlanEvidence=true to persist the resulting plan as durable session evidence.",
 				"AFTER CALLING: summarize the orchestrator status to the user. On status=quick_fallback_run_completed, surface the new attempt id, regate plan state (typically 'full_regate_required'), required fresh evidence count, and remind the user that the actual provider switch is still blocked behind managed-dispatch promotion. On status=quick_fallback_run_incomplete, surface the regatePlanRedactedErrors or redactedBlockReason and suggest what evidence to refresh. Never echo raw provider/auth/token payloads.",
 			].join(" "),
@@ -5530,7 +5530,7 @@ export function createFlowDeskStatusLiveOptInTools(
 				"Return a live FlowDesk status summary by reloading durable session evidence under the configured FlowDesk state root, including reviewer verdict counts, reviewer fan-out plans, runtime lane lifecycle records, fallback regate plans, exact-model availability cache entries, provider acquisition results, and a lane heartbeat stall projection that classifies each FlowDesk-owned lane as progressing_normal, progressing_late, stalled, terminal, or unknown based on the most recent lifecycle update.",
 				"WHEN TO USE: the user asks about recent FlowDesk activity, current workflow progress, recent reviewer results, ongoing or stalled runs, lanes that have stopped logging, lanes that look stuck, or what has been recorded so far. Trigger on English phrases such as 'status', 'what happened', 'recent activity', 'progress', 'where are we', 'how is it going', 'recent reviews', 'recent runs', 'is it stuck', 'stalled', 'no log', 'no update', 'is anything frozen', 'last review', 'just now', 'earlier result', and Korean phrases such as '상태', '어디까지', '진행 상황', '진행됐', '오늘 작업', '오늘 뭐했', '최근 활동', '최근 리뷰', '지금 어디', '상태 요약', '워크플로우 상태', '멈춘 것 같아', '멈췄어', '응답이 없어', '아무 로그도 없', '오래 걸리는', '진행이 안돼', '방금', '직전', '조금 전', '이전', '최근에 한 거', '아까 한 거', '결과 보여줘'.",
 				"ALSO PROACTIVELY USE: as a follow-up after invoking a real-work FlowDesk tool (quick_reviewer_run, quick_fallback_run, managed_dispatch). If the user asks a vague follow-up about the just-completed work ('잘 됐어?', 'how did it go?', '결과는?'), call this tool with the just-created workflowId to pull durable evidence instead of guessing from memory.",
-				"WHEN NOT TO USE: provider usage/quota questions (use flowdesk_provider_usage_live), multi-perspective code reviews (use flowdesk_quick_reviewer_run), or unrelated general chat.",
+				"WHEN NOT TO USE: provider usage/quota questions (use flowdesk_quota), multi-perspective code reviews (use explicit flowdesk_task reviewer lanes), or unrelated general chat.",
 				"INVOKE WITH: optional workflowId. When omitted, the tool lists the most recently modified durable workflows (default up to 5). The plugin user already opted in to durable status evidence reload at configuration time, so this tool can be called automatically without per-call confirmation.",
 				"AFTER CALLING: read result.summaryForUser and surface that as the headline reply. If latestTaskResultExcerpts is present and the user asks for completed lane results, surface the bounded resultText excerpts with preserved line breaks; do not expand beyond those excerpts. If the user needs more detail, mention reviewer verdict labels (pass / changes_required / blocked / inconclusive), lane lifecycle states (running, complete, invocation_failed), the most recent fallback_regate_plan state, the most recent provider acquisition status, and any stalled or progressing_late lanes reported in worstLaneStallClassification with totalStalledLaneCount and totalProgressingLateLaneCount. Per-lane entries inside laneStallProjection.entries can also carry expectedNextHeartbeatOverdue=true plus secondsPastExpectedNextHeartbeat to indicate that the heartbeat's own expected_next_heartbeat_at has passed, which is a diagnostic hint independent of the configurable stall threshold. If stalled lanes are present, surface the laneStallProjection safe next actions (/flowdesk-status, /flowdesk-retry, /flowdesk-resume, /flowdesk-abort, /flowdesk-doctor, /flowdesk-export-debug) without auto-retrying, auto-aborting, or auto-fallbacking on the user's behalf. If no workflow returned evidence, say so plainly. Never echo raw provider/auth/token payloads.",
 			].join(" "),

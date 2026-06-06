@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-retry
-Matching FlowDesk tool stub: flowdesk_retry
+Preferred agent-facing wrapper: flowdesk_retry_diag or flowdesk_task
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_retry
 Request schema: flowdesk.retry.request.v1
 Response schema: flowdesk.retry.response.v1
 Fixture prefix: retry

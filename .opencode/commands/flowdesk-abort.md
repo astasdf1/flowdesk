@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-abort
-Matching FlowDesk tool stub: flowdesk_abort
+Preferred agent-facing wrapper: flowdesk_abort_cmd
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_abort
 Request schema: flowdesk.abort.request.v1
 Response schema: flowdesk.abort.response.v1
 Fixture prefix: abort

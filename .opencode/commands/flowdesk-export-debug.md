@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-export-debug
-Matching FlowDesk tool stub: flowdesk_export_debug
+Preferred agent-facing wrapper: flowdesk_debug
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_export_debug
 Request schema: flowdesk.export_debug.request.v1
 Response schema: flowdesk.export_debug.response.v1
 Fixture prefix: export-debug

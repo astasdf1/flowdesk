@@ -118,10 +118,34 @@ function commandFileName(commandName: FlowDeskRelease1MinimumPortableCommandName
   return `${commandSlug(commandName)}.md`;
 }
 
+function preferredWrapperFor(commandName: FlowDeskRelease1MinimumPortableCommandName): string {
+  switch (commandName) {
+    case "/flowdesk-doctor":
+      return "flowdesk_check";
+    case "/flowdesk-plan":
+      return "flowdesk_plan_short";
+    case "/flowdesk-run":
+      return "flowdesk_run_short or flowdesk_task";
+    case "/flowdesk-status":
+      return "flowdesk_now";
+    case "/flowdesk-resume":
+      return "flowdesk_resume_status or flowdesk_task";
+    case "/flowdesk-retry":
+      return "flowdesk_retry_diag or flowdesk_task";
+    case "/flowdesk-abort":
+      return "flowdesk_abort_cmd";
+    case "/flowdesk-usage":
+      return "flowdesk_quota";
+    case "/flowdesk-export-debug":
+      return "flowdesk_debug";
+  }
+}
+
 function commandContentFor(entry: FlowDeskCommandManifestEntryV1): string {
   return [
     `FlowDesk portable command file: ${entry.commandName}`,
-    `Matching FlowDesk tool stub: ${entry.toolName}`,
+    `Preferred agent-facing wrapper: ${preferredWrapperFor(entry.commandName)}`,
+    `Internal low-level schema stub, not the preferred agent-facing wrapper: ${entry.toolName}`,
     `Request schema: ${entry.requestSchemaId}`,
     `Response schema: ${entry.responseSchemaId}`,
     `Fixture prefix: ${entry.fixturePrefix}`,

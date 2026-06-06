@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-doctor
-Matching FlowDesk tool stub: flowdesk_doctor
+Preferred agent-facing wrapper: flowdesk_check
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_doctor
 Request schema: flowdesk.doctor.request.v1
 Response schema: flowdesk.doctor.response.v1
 Fixture prefix: doctor

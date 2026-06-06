@@ -45,7 +45,7 @@ export interface FlowDeskAgentTaskInputV1 {
 	/**
 	 * When true, return immediately after lane launch with { status: "task_launched" }.
 	 * The watchdog takes over polling, nudging (noReply), and aborting the child session.
-	 * The coordinator polls flowdesk_status_live to detect terminal state.
+	 * The coordinator uses the short status wrapper to detect terminal state.
 	 */
 	asyncMode?: boolean;
 	/**

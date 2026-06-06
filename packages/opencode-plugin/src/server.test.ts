@@ -10995,6 +10995,8 @@ test("flowdesk_task normalizes safe defaults and adds no authority claims", asyn
 		) as Record<string, unknown>;
 		assert.equal(result.status, "task_launched");
 		assert.equal(result.asyncMode, true);
+		assert.match(String(result.summaryForUser), /flowdesk_now/);
+		assert.doesNotMatch(String(result.summaryForUser), /flowdesk_status_live/);
 		assert.equal((createOptions[0] as Record<string, unknown>).parentID, "current-short-task-parent-1");
 		assert.equal(promptOptions.length, 1);
 		assert.equal("authority" in result, false);

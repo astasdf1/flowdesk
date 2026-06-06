@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-plan
-Matching FlowDesk tool stub: flowdesk_plan
+Preferred agent-facing wrapper: flowdesk_plan_short
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_plan
 Request schema: flowdesk.plan.request.v1
 Response schema: flowdesk.plan.response.v1
 Fixture prefix: plan

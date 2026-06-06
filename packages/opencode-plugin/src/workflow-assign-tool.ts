@@ -61,7 +61,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 	if (nodes.length === 0) return blocked("task_graph has no nodes", input.workflowId);
 
 	const rows = input.sidebarCacheRows ?? [];
-	if (rows.length === 0) return blocked("no provider usage data available – run flowdesk_provider_usage_live first", input.workflowId);
+	if (rows.length === 0) return blocked("no provider usage data available – run flowdesk_quota first", input.workflowId);
 	let workingModelIds: string[];
 	try {
 		workingModelIds = loadWorkingModelIds(input.rootDir);

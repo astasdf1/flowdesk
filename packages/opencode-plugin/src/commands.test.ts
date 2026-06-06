@@ -52,6 +52,8 @@ test("portable command file artifacts are static, portable-only, and schema-back
     assert.equal(artifact.generationMode, "inert_static_command_file_artifact");
     assert.equal(artifact.writeMode, "not_written_pre_spike_artifact");
     assert.match(artifact.commandContent, new RegExp(artifact.commandName.replace("/", "\\/")));
+    assert.match(artifact.commandContent, /Preferred agent-facing wrapper:/);
+    assert.doesNotMatch(artifact.commandContent, /Matching FlowDesk tool stub:/);
     assert.match(artifact.commandContent, new RegExp(artifact.toolName));
     assert.match(artifact.commandContent, new RegExp(artifact.requestSchemaId.replaceAll(".", "\\.")));
     assert.match(artifact.commandContent, new RegExp(artifact.responseSchemaId.replaceAll(".", "\\.")));

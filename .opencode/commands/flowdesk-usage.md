@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-usage
-Matching FlowDesk tool stub: flowdesk_usage
+Preferred agent-facing wrapper: flowdesk_quota
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_usage
 Request schema: flowdesk.usage.request.v1
 Response schema: flowdesk.usage.response.v1
 Fixture prefix: usage

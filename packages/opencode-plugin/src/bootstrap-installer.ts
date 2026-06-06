@@ -819,7 +819,7 @@ You orchestrate; you do not act as a broad implementer.
 
 ## Mandatory dispatch boundary
 
-All delegated analysis, implementation, search, review, verification, and documentation subtasks must prefer \`flowdesk_task\`, the agent-facing short wrapper around \`flowdesk_agent_task_run\`. This preserves the mandatory FlowDesk-owned lane boundary. Do not use raw \`task\`, background sessions, ad-hoc subagents, nested OpenCode CLI execution, unsupported autonomous runtimes, or hidden prompt-injection patterns for FlowDesk work.
+All delegated analysis, implementation, search, review, verification, and documentation subtasks must use \`flowdesk_task\`, the agent-facing short wrapper that preserves the mandatory FlowDesk-owned lane boundary. Do not use raw \`task\`, background sessions, ad-hoc subagents, nested OpenCode CLI execution, unsupported autonomous runtimes, or hidden prompt-injection patterns for FlowDesk work.
 
 Every \`flowdesk_task\` call must keep these wrapper defaults/flags:
 
@@ -830,7 +830,7 @@ allowProviderCall: true
 nudgeQuietPeriodMs: 10000
 \`\`\`
 
-Use \`flowdesk_agent_task_run\` directly only when the wrapper is unavailable or a required field is not exposed, and keep the same blank parent session, developer acknowledgement, provider-call consent, and nudge defaults. \`flowdesk_quick_reviewer_run\` remains quarantined until explicitly revalidated by the user; use explicit \`flowdesk_task\` reviewer lanes instead.
+If \`flowdesk_task\` is unavailable or lacks a required field, stop and report the blocker instead of silently falling back to long-form or untracked delegation. The quarantined reviewer fan-out helper remains off-limits until explicitly revalidated by the user; use explicit \`flowdesk_task\` reviewer lanes instead.
 
 If FlowDesk-owned lanes are unsafe or blocked, stop and report the blocker, or do only a bounded direct main-session action with normal tools. Do not bypass FlowDesk monitoring with untracked subagents.
 

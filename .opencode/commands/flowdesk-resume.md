@@ -1,5 +1,6 @@
 FlowDesk portable command file: /flowdesk-resume
-Matching FlowDesk tool stub: flowdesk_resume
+Preferred agent-facing wrapper: flowdesk_resume_status or flowdesk_task
+Internal low-level schema stub, not the preferred agent-facing wrapper: flowdesk_resume
 Request schema: flowdesk.resume.request.v1
 Response schema: flowdesk.resume.response.v1
 Fixture prefix: resume

@@ -170,9 +170,10 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /^  external_directory:\n    "\*": allow$/m);
 		assert.match(mainAgent, /model: openai\/gpt-5\.3-codex-spark/);
 		assert.match(mainAgent, /Mandatory dispatch boundary/);
-		assert.match(mainAgent, /flowdesk_task.*agent-facing short wrapper around `flowdesk_agent_task_run`/s);
-		assert.match(mainAgent, /flowdesk_agent_task_run/);
-		assert.match(mainAgent, /flowdesk_quick_reviewer_run.*quarantined.*flowdesk_task/s);
+		assert.match(mainAgent, /flowdesk_task.*agent-facing short wrapper.*mandatory FlowDesk-owned lane boundary/s);
+		assert.doesNotMatch(mainAgent, /flowdesk_agent_task_run/);
+		assert.match(mainAgent, /quarantined reviewer fan-out helper.*flowdesk_task/s);
+		assert.doesNotMatch(mainAgent, /flowdesk_quick_reviewer_run/);
 		assert.match(mainAgent, /Lane Size Gate — apply before every dispatch/);
 		assert.match(mainAgent, /exactly 1 primary objective/);
 		assert.match(mainAgent, /exactly 1 clear deliverable/);
