@@ -248,10 +248,17 @@ test("managed dispatch promotion blocks missing evidence, wrong action, and smug
 });
 
 test("reviewer typed verdict promotion accepts only all canonical passing low-uncertainty verdicts", () => {
+	const verdicts = canonicalVerdicts();
+	assert.equal(new Set(verdicts.map((entry) => entry.source)).size, 1);
+	assert.equal(new Set(verdicts.map((entry) => entry.binding_ref)).size, 1);
+	assert.equal(new Set(verdicts.map((entry) => entry.perspective)).size, 3);
+	assert.equal(new Set(verdicts.map((entry) => entry.lane_id)).size, 3);
+	assert.equal(new Set(verdicts.map((entry) => entry.lane_plan_ref)).size, 3);
+	assert.equal(new Set(verdicts.map((entry) => entry.verdict_id)).size, 3);
 	const result = promoteFlowDeskReviewerTypedVerdictsV1({
 		workflowId: "workflow-1",
 		attemptId: "attempt-1",
-		verdicts: canonicalVerdicts(),
+		verdicts,
 		consumedApproval: consumedApproval("reviewer_fanout"),
 	});
 	assert.equal(result.ok, true, result.errors.join("; "));
@@ -259,7 +266,80 @@ test("reviewer typed verdict promotion accepts only all canonical passing low-un
 	assert.equal(result.typed_reviewer_verdict_acceptance_enabled, true);
 	assert.equal(result.managed_dispatch_beta_authority_enabled, false);
 	assert.equal(result.external_write_authority_enabled, false);
+	assert.equal(result.dispatch_authority_enabled, false);
+	assert.equal(result.automatic_fallback_authorized, false);
+	assert.equal(result.realOpenCodeDispatch, false);
+	assert.equal(result.providerCall, false);
+	assert.equal(result.actualLaneLaunch, false);
+	assert.equal(result.runtimeExecution, false);
+	assert.deepEqual(result.accepted_verdict_ids, [
+		"verdict-policy_security",
+		"verdict-architecture",
+		"verdict-verification_implementation",
+	]);
 	assert.deepEqual(result.accepted_perspectives, ["policy_security", "architecture", "verification_implementation"]);
+});
+
+test("reviewer typed verdict promotion cannot collapse one same-model pass into aggregate acceptance", () => {
+	const onePolicyPass = promoteFlowDeskReviewerTypedVerdictsV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		verdicts: [verdict("policy_security")],
+		consumedApproval: consumedApproval("reviewer_fanout"),
+	});
+	assert.equal(onePolicyPass.ok, false);
+	assert.equal(onePolicyPass.state, "blocked");
+	assert.match(onePolicyPass.errors.join("; "), /missing required reviewer perspective: architecture/);
+	assert.match(onePolicyPass.errors.join("; "), /missing required reviewer perspective: verification_implementation/);
+	assert.equal(onePolicyPass.typed_reviewer_verdict_acceptance_enabled, false);
+	assert.equal(onePolicyPass.dispatch_authority_enabled, false);
+	assert.equal(onePolicyPass.providerCall, false);
+	assert.equal(onePolicyPass.actualLaneLaunch, false);
+
+	const sharedBindingDuplicatePerspective = promoteFlowDeskReviewerTypedVerdictsV1({
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		verdicts: [
+			verdict("policy_security"),
+			verdict("policy_security", { verdict_id: "verdict-policy-security-2", lane_id: "lane-policy-security-2" }),
+			verdict("architecture"),
+		],
+		consumedApproval: consumedApproval("reviewer_fanout"),
+	});
+	assert.equal(sharedBindingDuplicatePerspective.ok, false);
+	assert.match(sharedBindingDuplicatePerspective.errors.join("; "), /perspective must be distinct/);
+	assert.match(sharedBindingDuplicatePerspective.errors.join("; "), /missing required reviewer perspective: verification_implementation/);
+	assert.equal(sharedBindingDuplicatePerspective.typed_reviewer_verdict_acceptance_enabled, false);
+	assert.equal(sharedBindingDuplicatePerspective.dispatch_authority_enabled, false);
+});
+
+test("reviewer typed verdict promotion rejects verdict self-approval and authority replacement attempts", () => {
+	for (const forbidden of [
+		{ approve_dispatch: true },
+		{ guard_approved_dispatch: "guard-1" },
+		{ guard_replacement_authority_enabled: true },
+		{ verification_replacement_authority_enabled: true },
+		{ self_approved: true },
+		{ dispatch_authority_enabled: true },
+	] as Record<string, unknown>[]) {
+		const result = promoteFlowDeskReviewerTypedVerdictsV1({
+			workflowId: "workflow-1",
+			attemptId: "attempt-1",
+			verdicts: canonicalVerdicts().map((entry) =>
+				entry.perspective === "policy_security"
+					? ({ ...entry, ...forbidden } as FlowDeskTopTierReviewVerdictV1)
+					: entry,
+			),
+			consumedApproval: consumedApproval("reviewer_fanout"),
+		});
+		assert.equal(result.ok, false, JSON.stringify(forbidden));
+		assert.equal(result.state, "blocked");
+		assert.equal(result.typed_reviewer_verdict_acceptance_enabled, false);
+		assert.equal(result.dispatch_authority_enabled, false);
+		assert.equal(result.managed_dispatch_beta_authority_enabled, false);
+		assert.equal(result.providerCall, false);
+		assert.equal(result.actualLaneLaunch, false);
+	}
 });
 
 test("reviewer typed verdict promotion blocks non-pass, inconclusive, duplicate, missing, and wrong approval", () => {

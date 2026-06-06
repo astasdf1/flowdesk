@@ -75,10 +75,41 @@ test("top tier review verdict requires lane, attempt, score timestamp, and non-G
 });
 
 test("top tier review verdict supports same-source multi-perspective verdicts", () => {
-  for (const perspective of FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES) {
-    const result = validateTopTierReviewVerdictV1(verdict({ perspective, verdict_id: `verdict-${perspective}` }));
-    assert.equal(result.ok, true, `${perspective}: ${result.errors.join("; ")}`);
-  }
+	const verdicts = FLOWDESK_TOP_TIER_REVIEW_PERSPECTIVES.map((perspective) => verdict({
+		perspective,
+		verdict_id: `verdict-${perspective}`,
+		lane_id: `lane-${perspective}`,
+		lane_plan_ref: `lane-plan-${perspective}`,
+		evidence_refs: [`lane-evidence-${perspective}`],
+	}));
+	for (const entry of verdicts) {
+		const result = validateTopTierReviewVerdictV1(entry);
+		assert.equal(result.ok, true, `${entry.perspective}: ${result.errors.join("; ")}`);
+		assert.equal(entry.source, "claude_opus");
+		assert.equal(entry.binding_ref, "binding-claude_opus");
+		assert.equal(entry.dispatch_authority_enabled, false);
+		assert.equal(entry.guard_replacement_authority_enabled, false);
+	}
+	assert.equal(new Set(verdicts.map((entry) => entry.source)).size, 1);
+	assert.equal(new Set(verdicts.map((entry) => entry.binding_ref)).size, 1);
+	assert.equal(new Set(verdicts.map((entry) => entry.perspective)).size, 3);
+	assert.equal(new Set(verdicts.map((entry) => entry.verdict_id)).size, 3);
+	assert.equal(new Set(verdicts.map((entry) => entry.lane_id)).size, 3);
+	assert.equal(new Set(verdicts.map((entry) => entry.lane_plan_ref)).size, 3);
+});
+
+test("top tier review verdict rejects self-approval and verification replacement claims", () => {
+	for (const forbidden of [
+		{ approve_dispatch: true },
+		{ guard_approved_dispatch: "guard-1" },
+		{ guard_replacement_authority_enabled: true },
+		{ verification_replacement_authority_enabled: true },
+		{ self_approved: true },
+		{ dispatch_authority_enabled: true },
+	] as Record<string, unknown>[]) {
+		const result = validateTopTierReviewVerdictV1({ ...verdict(), ...forbidden });
+		assert.equal(result.ok, false, JSON.stringify(forbidden));
+	}
 });
 
 test("top tier review verdict accepts any registered source label, not just current floor", () => {

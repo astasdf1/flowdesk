@@ -26,7 +26,11 @@ function probeResult(
   const result: FlowDeskTopTierReviewerLaneProbeResultV1 = {
     schema_version: "flowdesk.top_tier_reviewer_lane_probe.result.v1",
     probe_id: request.probe_id,
+    binding_ref: request.binding_ref,
+    lane_plan_ref: request.lane_plan_ref,
     channel: request.channel,
+    provider_qualified_model_id: request.provider_qualified_model_id,
+    perspective: request.perspective,
     outcome,
     observed_at: options.observedAt,
     evidence_refs: [...options.evidenceRefs],

@@ -40,14 +40,23 @@ test("reviewer lane conformance observation records observed runtime separation 
 });
 
 test("reviewer lane conformance supports same-model multi-perspective observations", () => {
-  const policy = observation({ observation_id: "observation-policy", lane_id: "lane-policy", lane_plan_ref: "lane-plan-policy", perspective: "policy_security", output_ref: "review-output-policy" });
-  const architecture = observation({ observation_id: "observation-architecture", lane_id: "lane-architecture", lane_plan_ref: "lane-plan-architecture", perspective: "architecture", output_ref: "review-output-architecture" });
+	const policy = observation({ observation_id: "observation-policy", lane_id: "lane-policy", lane_plan_ref: "lane-plan-policy", perspective: "policy_security", output_ref: "review-output-policy" });
+	const architecture = observation({ observation_id: "observation-architecture", lane_id: "lane-architecture", lane_plan_ref: "lane-plan-architecture", perspective: "architecture", output_ref: "review-output-architecture" });
+	const verification = observation({ observation_id: "observation-verification", lane_id: "lane-verification", lane_plan_ref: "lane-plan-verification", perspective: "verification_implementation", output_ref: "review-output-verification" });
+	const observations = [policy, architecture, verification];
 
-  assert.equal(policy.provider_qualified_model_id, architecture.provider_qualified_model_id);
-  assert.notEqual(policy.lane_id, architecture.lane_id);
-  assert.notEqual(policy.output_ref, architecture.output_ref);
-  assert.equal(validateFlowDeskReviewerLaneConformanceObservationV1(policy).ok, true);
-  assert.equal(validateFlowDeskReviewerLaneConformanceObservationV1(architecture).ok, true);
+	assert.equal(new Set(observations.map((entry) => entry.provider_qualified_model_id)).size, 1);
+	assert.equal(new Set(observations.map((entry) => entry.binding_ref)).size, 1);
+	assert.equal(new Set(observations.map((entry) => entry.perspective)).size, 3);
+	assert.equal(new Set(observations.map((entry) => entry.observation_id)).size, 3);
+	assert.equal(new Set(observations.map((entry) => entry.lane_id)).size, 3);
+	assert.equal(new Set(observations.map((entry) => entry.lane_plan_ref)).size, 3);
+	assert.equal(new Set(observations.map((entry) => entry.output_ref)).size, 3);
+	for (const entry of observations) {
+		assert.equal(entry.dispatch_authority_enabled, false);
+		assert.equal(entry.hard_chat_authority_claimed, false);
+		assert.equal(validateFlowDeskReviewerLaneConformanceObservationV1(entry).ok, true);
+	}
 });
 
 test("reviewer lane conformance records partial runtime proof as uncertainty instead of blocking construction", () => {

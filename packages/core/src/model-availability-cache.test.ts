@@ -116,12 +116,29 @@ test("exact-model availability cache validates same-day concrete model entries",
 	});
 	assert.equal(plan.state, "ready");
 	assert.equal(plan.lane_bindings.length, 3);
+	assert.deepEqual(
+		plan.lane_bindings.map((lane) => lane.perspective),
+		["policy_security", "architecture", "verification_implementation"],
+	);
+	assert.equal(
+		new Set(plan.lane_bindings.map((lane) => lane.perspective)).size,
+		3,
+		"same concrete model assignment must not collapse reviewer perspectives",
+	);
 	assert.equal(
 		new Set(plan.lane_bindings.map((lane) => lane.provider_qualified_model_id))
 			.size,
 		1,
 	);
+	assert.equal(
+		new Set(plan.lane_bindings.map((lane) => lane.entry_id)).size,
+		1,
+		"one highest-tier concrete binding may be reused across distinct perspective lanes",
+	);
 	assert.equal(plan.providerCall, false);
+	assert.equal(plan.dispatch_authority_enabled, false);
+	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(plan.runtimeExecution, false);
 });
 
 test("reviewer binding predicates include only available highest-tier registered bindings", () => {
@@ -180,6 +197,61 @@ test("reviewer binding predicates reject lower-tier substitution explicitly", ()
 	assert.equal(plan.state, "blocked");
 	assert.deepEqual(plan.lane_bindings, []);
 	assert.ok(plan.blocked_labels.includes("lower_tier_substitution_rejected"));
+});
+
+test("reviewer assignment keeps one highest-tier model for all perspectives and rejects lower-tier substitution", () => {
+	const highestAndLowerTierCache = cache({
+		entries: [
+			cache().entries[0],
+			{
+				entry_id: "entry-claude-sonnet-lower",
+				provider_family: "claude",
+				provider_identity_ref: "provider-claude-1",
+				provider_qualified_model_id: "claude/claude-sonnet-4-5",
+				model_family: "sonnet",
+				registered: true,
+				available: true,
+				highest_tier_eligible: false,
+				availability_ref: "availability-sonnet",
+			},
+		],
+	});
+
+	const lowerRequested = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: highestAndLowerTierCache,
+		localDate: "2026-05-21",
+		requestedProviderQualifiedModelIds: ["claude/claude-sonnet-4-5"],
+	});
+	assert.equal(lowerRequested.state, "blocked");
+	assert.equal(lowerRequested.binding_states[0]?.inclusion, "excluded");
+	assert.ok(
+		lowerRequested.binding_states[0]?.blocked_labels.includes(
+			"lower_tier_substitution_rejected",
+		),
+	);
+
+	const plan = planFlowDeskReviewerAssignmentsV1({
+		cache: highestAndLowerTierCache,
+		localDate: "2026-05-21",
+	});
+	assert.equal(plan.state, "ready", plan.errors.join("; "));
+	assert.equal(plan.lane_bindings.length, 3);
+	assert.deepEqual(
+		plan.lane_bindings.map((lane) => lane.perspective),
+		["policy_security", "architecture", "verification_implementation"],
+	);
+	assert.deepEqual(
+		[...new Set(plan.lane_bindings.map((lane) => lane.entry_id))],
+		["entry-claude-1"],
+	);
+	assert.deepEqual(
+		[...new Set(plan.lane_bindings.map((lane) => lane.provider_qualified_model_id))],
+		["claude/claude-opus-4-5"],
+	);
+	assert.equal(plan.dispatch_authority_enabled, false);
+	assert.equal(plan.providerCall, false);
+	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(plan.runtimeExecution, false);
 });
 
 test("reviewer binding predicates block stale or missing cache availability", () => {
@@ -1173,6 +1245,28 @@ test("reviewer fanout plan deterministically materializes launch requests withou
 		).size,
 		1,
 	);
+	assert.equal(
+		new Set(plan.runtime_lane_launch_requests.map((request) => request.lane_id)).size,
+		3,
+		"same concrete model fan-out must retain one lane per perspective",
+	);
+	assert.deepEqual(
+		plan.runtime_lane_launch_requests.map((request) => request.lane_id),
+		[
+			"reviewer-lane-attempt-1-policy_security",
+			"reviewer-lane-attempt-1-architecture",
+			"reviewer-lane-attempt-1-verification_implementation",
+		],
+	);
+	assert.equal(
+		new Set(
+			plan.runtime_lane_launch_requests.map(
+				(request) => request.launch_request_id,
+			),
+		).size,
+		3,
+		"same concrete model fan-out must retain one launch request per perspective",
+	);
 	assert.equal(plan.max_concurrent_lane_count, 1);
 	assert.equal(plan.same_model_stagger_ms, 1);
 	assert.deepEqual(
@@ -1181,8 +1275,10 @@ test("reviewer fanout plan deterministically materializes launch requests withou
 	);
 	assert.equal(plan.launch_attempted, false);
 	assert.equal(plan.approval_inferred, false);
+	assert.equal(plan.dispatch_authority_enabled, false);
 	assert.equal(plan.providerCall, false);
 	assert.equal(plan.actualLaneLaunch, false);
+	assert.equal(plan.runtimeExecution, false);
 	assert.equal(validateFlowDeskReviewerFanoutPlanV1(plan).ok, true);
 });
 

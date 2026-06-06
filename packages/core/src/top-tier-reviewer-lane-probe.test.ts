@@ -96,14 +96,23 @@ test("reviewer lane probe supports same-model multi-perspective fan-out without 
   const results = perspectives.map((perspective) =>
     evaluateFlowDeskTopTierReviewerLaneProbeV1(request({
       probe_id: `probe-${perspective}`,
+      binding_ref: "binding-claude_opus",
       lane_plan_ref: `lane-plan-${perspective}`,
       perspective
     }))
   );
   for (const result of results) {
     assert.equal(result.outcome, "probe_pass");
+    assert.equal(result.provider_qualified_model_id, "claude/claude-opus-4-5");
+    assert.equal(result.binding_ref, "binding-claude_opus");
+    assert.equal(result.dispatch_authority_enabled, false);
+    assert.equal(result.provider_call_made, false);
+    assert.equal(result.lane_launch_made, false);
   }
   assert.equal(new Set(results.map((result) => result.probe_id)).size, perspectives.length, "each perspective must have a distinct probe id");
+  assert.equal(new Set(results.map((result) => result.perspective)).size, perspectives.length, "each perspective must remain distinct");
+  assert.equal(new Set(results.map((result) => result.lane_plan_ref)).size, perspectives.length, "each perspective must have a distinct lane plan ref");
+  assert.equal(new Set(results.map((result) => result.binding_ref)).size, 1, "same model may share one binding ref without collapsing lanes");
   assert.equal(new Set(results.map((result) => result.evidence_refs.join(":"))).size, 1, "shared model should produce identical evidence ref set across perspectives");
 });
 

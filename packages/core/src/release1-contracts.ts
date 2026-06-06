@@ -1594,7 +1594,11 @@ export interface FlowDeskTopTierReviewerLaneProbeRequestV1 {
 export interface FlowDeskTopTierReviewerLaneProbeResultV1 {
   schema_version: "flowdesk.top_tier_reviewer_lane_probe.result.v1";
   probe_id: OpaqueId;
+  binding_ref: OpaqueRef;
+  lane_plan_ref: OpaqueRef;
   channel: FlowDeskTopTierReviewerLaneProbeChannel;
+  provider_qualified_model_id: string;
+  perspective: FlowDeskTopTierReviewPerspective;
   outcome: FlowDeskTopTierReviewerLaneProbeOutcome;
   failure_label?: string;
   observed_at: IsoTimestamp;
