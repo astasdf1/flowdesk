@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	type FlowDeskExactModelAvailabilityCacheV1,
+	evaluateFlowDeskReviewerBindingPredicatesV1,
 	materializeFlowDeskExactModelAvailabilityCacheFromProviderAcquisitionResultV1,
 	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
 	planFlowDeskExactModelAvailabilityCacheRefreshV1,
@@ -119,6 +120,106 @@ test("exact-model availability cache validates same-day concrete model entries",
 		1,
 	);
 	assert.equal(plan.providerCall, false);
+});
+
+test("reviewer binding predicates include only available highest-tier registered bindings", () => {
+	const evaluation = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache(),
+		localDate: "2026-05-21",
+		requestedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+	});
+	assert.equal(evaluation.state, "evaluated", evaluation.errors.join("; "));
+	assert.equal(evaluation.binding_states.length, 1);
+	assert.deepEqual(evaluation.binding_states[0], {
+		entry_id: "entry-claude-1",
+		provider_qualified_model_id: "claude/claude-opus-4-5",
+		registered: true,
+		available: true,
+		highest_tier_eligible: true,
+		inclusion: "included",
+		labels: ["registered", "available_highest_tier"],
+		blocked_labels: [],
+		safe_next_actions: ["/flowdesk-status"],
+	});
+	assert.equal(evaluation.providerCall, false);
+	assert.equal(evaluation.actualLaneLaunch, false);
+});
+
+test("reviewer binding predicates reject lower-tier substitution explicitly", () => {
+	const lowerTierCache = cache({
+		entries: [
+			{ ...cache().entries[0], available: false, highest_tier_eligible: false },
+			{
+				entry_id: "entry-claude-sonnet-lower",
+				provider_family: "claude",
+				provider_identity_ref: "provider-claude-1",
+				provider_qualified_model_id: "claude/claude-sonnet-4-5",
+				model_family: "sonnet",
+				registered: true,
+				available: true,
+				highest_tier_eligible: false,
+				availability_ref: "availability-sonnet",
+			},
+		],
+	});
+	const evaluation = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: lowerTierCache,
+		localDate: "2026-05-21",
+	});
+	assert.equal(evaluation.state, "blocked");
+	const lower = evaluation.binding_states.find((state) => state.entry_id === "entry-claude-sonnet-lower");
+	assert.equal(lower?.inclusion, "excluded");
+	assert.ok(lower?.blocked_labels.includes("available_but_not_highest_tier"));
+	assert.ok(lower?.blocked_labels.includes("lower_tier_substitution_rejected"));
+	const plan = planFlowDeskReviewerAssignmentsV1({
+		cache: lowerTierCache,
+		localDate: "2026-05-21",
+	});
+	assert.equal(plan.state, "blocked");
+	assert.deepEqual(plan.lane_bindings, []);
+	assert.ok(plan.blocked_labels.includes("lower_tier_substitution_rejected"));
+});
+
+test("reviewer binding predicates block stale or missing cache availability", () => {
+	const stale = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache(),
+		localDate: "2026-05-22",
+	});
+	assert.equal(stale.state, "blocked");
+	assert.ok(stale.blocked_labels.includes("cache_not_same_day"));
+	assert.equal(stale.binding_states[0]?.available, false);
+	assert.equal(stale.binding_states[0]?.inclusion, "blocked");
+	const missing = evaluateFlowDeskReviewerBindingPredicatesV1({
+		localDate: "2026-05-21",
+		requestedProviderQualifiedModelIds: ["claude/claude-opus-4-5"],
+	});
+	assert.equal(missing.state, "blocked");
+	assert.ok(missing.blocked_labels.includes("cache_missing"));
+	assert.equal(missing.binding_states[0]?.registered, false);
+	assert.equal(missing.providerCall, false);
+});
+
+test("reviewer binding predicates distinguish registered unavailable and unregistered models", () => {
+	const unavailable = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache({
+			entries: [{ ...cache().entries[0], available: false, highest_tier_eligible: false }],
+		}),
+		localDate: "2026-05-21",
+	});
+	assert.equal(unavailable.binding_states[0]?.registered, true);
+	assert.equal(unavailable.binding_states[0]?.available, false);
+	assert.equal(unavailable.binding_states[0]?.inclusion, "excluded");
+	assert.ok(unavailable.binding_states[0]?.blocked_labels.includes("registered_but_unavailable"));
+	assert.ok(unavailable.binding_states[0]?.safe_next_actions.includes("/flowdesk-usage"));
+	const unregistered = evaluateFlowDeskReviewerBindingPredicatesV1({
+		cache: cache(),
+		localDate: "2026-05-21",
+		requestedProviderQualifiedModelIds: ["openai/gpt-5.5"],
+	});
+	assert.equal(unregistered.binding_states[0]?.registered, false);
+	assert.equal(unregistered.binding_states[0]?.inclusion, "blocked");
+	assert.ok(unregistered.binding_states[0]?.blocked_labels.includes("binding_unregistered"));
+	assert.ok(unregistered.blocked_labels.includes("binding_unregistered"));
 });
 
 test("availability cache blocks stale date, aliases, and lower-tier substitution", () => {

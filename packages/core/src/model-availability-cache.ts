@@ -165,6 +165,32 @@ export interface FlowDeskReviewerAssignmentPlanV1 extends ValidationResult {
 	runtimeExecution: false;
 }
 
+export type FlowDeskReviewerBindingPredicateInclusionV1 = "included" | "excluded" | "blocked";
+
+export interface FlowDeskReviewerBindingPredicateStateV1 {
+	entry_id?: string;
+	provider_qualified_model_id: string;
+	registered: boolean;
+	available: boolean;
+	highest_tier_eligible: boolean;
+	inclusion: FlowDeskReviewerBindingPredicateInclusionV1;
+	labels: string[];
+	blocked_labels: string[];
+	safe_next_actions: string[];
+}
+
+export interface FlowDeskReviewerBindingPredicateEvaluationV1 extends ValidationResult {
+	schema_version: "flowdesk.reviewer_binding_predicate_evaluation.v1";
+	cache_id?: string;
+	state: "evaluated" | "blocked";
+	binding_states: FlowDeskReviewerBindingPredicateStateV1[];
+	blocked_labels: string[];
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
 export type FlowDeskUsagePressureLabelV1 = "ok" | "warning" | "critical" | "exhausted" | "unknown";
 
 export interface FlowDeskReviewerAssignmentRevalidationV1 extends ValidationResult {
@@ -309,8 +335,12 @@ function eligibleEntries(cache: FlowDeskExactModelAvailabilityCacheV1, options: 
 	usagePressureByEntryId?: Partial<Record<string, FlowDeskUsagePressureLabelV1>>;
 	preferredModelFamilies?: readonly string[];
 } = {}): FlowDeskExactModelAvailabilityEntryV1[] {
+	const predicate = evaluateFlowDeskReviewerBindingPredicatesV1({ cache, localDate: cache.local_date });
+	const includedIds = new Set(predicate.binding_states
+		.filter((state) => state.inclusion === "included")
+		.map((state) => state.entry_id));
 	return cache.entries
-		.filter((entry) => entry.registered && entry.available && entry.highest_tier_eligible)
+		.filter((entry) => includedIds.has(entry.entry_id))
 		.sort((left, right) => {
 			const suitability = modelFamilyPreferenceRank(left.model_family, options.preferredModelFamilies) - modelFamilyPreferenceRank(right.model_family, options.preferredModelFamilies);
 			if (suitability !== 0) return suitability;
@@ -320,6 +350,95 @@ function eligibleEntries(cache: FlowDeskExactModelAvailabilityCacheV1, options: 
 			const rightKey = `${right.provider_family}/${right.provider_qualified_model_id}/${right.entry_id}`;
 			return leftKey.localeCompare(rightKey);
 		});
+}
+
+export function evaluateFlowDeskReviewerBindingPredicatesV1(input: {
+	cache?: FlowDeskExactModelAvailabilityCacheV1;
+	localDate: string;
+	requestedProviderQualifiedModelIds?: readonly string[];
+}): FlowDeskReviewerBindingPredicateEvaluationV1 {
+	const errors: string[] = [];
+	errors.push(...validateLocalDate(input.localDate, "local_date").errors);
+	const blockedLabels: string[] = [];
+	const cacheResult = input.cache === undefined ? valid() : validateFlowDeskExactModelAvailabilityCacheV1(input.cache);
+	if (!cacheResult.ok) {
+		errors.push(...cacheResult.errors);
+		blockedLabels.push("cache_invalid");
+	}
+	if (input.cache === undefined) blockedLabels.push("cache_missing");
+	else if (input.cache.local_date !== input.localDate) blockedLabels.push("cache_not_same_day");
+	const requestedIds = input.requestedProviderQualifiedModelIds ?? [];
+	for (const [index, modelId] of requestedIds.entries())
+		errors.push(...validateConcreteProviderQualifiedModelId(modelId, `requested_provider_qualified_model_ids[${index}]`).errors);
+
+	const staleOrInvalid = input.cache === undefined || !cacheResult.ok || input.cache.local_date !== input.localDate;
+	const baseEntries = input.cache?.entries ?? [];
+	const entries = requestedIds.length === 0
+		? baseEntries
+		: requestedIds.map((modelId) => baseEntries.find((entry) => entry.provider_qualified_model_id === modelId) ?? modelId);
+	const bindingStates = entries.map((entryOrModelId): FlowDeskReviewerBindingPredicateStateV1 => {
+		if (typeof entryOrModelId === "string") {
+			return {
+				provider_qualified_model_id: entryOrModelId,
+				registered: false,
+				available: false,
+				highest_tier_eligible: false,
+				inclusion: "blocked",
+				labels: ["unregistered"],
+				blocked_labels: ["binding_unregistered"],
+				safe_next_actions: ["/flowdesk-plan", "/flowdesk-doctor"],
+			};
+		}
+		const labels: string[] = [];
+		const entryBlockedLabels: string[] = [];
+		let inclusion: FlowDeskReviewerBindingPredicateInclusionV1 = "included";
+		let safeNextActions = ["/flowdesk-status"];
+		if (staleOrInvalid) {
+			inclusion = "blocked";
+			entryBlockedLabels.push(input.cache === undefined ? "cache_missing" : !cacheResult.ok ? "cache_invalid" : "cache_not_same_day");
+			safeNextActions = ["/flowdesk-usage", "/flowdesk-doctor", "/flowdesk-status"];
+		} else if (entryOrModelId.registered !== true) {
+			inclusion = "blocked";
+			labels.push("unregistered");
+			entryBlockedLabels.push("binding_unregistered");
+			safeNextActions = ["/flowdesk-plan", "/flowdesk-doctor"];
+		} else if (entryOrModelId.available !== true) {
+			inclusion = "excluded";
+			labels.push("registered", "registered_unavailable");
+			entryBlockedLabels.push("registered_but_unavailable");
+			safeNextActions = ["/flowdesk-usage", "/flowdesk-doctor", "/flowdesk-status"];
+		} else if (entryOrModelId.highest_tier_eligible !== true) {
+			inclusion = "excluded";
+			labels.push("registered", "available_not_highest_tier", "lower_tier_substitution_rejected");
+			entryBlockedLabels.push("available_but_not_highest_tier", "lower_tier_substitution_rejected");
+			safeNextActions = ["/flowdesk-plan", "/flowdesk-usage", "/flowdesk-status"];
+		} else {
+			labels.push("registered", "available_highest_tier");
+		}
+		return {
+			entry_id: entryOrModelId.entry_id,
+			provider_qualified_model_id: entryOrModelId.provider_qualified_model_id,
+			registered: entryOrModelId.registered,
+			available: !staleOrInvalid && entryOrModelId.available,
+			highest_tier_eligible: !staleOrInvalid && entryOrModelId.available && entryOrModelId.highest_tier_eligible,
+			inclusion,
+			labels,
+			blocked_labels: unique(entryBlockedLabels),
+			safe_next_actions: safeNextActions,
+		};
+	});
+	blockedLabels.push(...bindingStates.flatMap((state) => state.blocked_labels));
+	const ready = errors.length === 0 && blockedLabels.length === 0;
+	return {
+		schema_version: "flowdesk.reviewer_binding_predicate_evaluation.v1",
+		ok: errors.length === 0,
+		errors: unique(errors),
+		cache_id: input.cache?.cache_id,
+		state: ready ? "evaluated" : "blocked",
+		binding_states: bindingStates,
+		blocked_labels: unique(blockedLabels),
+		...disabledReviewerRuntimeAuthority,
+	};
 }
 
 function validatePerspectiveArray(value: unknown, label: string): ValidationResult {
@@ -429,7 +548,18 @@ export function planFlowDeskReviewerAssignmentsV1(input: {
 		usagePressureByEntryId: input.usagePressureByEntryId,
 		preferredModelFamilies: input.preferredModelFamilies,
 	});
-	if (eligible.length === 0) blockedLabels.push("no_registered_available_highest_tier_models");
+	if (eligible.length === 0) {
+		const predicate = evaluateFlowDeskReviewerBindingPredicatesV1({ cache: input.cache, localDate: input.localDate });
+		const hasRegisteredAvailableLowerTier = predicate.binding_states.some((state) =>
+			state.registered && state.available && !state.highest_tier_eligible
+		);
+		const hasRegisteredUnavailable = predicate.binding_states.some((state) =>
+			state.registered && !state.available && !state.blocked_labels.includes("cache_not_same_day")
+		);
+		if (hasRegisteredAvailableLowerTier) blockedLabels.push("registered_available_lower_tier_only", "lower_tier_substitution_rejected");
+		else if (hasRegisteredUnavailable) blockedLabels.push("registered_but_unavailable");
+		else blockedLabels.push("no_registered_available_highest_tier_models");
+	}
 	const canBind = errors.length === 0 && blockedLabels.length === 0;
 	const spreadEligible = spreadByConcreteModel(eligible);
 	const lane_bindings = !canBind ? [] : perspectives.map((perspective, index) => {
@@ -1085,8 +1215,16 @@ export function revalidateFlowDeskReviewerAssignmentsV1(input: {
 		blockedLabels.push("auth_account_boundary_drift");
 	const eligible = cacheResult.ok ? eligibleEntries(input.cache) : [];
 	if (cacheResult.ok && eligible.length === 0) {
-		const registeredAvailable = input.cache.entries.some((entry) => entry.registered && entry.available);
-		blockedLabels.push(registeredAvailable ? "registered_available_lower_tier_only" : "no_registered_available_highest_tier_models");
+		const predicate = evaluateFlowDeskReviewerBindingPredicatesV1({ cache: input.cache, localDate: input.localDate });
+		const hasRegisteredAvailableLowerTier = predicate.binding_states.some((state) =>
+			state.registered && state.available && !state.highest_tier_eligible
+		);
+		const hasRegisteredUnavailable = predicate.binding_states.some((state) =>
+			state.registered && !state.available && !state.blocked_labels.includes("cache_not_same_day")
+		);
+		if (hasRegisteredAvailableLowerTier) blockedLabels.push("registered_available_lower_tier_only", "lower_tier_substitution_rejected");
+		else if (hasRegisteredUnavailable) blockedLabels.push("registered_but_unavailable");
+		else blockedLabels.push("no_registered_available_highest_tier_models");
 	}
 	const ready = errors.length === 0 && blockedLabels.length === 0;
 	return {
