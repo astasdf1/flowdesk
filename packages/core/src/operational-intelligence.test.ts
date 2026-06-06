@@ -55,6 +55,9 @@ import {
 	createFlowDeskMCPConnectorAdvisoryV1,
 	validateFlowDeskMCPConnectorAdvisoryV1,
 	type FlowDeskMCPConnectorAdvisoryV1,
+	validateFlowDeskOIAdvisoryEnvelopeV1,
+	type FlowDeskOIAdvisoryEnvelopeV1,
+	type FlowDeskOIAdvisoryHealthLabelV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -2737,4 +2740,171 @@ test("MCP connector advisory: malformed ref and raw marker rejection", () => {
 	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(null).ok, false);
 	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(42).ok, false);
 	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1([]).ok, false);
+});
+
+// ─── P7-S13.6a: OI Advisory Envelope + Health Label Taxonomy tests ────────────
+
+test("OI advisory envelope: valid envelope creation and round-trip", () => {
+	const envelope: FlowDeskOIAdvisoryEnvelopeV1 = {
+		advisory_only: true,
+		non_authorizing: true,
+		routing_decision_changed: false,
+		dispatch_authority_enabled: false,
+		fallback_authority_enabled: false,
+		provider_call_made: false,
+		runtime_execution_attempted: false,
+		write_authority_enabled: false,
+		source_evidence_refs: ["evidence-ref-1", "evidence-ref-2"],
+		generated_at: "2026-06-07T00:00:00.000Z",
+		generation_status: "complete",
+	};
+	const result = validateFlowDeskOIAdvisoryEnvelopeV1(envelope);
+	assert.equal(result.ok, true, result.errors.join("; "));
+
+	// Partial generation_status also valid
+	const partial: FlowDeskOIAdvisoryEnvelopeV1 = { ...envelope, generation_status: "partial" };
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1(partial).ok, true);
+
+	// Empty source_evidence_refs is allowed
+	const noRefs: FlowDeskOIAdvisoryEnvelopeV1 = { ...envelope, source_evidence_refs: [] };
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1(noRefs).ok, true);
+
+	// Non-object inputs rejected
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1(null).ok, false);
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1(42).ok, false);
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1("string").ok, false);
+});
+
+test("OI advisory health label taxonomy: all 7 values are valid, invalid values rejected", () => {
+	// All 7 valid values as FlowDeskOIAdvisoryHealthLabelV1
+	const validLabels: FlowDeskOIAdvisoryHealthLabelV1[] = [
+		"healthy",
+		"degraded",
+		"stale",
+		"unknown",
+		"disabled_by_config",
+		"missing_source_evidence",
+		"partial",
+	];
+	// Verify the union type accepts all 7 values (compile-time check via array assignment)
+	assert.equal(validLabels.length, 7);
+
+	// OI session summary accepts the 3 new labels
+	for (const label of ["disabled_by_config", "missing_source_evidence", "partial"] as const) {
+		const result = createFlowDeskOISessionSummaryV1({
+			summaryId: `oi-summary-label-${label}`,
+			sessionRef: "ses-label-test-1",
+			workflowId: `workflow-oi-label-${label}`,
+			proposalsScored: 0,
+			reuseGatesChecked: 0,
+			fanoutGatesEvaluated: 0,
+			ledgerEntriesTotal: 0,
+			advisoryHealthLabel: label,
+			capturedAt: "2026-06-07T00:00:00.000Z",
+			safeNextActions: ["flowdesk-status"],
+		});
+		assert.equal(result.ok, true, `label '${label}' should be accepted: ${result.errors.join("; ")}`);
+		assert.equal(result.summary?.advisory_health_label, label);
+	}
+
+	// Invalid label values still rejected
+	const badLabel = createFlowDeskOISessionSummaryV1({
+		summaryId: "oi-summary-bad-label",
+		sessionRef: "ses-bad-label",
+		workflowId: "workflow-bad-label",
+		proposalsScored: 0,
+		reuseGatesChecked: 0,
+		fanoutGatesEvaluated: 0,
+		ledgerEntriesTotal: 0,
+		advisoryHealthLabel: "excellent" as never,
+		capturedAt: "2026-06-07T00:01:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badLabel.ok, false);
+	assert.match(badLabel.errors.join("; "), /advisory_health_label/);
+});
+
+test("OI advisory envelope: authority smuggling rejection", () => {
+	const validEnvelope: FlowDeskOIAdvisoryEnvelopeV1 = {
+		advisory_only: true,
+		non_authorizing: true,
+		routing_decision_changed: false,
+		dispatch_authority_enabled: false,
+		fallback_authority_enabled: false,
+		provider_call_made: false,
+		runtime_execution_attempted: false,
+		write_authority_enabled: false,
+		source_evidence_refs: ["evidence-ref-auth-1"],
+		generated_at: "2026-06-07T01:00:00.000Z",
+		generation_status: "complete",
+	};
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1(validEnvelope).ok, true);
+
+	// Attempt to smuggle dispatch authority
+	const smuggledDispatch = validateFlowDeskOIAdvisoryEnvelopeV1({ ...validEnvelope, dispatch_authority_enabled: true });
+	assert.equal(smuggledDispatch.ok, false);
+	assert.match(smuggledDispatch.errors.join("; "), /dispatch_authority_enabled.*false|authority smuggling/);
+
+	// Attempt to smuggle fallback authority
+	const smuggledFallback = validateFlowDeskOIAdvisoryEnvelopeV1({ ...validEnvelope, fallback_authority_enabled: true });
+	assert.equal(smuggledFallback.ok, false);
+	assert.match(smuggledFallback.errors.join("; "), /fallback_authority_enabled.*false|authority smuggling/);
+
+	// Attempt to flip advisory_only to false
+	const smuggledAdvisory = validateFlowDeskOIAdvisoryEnvelopeV1({ ...validEnvelope, advisory_only: false as true });
+	assert.equal(smuggledAdvisory.ok, false);
+	assert.match(smuggledAdvisory.errors.join("; "), /advisory_only.*true/);
+
+	// Attempt to set provider_call_made to true
+	const smuggledProvider = validateFlowDeskOIAdvisoryEnvelopeV1({ ...validEnvelope, provider_call_made: true as false });
+	assert.equal(smuggledProvider.ok, false);
+	assert.match(smuggledProvider.errors.join("; "), /provider_call_made.*false|authority smuggling/);
+
+	// Unknown property injection
+	const unknownProp = validateFlowDeskOIAdvisoryEnvelopeV1({ ...validEnvelope, runtimeTarget: "openai" });
+	assert.equal(unknownProp.ok, false);
+	assert.match(unknownProp.errors.join("; "), /unknown properties/);
+});
+
+test("OI advisory envelope: invalid generation_status rejection and malformed generated_at rejection", () => {
+	const base: FlowDeskOIAdvisoryEnvelopeV1 = {
+		advisory_only: true,
+		non_authorizing: true,
+		routing_decision_changed: false,
+		dispatch_authority_enabled: false,
+		fallback_authority_enabled: false,
+		provider_call_made: false,
+		runtime_execution_attempted: false,
+		write_authority_enabled: false,
+		source_evidence_refs: [],
+		generated_at: "2026-06-07T02:00:00.000Z",
+		generation_status: "complete",
+	};
+	assert.equal(validateFlowDeskOIAdvisoryEnvelopeV1(base).ok, true);
+
+	// Invalid generation_status value
+	const badStatus = validateFlowDeskOIAdvisoryEnvelopeV1({ ...base, generation_status: "dispatching" as "complete" });
+	assert.equal(badStatus.ok, false);
+	assert.match(badStatus.errors.join("; "), /generation_status.*complete.*partial.*degraded.*disabled_by_config/);
+
+	// All valid generation_status values are accepted
+	for (const status of ["complete", "partial", "degraded", "disabled_by_config"] as const) {
+		const result = validateFlowDeskOIAdvisoryEnvelopeV1({ ...base, generation_status: status });
+		assert.equal(result.ok, true, `generation_status '${status}' should be valid: ${result.errors.join("; ")}`);
+	}
+
+	// Malformed generated_at (not parseable timestamp)
+	const badTimestamp = validateFlowDeskOIAdvisoryEnvelopeV1({ ...base, generated_at: "not-a-timestamp" });
+	assert.equal(badTimestamp.ok, false);
+	assert.match(badTimestamp.errors.join("; "), /generated_at.*parseable|timestamp/);
+
+	// Missing generated_at (undefined)
+	const missingTimestamp = validateFlowDeskOIAdvisoryEnvelopeV1({ ...base, generated_at: undefined as unknown as string });
+	assert.equal(missingTimestamp.ok, false);
+	assert.match(missingTimestamp.errors.join("; "), /generated_at.*parseable|timestamp/);
+
+	// source_evidence_refs with invalid opaque ref (contains spaces)
+	const badRef = validateFlowDeskOIAdvisoryEnvelopeV1({ ...base, source_evidence_refs: ["ref with spaces"] });
+	assert.equal(badRef.ok, false);
+	assert.match(badRef.errors.join("; "), /schema-safe|spaces/);
 });

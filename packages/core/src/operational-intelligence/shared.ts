@@ -136,6 +136,125 @@ export const optimizerDimensionNames = [
 	"goal_fit", "safety", "simplicity_fit", "detail_fit", "taxonomy_fit", "verification_coverage", "risk", "dependency_impact", "confidence", "cost", "latency", "model_diversity"
 ] as const;
 
+// ─── P7-S13.6a: Common OI advisory envelope + health label taxonomy ───────────
+
+/**
+ * Closed health label union for operational intelligence advisory outputs.
+ * 7 values covering the full operational state space.
+ */
+export type FlowDeskOIAdvisoryHealthLabelV1 =
+	| "healthy"
+	| "degraded"
+	| "stale"
+	| "unknown"
+	| "disabled_by_config"
+	| "missing_source_evidence"
+	| "partial";
+
+const oiAdvisoryHealthLabels: readonly string[] = [
+	"healthy",
+	"degraded",
+	"stale",
+	"unknown",
+	"disabled_by_config",
+	"missing_source_evidence",
+	"partial",
+];
+
+/**
+ * Common advisory envelope for all OI advisory outputs.
+ * All authority flags are false literals; no runtime behavior is granted.
+ */
+export interface FlowDeskOIAdvisoryEnvelopeV1 {
+	advisory_only: true;
+	non_authorizing: true;
+	routing_decision_changed: false;
+	dispatch_authority_enabled: false;
+	fallback_authority_enabled: false;
+	provider_call_made: false;
+	runtime_execution_attempted: false;
+	write_authority_enabled: false;
+	source_evidence_refs: readonly string[];
+	generated_at: string; // ISO timestamp
+	generation_status: "complete" | "partial" | "degraded" | "disabled_by_config";
+}
+
+const oiAdvisoryEnvelopeAllowedProperties = [
+	"advisory_only",
+	"non_authorizing",
+	"routing_decision_changed",
+	"dispatch_authority_enabled",
+	"fallback_authority_enabled",
+	"provider_call_made",
+	"runtime_execution_attempted",
+	"write_authority_enabled",
+	"source_evidence_refs",
+	"generated_at",
+	"generation_status",
+] as const;
+
+const oiAdvisoryEnvelopeGenerationStatusValues: readonly string[] = [
+	"complete",
+	"partial",
+	"degraded",
+	"disabled_by_config",
+];
+
+/**
+ * Validates a FlowDeskOIAdvisoryEnvelopeV1.
+ * Rejects: unknown properties, authority smuggling, raw payload markers,
+ * invalid generation_status, unparseable generated_at.
+ */
+export function validateFlowDeskOIAdvisoryEnvelopeV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("OI advisory envelope must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Reject unknown properties first
+	errors.push(...rejectUnknownProperties(record, oiAdvisoryEnvelopeAllowedProperties, "OI advisory envelope").errors);
+
+	// Validate required literal authority flags
+	if (record.advisory_only !== true) errors.push("OI advisory envelope advisory_only must be true");
+	if (record.non_authorizing !== true) errors.push("OI advisory envelope non_authorizing must be true");
+	if (record.routing_decision_changed !== false) errors.push("OI advisory envelope routing_decision_changed must be false");
+	if (record.dispatch_authority_enabled !== false) errors.push("OI advisory envelope dispatch_authority_enabled must be false (authority smuggling rejected)");
+	if (record.fallback_authority_enabled !== false) errors.push("OI advisory envelope fallback_authority_enabled must be false (authority smuggling rejected)");
+	if (record.provider_call_made !== false) errors.push("OI advisory envelope provider_call_made must be false (authority smuggling rejected)");
+	if (record.runtime_execution_attempted !== false) errors.push("OI advisory envelope runtime_execution_attempted must be false (authority smuggling rejected)");
+	if (record.write_authority_enabled !== false) errors.push("OI advisory envelope write_authority_enabled must be false (authority smuggling rejected)");
+
+	// Validate generated_at is parseable ISO timestamp
+	errors.push(...validateTimestamp(record.generated_at, "generated_at").errors);
+
+	// Validate generation_status is a valid enum value
+	if (typeof record.generation_status !== "string" || !oiAdvisoryEnvelopeGenerationStatusValues.includes(record.generation_status)) {
+		errors.push(`OI advisory envelope generation_status must be one of: ${oiAdvisoryEnvelopeGenerationStatusValues.join(", ")}`);
+	}
+
+	// Validate source_evidence_refs is an array of opaque refs (may be empty)
+	if (!Array.isArray(record.source_evidence_refs)) {
+		errors.push("OI advisory envelope source_evidence_refs must be an array");
+	} else {
+		for (const [index, ref] of record.source_evidence_refs.entries()) {
+			errors.push(...validateOpaqueRef(ref, `source_evidence_refs[${index}]`).errors);
+		}
+	}
+
+	// Reject raw payload markers in the envelope as a whole
+	errors.push(...validateNoForbiddenRawPayloads(record, "OI advisory envelope").errors);
+
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+/**
+ * Validates that a value is a valid FlowDeskOIAdvisoryHealthLabelV1 (7-value taxonomy).
+ */
+export function validateFlowDeskOIAdvisoryHealthLabelV1(value: unknown, label: string): ValidationResult {
+	return typeof value === "string" && oiAdvisoryHealthLabels.includes(value)
+		? valid()
+		: invalid(`${label} must be one of: ${oiAdvisoryHealthLabels.join(", ")}`);
+}
+
 export function validateOptimizerScoreDimensions(value: unknown, label: string): ValidationResult {
 	if (!Array.isArray(value)) return invalid(`${label} must be an array`);
 	if (value.length === 0 || value.length > 12) return invalid(`${label} must be a non-empty bounded array`);

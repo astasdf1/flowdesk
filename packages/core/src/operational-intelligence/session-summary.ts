@@ -4,6 +4,7 @@
  */
 import {
 	type ValidationResult,
+	type FlowDeskOIAdvisoryHealthLabelV1,
 	valid,
 	invalid,
 	validateNoForbiddenRawPayloads,
@@ -14,12 +15,11 @@ import {
 	validateTimestamp,
 } from "./shared.js";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// Re-export the shared health label so callers that previously imported
+// it from this module continue to work without breakage.
+export type { FlowDeskOIAdvisoryHealthLabelV1 };
 
-/**
- * Advisory health label for the overall operational intelligence session.
- */
-export type FlowDeskOIAdvisoryHealthLabelV1 = "healthy" | "degraded" | "stale" | "unknown";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 /**
  * Pure advisory summary of operational intelligence activity for a single session.
@@ -58,7 +58,7 @@ export interface FlowDeskOISessionSummaryResultV1 {
 
 // ─── Creator ──────────────────────────────────────────────────────────────────
 
-const oiHealthLabelsSet: readonly string[] = ["healthy", "degraded", "stale", "unknown"];
+const oiHealthLabelsSet: readonly string[] = ["healthy", "degraded", "stale", "unknown", "disabled_by_config", "missing_source_evidence", "partial"];
 
 export function createFlowDeskOISessionSummaryV1(input: {
 	summaryId: string;
@@ -93,7 +93,7 @@ export function createFlowDeskOISessionSummaryV1(input: {
 	}
 
 	if (typeof input.advisoryHealthLabel !== "string" || !oiHealthLabelsSet.includes(input.advisoryHealthLabel)) {
-		errors.push("advisory_health_label must be 'healthy', 'degraded', 'stale', or 'unknown'");
+		errors.push("advisory_health_label must be 'healthy', 'degraded', 'stale', 'unknown', 'disabled_by_config', 'missing_source_evidence', or 'partial'");
 	}
 
 	if (!Array.isArray(input.safeNextActions) || input.safeNextActions.length === 0 || input.safeNextActions.length > 8) {
@@ -162,7 +162,7 @@ const oiSessionSummaryAllowedProperties = [
 	"hard_chat_authority_enabled",
 ] as const;
 
-const oiHealthLabels: readonly string[] = ["healthy", "degraded", "stale", "unknown"];
+const oiHealthLabels: readonly string[] = ["healthy", "degraded", "stale", "unknown", "disabled_by_config", "missing_source_evidence", "partial"];
 
 export function validateFlowDeskOISessionSummaryV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("OI session summary must be an object");
@@ -194,7 +194,7 @@ export function validateFlowDeskOISessionSummaryV1(value: unknown): ValidationRe
 	}
 
 	if (typeof record.advisory_health_label !== "string" || !oiHealthLabels.includes(record.advisory_health_label)) {
-		errors.push("advisory_health_label must be 'healthy', 'degraded', 'stale', or 'unknown'");
+		errors.push("advisory_health_label must be 'healthy', 'degraded', 'stale', 'unknown', 'disabled_by_config', 'missing_source_evidence', or 'partial'");
 	}
 
 	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) {

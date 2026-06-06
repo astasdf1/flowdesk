@@ -1,6 +1,7 @@
 /**
  * Barrel export for the operational-intelligence submodule directory.
  * P7-S13.5: Re-exports all public symbols from all bounded submodules.
+ * P7-S13.6a: Adds common OI advisory envelope + health label taxonomy from shared.ts.
  *
  * Dependency order (no circular deps):
  *   shared.ts → (no OI deps)
@@ -17,6 +18,13 @@
  *   mcp-advisory.ts → shared.ts
  *   federated.ts → shared.ts, evaluation-events.ts
  */
+
+// shared public types (P7-S13.6a: common OI advisory envelope + health label taxonomy)
+export {
+	type FlowDeskOIAdvisoryHealthLabelV1,
+	type FlowDeskOIAdvisoryEnvelopeV1,
+	validateFlowDeskOIAdvisoryEnvelopeV1,
+} from "./shared.js";
 
 // proposals (no dependency on evaluation-events)
 export {
@@ -116,9 +124,8 @@ export {
 	validateFlowDeskWorkflowSignatureIndexEntryV1,
 } from "./score-reference.js";
 
-// session-summary
+// session-summary (FlowDeskOIAdvisoryHealthLabelV1 is now exported from shared above)
 export {
-	type FlowDeskOIAdvisoryHealthLabelV1,
 	type FlowDeskOISessionSummaryV1,
 	type FlowDeskOISessionSummaryResultV1,
 	createFlowDeskOISessionSummaryV1,
