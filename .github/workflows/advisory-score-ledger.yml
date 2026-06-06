@@ -1,0 +1,92 @@
+name: Advisory Score Ledger
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  local-ledger-validation:
+    name: Local advisory score ledger validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.1"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build core package
+        run: npm run build --workspace @flowdesk/core
+
+      - name: Run operational intelligence tests
+        run: node --test packages/core/dist/operational-intelligence.test.js
+
+      - name: Produce and validate local advisory score ledger JSONL artifact
+        run: |
+          mkdir -p artifacts/advisory-score-ledger
+          node --input-type=module <<'EOF'
+          import { writeFileSync } from "node:fs";
+          import {
+            createFlowDeskAdvisoryScoreLedgerEntryV1,
+            createFlowDeskWorkflowPlanProposalScoreEventV1,
+            decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
+            encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
+          } from "./packages/core/dist/index.js";
+
+          const scoreEvent = createFlowDeskWorkflowPlanProposalScoreEventV1({
+            scoreEventId: "score-event-ci-local-1",
+            workflowId: "workflow-ci-local-1",
+            proposalId: "proposal-ci-local-1",
+            candidateRef: "candidate-ci-local-1",
+            hardFiltersPassed: true,
+            advisoryScore: 1,
+            scoreReasonRef: "reason-ci-local-1",
+          });
+
+          const entry = createFlowDeskAdvisoryScoreLedgerEntryV1({
+            ledgerEntryId: "ledger-entry-ci-local-1",
+            workflowId: "workflow-ci-local-1",
+            sequence: 0,
+            recordedAt: "2026-06-06T00:00:00.000Z",
+            event: scoreEvent,
+          });
+
+          const encoded = encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(entry);
+          if (!encoded.ok || encoded.line === undefined) throw new Error(encoded.errors.join("; "));
+
+          const decoded = decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(encoded.line);
+          if (!decoded.ok) throw new Error(decoded.errors.join("; "));
+
+          if (
+            decoded.entry?.local_only !== true ||
+            decoded.entry?.append_only !== true ||
+            decoded.entry?.non_authorizing !== true ||
+            decoded.entry?.advisory_only !== true ||
+            decoded.entry?.dispatch_authority_enabled !== false ||
+            decoded.entry?.approval_authority_enabled !== false ||
+            decoded.entry?.provider_authority_enabled !== false ||
+            decoded.entry?.runtime_authority_enabled !== false ||
+            decoded.entry?.external_write_authority_enabled !== false ||
+            decoded.entry?.fallback_authority_enabled !== false ||
+            decoded.entry?.lane_launch_authority_enabled !== false
+          ) {
+            throw new Error("local advisory score ledger artifact gained authority");
+          }
+
+          writeFileSync("artifacts/advisory-score-ledger/ci-local-ledger.jsonl", `${encoded.line}\n`, "utf8");
+          EOF
+
+      - name: Re-validate local artifact shape
+        run: node --input-type=module -e 'import { readFileSync } from "node:fs"; import { decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine } from "./packages/core/dist/index.js"; const lines = readFileSync("artifacts/advisory-score-ledger/ci-local-ledger.jsonl", "utf8").trimEnd().split("\n").filter(Boolean); if (lines.length !== 1) throw new Error(`expected 1 JSONL line, got ${lines.length}`); for (const line of lines) { const result = decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(line); if (!result.ok) throw new Error(result.errors.join("; ")); }'
