@@ -168,7 +168,7 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /^  task: deny$/m);
 		assert.match(mainAgent, /^  lsr: allow$/m);
 		assert.match(mainAgent, /^  external_directory:\n    "\*": allow$/m);
-		assert.match(mainAgent, /model: openai\/gpt-5\.3-codex-spark/);
+		assert.match(mainAgent, /model: openai\/gpt-5\.4-mini-fast/);
 		assert.match(mainAgent, /Mandatory dispatch boundary/);
 		assert.match(mainAgent, /flowdesk_task.*agent-facing short wrapper.*mandatory FlowDesk-owned lane boundary/s);
 		assert.doesNotMatch(mainAgent, /flowdesk_agent_task_run/);

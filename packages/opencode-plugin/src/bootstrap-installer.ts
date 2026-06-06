@@ -789,7 +789,7 @@ function flowDeskMainAgentMarkdown(): string {
 	return `---
 description: Primary FlowDesk coordinator. Plans workflows, splits work into small FlowDesk-owned lanes, and summarizes durable results.
 mode: primary
-model: openai/gpt-5.3-codex-spark
+model: openai/gpt-5.4-mini-fast
 permission:
   read: allow
   glob: allow
