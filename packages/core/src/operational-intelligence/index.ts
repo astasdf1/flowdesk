@@ -155,6 +155,7 @@ export {
 // federated (Phase 8 scaffold; depends on evaluation-events)
 // P8-S3: federated registry connector capability + preflight contracts
 // P8-S4: connector gate evaluator (always-false, blocked-by-default)
+// P8-S6a: OAuth/consent architecture contracts (advisory-only, no runtime OAuth calls)
 export {
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 	type FlowDeskFederatedScoreRegistryPublicationIntentV1,
@@ -182,6 +183,26 @@ export {
 	type FlowDeskGitHubDryRunPublicationResultResultV1,
 	createFlowDeskGitHubDryRunPublicationResultV1,
 	validateFlowDeskGitHubDryRunPublicationResultV1,
+	type FlowDeskFederatedConsentScopeV1,
+	type FlowDeskFederatedConsentRecordV1,
+	type FlowDeskFederatedConsentRecordResultV1,
+	createFlowDeskFederatedConsentRecordV1,
+	validateFlowDeskFederatedConsentRecordV1,
+	type FlowDeskGitHubOAuthAuthStateV1,
+	type FlowDeskGitHubOAuthArchitectureV1,
+	type FlowDeskGitHubOAuthArchitectureResultV1,
+	createFlowDeskGitHubOAuthArchitectureV1,
+	validateFlowDeskGitHubOAuthArchitectureV1,
+	// P8-S7: data minimization policy
+	type FlowDeskFederatedDataMinimizationPolicyV1,
+	type FlowDeskFederatedDataMinimizationPolicyResultV1,
+	createFlowDeskFederatedDataMinimizationPolicyV1,
+	validateFlowDeskFederatedDataMinimizationPolicyV1,
+	// P8-S7: canonical workflow ref
+	type FlowDeskFederatedCanonicalWorkflowRefV1,
+	type FlowDeskFederatedCanonicalWorkflowRefResultV1,
+	createFlowDeskFederatedCanonicalWorkflowRefV1,
+	validateFlowDeskFederatedCanonicalWorkflowRefV1,
 } from "./federated.js";
 
 // scoring-engine (P7-S14: minimal OI scoring engine)

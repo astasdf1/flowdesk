@@ -140,7 +140,9 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.federated_registry_connector_capability.v1": ["schema_version", "capability_descriptor_id", "capability_ref", "connector_kind", "connector_profile_ref", "registry_ref", "auth_scope_ref", "target_kind", "tool_ref", "capability_state", "content_format_ref", "dry_run_supported", "discovered_at", "connector_gate_satisfiable", "remote_write_blocked_by_default", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
   "flowdesk.federated_registry_publication_preflight.v1": ["schema_version", "preflight_id", "publication_intent_ref", "capability_descriptor_ref", "workflow_id", "attempt_id", "registry_ref", "connector_kind", "target_ref", "content_hash_ref", "redaction_policy_ref", "auth_scope_ref", "dry_run_required", "content_format_ref", "idempotency_key_ref", "pre_write_audit_ref", "preflight_state", "blocked_labels", "connector_gate_satisfied", "remote_write_blocked_by_default", "remote_write_attempted", "preflight_only", "non_authorizing", "advisory_only", "created_at", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
   "flowdesk.github_dry_run_publication_result.v1": ["schema_version", "dry_run_result_id", "preflight_ref", "write_plan_ref", "workflow_id", "attempt_id", "connector_kind", "redacted_target_label", "redacted_content_preview", "content_hash_ref", "dry_run_state", "blocked_labels", "fake_remote_write_attempted", "would_produce_ref_shape", "remote_write_attempted", "github_write_attempted", "connector_write_attempted", "remote_write_authority_enabled", "external_write_authority_enabled", "dispatch_authority_enabled", "providerCall", "actualLaneLaunch", "runtimeExecution"],
-  "flowdesk.federated_gate_evaluation.v1": ["schema_version", "evaluation_id", "workflow_id", "attempt_id", "gate_satisfied", "redacted_block_reasons", "missing_evidence_labels", "evaluated_at", "advisory_only", "non_authorizing", "connector_gate_promotion_authorized", "remote_write_authority_enabled", "dispatch_authority_enabled"]
+  "flowdesk.federated_gate_evaluation.v1": ["schema_version", "evaluation_id", "workflow_id", "attempt_id", "gate_satisfied", "redacted_block_reasons", "missing_evidence_labels", "evaluated_at", "advisory_only", "non_authorizing", "connector_gate_promotion_authorized", "remote_write_authority_enabled", "dispatch_authority_enabled"],
+  "flowdesk.federated_consent_record.v1": ["schema_version", "consent_record_id", "workflow_id", "consent_granted_at", "consent_granted_by", "target_registry_ref", "revocable", "revoked", "consent_scope", "retention_days", "installation_id_hash_ref", "advisory_only", "non_authorizing", "remote_write_authority_enabled", "dispatch_authority_enabled"],
+  "flowdesk.github_oauth_architecture.v1": ["schema_version", "architecture_id", "auth_scope_ref", "required_github_scopes", "token_storage", "token_ref", "auth_state", "dry_run_allowed_without_token", "advisory_only", "non_authorizing", "provider_call_made", "token_transmitted_in_evidence", "remote_write_authority_enabled", "dispatch_authority_enabled"]
 } satisfies Record<string, readonly string[]>;
 
 const optionalFields: Record<string, readonly string[]> = {
@@ -215,7 +217,9 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.federated_registry_connector_capability.v1": [],
   "flowdesk.federated_registry_publication_preflight.v1": [],
   "flowdesk.github_dry_run_publication_result.v1": [],
-  "flowdesk.federated_gate_evaluation.v1": []
+  "flowdesk.federated_gate_evaluation.v1": [],
+  "flowdesk.federated_consent_record.v1": ["revoked_at"],
+  "flowdesk.github_oauth_architecture.v1": []
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {

@@ -77,6 +77,21 @@ import {
 	validateFlowDeskGitHubDryRunPublicationResultV1,
 	type FlowDeskGitHubDryRunPublicationResultV1,
 	type FlowDeskGitHubDryRunStateV1,
+	createFlowDeskFederatedConsentRecordV1,
+	validateFlowDeskFederatedConsentRecordV1,
+	type FlowDeskFederatedConsentRecordV1,
+	type FlowDeskFederatedConsentScopeV1,
+	createFlowDeskGitHubOAuthArchitectureV1,
+	validateFlowDeskGitHubOAuthArchitectureV1,
+	type FlowDeskGitHubOAuthArchitectureV1,
+	type FlowDeskGitHubOAuthAuthStateV1,
+	// P8-S7: data minimization + canonicalization
+	createFlowDeskFederatedDataMinimizationPolicyV1,
+	validateFlowDeskFederatedDataMinimizationPolicyV1,
+	type FlowDeskFederatedDataMinimizationPolicyV1,
+	createFlowDeskFederatedCanonicalWorkflowRefV1,
+	validateFlowDeskFederatedCanonicalWorkflowRefV1,
+	type FlowDeskFederatedCanonicalWorkflowRefV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -3608,4 +3623,572 @@ test("P8-S3 dry-run: invalid would_produce_ref_shape → rejected by validator",
 	assert.equal(validation.ok, false);
 	assert.ok(validation.errors.some((e: string) => /would_produce_ref_shape.*github_url/i.test(e)),
 		`Expected would_produce_ref_shape error, got: ${validation.errors.join("; ")}`);
+});
+
+// ─── P8-S6a: Federated Consent Record tests ────────────────────────────────────
+
+test("P8-S6a consent record: valid granted not-revoked publish_scores scope", () => {
+	const result = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-1",
+		workflowId: "workflow-consent-1",
+		consentGrantedAt: "2026-06-07T00:00:00.000Z",
+		consentGrantedBy: "operator-config-ref-1",
+		targetRegistryRef: "registry-config-ref-1",
+		revoked: false,
+		consentScope: ["publish_scores"],
+		retentionDays: 30,
+		installationIdHashRef: "hash-installation-abc123",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.record !== undefined);
+	const r = result.record as FlowDeskFederatedConsentRecordV1;
+	assert.equal(r.schema_version, "flowdesk.federated_consent_record.v1");
+	assert.equal(r.consent_record_id, "consent-record-1");
+	assert.equal(r.revocable, true);
+	assert.equal(r.revoked, false);
+	assert.equal(r.revoked_at, undefined);
+	assert.deepEqual(r.consent_scope, ["publish_scores"]);
+	assert.equal(r.retention_days, 30);
+	assert.equal(r.advisory_only, true);
+	assert.equal(r.non_authorizing, true);
+	assert.equal(r.remote_write_authority_enabled, false);
+	assert.equal(r.dispatch_authority_enabled, false);
+	// Validator round-trip
+	assert.equal(validateFlowDeskFederatedConsentRecordV1(r).ok, true);
+});
+
+test("P8-S6a consent record: revoked=true requires revoked_at", () => {
+	// revoked=true without revoked_at → rejected
+	const withoutAt = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-2a",
+		workflowId: "workflow-consent-2",
+		consentGrantedAt: "2026-06-07T00:01:00.000Z",
+		consentGrantedBy: "operator-config-ref-2",
+		targetRegistryRef: "registry-config-ref-2",
+		revoked: true,
+		// revokedAt intentionally absent
+		consentScope: ["read_scores"],
+		retentionDays: 90,
+		installationIdHashRef: "hash-installation-def456",
+	});
+	assert.equal(withoutAt.ok, false);
+	assert.match(withoutAt.errors.join("; "), /revoked_at.*required|required.*revoked_at/);
+
+	// revoked=true WITH revoked_at → accepted
+	const withAt = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-2b",
+		workflowId: "workflow-consent-2",
+		consentGrantedAt: "2026-06-07T00:01:00.000Z",
+		consentGrantedBy: "operator-config-ref-2",
+		targetRegistryRef: "registry-config-ref-2",
+		revoked: true,
+		revokedAt: "2026-06-07T01:00:00.000Z",
+		consentScope: ["read_scores"],
+		retentionDays: 90,
+		installationIdHashRef: "hash-installation-def456",
+	});
+	assert.equal(withAt.ok, true, withAt.errors.join("; "));
+	assert.equal(withAt.record?.revoked_at, "2026-06-07T01:00:00.000Z");
+	assert.equal(validateFlowDeskFederatedConsentRecordV1(withAt.record!).ok, true);
+
+	// Validator: revoked=true without revoked_at is also caught
+	const forgedRevoked = validateFlowDeskFederatedConsentRecordV1({
+		...withAt.record!,
+		revoked_at: undefined,
+	});
+	assert.equal(forgedRevoked.ok, false);
+	assert.match(forgedRevoked.errors.join("; "), /revoked_at.*required|required.*revoked_at/);
+});
+
+test("P8-S6a consent record: empty consent_scope rejected", () => {
+	const result = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-3",
+		workflowId: "workflow-consent-3",
+		consentGrantedAt: "2026-06-07T00:02:00.000Z",
+		consentGrantedBy: "operator-config-ref-3",
+		targetRegistryRef: "registry-config-ref-3",
+		revoked: false,
+		consentScope: [],  // empty — must be rejected
+		retentionDays: 7,
+		installationIdHashRef: "hash-installation-ghi789",
+	});
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /consent_scope.*non-empty|non-empty.*consent_scope/);
+
+	// Validator also rejects empty scope on a valid base
+	const base = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-3b",
+		workflowId: "workflow-consent-3",
+		consentGrantedAt: "2026-06-07T00:03:00.000Z",
+		consentGrantedBy: "operator-config-ref-3b",
+		targetRegistryRef: "registry-config-ref-3b",
+		revoked: false,
+		consentScope: ["post_pr_comments"],
+		retentionDays: 14,
+		installationIdHashRef: "hash-installation-ghi789",
+	});
+	assert.equal(base.ok, true, base.errors.join("; "));
+	const emptyScope = validateFlowDeskFederatedConsentRecordV1({ ...base.record!, consent_scope: [] });
+	assert.equal(emptyScope.ok, false);
+	assert.match(emptyScope.errors.join("; "), /consent_scope.*non-empty|non-empty.*consent_scope/);
+});
+
+test("P8-S6a consent record: retention_days out of range rejected", () => {
+	// Zero days (< 1)
+	const zeroDays = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-4a",
+		workflowId: "workflow-consent-4",
+		consentGrantedAt: "2026-06-07T00:04:00.000Z",
+		consentGrantedBy: "operator-config-ref-4",
+		targetRegistryRef: "registry-config-ref-4",
+		revoked: false,
+		consentScope: ["publish_scores"],
+		retentionDays: 0,
+		installationIdHashRef: "hash-installation-jkl012",
+	});
+	assert.equal(zeroDays.ok, false);
+	assert.match(zeroDays.errors.join("; "), /retention_days.*1\.\.365|1\.\.365.*retention_days/);
+
+	// 366 days (> 365)
+	const tooManyDays = createFlowDeskFederatedConsentRecordV1({
+		consentRecordId: "consent-record-4b",
+		workflowId: "workflow-consent-4",
+		consentGrantedAt: "2026-06-07T00:05:00.000Z",
+		consentGrantedBy: "operator-config-ref-4b",
+		targetRegistryRef: "registry-config-ref-4b",
+		revoked: false,
+		consentScope: ["read_scores"],
+		retentionDays: 366,
+		installationIdHashRef: "hash-installation-jkl012",
+	});
+	assert.equal(tooManyDays.ok, false);
+	assert.match(tooManyDays.errors.join("; "), /retention_days.*1\.\.365|1\.\.365.*retention_days/);
+
+	// Valid boundary values 1 and 365
+	for (const days of [1, 365]) {
+		const boundary = createFlowDeskFederatedConsentRecordV1({
+			consentRecordId: `consent-record-4c-${days}`,
+			workflowId: "workflow-consent-4",
+			consentGrantedAt: "2026-06-07T00:06:00.000Z",
+			consentGrantedBy: "operator-config-ref-4c",
+			targetRegistryRef: "registry-config-ref-4c",
+			revoked: false,
+			consentScope: ["publish_scores"],
+			retentionDays: days,
+			installationIdHashRef: "hash-installation-jkl012",
+		});
+		assert.equal(boundary.ok, true, `retention_days=${days} should be valid: ${boundary.errors.join("; ")}`);
+	}
+});
+
+// ─── P8-S6a: GitHub OAuth Architecture tests ────────────────────────────────────
+
+test("P8-S6a OAuth architecture: valid configured state", () => {
+	const result = createFlowDeskGitHubOAuthArchitectureV1({
+		architectureId: "oauth-arch-1",
+		authScopeRef: "auth-scope-ref-1",
+		requiredGithubScopes: ["repo", "read:org"],
+		tokenRef: "token-opaque-ref-1",
+		authState: "configured",
+		dryRunAllowedWithoutToken: false,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.architecture !== undefined);
+	const a = result.architecture as FlowDeskGitHubOAuthArchitectureV1;
+	assert.equal(a.schema_version, "flowdesk.github_oauth_architecture.v1");
+	assert.equal(a.architecture_id, "oauth-arch-1");
+	assert.equal(a.token_storage, "config_file_only");
+	assert.equal(a.token_ref, "token-opaque-ref-1");
+	assert.equal(a.auth_state, "configured");
+	assert.equal(a.dry_run_allowed_without_token, false);
+	assert.equal(a.advisory_only, true);
+	assert.equal(a.non_authorizing, true);
+	assert.equal(a.provider_call_made, false);
+	assert.equal(a.token_transmitted_in_evidence, false);
+	assert.equal(a.remote_write_authority_enabled, false);
+	assert.equal(a.dispatch_authority_enabled, false);
+	// Validator round-trip
+	assert.equal(validateFlowDeskGitHubOAuthArchitectureV1(a).ok, true);
+
+	// Missing state: dry_run_allowed_without_token=true
+	const missing = createFlowDeskGitHubOAuthArchitectureV1({
+		architectureId: "oauth-arch-1b",
+		authScopeRef: "auth-scope-ref-1b",
+		requiredGithubScopes: ["public_repo"],
+		tokenRef: "token-ref-missing-1",
+		authState: "missing",
+		dryRunAllowedWithoutToken: true,
+	});
+	assert.equal(missing.ok, true, missing.errors.join("; "));
+	assert.equal(missing.architecture?.dry_run_allowed_without_token, true);
+	assert.equal(missing.architecture?.auth_state, "missing");
+	assert.equal(validateFlowDeskGitHubOAuthArchitectureV1(missing.architecture!).ok, true);
+});
+
+test("P8-S6a OAuth architecture: token_ref containing ghp_ rejected", () => {
+	// ghp_ prefix is a raw GitHub PAT — must never appear in token_ref
+	const ghpToken = createFlowDeskGitHubOAuthArchitectureV1({
+		architectureId: "oauth-arch-2a",
+		authScopeRef: "auth-scope-ref-2",
+		requiredGithubScopes: ["repo"],
+		tokenRef: "ghp_secretTokenValue12345",  // raw token — must be rejected
+		authState: "configured",
+		dryRunAllowedWithoutToken: false,
+	});
+	assert.equal(ghpToken.ok, false);
+	assert.match(ghpToken.errors.join("; "), /token_ref.*raw token|raw token.*token_ref|token smuggling/);
+
+	// github_pat_ prefix
+	const patToken = createFlowDeskGitHubOAuthArchitectureV1({
+		architectureId: "oauth-arch-2b",
+		authScopeRef: "auth-scope-ref-2b",
+		requiredGithubScopes: ["repo"],
+		tokenRef: "github_pat_abc123xyz",  // raw PAT — must be rejected
+		authState: "configured",
+		dryRunAllowedWithoutToken: false,
+	});
+	assert.equal(patToken.ok, false);
+	assert.match(patToken.errors.join("; "), /token_ref.*raw token|raw token.*token_ref|token smuggling/);
+
+	// Validator also rejects raw token patterns
+	const validArch = createFlowDeskGitHubOAuthArchitectureV1({
+		architectureId: "oauth-arch-2c",
+		authScopeRef: "auth-scope-ref-2c",
+		requiredGithubScopes: ["repo"],
+		tokenRef: "token-opaque-ref-2c",
+		authState: "configured",
+		dryRunAllowedWithoutToken: false,
+	});
+	assert.equal(validArch.ok, true, validArch.errors.join("; "));
+	const forgedToken = validateFlowDeskGitHubOAuthArchitectureV1({
+		...validArch.architecture!,
+		token_ref: "ghp_leakedToken",
+	});
+	assert.equal(forgedToken.ok, false);
+	assert.match(forgedToken.errors.join("; "), /token_ref.*raw token|raw token.*token_ref|token smuggling/);
+});
+
+test("P8-S6a OAuth architecture: token_transmitted_in_evidence=true rejected (authority smuggling)", () => {
+	// Create valid architecture first
+	const validArch = createFlowDeskGitHubOAuthArchitectureV1({
+		architectureId: "oauth-arch-3",
+		authScopeRef: "auth-scope-ref-3",
+		requiredGithubScopes: ["repo", "read:org"],
+		tokenRef: "token-opaque-ref-3",
+		authState: "configured",
+		dryRunAllowedWithoutToken: false,
+	});
+	assert.equal(validArch.ok, true, validArch.errors.join("; "));
+
+	// Attempt to smuggle token_transmitted_in_evidence=true
+	const smuggled = validateFlowDeskGitHubOAuthArchitectureV1({
+		...validArch.architecture!,
+		token_transmitted_in_evidence: true as unknown as false,
+	});
+	assert.equal(smuggled.ok, false);
+	assert.match(smuggled.errors.join("; "), /token_transmitted_in_evidence.*false|token smuggling/);
+
+	// Attempt to smuggle dispatch_authority_enabled=true
+	const dispatchSmuggled = validateFlowDeskGitHubOAuthArchitectureV1({
+		...validArch.architecture!,
+		dispatch_authority_enabled: true as unknown as false,
+	});
+	assert.equal(dispatchSmuggled.ok, false);
+	assert.match(dispatchSmuggled.errors.join("; "), /dispatch_authority_enabled.*false|authority smuggling/);
+
+	// Attempt to smuggle provider_call_made=true
+	const providerSmuggled = validateFlowDeskGitHubOAuthArchitectureV1({
+		...validArch.architecture!,
+		provider_call_made: true as unknown as false,
+	});
+	assert.equal(providerSmuggled.ok, false);
+	assert.match(providerSmuggled.errors.join("; "), /provider_call_made.*false|authority smuggling/);
+
+	// Unknown property injection
+	const unknownProp = validateFlowDeskGitHubOAuthArchitectureV1({
+		...validArch.architecture!,
+		extra_field: "injected",
+	});
+	assert.equal(unknownProp.ok, false);
+	assert.match(unknownProp.errors.join("; "), /unknown properties/);
+});
+
+// ─── P8-S7: Federated Data Minimization Policy tests ─────────────────────────
+
+const validMinPolicyInput = {
+	policyId: "policy-minimization-1",
+	workflowId: "workflow-1",
+	kAnonymityThreshold: 10,
+	createdAt: "2026-06-07T00:00:00.000Z",
+};
+
+test("P8-S7 data minimization policy: valid policy with k_anonymity_threshold=10", () => {
+	const result = createFlowDeskFederatedDataMinimizationPolicyV1(validMinPolicyInput);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const policy = result.policy as FlowDeskFederatedDataMinimizationPolicyV1;
+	assert.equal(policy.schema_version, "flowdesk.federated_data_minimization_policy.v1");
+	assert.equal(policy.policy_id, "policy-minimization-1");
+	assert.equal(policy.workflow_id, "workflow-1");
+	assert.equal(policy.strip_workflow_id, true);
+	assert.equal(policy.strip_proposal_id, true);
+	assert.equal(policy.strip_task_descriptions, true);
+	assert.equal(policy.strip_model_names, true);
+	assert.equal(policy.publish_dimension_scores_as_buckets, true);
+	assert.equal(policy.score_bucket_size, 25);
+	assert.equal(policy.publish_timestamp_resolution, "day");
+	assert.equal(policy.canonical_workflow_ref_algorithm, "sha256");
+	assert.equal(policy.k_anonymity_threshold, 10);
+	assert.equal(policy.advisory_only, true);
+	assert.equal(policy.non_authorizing, true);
+	assert.equal(policy.remote_write_authority_enabled, false);
+	assert.equal(policy.dispatch_authority_enabled, false);
+	// Round-trip validation
+	const validation = validateFlowDeskFederatedDataMinimizationPolicyV1(policy);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S7 data minimization policy: k_anonymity_threshold < 10 rejected", () => {
+	// threshold = 9 → rejected
+	const r9 = createFlowDeskFederatedDataMinimizationPolicyV1({ ...validMinPolicyInput, kAnonymityThreshold: 9 });
+	assert.equal(r9.ok, false);
+	assert.match(r9.errors.join("; "), /k_anonymity_threshold.*>= 10/);
+
+	// threshold = 0 → rejected
+	const r0 = createFlowDeskFederatedDataMinimizationPolicyV1({ ...validMinPolicyInput, kAnonymityThreshold: 0 });
+	assert.equal(r0.ok, false);
+	assert.match(r0.errors.join("; "), /k_anonymity_threshold.*>= 10/);
+
+	// threshold = -1 → rejected
+	const rNeg = createFlowDeskFederatedDataMinimizationPolicyV1({ ...validMinPolicyInput, kAnonymityThreshold: -1 });
+	assert.equal(rNeg.ok, false);
+	assert.match(rNeg.errors.join("; "), /k_anonymity_threshold.*>= 10/);
+
+	// Validator-level: k_anonymity_threshold = 5 on an otherwise-valid record
+	const valid10 = createFlowDeskFederatedDataMinimizationPolicyV1(validMinPolicyInput);
+	assert.equal(valid10.ok, true);
+	const tampered = validateFlowDeskFederatedDataMinimizationPolicyV1({ ...valid10.policy!, k_anonymity_threshold: 5 });
+	assert.equal(tampered.ok, false);
+	assert.match(tampered.errors.join("; "), /k_anonymity_threshold.*>= 10/);
+});
+
+test("P8-S7 data minimization policy: score_bucket_size != 25 rejected by validator", () => {
+	const valid = createFlowDeskFederatedDataMinimizationPolicyV1(validMinPolicyInput);
+	assert.equal(valid.ok, true);
+
+	// Attempt to mutate score_bucket_size to a different value
+	const tampered = validateFlowDeskFederatedDataMinimizationPolicyV1({
+		...valid.policy!,
+		score_bucket_size: 10 as 25,
+	});
+	assert.equal(tampered.ok, false);
+	assert.match(tampered.errors.join("; "), /score_bucket_size.*25/);
+
+	// Also reject score_bucket_size = 50
+	const tampered50 = validateFlowDeskFederatedDataMinimizationPolicyV1({
+		...valid.policy!,
+		score_bucket_size: 50 as 25,
+	});
+	assert.equal(tampered50.ok, false);
+	assert.match(tampered50.errors.join("; "), /score_bucket_size.*25/);
+});
+
+test("P8-S7 data minimization policy: all literal fields enforced by validator", () => {
+	const valid = createFlowDeskFederatedDataMinimizationPolicyV1(validMinPolicyInput);
+	assert.equal(valid.ok, true);
+	const p = valid.policy!;
+
+	// strip_workflow_id must be true
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, strip_workflow_id: false as true }).ok, false);
+
+	// strip_proposal_id must be true
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, strip_proposal_id: false as true }).ok, false);
+
+	// strip_task_descriptions must be true
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, strip_task_descriptions: false as true }).ok, false);
+
+	// strip_model_names must be true
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, strip_model_names: false as true }).ok, false);
+
+	// publish_dimension_scores_as_buckets must be true
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, publish_dimension_scores_as_buckets: false as true }).ok, false);
+
+	// publish_timestamp_resolution must be "day"
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, publish_timestamp_resolution: "hour" as "day" }).ok, false);
+
+	// canonical_workflow_ref_algorithm must be "sha256"
+	assert.equal(validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, canonical_workflow_ref_algorithm: "md5" as "sha256" }).ok, false);
+
+	// dispatch_authority_enabled must be false
+	const forgedDispatch = validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, dispatch_authority_enabled: true as false });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled.*false/);
+
+	// remote_write_authority_enabled must be false
+	const forgedRemoteWrite = validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, remote_write_authority_enabled: true as false });
+	assert.equal(forgedRemoteWrite.ok, false);
+	assert.match(forgedRemoteWrite.errors.join("; "), /remote_write_authority_enabled.*false/);
+
+	// Unknown property injection
+	const unknown = validateFlowDeskFederatedDataMinimizationPolicyV1({ ...p, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("P8-S7 data minimization policy: valid threshold values >= 10 accepted", () => {
+	for (const threshold of [10, 15, 100, 1000]) {
+		const result = createFlowDeskFederatedDataMinimizationPolicyV1({
+			...validMinPolicyInput,
+			policyId: `policy-min-threshold-${threshold}`,
+			kAnonymityThreshold: threshold,
+		});
+		assert.equal(result.ok, true, `threshold=${threshold}: ${result.errors.join("; ")}`);
+		assert.equal(result.policy!.k_anonymity_threshold, threshold);
+		const validation = validateFlowDeskFederatedDataMinimizationPolicyV1(result.policy!);
+		assert.equal(validation.ok, true, `threshold=${threshold} validate: ${validation.errors.join("; ")}`);
+	}
+});
+
+// ─── P8-S7: Federated Canonical Workflow Ref tests ───────────────────────────
+
+const validCanonRefInput = {
+	canonicalRefId: "canonical-ref-1",
+	sourceHashRef: "sha256-abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+	createdAt: "2026-06-07T00:00:00.000Z",
+};
+
+test("P8-S7 canonical workflow ref: valid canonical ref with sha256 source_hash_ref", () => {
+	const result = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const ref = result.canonicalRef as FlowDeskFederatedCanonicalWorkflowRefV1;
+	assert.equal(ref.schema_version, "flowdesk.federated_canonical_workflow_ref.v1");
+	assert.equal(ref.canonical_ref_id, "canonical-ref-1");
+	assert.equal(ref.source_hash_ref, validCanonRefInput.sourceHashRef);
+	assert.equal(ref.algorithm, "sha256");
+	assert.deepEqual(ref.input_fields_hashed, ["installation_id", "workflow_id"]);
+	assert.equal(ref.reversible, false);
+	assert.equal(ref.source_workflow_id_exposed, false);
+	assert.equal(ref.advisory_only, true);
+	assert.equal(ref.non_authorizing, true);
+	assert.equal(ref.remote_write_authority_enabled, false);
+	// Round-trip validation
+	const validation = validateFlowDeskFederatedCanonicalWorkflowRefV1(ref);
+	assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("P8-S7 canonical workflow ref: reversible=true rejected", () => {
+	const valid = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(valid.ok, true);
+	const tampered = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		reversible: true as false,
+	});
+	assert.equal(tampered.ok, false);
+	assert.match(tampered.errors.join("; "), /reversible.*false/);
+});
+
+test("P8-S7 canonical workflow ref: source_workflow_id_exposed=true rejected", () => {
+	const valid = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(valid.ok, true);
+	const tampered = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		source_workflow_id_exposed: true as false,
+	});
+	assert.equal(tampered.ok, false);
+	assert.match(tampered.errors.join("; "), /source_workflow_id_exposed.*false/);
+});
+
+test("P8-S7 canonical workflow ref: raw workflowId in source_hash_ref rejected", () => {
+	// A ref containing "workflow-" prefix is rejected as a raw workflowId marker
+	const rawMarkerRef = createFlowDeskFederatedCanonicalWorkflowRefV1({
+		...validCanonRefInput,
+		sourceHashRef: "hash-workflow-abc123" as string,
+	});
+	assert.equal(rawMarkerRef.ok, false);
+	assert.match(rawMarkerRef.errors.join("; "), /raw workflowId markers rejected/);
+
+	// Also rejected at validator level
+	const valid = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(valid.ok, true);
+	const tamperedAtValidate = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		source_hash_ref: "hash-workflow-xyz" as string,
+	});
+	assert.equal(tamperedAtValidate.ok, false);
+	assert.match(tamperedAtValidate.errors.join("; "), /raw workflowId markers rejected/);
+});
+
+test("P8-S7 canonical workflow ref: algorithm != sha256 rejected", () => {
+	const valid = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(valid.ok, true);
+	const tampered = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		algorithm: "md5" as "sha256",
+	});
+	assert.equal(tampered.ok, false);
+	assert.match(tampered.errors.join("; "), /algorithm.*sha256/);
+});
+
+test("P8-S7 canonical workflow ref: input_fields_hashed missing required fields rejected", () => {
+	const valid = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(valid.ok, true);
+
+	// Missing "installation_id"
+	const missingInstall = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		input_fields_hashed: ["workflow_id"] as readonly ("installation_id" | "workflow_id")[],
+	});
+	assert.equal(missingInstall.ok, false);
+	assert.match(missingInstall.errors.join("; "), /installation_id/);
+
+	// Missing "workflow_id"
+	const missingWorkflow = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		input_fields_hashed: ["installation_id"] as readonly ("installation_id" | "workflow_id")[],
+	});
+	assert.equal(missingWorkflow.ok, false);
+	assert.match(missingWorkflow.errors.join("; "), /workflow_id/);
+
+	// Both missing (empty array)
+	const empty = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		input_fields_hashed: [] as readonly ("installation_id" | "workflow_id")[],
+	});
+	assert.equal(empty.ok, false);
+
+	// Both required fields present → accepted
+	const both = validateFlowDeskFederatedCanonicalWorkflowRefV1({
+		...valid.canonicalRef!,
+		input_fields_hashed: ["installation_id", "workflow_id"],
+	});
+	assert.equal(both.ok, true, both.errors.join("; "));
+});
+
+test("P8-S7 canonical workflow ref: authority smuggling and unknown properties rejected", () => {
+	const valid = createFlowDeskFederatedCanonicalWorkflowRefV1(validCanonRefInput);
+	assert.equal(valid.ok, true);
+	const ref = valid.canonicalRef!;
+
+	// remote_write_authority_enabled must be false
+	const forgedRemoteWrite = validateFlowDeskFederatedCanonicalWorkflowRefV1({ ...ref, remote_write_authority_enabled: true as false });
+	assert.equal(forgedRemoteWrite.ok, false);
+	assert.match(forgedRemoteWrite.errors.join("; "), /remote_write_authority_enabled.*false/);
+
+	// advisory_only must be true
+	const forgedAdvisory = validateFlowDeskFederatedCanonicalWorkflowRefV1({ ...ref, advisory_only: false as true });
+	assert.equal(forgedAdvisory.ok, false);
+	assert.match(forgedAdvisory.errors.join("; "), /advisory_only.*true/);
+
+	// non_authorizing must be true
+	const forgedNonAuth = validateFlowDeskFederatedCanonicalWorkflowRefV1({ ...ref, non_authorizing: false as true });
+	assert.equal(forgedNonAuth.ok, false);
+	assert.match(forgedNonAuth.errors.join("; "), /non_authorizing.*true/);
+
+	// Unknown property injection
+	const unknown = validateFlowDeskFederatedCanonicalWorkflowRefV1({ ...ref, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+
+	// Non-object input
+	assert.equal(validateFlowDeskFederatedCanonicalWorkflowRefV1(null).ok, false);
+	assert.equal(validateFlowDeskFederatedCanonicalWorkflowRefV1(42).ok, false);
 });
