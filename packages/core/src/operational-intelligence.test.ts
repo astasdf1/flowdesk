@@ -1,15 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	createFlowDeskAdvisoryScoreLedgerAppendIntentV1,
+	createFlowDeskAdvisoryScoreLedgerEntryV1,
 	createFlowDeskOperationalIntelligenceScoreV1,
 	createFlowDeskWorkflowPlanProposalScoreEventV1,
 	createFlowDeskWorkflowPlanProposalV1,
+	decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
+	encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
+	validateFlowDeskAdvisoryScoreLedgerEntryV1,
 	validateFlowDeskOperationalIntelligenceScoreV1,
 	validateFlowDeskReferencePackV1,
 	validateFlowDeskWorkflowPlanProposalScoreEventV1,
 	validateFlowDeskWorkflowPlanProposalV1,
 	type FlowDeskReferencePackV1,
 } from "./index.js";
+
+function scoreEvent(overrides: Partial<ReturnType<typeof createFlowDeskWorkflowPlanProposalScoreEventV1>> = {}) {
+	return {
+		...createFlowDeskWorkflowPlanProposalScoreEventV1({
+			scoreEventId: "score-event-ledger-1",
+			workflowId: "workflow-1",
+			proposalId: "proposal-1",
+			candidateRef: "candidate-1",
+			hardFiltersPassed: true,
+			advisoryScore: 81,
+			scoreReasonRef: "reason-1",
+		}),
+		...overrides,
+	};
+}
+
+function ledgerEntry(overrides: Partial<ReturnType<typeof createFlowDeskAdvisoryScoreLedgerEntryV1>> = {}) {
+	return {
+		...createFlowDeskAdvisoryScoreLedgerEntryV1({
+			ledgerEntryId: "ledger-entry-1",
+			workflowId: "workflow-1",
+			sequence: 0,
+			recordedAt: "2026-06-06T00:00:00.000Z",
+			event: scoreEvent(),
+		}),
+		...overrides,
+	};
+}
 
 test("operational intelligence scores remain advisory after hard filters", () => {
 	const score = createFlowDeskOperationalIntelligenceScoreV1({
@@ -211,4 +244,91 @@ test("operational intelligence contracts reject unknown authority fields", () =>
 	const forgedPack = validateFlowDeskReferencePackV1({ ...pack, dispatch_authority_enabled: true });
 	assert.equal(forgedPack.ok, false);
 	assert.match(forgedPack.errors.join("|"), /unknown properties/);
+});
+
+test("advisory score ledger entries encode and decode as local JSONL", () => {
+	const entry = ledgerEntry();
+	assert.equal(validateFlowDeskAdvisoryScoreLedgerEntryV1(entry).ok, true);
+	const encoded = encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(entry);
+	assert.equal(encoded.ok, true);
+	assert.equal(encoded.line?.includes("\n"), false);
+	const decoded = decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(encoded.line ?? "");
+	assert.equal(decoded.ok, true);
+	assert.deepEqual(decoded.entry, entry);
+	assert.equal(decoded.entry?.local_only, true);
+	assert.equal(decoded.entry?.append_only, true);
+	assert.equal(decoded.entry?.non_authorizing, true);
+	assert.equal(decoded.entry?.dispatch_authority_enabled, false);
+	assert.equal(decoded.entry?.external_write_authority_enabled, false);
+});
+
+test("advisory score ledger JSONL rejects malformed and authority-smuggling lines", () => {
+	const malformed = decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine("{not-json}");
+	assert.equal(malformed.ok, false);
+	assert.match(malformed.errors.join("; "), /malformed JSON/);
+
+	const entry = ledgerEntry({ runtime_authority_enabled: true as false });
+	const forged = decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(JSON.stringify(entry));
+	assert.equal(forged.ok, false);
+	assert.match(forged.errors.join("; "), /advisory-only/);
+
+	const unknownProviderCall = decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(JSON.stringify({ ...ledgerEntry(), providerCall: true }));
+	assert.equal(unknownProviderCall.ok, false);
+	assert.match(unknownProviderCall.errors.join("; "), /unknown properties/);
+});
+
+test("advisory score ledger rejects raw payload and path markers", () => {
+	const rawReason = ledgerEntry({ event: scoreEvent({ score_reason_ref: "prompt details expose secret" }) });
+	const rawResult = validateFlowDeskAdvisoryScoreLedgerEntryV1(rawReason);
+	assert.equal(rawResult.ok, false);
+	assert.match(rawResult.errors.join("; "), /schema-safe|prompt-like|credential-shaped/);
+
+	const rawLabelProposal = createFlowDeskWorkflowPlanProposalV1({
+		proposalId: "proposal-raw",
+		workflowId: "workflow-1",
+		proposalLabel: "raw path /Users/example/secret",
+		advisorySummaryRef: "summary-1",
+		candidates: [{ candidateRef: "candidate-1", candidateLabel: "Candidate", candidateSummaryRef: "candidate-summary-1", hardFiltersPassed: true }],
+	});
+	const pathResult = validateFlowDeskAdvisoryScoreLedgerEntryV1(ledgerEntry({ event_kind: "workflow_plan_proposal", event: rawLabelProposal }));
+	assert.equal(pathResult.ok, false);
+	assert.match(pathResult.errors.join("; "), /raw path marker/);
+});
+
+test("advisory score ledger append intents preserve ordering and idempotency", () => {
+	const first = ledgerEntry();
+	const firstIntent = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: "", entry: first, idempotencyKey: "idem-1" });
+	assert.equal(firstIntent.ok, true);
+	assert.equal(firstIntent.intent?.operation, "append_jsonl");
+	assert.equal(firstIntent.intent?.serialization, "jsonl");
+	assert.equal(firstIntent.intent?.append_only, true);
+	assert.equal(firstIntent.intent?.local_only, true);
+	assert.equal(firstIntent.intent?.non_authorizing, true);
+	assert.equal(firstIntent.intent?.append_line, encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine(first).line);
+
+	const existing = `${firstIntent.intent?.append_line ?? ""}\n`;
+	const replay = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: existing, entry: first, idempotencyKey: "idem-1" });
+	assert.equal(replay.ok, true);
+	assert.equal(replay.intent?.idempotent_replay, true);
+	assert.equal(replay.intent?.append_line, null);
+
+	const second = ledgerEntry({
+		ledger_entry_id: "ledger-entry-2",
+		sequence: 1,
+		previous_ledger_entry_id: "ledger-entry-1",
+		recorded_at: "2026-06-06T00:00:01.000Z",
+		event: scoreEvent({ score_event_id: "score-event-ledger-2", candidate_ref: "candidate-2" }),
+	});
+	const secondIntent = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: existing, entry: second, idempotencyKey: "idem-2" });
+	assert.equal(secondIntent.ok, true);
+	assert.equal(secondIntent.intent?.expected_previous_ledger_entry_id, "ledger-entry-1");
+	assert.equal(secondIntent.intent?.next_sequence, 2);
+
+	const skipped = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: existing, entry: { ...second, sequence: 3 }, idempotencyKey: "idem-3" });
+	assert.equal(skipped.ok, false);
+	assert.match(skipped.errors.join("; "), /sequence must continue/);
+
+	const wrongPrevious = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: existing, entry: { ...second, previous_ledger_entry_id: "ledger-entry-other" }, idempotencyKey: "idem-4" });
+	assert.equal(wrongPrevious.ok, false);
+	assert.match(wrongPrevious.errors.join("; "), /must match current tail/);
 });
