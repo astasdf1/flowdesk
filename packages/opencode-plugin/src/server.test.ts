@@ -88,6 +88,8 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskWorkflowDispatchPlanToolOption,
 	flowdeskWorkflowDispatchToolName,
 	flowdeskWriteToolName,
+	flowdeskOperationalIntelligenceOption,
+	operationalIntelligenceConfigFromOptions,
 } from "./server.js";
 import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
@@ -11476,9 +11478,178 @@ test("flowdesk_agent_task_run reads current SDK messages response shapes", async
 				),
 			),
 		) as Record<string, unknown>;
-		assert.equal(result.status, "task_completed");
-		assert.match(String(result.resultText), /Architecture synthesis complete/);
+	assert.equal(result.status, "task_completed");
+	assert.match(String(result.resultText), /Architecture synthesis complete/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+// P7-S13.6b: OI plugin config gate truth table tests
+test("operationalIntelligenceConfigFromOptions returns all-false defaults when options are undefined", () => {
+	const result = operationalIntelligenceConfigFromOptions(undefined);
+	assert.deepEqual(result, {
+		enabled: false,
+		exposeMcpTools: false,
+		persistAdvisoryEvidence: false,
+	});
+});
+
+test("operationalIntelligenceConfigFromOptions returns all-false when operationalIntelligence option is absent", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		localNonDispatchAdapter: false,
+	});
+	assert.deepEqual(result, {
+		enabled: false,
+		exposeMcpTools: false,
+		persistAdvisoryEvidence: false,
+	});
+});
+
+test("operationalIntelligenceConfigFromOptions: partial options — only enabled set — fills defaults for sub-fields", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: { enabled: true },
+	});
+	assert.deepEqual(result, {
+		enabled: true,
+		exposeMcpTools: false,
+		persistAdvisoryEvidence: false,
+	});
+});
+
+test("OI config gate truth table — row 1: enabled=false, exposeMcpTools=false, persistAdvisoryEvidence=false → all false", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: {
+			enabled: false,
+			exposeMcpTools: false,
+			persistAdvisoryEvidence: false,
+		},
+	});
+	assert.equal(result.enabled, false);
+	assert.equal(result.exposeMcpTools, false);
+	assert.equal(result.persistAdvisoryEvidence, false);
+});
+
+test("OI config gate truth table — row 2: enabled=true, exposeMcpTools=false, persistAdvisoryEvidence=false → enabled only", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: {
+			enabled: true,
+			exposeMcpTools: false,
+			persistAdvisoryEvidence: false,
+		},
+	});
+	assert.equal(result.enabled, true);
+	assert.equal(result.exposeMcpTools, false);
+	assert.equal(result.persistAdvisoryEvidence, false);
+});
+
+test("OI config gate truth table — row 3: enabled=true, exposeMcpTools=true, persistAdvisoryEvidence=false → enabled + exposeMcpTools", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: {
+			enabled: true,
+			exposeMcpTools: true,
+			persistAdvisoryEvidence: false,
+		},
+	});
+	assert.equal(result.enabled, true);
+	assert.equal(result.exposeMcpTools, true);
+	assert.equal(result.persistAdvisoryEvidence, false);
+});
+
+test("OI config gate truth table — row 4: enabled=true, exposeMcpTools=true, persistAdvisoryEvidence=true → all true", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: {
+			enabled: true,
+			exposeMcpTools: true,
+			persistAdvisoryEvidence: true,
+		},
+	});
+	assert.equal(result.enabled, true);
+	assert.equal(result.exposeMcpTools, true);
+	assert.equal(result.persistAdvisoryEvidence, true);
+});
+
+test("OI config gate truth table — row 5: enabled=true, exposeMcpTools=false, persistAdvisoryEvidence=true → enabled + persist only", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: {
+			enabled: true,
+			exposeMcpTools: false,
+			persistAdvisoryEvidence: true,
+		},
+	});
+	assert.equal(result.enabled, true);
+	assert.equal(result.exposeMcpTools, false);
+	assert.equal(result.persistAdvisoryEvidence, true);
+});
+
+test("OI config gate: exposeMcpTools and persistAdvisoryEvidence are false when enabled=false even if sub-fields are true", () => {
+	const result = operationalIntelligenceConfigFromOptions({
+		[flowdeskOperationalIntelligenceOption]: {
+			enabled: false,
+			exposeMcpTools: true,
+			persistAdvisoryEvidence: true,
+		},
+	});
+	assert.equal(result.enabled, false);
+	assert.equal(result.exposeMcpTools, false);
+	assert.equal(result.persistAdvisoryEvidence, false);
+});
+
+test("OI config gate is reflected in pre-spike doctor output", async () => {
+	const defaultHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+	);
+	const doctor = defaultHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+	assert.ok(doctor);
+
+	// Default (no OI option): all false
+	const defaultResult = JSON.parse(
+		toolOutput(await doctor.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.deepEqual(defaultResult.operationalIntelligence, {
+		enabled: false,
+		exposeMcpTools: false,
+		persistAdvisoryEvidence: false,
+	});
+
+	// With OI enabled + all sub-fields
+	const enabledHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskOperationalIntelligenceOption]: {
+				enabled: true,
+				exposeMcpTools: true,
+				persistAdvisoryEvidence: true,
+			},
+		},
+	);
+	const enabledDoctor = enabledHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+	assert.ok(enabledDoctor);
+	const enabledResult = JSON.parse(
+		toolOutput(await enabledDoctor.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.deepEqual(enabledResult.operationalIntelligence, {
+		enabled: true,
+		exposeMcpTools: true,
+		persistAdvisoryEvidence: true,
+	});
+
+	// With OI enabled-only (sub-fields default false)
+	const enabledOnlyHooks = await flowdeskOpenCodeServerPlugin.server(
+		undefined as never,
+		{
+			[flowdeskOperationalIntelligenceOption]: { enabled: true },
+		},
+	);
+	const enabledOnlyDoctor =
+		enabledOnlyHooks.tool?.[flowdeskPreSpikeDoctorToolName];
+	assert.ok(enabledOnlyDoctor);
+	const enabledOnlyResult = JSON.parse(
+		toolOutput(await enabledOnlyDoctor.execute({}, undefined as never)),
+	) as Record<string, unknown>;
+	assert.deepEqual(enabledOnlyResult.operationalIntelligence, {
+		enabled: true,
+		exposeMcpTools: false,
+		persistAdvisoryEvidence: false,
+	});
 });

@@ -245,6 +245,8 @@ export const flowdeskAutoContinueExecutionOption = "autoContinueExecution" as co
 export const flowdeskAutoContinueExecutionToolName = "flowdesk_auto_continue_execute" as const;
 export const flowdeskContinueToolName = "flowdesk_continue" as const;
 export const flowdeskUiProbeToolName = "flowdesk_ui_probe" as const;
+export const flowdeskOperationalIntelligenceOption =
+	"operationalIntelligence" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -3233,6 +3235,21 @@ function isNaturalLanguageRoutingEnabled(options?: PluginOptions): boolean {
 	return !isFds1SchemaConversionProbeEnabled(options);
 }
 
+export function operationalIntelligenceConfigFromOptions(options?: PluginOptions): {
+	enabled: boolean;
+	exposeMcpTools: boolean;
+	persistAdvisoryEvidence: boolean;
+} {
+	const raw = options?.[flowdeskOperationalIntelligenceOption];
+	if (!isRecord(raw)) {
+		return { enabled: false, exposeMcpTools: false, persistAdvisoryEvidence: false };
+	}
+	const enabled = raw.enabled === true;
+	const exposeMcpTools = enabled && raw.exposeMcpTools === true;
+	const persistAdvisoryEvidence = enabled && raw.persistAdvisoryEvidence === true;
+	return { enabled, exposeMcpTools, persistAdvisoryEvidence };
+}
+
 interface FlowDeskProjectConfigLoadResultV1 {
 	enabled: boolean;
 	status: "disabled" | "loaded" | "missing" | "blocked";
@@ -6119,16 +6136,18 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						getFlowDeskRelease1HandlerReadinessSummary(),
 					release1ProductionReadiness:
 						getFlowDeskRelease1ProductionReadinessSummary(),
-					fds1SchemaConversionSpikePassed:
-						hasPassingFds1SchemaConversionSpike(),
-					realOpenCodeDispatch:
-						flowdeskPluginScaffold.runtimeBoundary.realOpenCodeDispatch,
-					providerCall: false,
-					runtimeExecution: false,
-					actualLaneLaunch: false,
-					fallbackAuthority: false,
-					hardCancelOrNoReplyAuthority: false,
-				});
+				fds1SchemaConversionSpikePassed:
+					hasPassingFds1SchemaConversionSpike(),
+				operationalIntelligence:
+					operationalIntelligenceConfigFromOptions(options),
+				realOpenCodeDispatch:
+					flowdeskPluginScaffold.runtimeBoundary.realOpenCodeDispatch,
+				providerCall: false,
+				runtimeExecution: false,
+				actualLaneLaunch: false,
+				fallbackAuthority: false,
+				hardCancelOrNoReplyAuthority: false,
+			});
 			},
 		}),
 	};
