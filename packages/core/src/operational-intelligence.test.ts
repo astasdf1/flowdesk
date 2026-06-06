@@ -49,6 +49,9 @@ import {
 	createFlowDeskOISessionSummaryV1,
 	validateFlowDeskOISessionSummaryV1,
 	type FlowDeskOISessionSummaryV1,
+	createFlowDeskSpecialistWorkflowEligibilityV1,
+	validateFlowDeskSpecialistWorkflowEligibilityV1,
+	type FlowDeskSpecialistWorkflowEligibilityV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -2287,4 +2290,223 @@ test("workflow signature index entry rejects malformed input and timestamp incon
 	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1(null).ok, false);
 	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1(42).ok, false);
 	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1([]).ok, false);
+});
+
+// ─── P7-S12: Specialist Workflow Eligibility ─────────────────────────────────
+
+test("specialist workflow eligibility: valid eligible decision", () => {
+	const result = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-1",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-security-1",
+		eligibilityDecision: "eligible",
+		specialistCategory: "security",
+		confidenceScore: 87,
+		reasonRefs: ["reason-security-match-1", "reason-confidence-1"],
+		blockingLabels: [],
+		evaluatedAt: "2026-06-06T12:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	assert.ok(result.eligibility);
+	const e = result.eligibility as FlowDeskSpecialistWorkflowEligibilityV1;
+	assert.equal(e.schema_version, "flowdesk.specialist_workflow_eligibility.v1");
+	assert.equal(e.eligibility_decision, "eligible");
+	assert.equal(e.specialist_category, "security");
+	assert.equal(e.confidence_score, 87);
+	assert.deepEqual(e.reason_refs, ["reason-security-match-1", "reason-confidence-1"]);
+	assert.deepEqual(e.blocking_labels, []);
+	assert.equal(e.advisory_only, true);
+	assert.equal(e.non_authorizing, true);
+	assert.equal(e.dispatch_authority_enabled, false);
+	assert.equal(e.routing_authority_enabled, false);
+	assert.equal(e.model_selection_authority_enabled, false);
+
+	// Validator accepts a valid eligible record
+	const validation = validateFlowDeskSpecialistWorkflowEligibilityV1(e);
+	assert.equal(validation.ok, true);
+});
+
+test("specialist workflow eligibility: valid ineligible decision", () => {
+	const result = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-2",
+		workflowId: "workflow-2",
+		taskSignatureRef: "task-sig-general-2",
+		eligibilityDecision: "ineligible",
+		specialistCategory: "unknown",
+		confidenceScore: 0,
+		reasonRefs: ["reason-no-match-2"],
+		blockingLabels: [],
+		evaluatedAt: "2026-06-06T13:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	assert.ok(result.eligibility);
+	const e = result.eligibility as FlowDeskSpecialistWorkflowEligibilityV1;
+	assert.equal(e.eligibility_decision, "ineligible");
+	assert.equal(e.specialist_category, "unknown");
+	assert.equal(e.confidence_score, 0);
+
+	// Round-trip through validator
+	const validation = validateFlowDeskSpecialistWorkflowEligibilityV1(e);
+	assert.equal(validation.ok, true);
+
+	// Non-object inputs rejected
+	assert.equal(validateFlowDeskSpecialistWorkflowEligibilityV1(null).ok, false);
+	assert.equal(validateFlowDeskSpecialistWorkflowEligibilityV1(42).ok, false);
+	assert.equal(validateFlowDeskSpecialistWorkflowEligibilityV1([]).ok, false);
+});
+
+test("specialist workflow eligibility: authority smuggling rejection", () => {
+	const valid = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-3",
+		workflowId: "workflow-3",
+		taskSignatureRef: "task-sig-3",
+		eligibilityDecision: "eligible",
+		specialistCategory: "compliance",
+		confidenceScore: 70,
+		evaluatedAt: "2026-06-06T14:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(valid.ok, true);
+
+	// Attempt to smuggle dispatch authority
+	const smuggledDispatch = validateFlowDeskSpecialistWorkflowEligibilityV1({
+		...valid.eligibility,
+		dispatch_authority_enabled: true,
+	});
+	assert.equal(smuggledDispatch.ok, false);
+	assert.match(smuggledDispatch.errors.join("; "), /advisory-only non-authorizing|dispatch/);
+
+	// Attempt to smuggle routing authority
+	const smuggledRouting = validateFlowDeskSpecialistWorkflowEligibilityV1({
+		...valid.eligibility,
+		routing_authority_enabled: true,
+	});
+	assert.equal(smuggledRouting.ok, false);
+	assert.match(smuggledRouting.errors.join("; "), /advisory-only non-authorizing|routing/);
+
+	// Attempt to smuggle non_authorizing=false
+	const smuggledNonAuth = validateFlowDeskSpecialistWorkflowEligibilityV1({
+		...valid.eligibility,
+		non_authorizing: false,
+	});
+	assert.equal(smuggledNonAuth.ok, false);
+
+	// Attempt to inject unknown property
+	const unknownProp = validateFlowDeskSpecialistWorkflowEligibilityV1({
+		...valid.eligibility,
+		inject_prompt: "do something",
+	});
+	assert.equal(unknownProp.ok, false);
+	assert.match(unknownProp.errors.join("; "), /unknown properties/);
+});
+
+test("specialist workflow eligibility: out-of-range confidence rejection and blocked-without-label inconsistency", () => {
+	// confidence_score above 100
+	const tooHigh = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4a",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4",
+		eligibilityDecision: "eligible",
+		specialistCategory: "legal",
+		confidenceScore: 101,
+		evaluatedAt: "2026-06-06T15:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(tooHigh.ok, false);
+	assert.match(tooHigh.errors.join("; "), /confidence_score/);
+
+	// confidence_score below 0
+	const tooLow = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4b",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4b",
+		eligibilityDecision: "ineligible",
+		specialistCategory: "medical",
+		confidenceScore: -1,
+		evaluatedAt: "2026-06-06T15:01:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(tooLow.ok, false);
+	assert.match(tooLow.errors.join("; "), /confidence_score/);
+
+	// confidence_score is non-integer (float)
+	const nonInteger = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4c",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4c",
+		eligibilityDecision: "deferred",
+		specialistCategory: "security",
+		confidenceScore: 50.5,
+		evaluatedAt: "2026-06-06T15:02:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(nonInteger.ok, false);
+	assert.match(nonInteger.errors.join("; "), /confidence_score/);
+
+	// blocked decision without blocking_labels → inconsistency
+	const blockedNoLabels = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4d",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4d",
+		eligibilityDecision: "blocked",
+		specialistCategory: "unknown",
+		confidenceScore: 0,
+		blockingLabels: [],  // empty — must be rejected
+		evaluatedAt: "2026-06-06T15:03:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(blockedNoLabels.ok, false);
+	assert.match(blockedNoLabels.errors.join("; "), /blocking_labels.*non-empty|non-empty.*blocking_labels|blocked/);
+
+	// Validator also detects blocked-without-label on a mutated valid blocked record
+	const validBlocked = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4e",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4e",
+		eligibilityDecision: "blocked",
+		specialistCategory: "compliance",
+		confidenceScore: 10,
+		blockingLabels: ["policy-gate-not-satisfied"],
+		evaluatedAt: "2026-06-06T15:04:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(validBlocked.ok, true);
+
+	// Mutate: clear blocking_labels while keeping decision=blocked
+	const mutated = validateFlowDeskSpecialistWorkflowEligibilityV1({
+		...validBlocked.eligibility,
+		blocking_labels: [],
+	});
+	assert.equal(mutated.ok, false);
+	assert.match(mutated.errors.join("; "), /blocking_labels.*non-empty|non-empty.*blocking_labels|blocked/);
+
+	// Unknown eligibility_decision
+	const badDecision = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4f",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4f",
+		eligibilityDecision: "approved" as "eligible",
+		specialistCategory: "security",
+		confidenceScore: 50,
+		evaluatedAt: "2026-06-06T15:05:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badDecision.ok, false);
+	assert.match(badDecision.errors.join("; "), /eligibility_decision/);
+
+	// Unknown specialist_category
+	const badCategory = createFlowDeskSpecialistWorkflowEligibilityV1({
+		eligibilityId: "eligibility-4g",
+		workflowId: "workflow-4",
+		taskSignatureRef: "task-sig-4g",
+		eligibilityDecision: "eligible",
+		specialistCategory: "finance" as "security",
+		confidenceScore: 50,
+		evaluatedAt: "2026-06-06T15:06:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badCategory.ok, false);
+	assert.match(badCategory.errors.join("; "), /specialist_category/);
 });

@@ -3167,6 +3167,324 @@ export function validateFlowDeskOISessionSummaryV1(value: unknown): ValidationRe
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
+// ─── P7-S12: Specialist Workflow Eligibility Gate ───────────────────────────
+
+/**
+ * Eligibility decision for routing a workflow/task to a specialist workflow lane.
+ *
+ * - `eligible`:   The task signature matches a known specialist category at
+ *   sufficient confidence; consumers MAY route to a specialist lane.
+ * - `ineligible`: The task signature does not meet the criteria for any
+ *   specialist workflow category.
+ * - `deferred`:   Evaluation cannot yet reach a confident decision; consumers
+ *   SHOULD retry after additional context is available.
+ * - `blocked`:    A hard constraint prevents evaluation (e.g., missing required
+ *   inputs, policy violation, unknown category). At least one `blocking_label`
+ *   must be present.  Consumers MUST NOT route to a specialist lane.
+ */
+export type FlowDeskSpecialistWorkflowEligibilityDecisionV1 = "eligible" | "ineligible" | "deferred" | "blocked";
+
+/**
+ * Known specialist workflow category labels.
+ *
+ * - `security`:   Security audits, threat model analysis, vulnerability research.
+ * - `legal`:      Legal document review, compliance interpretation, IP analysis.
+ * - `medical`:    Clinical decision support, medical literature review.
+ * - `compliance`: Regulatory compliance checking, policy adherence verification.
+ * - `unknown`:    Category could not be classified from available signatures.
+ */
+export type FlowDeskSpecialistCategoryV1 = "security" | "legal" | "medical" | "compliance" | "unknown";
+
+/**
+ * Pure advisory eligibility gate encoding whether a given workflow/task
+ * signature qualifies for routing to a specialist workflow lane.
+ *
+ * This contract is advisory-only and non-authorizing: it records the eligibility
+ * decision but does NOT perform routing, dispatch, or provider selection.
+ *
+ * All authority flags are disabled.  This contract never grants dispatch, provider,
+ * runtime, lane-launch, fallback, write, remote-write, or hard-chat authority.
+ */
+export interface FlowDeskSpecialistWorkflowEligibilityV1 {
+	schema_version: "flowdesk.specialist_workflow_eligibility.v1";
+	/** Opaque identifier for this eligibility record. */
+	eligibility_id: string;
+	/** Workflow this eligibility decision is associated with. */
+	workflow_id: string;
+	/** Opaque ref identifying the task/workflow signature being evaluated. */
+	task_signature_ref: string;
+	/** The eligibility decision. */
+	eligibility_decision: FlowDeskSpecialistWorkflowEligibilityDecisionV1;
+	/** Specialist workflow category that was matched or evaluated. */
+	specialist_category: FlowDeskSpecialistCategoryV1;
+	/**
+	 * Advisory confidence score for the eligibility decision (0..100 integer).
+	 * Higher values indicate higher confidence that the decision is correct.
+	 */
+	confidence_score: number;
+	/** Opaque reason refs (max 10) providing rationale for the decision. */
+	reason_refs: string[];
+	/**
+	 * Schema-safe blocking labels (max 10) explaining why the decision is
+	 * `blocked`.  Must be non-empty when `eligibility_decision` is `blocked`.
+	 */
+	blocking_labels: string[];
+	/** ISO 8601 timestamp at which this eligibility was evaluated. */
+	evaluated_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	safe_next_actions: string[];
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+	routing_authority_enabled: false;
+	model_selection_authority_enabled: false;
+}
+
+export interface FlowDeskSpecialistWorkflowEligibilityResultV1 {
+	ok: boolean;
+	errors: string[];
+	eligibility?: FlowDeskSpecialistWorkflowEligibilityV1;
+}
+
+const specialistEligibilityDecisions: readonly string[] = ["eligible", "ineligible", "deferred", "blocked"];
+const specialistCategories: readonly string[] = ["security", "legal", "medical", "compliance", "unknown"];
+
+const specialistWorkflowEligibilityAllowedProperties = [
+	"schema_version",
+	"eligibility_id",
+	"workflow_id",
+	"task_signature_ref",
+	"eligibility_decision",
+	"specialist_category",
+	"confidence_score",
+	"reason_refs",
+	"blocking_labels",
+	"evaluated_at",
+	"advisory_only",
+	"non_authorizing",
+	"safe_next_actions",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"remote_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+	"routing_authority_enabled",
+	"model_selection_authority_enabled",
+] as const;
+
+/**
+ * Create a pure advisory specialist workflow eligibility record.
+ *
+ * No routing, dispatch, or provider selection is performed.  The caller supplies
+ * all field values.
+ *
+ * Consistency rules enforced:
+ * - `confidence_score` must be an integer 0..100.
+ * - `reason_refs` must be an array of 0..10 opaque refs.
+ * - `blocking_labels` must be present and non-empty when `eligibility_decision` is `blocked`.
+ * - `safe_next_actions` must have 1..8 entries.
+ * - `eligibility_decision` must be a valid decision label.
+ * - `specialist_category` must be a valid category label.
+ */
+export function createFlowDeskSpecialistWorkflowEligibilityV1(input: {
+	eligibilityId: string;
+	workflowId: string;
+	taskSignatureRef: string;
+	eligibilityDecision: FlowDeskSpecialistWorkflowEligibilityDecisionV1;
+	specialistCategory: FlowDeskSpecialistCategoryV1;
+	confidenceScore: number;
+	reasonRefs?: string[];
+	blockingLabels?: string[];
+	evaluatedAt: string;
+	safeNextActions: string[];
+}): FlowDeskSpecialistWorkflowEligibilityResultV1 {
+	const errors: string[] = [];
+
+	errors.push(...validateOpaqueId(input.eligibilityId, "eligibility_id").errors);
+	errors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(input.taskSignatureRef, "task_signature_ref").errors);
+	errors.push(...validateTimestamp(input.evaluatedAt, "evaluated_at").errors);
+
+	// eligibility_decision
+	if (typeof input.eligibilityDecision !== "string" || !specialistEligibilityDecisions.includes(input.eligibilityDecision)) {
+		errors.push("eligibility_decision must be 'eligible', 'ineligible', 'deferred', or 'blocked'");
+	}
+
+	// specialist_category
+	if (typeof input.specialistCategory !== "string" || !specialistCategories.includes(input.specialistCategory)) {
+		errors.push("specialist_category must be 'security', 'legal', 'medical', 'compliance', or 'unknown'");
+	}
+
+	// confidence_score: integer 0..100
+	if (typeof input.confidenceScore !== "number" || !Number.isInteger(input.confidenceScore) || input.confidenceScore < 0 || input.confidenceScore > 100) {
+		errors.push("confidence_score must be an integer 0..100");
+	}
+
+	// reason_refs: 0..10
+	const reasonRefs = input.reasonRefs ?? [];
+	if (!Array.isArray(reasonRefs) || reasonRefs.length > 10) {
+		errors.push("reason_refs must be a bounded array (0..10 entries)");
+	} else {
+		for (const [index, ref] of reasonRefs.entries()) {
+			errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+		}
+	}
+
+	// blocking_labels: 0..10; required non-empty when decision is blocked
+	const blockingLabels = input.blockingLabels ?? [];
+	if (!Array.isArray(blockingLabels) || blockingLabels.length > 10) {
+		errors.push("blocking_labels must be a bounded array (0..10 entries)");
+	} else {
+		for (const [index, label] of blockingLabels.entries()) {
+			errors.push(...validateOpaqueRef(label, `blocking_labels[${index}]`).errors);
+		}
+	}
+
+	// Consistency: blocked decision must have at least one blocking_label
+	if (input.eligibilityDecision === "blocked" && Array.isArray(blockingLabels) && blockingLabels.length === 0) {
+		errors.push("blocking_labels must be non-empty when eligibility_decision is 'blocked'");
+	}
+
+	// safe_next_actions: 1..8
+	if (!Array.isArray(input.safeNextActions) || input.safeNextActions.length === 0 || input.safeNextActions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of input.safeNextActions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	if (errors.length > 0) return { ok: false, errors };
+
+	const eligibility: FlowDeskSpecialistWorkflowEligibilityV1 = {
+		schema_version: "flowdesk.specialist_workflow_eligibility.v1",
+		eligibility_id: input.eligibilityId,
+		workflow_id: input.workflowId,
+		task_signature_ref: input.taskSignatureRef,
+		eligibility_decision: input.eligibilityDecision,
+		specialist_category: input.specialistCategory,
+		confidence_score: input.confidenceScore,
+		reason_refs: [...reasonRefs],
+		blocking_labels: [...blockingLabels],
+		evaluated_at: input.evaluatedAt,
+		advisory_only: true,
+		non_authorizing: true,
+		safe_next_actions: [...input.safeNextActions],
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+		routing_authority_enabled: false,
+		model_selection_authority_enabled: false,
+	};
+	return { ok: true, errors: [], eligibility };
+}
+
+export function validateFlowDeskSpecialistWorkflowEligibilityV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("specialist workflow eligibility must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, specialistWorkflowEligibilityAllowedProperties, "specialist workflow eligibility").errors);
+
+	if (record.schema_version !== "flowdesk.specialist_workflow_eligibility.v1") {
+		errors.push("specialist workflow eligibility schema_version is invalid");
+	}
+
+	errors.push(...validateOpaqueId(record.eligibility_id, "eligibility_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(record.task_signature_ref, "task_signature_ref").errors);
+	errors.push(...validateTimestamp(record.evaluated_at, "evaluated_at").errors);
+
+	// eligibility_decision
+	if (typeof record.eligibility_decision !== "string" || !specialistEligibilityDecisions.includes(record.eligibility_decision)) {
+		errors.push("eligibility_decision must be 'eligible', 'ineligible', 'deferred', or 'blocked'");
+	}
+
+	// specialist_category
+	if (typeof record.specialist_category !== "string" || !specialistCategories.includes(record.specialist_category)) {
+		errors.push("specialist_category must be 'security', 'legal', 'medical', 'compliance', or 'unknown'");
+	}
+
+	// confidence_score: integer 0..100
+	if (typeof record.confidence_score !== "number" || !Number.isInteger(record.confidence_score) || record.confidence_score < 0 || record.confidence_score > 100) {
+		errors.push("confidence_score must be an integer 0..100");
+	}
+
+	// reason_refs: 0..10
+	if (!Array.isArray(record.reason_refs) || (record.reason_refs as unknown[]).length > 10) {
+		errors.push("reason_refs must be a bounded array (0..10 entries)");
+	} else {
+		for (const [index, ref] of (record.reason_refs as unknown[]).entries()) {
+			errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+		}
+	}
+
+	// blocking_labels: 0..10
+	if (!Array.isArray(record.blocking_labels) || (record.blocking_labels as unknown[]).length > 10) {
+		errors.push("blocking_labels must be a bounded array (0..10 entries)");
+	} else {
+		for (const [index, label] of (record.blocking_labels as unknown[]).entries()) {
+			errors.push(...validateOpaqueRef(label, `blocking_labels[${index}]`).errors);
+		}
+	}
+
+	// Consistency: blocked decision must have at least one blocking_label
+	if (record.eligibility_decision === "blocked" && Array.isArray(record.blocking_labels) && record.blocking_labels.length === 0) {
+		errors.push("blocking_labels must be non-empty when eligibility_decision is 'blocked'");
+	}
+
+	// safe_next_actions: 1..8
+	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of (record.safe_next_actions as unknown[]).entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	// Authority flags — all explicitly disabled, advisory_only and non_authorizing required
+	if (record.advisory_only !== true
+		|| record.non_authorizing !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false
+		|| record.routing_authority_enabled !== false
+		|| record.model_selection_authority_enabled !== false) {
+		errors.push("specialist workflow eligibility must remain advisory-only non-authorizing with no dispatch, approval, provider, runtime, external-write, remote-write, fallback, lane-launch, write, hard-chat, routing, or model-selection authority");
+	}
+
+	errors.push(...validateNoForbiddenRawPayloads(record, "specialist_workflow_eligibility").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
 export function validateFlowDeskWorkflowSignatureIndexEntryV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("workflow signature index entry must be an object");
 	const record = value as Record<string, unknown>;
