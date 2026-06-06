@@ -102,7 +102,31 @@ export {
 	type FlowDeskFanoutCadenceGateResultV1,
 	createFlowDeskFanoutCadenceGateV1,
 	validateFlowDeskFanoutCadenceGateV1,
+	type FlowDeskSurplusUsageDecisionLabelV1,
+	type FlowDeskSurplusUsageGateV1,
+	type FlowDeskSurplusUsageGateResultV1,
+	createFlowDeskSurplusUsageGateV1,
+	validateFlowDeskSurplusUsageGateV1,
 } from "./gates.js";
+
+// admission (R3 OI admission, fanout reservation, advisory variant result)
+export {
+	type FlowDeskR3ExecutionModeV1,
+	type FlowDeskR3AdmissionDecisionV1,
+	type FlowDeskR3AdmissionDecisionResultV1,
+	createFlowDeskR3AdmissionDecisionV1,
+	validateFlowDeskR3AdmissionDecisionV1,
+	type FlowDeskR3ReservationStatusV1,
+	type FlowDeskR3FanoutReservationV1,
+	type FlowDeskR3FanoutReservationResultV1,
+	createFlowDeskR3FanoutReservationV1,
+	validateFlowDeskR3FanoutReservationV1,
+	type FlowDeskAdvisoryVariantOutcomeClassV1,
+	type FlowDeskAdvisoryVariantResultV1,
+	type FlowDeskAdvisoryVariantResultResultV1,
+	createFlowDeskAdvisoryVariantResultV1,
+	validateFlowDeskAdvisoryVariantResultV1,
+} from "./admission.js";
 
 // ledger
 export {

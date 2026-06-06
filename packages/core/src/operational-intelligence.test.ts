@@ -115,6 +115,23 @@ import {
 	createFlowDeskFederatedRevocationRequestV1,
 	validateFlowDeskFederatedRevocationRequestV1,
 	type FlowDeskFederatedRevocationRequestV1,
+	// R3 OI: surplus usage gate + admission + fanout reservation + advisory variant result
+	createFlowDeskSurplusUsageGateV1,
+	validateFlowDeskSurplusUsageGateV1,
+	type FlowDeskSurplusUsageGateV1,
+	type FlowDeskSurplusUsageDecisionLabelV1,
+	createFlowDeskR3AdmissionDecisionV1,
+	validateFlowDeskR3AdmissionDecisionV1,
+	type FlowDeskR3AdmissionDecisionV1,
+	type FlowDeskR3ExecutionModeV1,
+	createFlowDeskR3FanoutReservationV1,
+	validateFlowDeskR3FanoutReservationV1,
+	type FlowDeskR3FanoutReservationV1,
+	type FlowDeskR3ReservationStatusV1,
+	createFlowDeskAdvisoryVariantResultV1,
+	validateFlowDeskAdvisoryVariantResultV1,
+	type FlowDeskAdvisoryVariantResultV1,
+	type FlowDeskAdvisoryVariantOutcomeClassV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -5434,4 +5451,534 @@ test("P8-S12 federated revocation request: revocation_state \"executed\" rejecte
 	});
 	assert.equal(badReason.ok, false, "invalid revocation_reason must be rejected");
 	assert.match(badReason.errors.join("; "), /revocation_reason/i);
+});
+
+// ─── CONTRACT 1: FlowDeskSurplusUsageGateV1 tests ────────────────────────────
+
+const surplusSnapshotHash = "sha256-aaaa0000bbbb1111cccc2222dddd3333eeee4444ffff5555aaaa6666bbbb7777";
+
+test("surplus usage gate allows when remaining percent exceeds threshold", () => {
+	const result = createFlowDeskSurplusUsageGateV1({
+		gateId: "surplus-gate-1",
+		workflowId: "workflow-1",
+		snapshotRef: "snapshot-ref-1",
+		snapshotHash: surplusSnapshotHash,
+		snapshotCapturedAt: "2026-06-07T12:00:00.000Z",
+		evaluatedAt: "2026-06-07T12:00:05.000Z",
+		snapshotAgeSeconds: 5,
+		maxSnapshotAgeSeconds: 120,
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		remainingPercent: 80,
+		surplusThresholdPercent: 50,
+		alertLevel: "ok",
+		reasonRefs: ["reason-surplus-1"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const gate = result.gate!;
+	assert.equal(gate.gate_verdict, "allow");
+	assert.equal(gate.surplus_sufficient, true);
+	assert.equal(gate.snapshot_fresh, true);
+	assert.equal(gate.alert_level_safe, true);
+	assert.equal(gate.blocked_labels.length, 0);
+	assert.equal(gate.schema_version, "flowdesk.surplus_usage_gate.v1");
+	assert.equal(gate.release_gate, "operational_intelligence_later_gate");
+	assert.equal(gate.advisory_only, true);
+	assert.equal(gate.non_authorizing, true);
+	assert.equal(gate.dispatch_authority_enabled, false);
+	assert.equal(validateFlowDeskSurplusUsageGateV1(gate).ok, true);
+});
+
+test("surplus usage gate blocks on stale snapshot (first match wins)", () => {
+	const result = createFlowDeskSurplusUsageGateV1({
+		gateId: "surplus-gate-2",
+		workflowId: "workflow-1",
+		snapshotRef: "snapshot-ref-2",
+		snapshotHash: surplusSnapshotHash,
+		snapshotCapturedAt: "2026-06-07T12:00:00.000Z",
+		evaluatedAt: "2026-06-07T12:03:00.000Z",
+		snapshotAgeSeconds: 500, // > max 300
+		maxSnapshotAgeSeconds: 300,
+		providerFamily: "openai",
+		bucketLabel: "openai-gpt-5h",
+		remainingPercent: 90,
+		surplusThresholdPercent: 50,
+		alertLevel: "ok",
+		reasonRefs: ["reason-surplus-2"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const gate = result.gate!;
+	assert.equal(gate.gate_verdict, "blocked_stale_usage");
+	assert.equal(gate.blocked_labels.length, 1);
+	assert.equal(validateFlowDeskSurplusUsageGateV1(gate).ok, true);
+});
+
+test("surplus usage gate blocks on unsafe alert level", () => {
+	for (const alertLevel of ["critical", "exhausted", "stale", "unknown"] as const) {
+		const result = createFlowDeskSurplusUsageGateV1({
+			gateId: `surplus-gate-alert-${alertLevel}`,
+			workflowId: "workflow-1",
+			snapshotRef: `snapshot-ref-alert-${alertLevel}`,
+			snapshotHash: surplusSnapshotHash,
+			snapshotCapturedAt: "2026-06-07T12:00:00.000Z",
+			evaluatedAt: "2026-06-07T12:00:05.000Z",
+			snapshotAgeSeconds: 5,
+			maxSnapshotAgeSeconds: 120,
+			providerFamily: "gemini",
+			bucketLabel: "gemini-pro-daily",
+			remainingPercent: 80,
+			surplusThresholdPercent: 50,
+			alertLevel,
+			reasonRefs: [`reason-alert-${alertLevel}`],
+		});
+		assert.equal(result.ok, true, `alert=${alertLevel}: ${result.errors.join("; ")}`);
+		assert.equal(result.gate!.gate_verdict, "blocked_alert_level", `alert=${alertLevel} should be blocked_alert_level`);
+		assert.equal(result.gate!.alert_level_safe, false);
+	}
+});
+
+test("surplus usage gate rejects out-of-range surplus_threshold_percent and authority smuggling", () => {
+	// surplusThresholdPercent below 25
+	const tooLow = createFlowDeskSurplusUsageGateV1({
+		gateId: "surplus-gate-low",
+		workflowId: "workflow-1",
+		snapshotRef: "snapshot-ref-low",
+		snapshotHash: surplusSnapshotHash,
+		snapshotCapturedAt: "2026-06-07T12:00:00.000Z",
+		evaluatedAt: "2026-06-07T12:00:05.000Z",
+		snapshotAgeSeconds: 5,
+		maxSnapshotAgeSeconds: 120,
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		remainingPercent: 50,
+		surplusThresholdPercent: 10, // below 25
+		alertLevel: "ok",
+		reasonRefs: ["reason-low"],
+	});
+	assert.equal(tooLow.ok, false);
+	assert.match(tooLow.errors.join("; "), /surplus_threshold_percent.*\[25,95\]|range/);
+
+	// surplusThresholdPercent above 95
+	const tooHigh = createFlowDeskSurplusUsageGateV1({
+		gateId: "surplus-gate-high",
+		workflowId: "workflow-1",
+		snapshotRef: "snapshot-ref-high",
+		snapshotHash: surplusSnapshotHash,
+		snapshotCapturedAt: "2026-06-07T12:00:00.000Z",
+		evaluatedAt: "2026-06-07T12:00:05.000Z",
+		snapshotAgeSeconds: 5,
+		maxSnapshotAgeSeconds: 120,
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		remainingPercent: 80,
+		surplusThresholdPercent: 99, // above 95
+		alertLevel: "ok",
+		reasonRefs: ["reason-high"],
+	});
+	assert.equal(tooHigh.ok, false);
+	assert.match(tooHigh.errors.join("; "), /surplus_threshold_percent.*\[25,95\]|range/);
+
+	// Authority smuggling via validator
+	const goodResult = createFlowDeskSurplusUsageGateV1({
+		gateId: "surplus-gate-good",
+		workflowId: "workflow-1",
+		snapshotRef: "snapshot-ref-good",
+		snapshotHash: surplusSnapshotHash,
+		snapshotCapturedAt: "2026-06-07T12:00:00.000Z",
+		evaluatedAt: "2026-06-07T12:00:05.000Z",
+		snapshotAgeSeconds: 5,
+		maxSnapshotAgeSeconds: 120,
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		remainingPercent: 80,
+		surplusThresholdPercent: 50,
+		alertLevel: "ok",
+		reasonRefs: ["reason-good"],
+	});
+	assert.equal(goodResult.ok, true);
+	const forgedDispatch = validateFlowDeskSurplusUsageGateV1({ ...goodResult.gate!, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+});
+
+// ─── CONTRACT 2: FlowDeskR3AdmissionDecisionV1 tests ─────────────────────────
+
+const combinedHash = "sha256-bbbb1111cccc2222dddd3333eeee4444ffff5555aaaa6666bbbb7777cccc8888";
+
+test("r3 admission decision skips when surplus gate blocks", () => {
+	const result = createFlowDeskR3AdmissionDecisionV1({
+		decisionId: "decision-1",
+		workflowId: "workflow-1",
+		workflowSignatureRef: "workflow-sig-1",
+		attemptId: "attempt-1",
+		surplusGateRef: "surplus-gate-ref-1",
+		surplusGateVerdict: "blocked_insufficient_surplus",
+		reuseGateRef: "reuse-gate-ref-1",
+		reuseGateDecision: "recompute",
+		cadenceGateRef: "cadence-gate-ref-1",
+		cadenceGateDecision: "allow",
+		combinedSnapshotHash: combinedHash,
+		decidedAt: "2026-06-07T12:00:00.000Z",
+		configRef: "config-ref-1",
+		skipReason: "surplus-gate-blocked",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const decision = result.decision!;
+	assert.equal(decision.execution_mode, "skipped");
+	assert.equal(decision.skip_reason, "surplus-gate-blocked");
+	assert.equal(decision.schema_version, "flowdesk.r3_admission_decision.v1");
+	assert.equal(decision.advisory_only, true);
+	assert.equal(decision.non_authorizing, true);
+	assert.equal(validateFlowDeskR3AdmissionDecisionV1(decision).ok, true);
+});
+
+test("r3 admission decision selects multi_model_fanout for allow+recompute", () => {
+	const result = createFlowDeskR3AdmissionDecisionV1({
+		decisionId: "decision-2",
+		workflowId: "workflow-1",
+		workflowSignatureRef: "workflow-sig-2",
+		attemptId: "attempt-2",
+		surplusGateRef: "surplus-gate-ref-2",
+		surplusGateVerdict: "allow",
+		reuseGateRef: "reuse-gate-ref-2",
+		reuseGateDecision: "recompute",
+		cadenceGateRef: "cadence-gate-ref-2",
+		cadenceGateDecision: "allow",
+		combinedSnapshotHash: combinedHash,
+		decidedAt: "2026-06-07T12:00:00.000Z",
+		configRef: "config-ref-2",
+		reservationId: "reservation-ref-fanout-1",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.decision!.execution_mode, "multi_model_fanout");
+	assert.equal(result.decision!.reservation_id, "reservation-ref-fanout-1");
+	assert.equal(validateFlowDeskR3AdmissionDecisionV1(result.decision!).ok, true);
+});
+
+test("r3 admission decision rejects skip_reason absent when skipped", () => {
+	const result = createFlowDeskR3AdmissionDecisionV1({
+		decisionId: "decision-3",
+		workflowId: "workflow-1",
+		workflowSignatureRef: "workflow-sig-3",
+		attemptId: "attempt-3",
+		surplusGateRef: "surplus-gate-ref-3",
+		surplusGateVerdict: "blocked_stale_usage",
+		reuseGateRef: "reuse-gate-ref-3",
+		reuseGateDecision: "recompute",
+		cadenceGateRef: "cadence-gate-ref-3",
+		cadenceGateDecision: "allow",
+		combinedSnapshotHash: combinedHash,
+		decidedAt: "2026-06-07T12:00:00.000Z",
+		configRef: "config-ref-3",
+		// skip_reason deliberately omitted
+	});
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /skip_reason is required/);
+});
+
+test("r3 admission decision rejects multi_model_fanout consistency violations", () => {
+	// surplus not allow
+	const r1 = validateFlowDeskR3AdmissionDecisionV1({
+		schema_version: "flowdesk.r3_admission_decision.v1",
+		decision_id: "decision-4",
+		workflow_id: "workflow-1",
+		workflow_signature_ref: "workflow-sig-4",
+		attempt_id: "attempt-4",
+		surplus_gate_ref: "surplus-gate-ref-4",
+		surplus_gate_verdict: "blocked_stale_usage", // not allow
+		reuse_gate_ref: "reuse-gate-ref-4",
+		reuse_gate_decision: "recompute",
+		cadence_gate_ref: "cadence-gate-ref-4",
+		cadence_gate_decision: "allow",
+		execution_mode: "multi_model_fanout",
+		reservation_id: "reservation-ref-4",
+		combined_snapshot_hash: combinedHash,
+		decided_at: "2026-06-07T12:00:00.000Z",
+		config_ref: "config-ref-4",
+		release_gate: "operational_intelligence_later_gate",
+		advisory_only: true,
+		non_authorizing: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	});
+	assert.equal(r1.ok, false);
+	assert.match(r1.errors.join("; "), /surplus_gate_verdict='allow'/);
+});
+
+// ─── CONTRACT 3: FlowDeskR3FanoutReservationV1 tests ─────────────────────────
+
+test("r3 fanout reservation creates a valid reserved record", () => {
+	const result = createFlowDeskR3FanoutReservationV1({
+		reservationId: "res-abcdef1234567890",
+		attemptId: "attempt-1",
+		workflowId: "workflow-1",
+		admissionDecisionRef: "decision-ref-1",
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		estimatedTokensReserved: 5000,
+		dailyHardCapTokens: 1_000_000,
+		tokensAlreadyReservedToday: 10_000,
+		reservedAt: "2026-06-07T12:00:00.000Z",
+		expiresAt: "2026-06-07T12:10:00.000Z",
+		cadenceWindowSeconds: 60,
+		status: "reserved",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const reservation = result.reservation!;
+	assert.equal(reservation.schema_version, "flowdesk.r3_fanout_reservation.v1");
+	assert.equal(reservation.daily_cap_check, "passed");
+	assert.equal(reservation.daily_cap_blocked_labels.length, 0);
+	assert.equal(reservation.fsync_required, true);
+	assert.equal(reservation.advisory_only, true);
+	assert.equal(reservation.non_authorizing, true);
+	assert.equal(reservation.dispatch_authority_enabled, false);
+	assert.equal(validateFlowDeskR3FanoutReservationV1(reservation).ok, true);
+});
+
+test("r3 fanout reservation blocks when daily cap exceeded", () => {
+	const result = createFlowDeskR3FanoutReservationV1({
+		reservationId: "res-bbbbbbbbbbbbbbbb",
+		attemptId: "attempt-2",
+		workflowId: "workflow-1",
+		admissionDecisionRef: "decision-ref-2",
+		providerFamily: "openai",
+		bucketLabel: "openai-gpt-5h",
+		estimatedTokensReserved: 900_001,
+		dailyHardCapTokens: 1_000_000,
+		tokensAlreadyReservedToday: 200_000,
+		// 200_000 + 900_001 > 1_000_000 → blocked
+		reservedAt: "2026-06-07T12:00:00.000Z",
+		expiresAt: "2026-06-07T12:10:00.000Z",
+		cadenceWindowSeconds: 60,
+		status: "reserved",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.reservation!.daily_cap_check, "blocked");
+	assert.deepEqual(result.reservation!.daily_cap_blocked_labels, ["daily-hard-cap-exceeded"]);
+});
+
+test("r3 fanout reservation rejects invalid reservation_id pattern and unknown provider", () => {
+	const badId = createFlowDeskR3FanoutReservationV1({
+		reservationId: "not-a-valid-res-id",
+		attemptId: "attempt-3",
+		workflowId: "workflow-1",
+		admissionDecisionRef: "decision-ref-3",
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		estimatedTokensReserved: 1000,
+		dailyHardCapTokens: 1_000_000,
+		tokensAlreadyReservedToday: 0,
+		reservedAt: "2026-06-07T12:00:00.000Z",
+		expiresAt: "2026-06-07T12:10:00.000Z",
+		cadenceWindowSeconds: 60,
+		status: "reserved",
+	});
+	assert.equal(badId.ok, false);
+	assert.match(badId.errors.join("; "), /reservation_id.*res-\[a-f0-9\]\{16,\}/);
+
+	const unknownProvider = createFlowDeskR3FanoutReservationV1({
+		reservationId: "res-aaaa1111bbbb2222",
+		attemptId: "attempt-4",
+		workflowId: "workflow-1",
+		admissionDecisionRef: "decision-ref-4",
+		providerFamily: "unknown" as "claude",
+		bucketLabel: "unknown-bucket",
+		estimatedTokensReserved: 1000,
+		dailyHardCapTokens: 1_000_000,
+		tokensAlreadyReservedToday: 0,
+		reservedAt: "2026-06-07T12:00:00.000Z",
+		expiresAt: "2026-06-07T12:10:00.000Z",
+		cadenceWindowSeconds: 60,
+		status: "reserved",
+	});
+	assert.equal(unknownProvider.ok, false);
+	assert.match(unknownProvider.errors.join("; "), /provider_family.*claude.*openai.*gemini/);
+});
+
+test("r3 fanout reservation requires consumed_at when status is consumed", () => {
+	const missingConsumedAt = createFlowDeskR3FanoutReservationV1({
+		reservationId: "res-cccc2222dddd3333",
+		attemptId: "attempt-5",
+		workflowId: "workflow-1",
+		admissionDecisionRef: "decision-ref-5",
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		estimatedTokensReserved: 1000,
+		dailyHardCapTokens: 1_000_000,
+		tokensAlreadyReservedToday: 0,
+		reservedAt: "2026-06-07T12:00:00.000Z",
+		expiresAt: "2026-06-07T12:10:00.000Z",
+		cadenceWindowSeconds: 60,
+		status: "consumed",
+		// consumedAt deliberately omitted
+	});
+	assert.equal(missingConsumedAt.ok, false);
+	assert.match(missingConsumedAt.errors.join("; "), /consumed_at is required/);
+});
+
+// ─── CONTRACT 4: FlowDeskAdvisoryVariantResultV1 tests ───────────────────────
+
+test("advisory variant result creates valid completed_ok record with score ref", () => {
+	const result = createFlowDeskAdvisoryVariantResultV1({
+		variantResultId: "variant-result-1",
+		admissionDecisionRef: "decision-ref-1",
+		reservationRef: "reservation-ref-1",
+		workflowId: "workflow-1",
+		attemptId: "attempt-1",
+		workflowSignatureRef: "workflow-sig-1",
+		variantId: "variant-1",
+		variantIndex: 0,
+		variantTotal: 3,
+		modelRef: "model-claude-sonnet-1",
+		providerFamily: "claude",
+		proposalRef: "proposal-ref-1",
+		normalizedScoreRef: "score-ref-normalized-1",
+		outcomeClass: "completed_ok",
+		outcomeReasonRefs: ["reason-outcome-1"],
+		boundedSummaryLabel: "Variant completed successfully",
+		durationMs: 1200,
+		providerTokenUsageEstimate: 500,
+		startedAt: "2026-06-07T12:00:00.000Z",
+		completedAt: "2026-06-07T12:00:01.200Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	assert.equal(r.schema_version, "flowdesk.advisory_variant_result.v1");
+	assert.equal(r.execution_purpose, "advisory_variant_test");
+	assert.equal(r.not_consumable_as_primary_task_result, true);
+	assert.equal(r.advisory_only, true);
+	assert.equal(r.non_authorizing, true);
+	assert.equal(r.dispatch_authority_enabled, false);
+	assert.equal(r.normalized_score_ref, "score-ref-normalized-1");
+	assert.equal(validateFlowDeskAdvisoryVariantResultV1(r).ok, true);
+});
+
+test("advisory variant result rejects deny-list fields (anti-blur enforcement)", () => {
+	const goodResult = createFlowDeskAdvisoryVariantResultV1({
+		variantResultId: "variant-result-2",
+		admissionDecisionRef: "decision-ref-2",
+		reservationRef: "reservation-ref-2",
+		workflowId: "workflow-1",
+		attemptId: "attempt-2",
+		workflowSignatureRef: "workflow-sig-2",
+		variantId: "variant-2",
+		variantIndex: 1,
+		variantTotal: 3,
+		modelRef: "model-openai-1",
+		providerFamily: "openai",
+		proposalRef: "proposal-ref-2",
+		outcomeClass: "completed_degraded",
+		outcomeReasonRefs: ["reason-degraded-1"],
+		boundedSummaryLabel: "Variant degraded",
+		durationMs: 3000,
+		providerTokenUsageEstimate: 200,
+		startedAt: "2026-06-07T12:00:00.000Z",
+		completedAt: "2026-06-07T12:00:03.000Z",
+	});
+	assert.equal(goodResult.ok, true, goodResult.errors.join("; "));
+	const r = goodResult.result!;
+
+	// Inject deny-list fields via validator
+	for (const denyField of ["task_result_id", "result_payload", "verdict", "accepted_for_synthesis", "primary_task_result_ref", "synthesis_input_ref"] as const) {
+		const injected = validateFlowDeskAdvisoryVariantResultV1({ ...r, [denyField]: "injected-value" });
+		assert.equal(injected.ok, false, `deny field '${denyField}' must be rejected`);
+		assert.match(injected.errors.join("; "), new RegExp(`deny-listed.*${denyField}|${denyField}.*deny-list`));
+	}
+});
+
+test("advisory variant result rejects wrong execution_purpose and missing anti-blur markers", () => {
+	const goodResult = createFlowDeskAdvisoryVariantResultV1({
+		variantResultId: "variant-result-3",
+		admissionDecisionRef: "decision-ref-3",
+		reservationRef: "reservation-ref-3",
+		workflowId: "workflow-1",
+		attemptId: "attempt-3",
+		workflowSignatureRef: "workflow-sig-3",
+		variantId: "variant-3",
+		variantIndex: 0,
+		variantTotal: 1,
+		modelRef: "model-gemini-1",
+		providerFamily: "gemini",
+		proposalRef: "proposal-ref-3",
+		outcomeClass: "timeout",
+		outcomeReasonRefs: ["reason-timeout-1"],
+		boundedSummaryLabel: "Variant timed out",
+		durationMs: 30000,
+		providerTokenUsageEstimate: 0,
+		startedAt: "2026-06-07T12:00:00.000Z",
+		completedAt: "2026-06-07T12:00:30.000Z",
+	});
+	assert.equal(goodResult.ok, true, goodResult.errors.join("; "));
+	const r = goodResult.result!;
+
+	// Tamper with execution_purpose
+	const wrongPurpose = validateFlowDeskAdvisoryVariantResultV1({ ...r, execution_purpose: "primary_task_execution" });
+	assert.equal(wrongPurpose.ok, false);
+	assert.match(wrongPurpose.errors.join("; "), /execution_purpose.*advisory_variant_test/);
+
+	// Remove not_consumable_as_primary_task_result
+	const missingAntiBlur = validateFlowDeskAdvisoryVariantResultV1({ ...r, not_consumable_as_primary_task_result: false as true });
+	assert.equal(missingAntiBlur.ok, false);
+	assert.match(missingAntiBlur.errors.join("; "), /not_consumable_as_primary_task_result/);
+});
+
+test("advisory variant result rejects variant_index >= variant_total and completed_ok without score", () => {
+	// variant_index >= variant_total
+	const badIndex = createFlowDeskAdvisoryVariantResultV1({
+		variantResultId: "variant-result-4",
+		admissionDecisionRef: "decision-ref-4",
+		reservationRef: "reservation-ref-4",
+		workflowId: "workflow-1",
+		attemptId: "attempt-4",
+		workflowSignatureRef: "workflow-sig-4",
+		variantId: "variant-4",
+		variantIndex: 3, // >= variantTotal=3
+		variantTotal: 3,
+		modelRef: "model-claude-2",
+		providerFamily: "claude",
+		proposalRef: "proposal-ref-4",
+		outcomeClass: "completed_degraded",
+		outcomeReasonRefs: ["reason-4"],
+		boundedSummaryLabel: "Test",
+		durationMs: 0,
+		providerTokenUsageEstimate: 0,
+		startedAt: "2026-06-07T12:00:00.000Z",
+		completedAt: "2026-06-07T12:00:00.000Z",
+	});
+	assert.equal(badIndex.ok, false);
+	assert.match(badIndex.errors.join("; "), /variant_index must be < variant_total/);
+
+	// completed_ok without normalized_score_ref
+	const missingScore = createFlowDeskAdvisoryVariantResultV1({
+		variantResultId: "variant-result-5",
+		admissionDecisionRef: "decision-ref-5",
+		reservationRef: "reservation-ref-5",
+		workflowId: "workflow-1",
+		attemptId: "attempt-5",
+		workflowSignatureRef: "workflow-sig-5",
+		variantId: "variant-5",
+		variantIndex: 0,
+		variantTotal: 2,
+		modelRef: "model-claude-3",
+		providerFamily: "claude",
+		proposalRef: "proposal-ref-5",
+		outcomeClass: "completed_ok",
+		// normalizedScoreRef deliberately omitted
+		outcomeReasonRefs: ["reason-5"],
+		boundedSummaryLabel: "Test completed_ok no score",
+		durationMs: 100,
+		providerTokenUsageEstimate: 10,
+		startedAt: "2026-06-07T12:00:00.000Z",
+		completedAt: "2026-06-07T12:00:00.100Z",
+	});
+	assert.equal(missingScore.ok, false);
+	assert.match(missingScore.errors.join("; "), /normalized_score_ref is required when outcome_class is 'completed_ok'/);
 });
