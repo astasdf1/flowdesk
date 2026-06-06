@@ -222,6 +222,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.fanout_cadence_gate.v1", "fanout-cadence-gate", "FlowDeskFanoutCadenceGateV1", "later_release"),
   artifactEntry("flowdesk.local_ledger_snapshot.v1", "local-ledger-snapshot", "FlowDeskLocalLedgerSnapshotV1", "later_release"),
   artifactEntry("flowdesk.score_reference_pack.v1", "score-reference-pack", "FlowDeskScoreReferencePackV1", "later_release"),
+  artifactEntry("flowdesk.workflow_signature_index_entry.v1", "workflow-signature-index-entry", "FlowDeskWorkflowSignatureIndexEntryV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",

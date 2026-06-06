@@ -43,6 +43,9 @@ import {
 	createFlowDeskScoreReferencePackV1,
 	validateFlowDeskScoreReferencePackV1,
 	type FlowDeskScoreReferencePackV1,
+	createFlowDeskWorkflowSignatureIndexEntryV1,
+	validateFlowDeskWorkflowSignatureIndexEntryV1,
+	type FlowDeskWorkflowSignatureIndexEntryV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -1923,4 +1926,154 @@ test("score reference pack rejects empty or missing required arrays via validato
 	assert.equal(validateFlowDeskScoreReferencePackV1(null).ok, false);
 	assert.equal(validateFlowDeskScoreReferencePackV1(42).ok, false);
 	assert.equal(validateFlowDeskScoreReferencePackV1([]).ok, false);
+});
+
+// ─── P7-S10: Workflow Signature Index Entry tests ────────────────────────────
+
+test("workflow signature index entry creates valid entry with all optional fields", () => {
+	const result = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-1",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		referencePackRef: "ref-pack-1",
+		categoryFitSnapshotRef: "cat-snap-1",
+		lastScoredAt: "2026-06-06T15:30:00.000Z",
+		createdAt: "2026-06-06T15:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const entry = result.entry as FlowDeskWorkflowSignatureIndexEntryV1;
+	assert.equal(entry.schema_version, "flowdesk.workflow_signature_index_entry.v1");
+	assert.equal(entry.entry_id, "idx-entry-1");
+	assert.equal(entry.workflow_id, "workflow-1");
+	assert.equal(entry.task_signature_ref, "task-sig-1");
+	assert.equal(entry.reference_pack_ref, "ref-pack-1");
+	assert.equal(entry.category_fit_snapshot_ref, "cat-snap-1");
+	assert.equal(entry.last_scored_at, "2026-06-06T15:30:00.000Z");
+	assert.equal(entry.created_at, "2026-06-06T15:00:00.000Z");
+	assert.equal(entry.advisory_only, true);
+	assert.equal(entry.non_authorizing, true);
+	assert.equal(entry.dispatch_authority_enabled, false);
+	assert.equal(entry.approval_authority_enabled, false);
+	assert.equal(entry.provider_authority_enabled, false);
+	assert.equal(entry.runtime_authority_enabled, false);
+	assert.equal(entry.external_write_authority_enabled, false);
+	assert.equal(entry.remote_write_authority_enabled, false);
+	assert.equal(entry.fallback_authority_enabled, false);
+	assert.equal(entry.lane_launch_authority_enabled, false);
+	assert.equal(entry.write_authority_enabled, false);
+	assert.equal(entry.hard_chat_authority_enabled, false);
+	// Validator also passes
+	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1(entry).ok, true);
+});
+
+test("workflow signature index entry creates valid minimal entry (no optional fields)", () => {
+	const result = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-2",
+		workflowId: "workflow-2",
+		taskSignatureRef: "task-sig-2",
+		createdAt: "2026-06-06T16:00:00.000Z",
+		safeNextActions: ["flowdesk-status", "flowdesk-doctor"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const entry = result.entry as FlowDeskWorkflowSignatureIndexEntryV1;
+	assert.equal(entry.reference_pack_ref, undefined);
+	assert.equal(entry.category_fit_snapshot_ref, undefined);
+	assert.equal(entry.last_scored_at, undefined);
+	assert.equal(entry.advisory_only, true);
+	assert.equal(entry.non_authorizing, true);
+	// Validator also passes on minimal entry
+	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1(entry).ok, true);
+});
+
+test("workflow signature index entry rejects authority smuggling and unknown properties", () => {
+	const result = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-3",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-3",
+		createdAt: "2026-06-06T16:01:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	const entry = result.entry as FlowDeskWorkflowSignatureIndexEntryV1;
+
+	// dispatch authority smuggling
+	const forgedDispatch = validateFlowDeskWorkflowSignatureIndexEntryV1({ ...entry, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+
+	// runtime authority smuggling
+	const forgedRuntime = validateFlowDeskWorkflowSignatureIndexEntryV1({ ...entry, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only non-authorizing/);
+
+	// non_authorizing stripped
+	const strippedNonAuth = validateFlowDeskWorkflowSignatureIndexEntryV1({ ...entry, non_authorizing: false as true });
+	assert.equal(strippedNonAuth.ok, false);
+	assert.match(strippedNonAuth.errors.join("; "), /advisory-only non-authorizing/);
+
+	// unknown property injection
+	const unknown = validateFlowDeskWorkflowSignatureIndexEntryV1({ ...entry, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("workflow signature index entry rejects malformed input and timestamp inconsistency", () => {
+	// Malformed task_signature_ref (raw path marker)
+	const rawPath = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-4a",
+		workflowId: "workflow-1",
+		taskSignatureRef: "/Users/foo/task-sig",
+		createdAt: "2026-06-06T16:02:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(rawPath.ok, false);
+	assert.match(rawPath.errors.join("; "), /schema-safe|raw path marker|traversal/);
+
+	// Malformed reference_pack_ref
+	const badRef = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-4b",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-4b",
+		referencePackRef: "../bad-ref",
+		createdAt: "2026-06-06T16:03:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badRef.ok, false);
+	assert.match(badRef.errors.join("; "), /schema-safe|traversal/);
+
+	// last_scored_at before created_at → timestamp inconsistency
+	const staleScore = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-4c",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-4c",
+		lastScoredAt: "2026-06-05T00:00:00.000Z", // before created_at
+		createdAt: "2026-06-06T16:04:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(staleScore.ok, false);
+	assert.match(staleScore.errors.join("; "), /last_scored_at must not precede created_at/);
+
+	// Validator also detects timestamp inconsistency on mutated entry
+	const validResult = createFlowDeskWorkflowSignatureIndexEntryV1({
+		entryId: "idx-entry-4d",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-4d",
+		lastScoredAt: "2026-06-06T17:00:00.000Z",
+		createdAt: "2026-06-06T16:05:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(validResult.ok, true);
+	// Mutate: push created_at to after last_scored_at
+	const mutated = validateFlowDeskWorkflowSignatureIndexEntryV1({
+		...validResult.entry,
+		created_at: "2026-06-06T18:00:00.000Z",
+	});
+	assert.equal(mutated.ok, false);
+	assert.match(mutated.errors.join("; "), /last_scored_at must not precede created_at/);
+
+	// Validator rejects non-object inputs
+	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1(null).ok, false);
+	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1(42).ok, false);
+	assert.equal(validateFlowDeskWorkflowSignatureIndexEntryV1([]).ok, false);
 });

@@ -2777,3 +2777,219 @@ export function validateFlowDeskScoreReferencePackV1(value: unknown): Validation
 	errors.push(...validateNoForbiddenRawPayloads(record, "score_reference_pack").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
+
+// ─── P7-S10: Workflow Signature Index Entry ──────────────────────────────────
+
+/**
+ * Advisory-only contract representing a single index entry that maps a
+ * workflow/task signature to its associated reference pack ref,
+ * category-fit snapshot ref, and last-scored timestamp.
+ *
+ * Enables lightweight advisory lookups without triggering actual I/O or
+ * dispatch.  No authority flags are enabled.
+ */
+export interface FlowDeskWorkflowSignatureIndexEntryV1 {
+	schema_version: "flowdesk.workflow_signature_index_entry.v1";
+	/** Opaque index entry identifier. */
+	entry_id: string;
+	/** Workflow this entry belongs to. */
+	workflow_id: string;
+	/** Opaque ref identifying the task/workflow signature. */
+	task_signature_ref: string;
+	/** Opaque ref to the associated reference pack (optional). */
+	reference_pack_ref?: string;
+	/** Opaque ref to the associated category-fit snapshot (optional). */
+	category_fit_snapshot_ref?: string;
+	/** ISO 8601 timestamp at which the entry was last scored (optional). */
+	last_scored_at?: string;
+	/** ISO 8601 timestamp at which this index entry was created. */
+	created_at: string;
+	advisory_only: true;
+	non_authorizing: true;
+	safe_next_actions: string[];
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
+export interface FlowDeskWorkflowSignatureIndexEntryResultV1 {
+	ok: boolean;
+	errors: string[];
+	entry?: FlowDeskWorkflowSignatureIndexEntryV1;
+}
+
+/**
+ * Create an advisory workflow signature index entry.
+ *
+ * No I/O is performed.  The caller supplies all field values.
+ */
+export function createFlowDeskWorkflowSignatureIndexEntryV1(input: {
+	entryId: string;
+	workflowId: string;
+	taskSignatureRef: string;
+	referencePackRef?: string;
+	categoryFitSnapshotRef?: string;
+	lastScoredAt?: string;
+	createdAt: string;
+	safeNextActions: string[];
+}): FlowDeskWorkflowSignatureIndexEntryResultV1 {
+	const errors: string[] = [];
+
+	errors.push(...validateOpaqueId(input.entryId, "entry_id").errors);
+	errors.push(...validateOpaqueId(input.workflowId, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(input.taskSignatureRef, "task_signature_ref").errors);
+	errors.push(...validateTimestamp(input.createdAt, "created_at").errors);
+
+	if (input.referencePackRef !== undefined) {
+		errors.push(...validateOpaqueRef(input.referencePackRef, "reference_pack_ref").errors);
+	}
+	if (input.categoryFitSnapshotRef !== undefined) {
+		errors.push(...validateOpaqueRef(input.categoryFitSnapshotRef, "category_fit_snapshot_ref").errors);
+	}
+	if (input.lastScoredAt !== undefined) {
+		errors.push(...validateTimestamp(input.lastScoredAt, "last_scored_at").errors);
+	}
+
+	// Timestamp consistency: last_scored_at must not precede created_at
+	if (input.lastScoredAt !== undefined && Number.isFinite(Date.parse(input.lastScoredAt)) && Number.isFinite(Date.parse(input.createdAt))) {
+		if (Date.parse(input.lastScoredAt) < Date.parse(input.createdAt)) {
+			errors.push("last_scored_at must not precede created_at");
+		}
+	}
+
+	// safe_next_actions: 1..8
+	if (!Array.isArray(input.safeNextActions) || input.safeNextActions.length === 0 || input.safeNextActions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of input.safeNextActions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	if (errors.length > 0) return { ok: false, errors };
+
+	const entry: FlowDeskWorkflowSignatureIndexEntryV1 = {
+		schema_version: "flowdesk.workflow_signature_index_entry.v1",
+		entry_id: input.entryId,
+		workflow_id: input.workflowId,
+		task_signature_ref: input.taskSignatureRef,
+		...(input.referencePackRef === undefined ? {} : { reference_pack_ref: input.referencePackRef }),
+		...(input.categoryFitSnapshotRef === undefined ? {} : { category_fit_snapshot_ref: input.categoryFitSnapshotRef }),
+		...(input.lastScoredAt === undefined ? {} : { last_scored_at: input.lastScoredAt }),
+		created_at: input.createdAt,
+		advisory_only: true,
+		non_authorizing: true,
+		safe_next_actions: [...input.safeNextActions],
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+	return { ok: true, errors: [], entry };
+}
+
+const workflowSignatureIndexEntryAllowedProperties = [
+	"schema_version",
+	"entry_id",
+	"workflow_id",
+	"task_signature_ref",
+	"reference_pack_ref",
+	"category_fit_snapshot_ref",
+	"last_scored_at",
+	"created_at",
+	"advisory_only",
+	"non_authorizing",
+	"safe_next_actions",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"remote_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+] as const;
+
+export function validateFlowDeskWorkflowSignatureIndexEntryV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("workflow signature index entry must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, workflowSignatureIndexEntryAllowedProperties, "workflow signature index entry").errors);
+
+	if (record.schema_version !== "flowdesk.workflow_signature_index_entry.v1") {
+		errors.push("workflow signature index entry schema_version is invalid");
+	}
+
+	errors.push(...validateOpaqueId(record.entry_id, "entry_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(record.task_signature_ref, "task_signature_ref").errors);
+	errors.push(...validateTimestamp(record.created_at, "created_at").errors);
+
+	if (record.reference_pack_ref !== undefined) {
+		errors.push(...validateOpaqueRef(record.reference_pack_ref, "reference_pack_ref").errors);
+	}
+	if (record.category_fit_snapshot_ref !== undefined) {
+		errors.push(...validateOpaqueRef(record.category_fit_snapshot_ref, "category_fit_snapshot_ref").errors);
+	}
+	if (record.last_scored_at !== undefined) {
+		errors.push(...validateTimestamp(record.last_scored_at, "last_scored_at").errors);
+	}
+
+	// Timestamp consistency: last_scored_at must not precede created_at
+	if (
+		record.last_scored_at !== undefined
+		&& typeof record.last_scored_at === "string"
+		&& typeof record.created_at === "string"
+		&& Number.isFinite(Date.parse(record.last_scored_at))
+		&& Number.isFinite(Date.parse(record.created_at as string))
+	) {
+		if (Date.parse(record.last_scored_at) < Date.parse(record.created_at as string)) {
+			errors.push("last_scored_at must not precede created_at");
+		}
+	}
+
+	// safe_next_actions: 1..8
+	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of record.safe_next_actions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	// Authority flags — all explicitly disabled, advisory_only and non_authorizing required
+	if (record.advisory_only !== true
+		|| record.non_authorizing !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) {
+		errors.push("workflow signature index entry must remain advisory-only non-authorizing with no dispatch, approval, provider, runtime, external-write, remote-write, fallback, lane-launch, write, or hard-chat authority");
+	}
+
+	errors.push(...validateNoForbiddenRawPayloads(record, "workflow_signature_index_entry").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
