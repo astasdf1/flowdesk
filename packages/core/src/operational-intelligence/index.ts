@@ -281,3 +281,31 @@ export {
 	type FlowDeskScoringEngineResultV1,
 	scoreWorkflowProposal,
 } from "./scoring-engine.js";
+
+// model-capability-profile (P7-S13.7)
+export {
+	type FlowDeskModelCapabilityProfileCategoryV1,
+	type FlowDeskCategoryFitnessMapV1,
+	type FlowDeskModelCapabilityProfileV1,
+	createFlowDeskModelCapabilityProfileV1,
+	validateFlowDeskModelCapabilityProfileV1,
+	FLOWDESK_INITIAL_MODEL_PROFILES,
+} from "./model-capability-profile.js";
+
+// block-selection-criteria (P7-S13.7)
+export {
+	type FlowDeskBlockSelectionCriteriaV1,
+	createFlowDeskBlockSelectionCriteriaV1,
+	validateFlowDeskBlockSelectionCriteriaV1,
+} from "./block-selection-criteria.js";
+
+// model-selection-result (P7-S13.7)
+export {
+	type FlowDeskModelSelectionReasonV1,
+	type FlowDeskIneligibleModelFailedThresholdV1,
+	type FlowDeskIneligibleModelEntryV1,
+	type FlowDeskModelSelectionResultV1,
+	createFlowDeskModelSelectionResultV1,
+	validateFlowDeskModelSelectionResultV1,
+	selectModelForBlock,
+} from "./model-selection-result.js";

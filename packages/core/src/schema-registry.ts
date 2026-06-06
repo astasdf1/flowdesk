@@ -243,6 +243,9 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.advisory_variant_result.v1", "advisory-variant-result", "FlowDeskAdvisoryVariantResultV1", "later_release"),
   artifactEntry("flowdesk.task_block_scoring.v1", "task-block-scoring", "FlowDeskTaskBlockScoringV1", "later_release"),
   artifactEntry("flowdesk.design_spec_quality.v1", "design-spec-quality", "FlowDeskDesignSpecQualityV1", "later_release"),
+  artifactEntry("flowdesk.model_capability_profile.v1", "model-capability-profile", "FlowDeskModelCapabilityProfileV1", "later_release"),
+  artifactEntry("flowdesk.block_selection_criteria.v1", "block-selection-criteria", "FlowDeskBlockSelectionCriteriaV1", "later_release"),
+  artifactEntry("flowdesk.model_selection_result.v1", "model-selection-result", "FlowDeskModelSelectionResultV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
