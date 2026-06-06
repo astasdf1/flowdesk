@@ -139,6 +139,19 @@ import {
 	createFlowDeskDesignSpecQualityV1,
 	validateFlowDeskDesignSpecQualityV1,
 	type FlowDeskDesignSpecQualityV1,
+	// P7-S13.7: model selection contracts
+	createFlowDeskModelCapabilityProfileV1,
+	validateFlowDeskModelCapabilityProfileV1,
+	type FlowDeskModelCapabilityProfileV1,
+	FLOWDESK_INITIAL_MODEL_PROFILES,
+	createFlowDeskBlockSelectionCriteriaV1,
+	validateFlowDeskBlockSelectionCriteriaV1,
+	type FlowDeskBlockSelectionCriteriaV1,
+	createFlowDeskModelSelectionResultV1,
+	validateFlowDeskModelSelectionResultV1,
+	selectModelForBlock,
+	type FlowDeskModelSelectionResultV1,
+	type FlowDeskModelSelectionReasonV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -6008,10 +6021,10 @@ test("task block scoring: valid score with derivation", () => {
 	assert.equal(result.ok, true, result.errors.join("; "));
 	const s = result.scoring!;
 	assert.equal(s.schema_version, "flowdesk.task_block_scoring.v1");
-	// block_score = 3 (scope) + 3 (impl) + 2 (complex) + 2 (coupling) + 1 (auth) + 1 (novelty) = 12
-	assert.equal(s.block_score, 12);
-	assert.equal(s.category_score, 3);
-	assert.equal(s.recommended_model_tier, "flash"); // 10-12 -> flash
+	// block_score = 3 (scope) + 6 (impl) + 2 (complex) + 2 (coupling) + 1 (auth) + 1 (novelty) = 15
+	assert.equal(s.block_score, 15);
+	assert.equal(s.category_score, 6);
+	assert.equal(s.recommended_model_tier, "flash_lite"); // 14-20 -> flash_lite
 	assert.equal(s.design_first_required, false);
 	assert.equal(s.multi_model_design_required, false);
 	assert.equal(validateFlowDeskTaskBlockScoringV1(s).ok, true);
@@ -6019,12 +6032,12 @@ test("task block scoring: valid score with derivation", () => {
 
 test("task block scoring: category mapping", () => {
 	const categories: [FlowDeskTaskBlockCategoryV1, number][] = [
-		["schema_only", 2],
-		["implementation", 3],
-		["integration", 3],
-		["orchestration", 4],
-		["security_boundary", 5],
-		["design", 5],
+		["schema_only", 4],
+		["implementation", 6],
+		["integration", 6],
+		["orchestration", 8],
+		["security_boundary", 10],
+		["design", 10],
 	];
 	for (const [cat, expectedScore] of categories) {
 		const result = createFlowDeskTaskBlockScoringV1({
@@ -6045,7 +6058,7 @@ test("task block scoring: category mapping", () => {
 });
 
 test("task block scoring: design_first_required and multi_model_design_required flags", () => {
-	// Case 1: high novelty -> design_first_required
+	// Case 1: high novelty (>=8) -> design_first_required
 	const res1 = createFlowDeskTaskBlockScoringV1({
 		blockId: "block-novelty",
 		blockLabel: "Novelty Block",
@@ -6055,30 +6068,31 @@ test("task block scoring: design_first_required and multi_model_design_required 
 		complexity: 1,
 		coupling: 1,
 		authoritySensitivity: 1,
-		novelty: 4,
+		novelty: 8,
 		readinessCheckPassed: true,
 	});
+	// score = 1 + 6 + 1 + 1 + 1 + 8 = 18, design_first=true (novelty>=8), multi=false (18<54)
 	assert.equal(res1.scoring?.design_first_required, true);
 	assert.equal(res1.scoring?.multi_model_design_required, false);
 
-	// Case 2: high block_score -> both required
+	// Case 2: high block_score (>=54) -> both required
 	const res2 = createFlowDeskTaskBlockScoringV1({
 		blockId: "block-high-score",
 		blockLabel: "High Score Block",
 		scoredAt: "2026-06-07T12:00:00.000Z",
-		scope: 5,
+		scope: 10,
 		category: "design",
-		complexity: 5,
-		coupling: 5,
-		authoritySensitivity: 3,
-		novelty: 3,
+		complexity: 10,
+		coupling: 10,
+		authoritySensitivity: 7,
+		novelty: 7,
 		readinessCheckPassed: true,
 	});
-	// score = 5 + 5 + 5 + 5 + 3 + 3 = 26
-	assert.equal(res2.scoring?.block_score, 26);
+	// score = 10 + 10 + 10 + 10 + 7 + 7 = 54
+	assert.equal(res2.scoring?.block_score, 54);
 	assert.equal(res2.scoring?.design_first_required, true);
 	assert.equal(res2.scoring?.multi_model_design_required, true);
-	assert.equal(res2.scoring?.recommended_model_tier, "opus"); // 25-28 -> opus
+	assert.equal(res2.scoring?.recommended_model_tier, "opus_multi_model"); // 53-60 -> opus_multi_model
 });
 
 test("task block scoring: authority smuggling rejection", () => {
@@ -6176,4 +6190,629 @@ test("design spec quality: authority smuggling rejection", () => {
 	const forged2 = validateFlowDeskDesignSpecQualityV1({ ...q, hard_chat_authority_enabled: true });
 	assert.equal(forged2.ok, false);
 	assert.match(forged2.errors.join("; "), /hard_chat_authority_enabled/);
+});
+
+// ─── P7-S13.7: MODEL CAPABILITY PROFILE tests ────────────────────────────────
+
+test("model capability profile: valid profile creates correctly", () => {
+	const result = createFlowDeskModelCapabilityProfileV1({
+		profileId: "cap-profile-test-1",
+		modelRef: "model-ref-test-1",
+		providerQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		categoryFitness: {
+			schema_only: 4,
+			implementation: 4,
+			integration: 4,
+			orchestration: 4,
+			security_boundary: 4,
+			design: 4,
+		},
+		complexityHandlingScore: 4,
+		authoritySensitivityScore: 4,
+		evidenceRefs: ["evidence-test-1"],
+		freshnessTtlSeconds: 604800,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const profile = result.profile!;
+	assert.equal(profile.schema_version, "flowdesk.model_capability_profile.v1");
+	assert.equal(profile.profile_id, "cap-profile-test-1");
+	assert.equal(profile.provider_qualified_model_id, "anthropic/claude-sonnet-4-6");
+	assert.equal(profile.complexity_handling_score, 4);
+	assert.equal(profile.authority_sensitivity_score, 4);
+	assert.equal(profile.freshness_ttl_seconds, 604800);
+	assert.equal(profile.advisory_only, true);
+	assert.equal(profile.non_authorizing, true);
+	assert.equal(profile.release_gate, "operational_intelligence_later_gate");
+	assert.equal(profile.dispatch_authority_enabled, false);
+	assert.equal(profile.model_selection_authority_enabled, false);
+	assert.equal(profile.ranking_authority_enabled, false);
+	// Validator also passes
+	assert.equal(validateFlowDeskModelCapabilityProfileV1(profile).ok, true);
+});
+
+test("model capability profile: rejects missing/invalid category fitness keys", () => {
+	// Missing a category key
+	const missingKey = createFlowDeskModelCapabilityProfileV1({
+		profileId: "cap-profile-test-2",
+		modelRef: "model-ref-test-2",
+		providerQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		categoryFitness: {
+			schema_only: 3,
+			implementation: 3,
+			integration: 3,
+			orchestration: 3,
+			security_boundary: 3,
+		} as Parameters<typeof createFlowDeskModelCapabilityProfileV1>[0]["categoryFitness"],
+		complexityHandlingScore: 3,
+		authoritySensitivityScore: 3,
+		evidenceRefs: ["evidence-test-2"],
+		freshnessTtlSeconds: 604800,
+	});
+	assert.equal(missingKey.ok, false);
+	assert.match(missingKey.errors.join("; "), /design is required/);
+
+	// Out-of-range category score (11 > 10)
+	const badScore = createFlowDeskModelCapabilityProfileV1({
+		profileId: "cap-profile-test-3",
+		modelRef: "model-ref-test-3",
+		providerQualifiedModelId: "openai/gpt-5.5",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		categoryFitness: {
+			schema_only: 11 as unknown as 10,
+			implementation: 3,
+			integration: 3,
+			orchestration: 3,
+			security_boundary: 3,
+			design: 3,
+		},
+		complexityHandlingScore: 3,
+		authoritySensitivityScore: 3,
+		evidenceRefs: ["evidence-test-3"],
+		freshnessTtlSeconds: 604800,
+	});
+	assert.equal(badScore.ok, false);
+	assert.match(badScore.errors.join("; "), /integer 1-10/);
+});
+
+test("model capability profile: rejects out-of-range freshness_ttl and evidence bounds", () => {
+	// freshness_ttl too small (< 3600)
+	const tooShort = createFlowDeskModelCapabilityProfileV1({
+		profileId: "cap-profile-test-4",
+		modelRef: "model-ref-test-4",
+		providerQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		categoryFitness: { schema_only: 3, implementation: 3, integration: 3, orchestration: 3, security_boundary: 3, design: 3 },
+		complexityHandlingScore: 3,
+		authoritySensitivityScore: 3,
+		evidenceRefs: ["evidence-test-4"],
+		freshnessTtlSeconds: 100,
+	});
+	assert.equal(tooShort.ok, false);
+	assert.match(tooShort.errors.join("; "), /3600/);
+
+	// Evidence refs exceeds 16
+	const tooManyEvidence = createFlowDeskModelCapabilityProfileV1({
+		profileId: "cap-profile-test-5",
+		modelRef: "model-ref-test-5",
+		providerQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		categoryFitness: { schema_only: 3, implementation: 3, integration: 3, orchestration: 3, security_boundary: 3, design: 3 },
+		complexityHandlingScore: 3,
+		authoritySensitivityScore: 3,
+		evidenceRefs: Array.from({ length: 17 }, (_, i) => `evidence-ref-${i + 1}`),
+		freshnessTtlSeconds: 604800,
+	});
+	assert.equal(tooManyEvidence.ok, false);
+	assert.match(tooManyEvidence.errors.join("; "), /1-16/);
+});
+
+test("model capability profile: rejects authority smuggling and unknown properties", () => {
+	const result = createFlowDeskModelCapabilityProfileV1({
+		profileId: "cap-profile-test-6",
+		modelRef: "model-ref-test-6",
+		providerQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		categoryFitness: { schema_only: 3, implementation: 3, integration: 3, orchestration: 3, security_boundary: 3, design: 3 },
+		complexityHandlingScore: 3,
+		authoritySensitivityScore: 3,
+		evidenceRefs: ["evidence-ref-1"],
+		freshnessTtlSeconds: 604800,
+	});
+	assert.equal(result.ok, true);
+	const profile = result.profile!;
+
+	const forgedDispatch = validateFlowDeskModelCapabilityProfileV1({ ...profile, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled/);
+
+	const forgedModelSelection = validateFlowDeskModelCapabilityProfileV1({ ...profile, model_selection_authority_enabled: true });
+	assert.equal(forgedModelSelection.ok, false);
+	assert.match(forgedModelSelection.errors.join("; "), /model_selection_authority_enabled/);
+
+	const unknown = validateFlowDeskModelCapabilityProfileV1({ ...profile, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("FLOWDESK_INITIAL_MODEL_PROFILES: all 12 entries are valid", () => {
+	assert.equal(FLOWDESK_INITIAL_MODEL_PROFILES.length, 12);
+	for (const profile of FLOWDESK_INITIAL_MODEL_PROFILES) {
+		const result = validateFlowDeskModelCapabilityProfileV1(profile);
+		assert.equal(result.ok, true, `Profile ${profile.profile_id} failed: ${result.errors.join("; ")}`);
+		assert.equal(profile.advisory_only, true);
+		assert.equal(profile.non_authorizing, true);
+		assert.equal(profile.dispatch_authority_enabled, false);
+		assert.equal(profile.release_gate, "operational_intelligence_later_gate");
+	}
+	// Spot-check opus-4-8 is highest ranked
+	const opus = FLOWDESK_INITIAL_MODEL_PROFILES.find((p) => p.profile_id === "cap-profile-claude-opus-4-8");
+	assert.ok(opus);
+	assert.equal(opus.complexity_handling_score, 8);
+	assert.equal(opus.authority_sensitivity_score, 10);
+	// Spot-check flash-lite is lowest
+	const flashLite = FLOWDESK_INITIAL_MODEL_PROFILES.find((p) => p.profile_id === "cap-profile-gemini-3-1-flash-lite");
+	assert.ok(flashLite);
+	assert.equal(flashLite.complexity_handling_score, 3);
+});
+
+test("FLOWDESK_INITIAL_MODEL_PROFILES: claude-opus-4-8 profile validates correctly", () => {
+	const opus48 = FLOWDESK_INITIAL_MODEL_PROFILES.find((p) => p.profile_id === "cap-profile-claude-opus-4-8");
+	assert.ok(opus48, "claude-opus-4-8 profile must exist");
+	assert.equal(validateFlowDeskModelCapabilityProfileV1(opus48).ok, true);
+	assert.equal(opus48.provider_qualified_model_id, "anthropic/claude-opus-4-8");
+	assert.equal(opus48.category_fitness.schema_only, 9);
+	assert.equal(opus48.category_fitness.implementation, 9);
+	assert.equal(opus48.category_fitness.integration, 9);
+	assert.equal(opus48.category_fitness.orchestration, 10);
+	assert.equal(opus48.category_fitness.security_boundary, 10);
+	assert.equal(opus48.category_fitness.design, 10);
+	assert.equal(opus48.complexity_handling_score, 8);
+	assert.equal(opus48.authority_sensitivity_score, 10);
+	assert.equal(opus48.advisory_only, true);
+	assert.equal(opus48.non_authorizing, true);
+	assert.equal(opus48.dispatch_authority_enabled, false);
+	assert.equal(opus48.model_selection_authority_enabled, false);
+	assert.equal(opus48.release_gate, "operational_intelligence_later_gate");
+});
+
+// ─── P7-S13.7: BLOCK SELECTION CRITERIA tests ────────────────────────────────
+
+test("block selection criteria: derives thresholds correctly from block scoring", () => {
+	const blockResult = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-criteria-test-1",
+		blockLabel: "Test block for criteria",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		scope: 3,
+		category: "implementation",
+		complexity: 3,
+		coupling: 2,
+		authoritySensitivity: 2,
+		novelty: 2,
+		readinessCheckPassed: true,
+	});
+	assert.equal(blockResult.ok, true, blockResult.errors.join("; "));
+	const block = blockResult.scoring!;
+
+	const criteriaResult = createFlowDeskBlockSelectionCriteriaV1({
+		criteriaId: "criteria-test-1",
+		blockScoring: block,
+		derivedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(criteriaResult.ok, true, criteriaResult.errors.join("; "));
+	const criteria = criteriaResult.criteria!;
+	assert.equal(criteria.schema_version, "flowdesk.block_selection_criteria.v1");
+	// implementation category_score=6, authority_sensitivity=2 < 8, not security/design
+	// → max(2, floor(6/2) + 2) = max(2, 5) = 5
+	assert.equal(criteria.min_category_fitness_required, 5);
+	assert.equal(criteria.min_complexity_handling_required, 3);
+	assert.equal(criteria.min_authority_score_required, 2);
+	assert.equal(criteria.source_block_id, "block-criteria-test-1");
+	assert.equal(criteria.source_category, "implementation");
+	assert.equal(criteria.advisory_only, true);
+	assert.equal(criteria.non_authorizing, true);
+	assert.equal(criteria.release_gate, "operational_intelligence_later_gate");
+	assert.equal(criteria.dispatch_authority_enabled, false);
+	// Validator round-trip
+	assert.equal(validateFlowDeskBlockSelectionCriteriaV1(criteria).ok, true);
+});
+
+test("block selection criteria: authority_sensitivity >= 8 forces min_category_fitness = 8", () => {
+	const blockResult = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-criteria-test-2",
+		blockLabel: "High authority block",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		scope: 3,
+		category: "schema_only",
+		complexity: 2,
+		coupling: 2,
+		authoritySensitivity: 8,
+		novelty: 1,
+		readinessCheckPassed: false,
+	});
+	assert.equal(blockResult.ok, true);
+	const criteria = createFlowDeskBlockSelectionCriteriaV1({
+		criteriaId: "criteria-test-2",
+		blockScoring: blockResult.scoring!,
+		derivedAt: "2026-06-07T00:00:00.000Z",
+	}).criteria!;
+	// authority_sensitivity=8 → min_category_fitness=8 (first rule wins)
+	assert.equal(criteria.min_category_fitness_required, 8);
+	assert.equal(criteria.min_authority_score_required, 8);
+	assert.equal(validateFlowDeskBlockSelectionCriteriaV1(criteria).ok, true);
+});
+
+test("block selection criteria: security_boundary forces min_category_fitness = 8", () => {
+	const blockResult = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-criteria-test-3",
+		blockLabel: "Security boundary block",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		scope: 2,
+		category: "security_boundary",
+		complexity: 2,
+		coupling: 1,
+		authoritySensitivity: 2,
+		novelty: 1,
+		readinessCheckPassed: true,
+	});
+	assert.equal(blockResult.ok, true);
+	const criteria = createFlowDeskBlockSelectionCriteriaV1({
+		criteriaId: "criteria-test-3",
+		blockScoring: blockResult.scoring!,
+		derivedAt: "2026-06-07T00:00:00.000Z",
+	}).criteria!;
+	// authority_sensitivity=2 < 8 but category=security_boundary → min_category_fitness=8
+	assert.equal(criteria.min_category_fitness_required, 8);
+	assert.equal(validateFlowDeskBlockSelectionCriteriaV1(criteria).ok, true);
+});
+
+test("block selection criteria: rejects requires_multi_model without allows_multi_model", () => {
+	// Create a block scoring manually matching a criteria, then validate with bad cross-field
+	const blockResult = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-criteria-test-4",
+		blockLabel: "Multi-model test",
+		scoredAt: "2026-06-07T00:00:00.000Z",
+		scope: 3,
+		category: "orchestration",
+		complexity: 3,
+		coupling: 2,
+		authoritySensitivity: 2,
+		novelty: 1,
+		readinessCheckPassed: true,
+	});
+	const criteria = createFlowDeskBlockSelectionCriteriaV1({
+		criteriaId: "criteria-test-4",
+		blockScoring: blockResult.scoring!,
+		derivedAt: "2026-06-07T00:00:00.000Z",
+	}).criteria!;
+
+	// Forge an inconsistent criteria: requires_multi_model=true but allows_multi_model=false
+	const bad = validateFlowDeskBlockSelectionCriteriaV1({
+		...criteria,
+		requires_multi_model: true,
+		allows_multi_model: false,
+	});
+	assert.equal(bad.ok, false);
+	assert.match(bad.errors.join("; "), /requires_multi_model=true requires allows_multi_model=true/);
+});
+
+// ─── P7-S13.7: MODEL SELECTION RESULT tests ──────────────────────────────────
+
+test("model selection result: valid result with eligible models", () => {
+	const result = createFlowDeskModelSelectionResultV1({
+		selectionId: "selection-test-1",
+		blockScoringRef: "block-ref-1",
+		criteriaRef: "criteria-ref-1",
+		evaluatedAt: "2026-06-07T00:00:00.000Z",
+		evaluatedModelProfileRefs: ["model-ref-a", "model-ref-b"],
+		eligibleModelRefs: ["model-ref-a"],
+		selectedModelRef: "model-ref-a",
+		selectedProviderQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		selectionReason: "only_eligible",
+		ineligibleModelEntries: [{
+			model_ref: "model-ref-b",
+			failed_threshold: "category_fitness",
+			actual_score: 2,
+			required_score: 4,
+		}],
+		quotaSnapshotRef: "quota-snap-1",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	assert.equal(r.schema_version, "flowdesk.model_selection_result.v1");
+	assert.equal(r.selection_failed, false);
+	assert.equal(r.escalation_required, false);
+	assert.equal(r.selected_model_ref, "model-ref-a");
+	assert.equal(r.selection_reason, "only_eligible");
+	assert.equal(r.advisory_only, true);
+	assert.equal(r.non_authorizing, true);
+	assert.equal(r.dispatch_authority_enabled, false);
+	assert.equal(r.model_selection_authority_enabled, false);
+	// Validator round-trip
+	assert.equal(validateFlowDeskModelSelectionResultV1(r).ok, true);
+});
+
+test("model selection result: selection_failed=true requires fallback_escalation", () => {
+	const result = createFlowDeskModelSelectionResultV1({
+		selectionId: "selection-test-2",
+		blockScoringRef: "block-ref-2",
+		criteriaRef: "criteria-ref-2",
+		evaluatedAt: "2026-06-07T00:00:00.000Z",
+		evaluatedModelProfileRefs: ["model-ref-a"],
+		eligibleModelRefs: [],
+		selectedModelRef: "",
+		selectedProviderQualifiedModelId: "",
+		selectionReason: "fallback_escalation",
+		ineligibleModelEntries: [{
+			model_ref: "model-ref-a",
+			failed_threshold: "quota_exhausted",
+			actual_score: 0,
+			required_score: 1,
+		}],
+		quotaSnapshotRef: "quota-snap-2",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	assert.equal(r.selection_failed, true);
+	assert.equal(r.escalation_required, true);
+	assert.equal(r.selection_reason, "fallback_escalation");
+	assert.equal(r.selected_model_ref, "");
+	assert.equal(validateFlowDeskModelSelectionResultV1(r).ok, true);
+
+	// Cross-field: selection_failed=true but selection_reason != fallback_escalation must fail
+	const badReason = validateFlowDeskModelSelectionResultV1({ ...r, selection_reason: "only_eligible" });
+	assert.equal(badReason.ok, false);
+	assert.match(badReason.errors.join("; "), /fallback_escalation/);
+});
+
+test("model selection result: eligible+ineligible count must equal evaluated count", () => {
+	const result = createFlowDeskModelSelectionResultV1({
+		selectionId: "selection-test-3",
+		blockScoringRef: "block-ref-3",
+		criteriaRef: "criteria-ref-3",
+		evaluatedAt: "2026-06-07T00:00:00.000Z",
+		evaluatedModelProfileRefs: ["model-ref-a", "model-ref-b"],
+		eligibleModelRefs: ["model-ref-a"],
+		selectedModelRef: "model-ref-a",
+		selectedProviderQualifiedModelId: "openai/gpt-5.5",
+		selectionReason: "only_eligible",
+		ineligibleModelEntries: [{
+			model_ref: "model-ref-b",
+			failed_threshold: "complexity_handling",
+			actual_score: 2,
+			required_score: 4,
+		}],
+		quotaSnapshotRef: "quota-snap-3",
+	});
+	assert.equal(result.ok, true);
+	const r = result.result!;
+	// Forge count inconsistency: add extra ineligible entry without adding to evaluated
+	const bad = validateFlowDeskModelSelectionResultV1({
+		...r,
+		ineligible_model_entries: [
+			...r.ineligible_model_entries,
+			{ model_ref: "model-ref-c", failed_threshold: "authority_score" as const, actual_score: 1, required_score: 3 },
+		],
+	});
+	assert.equal(bad.ok, false);
+	assert.match(bad.errors.join("; "), /eligible.*ineligible.*evaluated/);
+});
+
+test("model selection result: rejects authority smuggling and unknown properties", () => {
+	const result = createFlowDeskModelSelectionResultV1({
+		selectionId: "selection-test-4",
+		blockScoringRef: "block-ref-4",
+		criteriaRef: "criteria-ref-4",
+		evaluatedAt: "2026-06-07T00:00:00.000Z",
+		evaluatedModelProfileRefs: ["model-ref-a"],
+		eligibleModelRefs: ["model-ref-a"],
+		selectedModelRef: "model-ref-a",
+		selectedProviderQualifiedModelId: "anthropic/claude-sonnet-4-6",
+		selectionReason: "only_eligible",
+		ineligibleModelEntries: [],
+		quotaSnapshotRef: "quota-snap-4",
+	});
+	assert.equal(result.ok, true);
+	const r = result.result!;
+
+	const forgedDispatch = validateFlowDeskModelSelectionResultV1({ ...r, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled/);
+
+	const unknown = validateFlowDeskModelSelectionResultV1({ ...r, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+// ─── P7-S13.7: selectModelForBlock() tests ───────────────────────────────────
+
+function makeProfile(overrides: Partial<FlowDeskModelCapabilityProfileV1> & Pick<FlowDeskModelCapabilityProfileV1, "profile_id" | "model_ref" | "provider_qualified_model_id">): FlowDeskModelCapabilityProfileV1 {
+	return {
+		schema_version: "flowdesk.model_capability_profile.v1",
+		scored_at: "2026-06-07T00:00:00.000Z",
+		category_fitness: { schema_only: 4, implementation: 4, integration: 4, orchestration: 4, security_boundary: 4, design: 4 },
+		complexity_handling_score: 4,
+		authority_sensitivity_score: 4,
+		evidence_refs: ["evidence-1"],
+		freshness_ttl_seconds: 604800,
+		advisory_only: true,
+		non_authorizing: true,
+		release_gate: "operational_intelligence_later_gate",
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+		model_selection_authority_enabled: false,
+		ranking_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function makeCriteria(overrides: Partial<FlowDeskBlockSelectionCriteriaV1> = {}): FlowDeskBlockSelectionCriteriaV1 {
+	return {
+		schema_version: "flowdesk.block_selection_criteria.v1",
+		criteria_id: "criteria-select-1",
+		block_scoring_ref: "block-select-1",
+		derived_at: "2026-06-07T00:00:00.000Z",
+		min_category_fitness_required: 3,
+		min_complexity_handling_required: 2,
+		min_authority_score_required: 2,
+		allows_multi_model: false,
+		requires_multi_model: false,
+		source_block_id: "block-select-1",
+		source_block_score: 14,
+		source_category: "implementation",
+		source_complexity: 2,
+		source_authority_sensitivity: 2,
+		advisory_only: true,
+		non_authorizing: true,
+		release_gate: "operational_intelligence_later_gate",
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+		model_selection_authority_enabled: false,
+		ranking_authority_enabled: false,
+		...overrides,
+	};
+}
+
+test("selectModelForBlock: selects only_eligible when exactly one model passes", () => {
+	const profileA = makeProfile({
+		profile_id: "prof-a",
+		model_ref: "prof-a",
+		provider_qualified_model_id: "anthropic/claude-sonnet-4-6",
+	});
+	const profileB = makeProfile({
+		profile_id: "prof-b",
+		model_ref: "prof-b",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		category_fitness: { schema_only: 1, implementation: 1, integration: 1, orchestration: 1, security_boundary: 1, design: 1 },
+	});
+
+	const quotaMap = new Map([["prof-a", 80], ["prof-b", 50]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria({ min_category_fitness_required: 3 }),
+		profiles: [profileA, profileB],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-1",
+		quotaSnapshotRef: "quota-snap-sel-1",
+		criteriaRef: "criteria-select-1",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	assert.equal(r.selection_reason, "only_eligible");
+	assert.equal(r.selected_model_ref, "prof-a");
+	assert.equal(r.selection_failed, false);
+	assert.equal(r.ineligible_model_entries.length, 1);
+	assert.equal(r.ineligible_model_entries[0].failed_threshold, "category_fitness");
+});
+
+test("selectModelForBlock: fallback_escalation when no profiles are eligible", () => {
+	const profileA = makeProfile({
+		profile_id: "prof-c",
+		model_ref: "prof-c",
+		provider_qualified_model_id: "anthropic/claude-sonnet-4-6",
+		// all category_fitness=1 < min=3
+		category_fitness: { schema_only: 1, implementation: 1, integration: 1, orchestration: 1, security_boundary: 1, design: 1 },
+	});
+	const quotaMap = new Map([["prof-c", 80]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria({ min_category_fitness_required: 3 }),
+		profiles: [profileA],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-2",
+		quotaSnapshotRef: "quota-snap-sel-2",
+		criteriaRef: "criteria-select-1",
+	});
+	assert.equal(result.ok, true);
+	const r = result.result!;
+	assert.equal(r.selection_failed, true);
+	assert.equal(r.escalation_required, true);
+	assert.equal(r.selection_reason, "fallback_escalation");
+	assert.equal(r.selected_model_ref, "");
+});
+
+test("selectModelForBlock: highest_quota_among_eligible when multiple eligible with different quotas", () => {
+	const profileA = makeProfile({ profile_id: "prof-d", model_ref: "prof-d", provider_qualified_model_id: "anthropic/claude-sonnet-4-6" });
+	const profileB = makeProfile({ profile_id: "prof-e", model_ref: "prof-e", provider_qualified_model_id: "openai/gpt-5.5" });
+	const quotaMap = new Map([["prof-d", 80], ["prof-e", 60]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria(),
+		profiles: [profileA, profileB],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-3",
+		quotaSnapshotRef: "quota-snap-sel-3",
+		criteriaRef: "criteria-select-1",
+	});
+	assert.equal(result.ok, true);
+	const r = result.result!;
+	assert.equal(r.selection_reason, "highest_quota_among_eligible");
+	assert.equal(r.selected_model_ref, "prof-d");
+	assert.equal(r.eligible_model_refs.length, 2);
+});
+
+test("selectModelForBlock: quota_exhausted fails a model correctly", () => {
+	const profileA = makeProfile({ profile_id: "prof-f", model_ref: "prof-f", provider_qualified_model_id: "anthropic/claude-sonnet-4-6" });
+	const profileB = makeProfile({ profile_id: "prof-g", model_ref: "prof-g", provider_qualified_model_id: "openai/gpt-5.5" });
+	// Profile B has 0 quota
+	const quotaMap = new Map([["prof-f", 50], ["prof-g", 0]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria(),
+		profiles: [profileA, profileB],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-4",
+		quotaSnapshotRef: "quota-snap-sel-4",
+		criteriaRef: "criteria-select-1",
+	});
+	assert.equal(result.ok, true);
+	const r = result.result!;
+	assert.equal(r.selection_reason, "only_eligible");
+	assert.equal(r.selected_model_ref, "prof-f");
+	assert.equal(r.ineligible_model_entries.find((e) => e.model_ref === "prof-g")?.failed_threshold, "quota_exhausted");
+});
+
+test("selectModelForBlock: profile_expired fails an expired profile", () => {
+	// Profile scored well in the past, now expired
+	const profileA = makeProfile({
+		profile_id: "prof-h",
+		model_ref: "prof-h",
+		provider_qualified_model_id: "anthropic/claude-sonnet-4-6",
+		scored_at: "2020-01-01T00:00:00.000Z", // very old
+		freshness_ttl_seconds: 3600, // 1 hour TTL - definitely expired
+	});
+	const profileB = makeProfile({ profile_id: "prof-i", model_ref: "prof-i", provider_qualified_model_id: "openai/gpt-5.5" });
+	const quotaMap = new Map([["prof-h", 90], ["prof-i", 70]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria(),
+		profiles: [profileA, profileB],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-5",
+		quotaSnapshotRef: "quota-snap-sel-5",
+		criteriaRef: "criteria-select-1",
+	});
+	assert.equal(result.ok, true);
+	const r = result.result!;
+	assert.equal(r.selected_model_ref, "prof-i");
+	const expiredEntry = r.ineligible_model_entries.find((e) => e.model_ref === "prof-h");
+	assert.ok(expiredEntry);
+	assert.equal(expiredEntry.failed_threshold, "profile_expired");
 });

@@ -65,19 +65,19 @@ export interface FlowDeskTaskBlockScoringV1 {
 }
 
 const CATEGORY_SCORE_LOOKUP: Record<FlowDeskTaskBlockCategoryV1, number> = {
-	schema_only: 2,
-	implementation: 3,
-	integration: 3,
-	orchestration: 4,
-	security_boundary: 5,
-	design: 5,
+	schema_only: 4,
+	implementation: 6,
+	integration: 6,
+	orchestration: 8,
+	security_boundary: 10,
+	design: 10,
 };
 
 function getModelTierFromScore(score: number): FlowDeskTaskBlockModelTierV1 {
-	if (score >= 29) return "opus_multi_model";
-	if (score >= 25) return "opus";
-	if (score >= 13) return "sonnet";
-	if (score >= 10) return "flash";
+	if (score >= 53) return "opus_multi_model";
+	if (score >= 43) return "opus";
+	if (score >= 29) return "sonnet";
+	if (score >= 21) return "flash";
 	return "flash_lite";
 }
 
@@ -96,8 +96,8 @@ export function createFlowDeskTaskBlockScoringV1(input: {
 	const errors: string[] = [];
 
 	const validateRange = (val: number, label: string) => {
-		if (!Number.isInteger(val) || val < 1 || val > 5) {
-			errors.push(`${label} must be an integer 1-5`);
+		if (!Number.isInteger(val) || val < 1 || val > 10) {
+			errors.push(`${label} must be an integer 1-10`);
 		}
 	};
 
@@ -116,8 +116,8 @@ export function createFlowDeskTaskBlockScoringV1(input: {
 	const categoryScore = CATEGORY_SCORE_LOOKUP[input.category];
 	const blockScore = input.scope + categoryScore + input.complexity + input.coupling + input.authoritySensitivity + input.novelty;
 	const recommendedModelTier = getModelTierFromScore(blockScore);
-	const designFirstRequired = input.novelty >= 4 || input.authoritySensitivity >= 4 || blockScore >= 25;
-	const multiModelDesignRequired = blockScore >= 25;
+	const designFirstRequired = input.novelty >= 8 || input.authoritySensitivity >= 8 || blockScore >= 50;
+	const multiModelDesignRequired = blockScore >= 54;
 
 	const scoring: FlowDeskTaskBlockScoringV1 = {
 		schema_version: "flowdesk.task_block_scoring.v1",
@@ -195,12 +195,12 @@ export function validateFlowDeskTaskBlockScoringV1(value: unknown): ValidationRe
 		errors.push(`recommended_model_tier ${record.recommended_model_tier} inconsistent with block_score ${blockScore}`);
 	}
 
-	const expectedDesignFirst = novelty >= 4 || authoritySensitivity >= 4 || blockScore >= 25;
+	const expectedDesignFirst = novelty >= 8 || authoritySensitivity >= 8 || blockScore >= 50;
 	if (record.design_first_required !== expectedDesignFirst) {
 		errors.push("design_first_required inconsistency");
 	}
 
-	const expectedMultiModel = blockScore >= 25;
+	const expectedMultiModel = blockScore >= 54;
 	if (record.multi_model_design_required !== expectedMultiModel) {
 		errors.push("multi_model_design_required inconsistency");
 	}
