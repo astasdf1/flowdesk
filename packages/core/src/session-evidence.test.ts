@@ -536,6 +536,35 @@ function controlledWorkspaceFileWriteRecord(overrides: Record<string, unknown> =
   };
 }
 
+function oiSessionSummaryRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.oi_session_summary.v1",
+    summary_id: "summary-oi-1",
+    session_ref: "ses-session-1",
+    workflow_id: workflowId,
+    proposals_scored: 3,
+    reuse_gates_checked: 2,
+    fanout_gates_evaluated: 1,
+    ledger_entries_total: 6,
+    advisory_health_label: "healthy",
+    captured_at: now,
+    safe_next_actions: ["flowdesk-status"],
+    advisory_only: true,
+    non_authorizing: true,
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    ...overrides
+  };
+}
+
 function workflowDispatchPlanRecord(overrides: Record<string, unknown> = {}) {
   return {
     schema_version: "flowdesk.workflow_dispatch_plan.v1",
@@ -732,7 +761,7 @@ test("session evidence write intent rejects malformed ids", () => {
 
 test("session evidence apply writes intents durably and reloads them", () => {
   withEvidenceTree((rootDir) => {
-    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord(), controlledWorkspaceFileWriteRecord(), workflowAuthoringResultRecord(), taskGraphRecord(), taskAgentAssignmentRecord(), taskModelSelectionRecord(), workflowDispatchPlanRecord()];
+    const records = [usageAuthorityRecord(), runtimeEchoRecord(), telemetryRecord(), productionApprovalSourceRecord(), dispatchIdempotencyRecord(), preDispatchAuditRecord(), exactModelAvailabilityCacheRecord(), exactModelAvailabilityCacheRefreshPlanRecord(), exactModelAvailabilityCacheAcquisitionPlanRecord(), exactModelAvailabilityCacheProviderAcquisitionResultRecord(), reviewerVerdictRecord(), reviewerFanoutPlanRecord(), runtimeLaneLaunchPlanRecord(), laneLifecycleRecord(), reviewerLaneConformanceRecord(), controlledConformanceDocWriteRecord(), controlledRedactedAuditExportWriteRecord(), controlledWorkspaceFileWriteRecord(), workflowAuthoringResultRecord(), taskGraphRecord(), taskAgentAssignmentRecord(), taskModelSelectionRecord(), workflowDispatchPlanRecord(), oiSessionSummaryRecord()];
     const intents = records.map((record, index) => {
       const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `evidence-${index + 1}`, record });
       assert.equal(prepared.ok, true, prepared.errors.join("; "));
@@ -742,14 +771,14 @@ test("session evidence apply writes intents durably and reloads them", () => {
 
     const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, intents);
     assert.equal(applied.ok, true, applied.errors.join("; "));
-    assert.equal(applied.writtenPaths.length, 23);
+    assert.equal(applied.writtenPaths.length, 24);
     assert.equal(applied.providerCall, false);
     assert.equal(applied.runtimeExecution, false);
 
     const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
     assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
-    assert.equal(reloaded.entries.length, 23);
-    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write", "controlled_workspace_file_write", "workflow_authoring_result", "task_graph", "task_agent_assignment", "task_model_selection", "workflow_dispatch_plan"]));
+    assert.equal(reloaded.entries.length, 24);
+    assert.deepEqual(new Set(reloaded.entries.map((entry) => entry.evidenceClass)), new Set(["usage_authority", "runtime_echo", "telemetry_correlation", "production_approval_source", "dispatch_idempotency", "pre_dispatch_audit", "exact_model_availability_cache", "exact_model_availability_cache_refresh_plan", "exact_model_availability_cache_acquisition_plan", "exact_model_availability_cache_provider_acquisition_result", "reviewer_verdict", "reviewer_fanout_plan", "runtime_lane_launch_plan", "lane_lifecycle", "reviewer_lane_conformance", "controlled_conformance_doc_write", "controlled_redacted_audit_export_write", "controlled_workspace_file_write", "workflow_authoring_result", "task_graph", "task_agent_assignment", "task_model_selection", "workflow_dispatch_plan", "oi_session_summary"]));
   });
 });
 
@@ -1377,6 +1406,43 @@ test("session evidence apply rejects escaping temp paths", () => {
     assert.equal(applied.ok, false);
     assert.deepEqual(applied.writtenPaths, []);
   });
+});
+
+test("session evidence reload accepts a valid oi_session_summary record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "oi_session_summary", "summary-good"), JSON.stringify(oiSessionSummaryRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "oi_session_summary");
+    assert.equal(result.entries[0].evidenceId, "summary-good");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects oi_session_summary with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "oi_session_summary", "summary-forged"), JSON.stringify(oiSessionSummaryRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /advisory-only|dispatch|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence write intent rejects oi_session_summary with unknown schema_version", () => {
+  const result = prepareFlowDeskSessionEvidenceWriteIntentV1({
+    workflowId,
+    evidenceId: "summary-bad-schema",
+    record: oiSessionSummaryRecord({ schema_version: "flowdesk.oi_session_summary.v2" })
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /schema_version|not a managed|oi_session_summary/.test(e)), `expected schema error but got: ${result.errors.join("; ")}`);
 });
 
 function withEvidenceTree(callback: (rootDir: string) => void): void {
