@@ -3485,6 +3485,251 @@ export function validateFlowDeskSpecialistWorkflowEligibilityV1(value: unknown):
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
+// ─── P7-S13: MCP Connector Advisory Gate ────────────────────────────────────
+
+/**
+ * Advisory-only connector kind labels for MCP connectors.
+ *
+ * - `tool`:     The connector exposes a callable tool (MCP tool endpoint).
+ * - `resource`: The connector exposes a readable resource (MCP resource endpoint).
+ * - `prompt`:   The connector exposes a prompt template (MCP prompt endpoint).
+ * - `unknown`:  The connector kind could not be determined from available metadata.
+ */
+export type FlowDeskMCPConnectorKindV1 = "tool" | "resource" | "prompt" | "unknown";
+
+/**
+ * Advisory-only connector state labels for MCP connectors.
+ *
+ * - `enabled`:     The connector is configured and believed to be available.
+ * - `disabled`:    The connector is explicitly disabled via configuration or policy.
+ * - `unavailable`: The connector cannot be reached or is not installed.
+ * - `degraded`:    The connector is partially available but operating in a reduced-capacity mode.
+ */
+export type FlowDeskMCPConnectorStateV1 = "enabled" | "disabled" | "unavailable" | "degraded";
+
+/**
+ * Pure advisory contract recording the observed state of an optional MCP connector.
+ *
+ * This contract is advisory-only, non-authorizing, and never performs actual connector
+ * execution, provider calls, managed dispatch, file I/O, or runtime operations.
+ *
+ * All authority flags are disabled.  Validators reject authority smuggling including
+ * `connector_execution_authority_enabled: true`.
+ */
+export interface FlowDeskMCPConnectorAdvisoryV1 {
+	schema_version: "flowdesk.mcp_connector_advisory.v1";
+	/** Opaque identifier for this advisory record. */
+	advisory_id: string;
+	/** Opaque, schema-safe connector identifier (no raw paths, URLs, or credentials). */
+	connector_id: string;
+	/** The bounded connector kind. */
+	connector_kind: FlowDeskMCPConnectorKindV1;
+	/** The observed connector state. */
+	connector_state: FlowDeskMCPConnectorStateV1;
+	/** Opaque refs explaining the current state (max 5). */
+	state_reason_refs: string[];
+	/** ISO 8601 timestamp at which this advisory was observed. */
+	observed_at: string;
+	/** Advisory safe next actions for consumers of this record. */
+	safe_next_actions: string[];
+	advisory_only: true;
+	non_authorizing: true;
+	/** Connector execution is never enabled by this advisory record. */
+	connector_execution_authority_enabled: false;
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	write_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
+export interface FlowDeskMCPConnectorAdvisoryResultV1 {
+	ok: boolean;
+	errors: string[];
+	advisory?: FlowDeskMCPConnectorAdvisoryV1;
+}
+
+const mcpConnectorKinds: readonly string[] = ["tool", "resource", "prompt", "unknown"];
+const mcpConnectorStates: readonly string[] = ["enabled", "disabled", "unavailable", "degraded"];
+
+const mcpConnectorAdvisoryAllowedProperties = [
+	"schema_version",
+	"advisory_id",
+	"connector_id",
+	"connector_kind",
+	"connector_state",
+	"state_reason_refs",
+	"observed_at",
+	"safe_next_actions",
+	"advisory_only",
+	"non_authorizing",
+	"connector_execution_authority_enabled",
+	"dispatch_authority_enabled",
+	"approval_authority_enabled",
+	"provider_authority_enabled",
+	"runtime_authority_enabled",
+	"external_write_authority_enabled",
+	"remote_write_authority_enabled",
+	"fallback_authority_enabled",
+	"lane_launch_authority_enabled",
+	"write_authority_enabled",
+	"hard_chat_authority_enabled",
+] as const;
+
+/**
+ * Create a pure advisory MCP connector state record.
+ *
+ * No connector execution, provider calls, managed dispatch, or I/O is performed.
+ * The caller supplies all field values derived from whatever configuration or
+ * diagnostic metadata is already available.
+ */
+export function createFlowDeskMCPConnectorAdvisoryV1(input: {
+	advisoryId: string;
+	connectorId: string;
+	connectorKind: FlowDeskMCPConnectorKindV1;
+	connectorState: FlowDeskMCPConnectorStateV1;
+	stateReasonRefs?: string[];
+	observedAt: string;
+	safeNextActions: string[];
+}): FlowDeskMCPConnectorAdvisoryResultV1 {
+	const errors: string[] = [];
+
+	errors.push(...validateOpaqueId(input.advisoryId, "advisory_id").errors);
+	errors.push(...validateOpaqueId(input.connectorId, "connector_id").errors);
+	errors.push(...validateTimestamp(input.observedAt, "observed_at").errors);
+
+	// connector_kind: bounded enum
+	if (typeof input.connectorKind !== "string" || !mcpConnectorKinds.includes(input.connectorKind)) {
+		errors.push("connector_kind must be 'tool', 'resource', 'prompt', or 'unknown'");
+	}
+
+	// connector_state: bounded enum
+	if (typeof input.connectorState !== "string" || !mcpConnectorStates.includes(input.connectorState)) {
+		errors.push("connector_state must be 'enabled', 'disabled', 'unavailable', or 'degraded'");
+	}
+
+	// state_reason_refs: 0..5 opaque refs
+	const stateReasonRefs = input.stateReasonRefs ?? [];
+	if (!Array.isArray(stateReasonRefs) || stateReasonRefs.length > 5) {
+		errors.push("state_reason_refs must be a bounded array (0..5 entries)");
+	} else {
+		for (const [index, ref] of stateReasonRefs.entries()) {
+			errors.push(...validateOpaqueRef(ref, `state_reason_refs[${index}]`).errors);
+		}
+	}
+
+	// safe_next_actions: 1..8
+	if (!Array.isArray(input.safeNextActions) || input.safeNextActions.length === 0 || input.safeNextActions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of input.safeNextActions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	if (errors.length > 0) return { ok: false, errors };
+
+	const advisory: FlowDeskMCPConnectorAdvisoryV1 = {
+		schema_version: "flowdesk.mcp_connector_advisory.v1",
+		advisory_id: input.advisoryId,
+		connector_id: input.connectorId,
+		connector_kind: input.connectorKind,
+		connector_state: input.connectorState,
+		state_reason_refs: [...stateReasonRefs],
+		observed_at: input.observedAt,
+		safe_next_actions: [...input.safeNextActions],
+		advisory_only: true,
+		non_authorizing: true,
+		connector_execution_authority_enabled: false,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		write_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+	return { ok: true, errors: [], advisory };
+}
+
+export function validateFlowDeskMCPConnectorAdvisoryV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("MCP connector advisory must be an object");
+	const record = value as Record<string, unknown>;
+	const errors: string[] = [];
+
+	// Closed schema: reject unknown properties
+	errors.push(...rejectUnknownProperties(record, mcpConnectorAdvisoryAllowedProperties, "MCP connector advisory").errors);
+
+	if (record.schema_version !== "flowdesk.mcp_connector_advisory.v1") {
+		errors.push("MCP connector advisory schema_version is invalid");
+	}
+
+	errors.push(...validateOpaqueId(record.advisory_id, "advisory_id").errors);
+	errors.push(...validateOpaqueId(record.connector_id, "connector_id").errors);
+	errors.push(...validateTimestamp(record.observed_at, "observed_at").errors);
+
+	// connector_kind: bounded enum
+	if (typeof record.connector_kind !== "string" || !mcpConnectorKinds.includes(record.connector_kind)) {
+		errors.push("connector_kind must be 'tool', 'resource', 'prompt', or 'unknown'");
+	}
+
+	// connector_state: bounded enum
+	if (typeof record.connector_state !== "string" || !mcpConnectorStates.includes(record.connector_state)) {
+		errors.push("connector_state must be 'enabled', 'disabled', 'unavailable', or 'degraded'");
+	}
+
+	// state_reason_refs: 0..5 opaque refs
+	if (!Array.isArray(record.state_reason_refs) || (record.state_reason_refs as unknown[]).length > 5) {
+		errors.push("state_reason_refs must be a bounded array (0..5 entries)");
+	} else {
+		for (const [index, ref] of (record.state_reason_refs as unknown[]).entries()) {
+			errors.push(...validateOpaqueRef(ref, `state_reason_refs[${index}]`).errors);
+		}
+	}
+
+	// safe_next_actions: 1..8
+	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) {
+		errors.push("safe_next_actions must be a non-empty bounded array (1..8 entries)");
+	} else {
+		for (const [index, action] of record.safe_next_actions.entries()) {
+			errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+		}
+	}
+
+	// Authority flags — all explicitly disabled, advisory_only and non_authorizing required
+	// connector_execution_authority_enabled MUST be false (no authority smuggling)
+	if (record.advisory_only !== true
+		|| record.non_authorizing !== true
+		|| record.connector_execution_authority_enabled !== false
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.write_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) {
+		errors.push("MCP connector advisory must remain advisory-only non-authorizing with no connector-execution, dispatch, approval, provider, runtime, external-write, remote-write, fallback, lane-launch, write, or hard-chat authority");
+	}
+
+	// Exclude bounded enum fields (connector_kind, connector_state) from raw payload scan
+	// since their allowed values ("prompt", "enabled", etc.) are controlled vocabulary,
+	// not user-supplied content that could carry raw markers.
+	const { connector_kind: _ck, connector_state: _cs, ...recordForRawScan } = record;
+	errors.push(...validateNoForbiddenRawPayloads(recordForRawScan, "mcp_connector_advisory").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
 export function validateFlowDeskWorkflowSignatureIndexEntryV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("workflow signature index entry must be an object");
 	const record = value as Record<string, unknown>;

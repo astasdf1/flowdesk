@@ -52,6 +52,9 @@ import {
 	createFlowDeskSpecialistWorkflowEligibilityV1,
 	validateFlowDeskSpecialistWorkflowEligibilityV1,
 	type FlowDeskSpecialistWorkflowEligibilityV1,
+	createFlowDeskMCPConnectorAdvisoryV1,
+	validateFlowDeskMCPConnectorAdvisoryV1,
+	type FlowDeskMCPConnectorAdvisoryV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -2509,4 +2512,229 @@ test("specialist workflow eligibility: out-of-range confidence rejection and blo
 	});
 	assert.equal(badCategory.ok, false);
 	assert.match(badCategory.errors.join("; "), /specialist_category/);
+});
+
+// ─── P7-S13: MCP Connector Advisory tests ───────────────────────────────────
+
+test("MCP connector advisory: valid enabled and disabled states", () => {
+	// Enabled tool connector
+	const enabled = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-enabled-1",
+		connectorId: "connector-filesystem-tool-1",
+		connectorKind: "tool",
+		connectorState: "enabled",
+		stateReasonRefs: ["reason-connector-enabled-1"],
+		observedAt: "2026-06-06T12:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(enabled.ok, true, enabled.errors.join("; "));
+	const a = enabled.advisory as FlowDeskMCPConnectorAdvisoryV1;
+	assert.equal(a.schema_version, "flowdesk.mcp_connector_advisory.v1");
+	assert.equal(a.advisory_id, "mcp-advisory-enabled-1");
+	assert.equal(a.connector_id, "connector-filesystem-tool-1");
+	assert.equal(a.connector_kind, "tool");
+	assert.equal(a.connector_state, "enabled");
+	assert.deepEqual(a.state_reason_refs, ["reason-connector-enabled-1"]);
+	assert.equal(a.advisory_only, true);
+	assert.equal(a.non_authorizing, true);
+	assert.equal(a.connector_execution_authority_enabled, false);
+	assert.equal(a.dispatch_authority_enabled, false);
+	assert.equal(a.provider_authority_enabled, false);
+	assert.equal(a.runtime_authority_enabled, false);
+	assert.equal(a.external_write_authority_enabled, false);
+	assert.equal(a.fallback_authority_enabled, false);
+	assert.equal(a.lane_launch_authority_enabled, false);
+	assert.equal(a.write_authority_enabled, false);
+	assert.equal(a.hard_chat_authority_enabled, false);
+	// Round-trip through validator
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(a).ok, true);
+
+	// Disabled resource connector (no stateReasonRefs)
+	const disabled = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-disabled-1",
+		connectorId: "connector-github-resource-1",
+		connectorKind: "resource",
+		connectorState: "disabled",
+		observedAt: "2026-06-06T12:01:00.000Z",
+		safeNextActions: ["flowdesk-doctor", "flowdesk-status"],
+	});
+	assert.equal(disabled.ok, true, disabled.errors.join("; "));
+	const d = disabled.advisory as FlowDeskMCPConnectorAdvisoryV1;
+	assert.equal(d.connector_state, "disabled");
+	assert.equal(d.connector_kind, "resource");
+	assert.deepEqual(d.state_reason_refs, []);
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(d).ok, true);
+});
+
+test("MCP connector advisory: valid degraded state with multiple reason refs", () => {
+	const degraded = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-degraded-1",
+		connectorId: "connector-search-prompt-1",
+		connectorKind: "prompt",
+		connectorState: "degraded",
+		stateReasonRefs: ["reason-timeout-1", "reason-partial-response-1"],
+		observedAt: "2026-06-06T12:02:00.000Z",
+		safeNextActions: ["flowdesk-status", "flowdesk-doctor"],
+	});
+	assert.equal(degraded.ok, true, degraded.errors.join("; "));
+	const a = degraded.advisory as FlowDeskMCPConnectorAdvisoryV1;
+	assert.equal(a.connector_state, "degraded");
+	assert.equal(a.connector_kind, "prompt");
+	assert.deepEqual(a.state_reason_refs, ["reason-timeout-1", "reason-partial-response-1"]);
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(a).ok, true);
+
+	// unknown kind + unavailable state
+	const unavailable = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-unavail-1",
+		connectorId: "connector-unknown-1",
+		connectorKind: "unknown",
+		connectorState: "unavailable",
+		stateReasonRefs: ["reason-not-installed-1"],
+		observedAt: "2026-06-06T12:03:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(unavailable.ok, true, unavailable.errors.join("; "));
+	const u = unavailable.advisory as FlowDeskMCPConnectorAdvisoryV1;
+	assert.equal(u.connector_kind, "unknown");
+	assert.equal(u.connector_state, "unavailable");
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(u).ok, true);
+});
+
+test("MCP connector advisory: authority smuggling rejection including connector_execution_authority_enabled", () => {
+	const result = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-auth-1",
+		connectorId: "connector-auth-test-1",
+		connectorKind: "tool",
+		connectorState: "enabled",
+		observedAt: "2026-06-06T12:04:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true);
+	const a = result.advisory as FlowDeskMCPConnectorAdvisoryV1;
+
+	// connector_execution_authority_enabled smuggling (the primary guard for this schema)
+	const forgedExec = validateFlowDeskMCPConnectorAdvisoryV1({ ...a, connector_execution_authority_enabled: true });
+	assert.equal(forgedExec.ok, false);
+	assert.match(forgedExec.errors.join("; "), /connector-execution|advisory-only non-authorizing/);
+
+	// dispatch authority smuggling
+	const forgedDispatch = validateFlowDeskMCPConnectorAdvisoryV1({ ...a, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+
+	// runtime authority smuggling
+	const forgedRuntime = validateFlowDeskMCPConnectorAdvisoryV1({ ...a, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /advisory-only non-authorizing/);
+
+	// non_authorizing stripped
+	const strippedNonAuth = validateFlowDeskMCPConnectorAdvisoryV1({ ...a, non_authorizing: false as true });
+	assert.equal(strippedNonAuth.ok, false);
+	assert.match(strippedNonAuth.errors.join("; "), /advisory-only non-authorizing/);
+
+	// Unknown property injection
+	const unknown = validateFlowDeskMCPConnectorAdvisoryV1({ ...a, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("MCP connector advisory: invalid connector_kind and connector_state rejection", () => {
+	// Invalid connector_kind
+	const badKind = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-kind-1",
+		connectorId: "connector-kind-test-1",
+		connectorKind: "database" as "tool",
+		connectorState: "enabled",
+		observedAt: "2026-06-06T12:05:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badKind.ok, false);
+	assert.match(badKind.errors.join("; "), /connector_kind.*tool.*resource.*prompt.*unknown/);
+
+	// Invalid connector_state
+	const badState = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-state-1",
+		connectorId: "connector-state-test-1",
+		connectorKind: "tool",
+		connectorState: "error" as "enabled",
+		observedAt: "2026-06-06T12:06:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(badState.ok, false);
+	assert.match(badState.errors.join("; "), /connector_state.*enabled.*disabled.*unavailable.*degraded/);
+
+	// Validator also rejects invalid kind/state
+	const validResult = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-valid-kind-1",
+		connectorId: "connector-valid-1",
+		connectorKind: "tool",
+		connectorState: "enabled",
+		observedAt: "2026-06-06T12:07:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(validResult.ok, true);
+	const badKindViaDirect = validateFlowDeskMCPConnectorAdvisoryV1({ ...validResult.advisory, connector_kind: "network" });
+	assert.equal(badKindViaDirect.ok, false);
+	assert.match(badKindViaDirect.errors.join("; "), /connector_kind/);
+
+	const badStateViaDirect = validateFlowDeskMCPConnectorAdvisoryV1({ ...validResult.advisory, connector_state: "active" });
+	assert.equal(badStateViaDirect.ok, false);
+	assert.match(badStateViaDirect.errors.join("; "), /connector_state/);
+});
+
+test("MCP connector advisory: malformed ref and raw marker rejection", () => {
+	// Malformed advisory_id (raw path marker)
+	const rawAdvisoryId = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "/Users/foo/advisory",
+		connectorId: "connector-ref-test-1",
+		connectorKind: "tool",
+		connectorState: "enabled",
+		observedAt: "2026-06-06T12:08:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(rawAdvisoryId.ok, false);
+	assert.match(rawAdvisoryId.errors.join("; "), /schema-safe|raw path marker|traversal/);
+
+	// Malformed connector_id (raw path marker)
+	const rawConnectorId = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-ref-test-2",
+		connectorId: "../connectors/secret",
+		connectorKind: "resource",
+		connectorState: "enabled",
+		observedAt: "2026-06-06T12:09:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(rawConnectorId.ok, false);
+	assert.match(rawConnectorId.errors.join("; "), /schema-safe|traversal/);
+
+	// Malformed state_reason_ref (contains spaces / raw marker)
+	const rawReasonRef = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-ref-test-3",
+		connectorId: "connector-ref-test-3",
+		connectorKind: "tool",
+		connectorState: "degraded",
+		stateReasonRefs: ["reason with spaces in it"],
+		observedAt: "2026-06-06T12:10:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(rawReasonRef.ok, false);
+	assert.match(rawReasonRef.errors.join("; "), /schema-safe|spaces/);
+
+	// Over-limit state_reason_refs (6 entries, max 5)
+	const tooManyRefs = createFlowDeskMCPConnectorAdvisoryV1({
+		advisoryId: "mcp-advisory-ref-test-4",
+		connectorId: "connector-ref-test-4",
+		connectorKind: "tool",
+		connectorState: "degraded",
+		stateReasonRefs: Array.from({ length: 6 }, (_, i) => `reason-${i + 1}`),
+		observedAt: "2026-06-06T12:11:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(tooManyRefs.ok, false);
+	assert.match(tooManyRefs.errors.join("; "), /state_reason_refs.*bounded|0\.\.5/);
+
+	// Non-object inputs rejected by validator
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(null).ok, false);
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1(42).ok, false);
+	assert.equal(validateFlowDeskMCPConnectorAdvisoryV1([]).ok, false);
 });
