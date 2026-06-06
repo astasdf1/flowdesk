@@ -362,11 +362,14 @@ function typedReviewerVerdict(
 		schema_version: "flowdesk.top_tier_review_verdict.v1",
 		verdict_id: "verdict-policy-security",
 		workflow_id: "workflow-123",
+		attempt_id: "attempt-123",
+		lane_id: "lane-reviewer-123",
 		lane_plan_ref: "lane-plan-123",
 		binding_ref: "binding-reviewer-123",
 		perspective: "policy_security",
 		source: "claude_opus",
 		created_at: now,
+		scored_at: now,
 		redaction_version: "redaction-v1",
 		findings: [],
 		evidence_refs: ["lane-evidence-123"],
@@ -375,6 +378,7 @@ function typedReviewerVerdict(
 		verdict_label: "pass",
 		safe_next_actions: ["/flowdesk-status"],
 		dispatch_authority_enabled: false,
+		guard_replacement_authority_enabled: false,
 		...overrides,
 	};
 }

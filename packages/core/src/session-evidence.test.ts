@@ -148,11 +148,14 @@ function reviewerVerdictRecord(overrides: Record<string, unknown> = {}) {
     schema_version: "flowdesk.top_tier_review_verdict.v1",
     verdict_id: "verdict-policy-security-1",
     workflow_id: workflowId,
+    attempt_id: "attempt-1",
+    lane_id: "lane-policy-security-1",
     lane_plan_ref: "lane-plan-policy-security-1",
     binding_ref: "binding-reviewer-1",
     perspective: "policy_security",
     source: "claude_opus",
     created_at: "2026-05-19T00:02:00.000Z",
+    scored_at: "2026-05-19T00:02:00.000Z",
     redaction_version: "redaction-v1",
     findings: [],
     evidence_refs: ["lane-evidence-policy-security-1"],
@@ -161,6 +164,7 @@ function reviewerVerdictRecord(overrides: Record<string, unknown> = {}) {
     verdict_label: "pass",
     safe_next_actions: ["/flowdesk-status"],
     dispatch_authority_enabled: false,
+    guard_replacement_authority_enabled: false,
     ...overrides
   };
 }

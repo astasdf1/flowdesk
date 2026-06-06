@@ -307,6 +307,8 @@ function quickReviewerPrompt(input: {
 	prompt: string;
 	workflowId: string;
 	perspective: string;
+	attemptId: string;
+	laneId: string;
 	lanePlanRef: string;
 	bindingRef: string;
 	verdictId: string;
@@ -318,11 +320,14 @@ function quickReviewerPrompt(input: {
 		schema_version: "flowdesk.top_tier_review_verdict.v1",
 		verdict_id: input.verdictId,
 		workflow_id: input.workflowId,
+		attempt_id: input.attemptId,
+		lane_id: input.laneId,
 		lane_plan_ref: input.lanePlanRef,
 		binding_ref: input.bindingRef,
 		perspective: input.perspective,
 		source: input.sourceLabel,
 		created_at: input.observedAt,
+		scored_at: input.observedAt,
 		redaction_version: "redaction-v1",
 		findings: [
 			{
@@ -340,6 +345,7 @@ function quickReviewerPrompt(input: {
 		verdict_label: "inconclusive",
 		safe_next_actions: ["/flowdesk-status"],
 		dispatch_authority_enabled: false,
+		guard_replacement_authority_enabled: false,
 	};
 	return [
 		"FlowDesk quick reviewer run requests a typed reviewer verdict on the user-provided prompt below.",
@@ -592,6 +598,8 @@ export async function executeFlowDeskQuickReviewerRunV1(
 			prompt: input.prompt,
 			workflowId,
 			perspective: binding.perspective,
+			attemptId,
+			laneId: `lane-quick-${binding.perspective}-${token}`,
 			lanePlanRef: `lane-plan-quick-${binding.perspective}-${token}`,
 			bindingRef: `binding-quick-${binding.perspective}-${token}`,
 			verdictId: `verdict-quick-${binding.perspective}-${token}`,

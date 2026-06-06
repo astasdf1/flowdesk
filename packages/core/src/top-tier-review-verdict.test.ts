@@ -28,11 +28,14 @@ function verdict(overrides: Partial<FlowDeskTopTierReviewVerdictV1> = {}): FlowD
     schema_version: "flowdesk.top_tier_review_verdict.v1",
     verdict_id: "verdict-1",
     workflow_id: "workflow-1",
+    attempt_id: "attempt-1",
+    lane_id: "lane-reviewer-1",
     lane_plan_ref: "lane-plan-1",
     binding_ref: "binding-claude_opus",
     perspective: "policy_security",
     source: "claude_opus",
     created_at: createdAt,
+    scored_at: createdAt,
     redaction_version: "redaction-v1",
     findings: [finding("1")],
     evidence_refs: ["lane-evidence-1"],
@@ -41,6 +44,7 @@ function verdict(overrides: Partial<FlowDeskTopTierReviewVerdictV1> = {}): FlowD
     verdict_label: "changes_required",
     safe_next_actions: ["/flowdesk-status"],
     dispatch_authority_enabled: false,
+    guard_replacement_authority_enabled: false,
     ...overrides
   };
 }
@@ -55,6 +59,19 @@ test("top tier review verdict constants expose the agreed output vocabulary", ()
 test("top tier review verdict validates a typed critical review output", () => {
   const result = validateTopTierReviewVerdictV1(verdict());
   assert.equal(result.ok, true, result.errors.join("; "));
+});
+
+test("top tier review verdict requires lane, attempt, score timestamp, and non-Guard authority fields", () => {
+  for (const field of ["workflow_id", "attempt_id", "lane_id", "lane_plan_ref", "binding_ref", "perspective", "scored_at", "guard_replacement_authority_enabled"] as const) {
+    const candidate = { ...verdict() } as Record<string, unknown>;
+    delete candidate[field];
+    const result = validateTopTierReviewVerdictV1(candidate);
+    assert.equal(result.ok, false, `${field} should be required`);
+  }
+
+  assert.equal(validateTopTierReviewVerdictV1(verdict({ attempt_id: "" })).ok, false);
+  assert.equal(validateTopTierReviewVerdictV1(verdict({ lane_id: "" })).ok, false);
+  assert.equal(validateTopTierReviewVerdictV1(verdict({ scored_at: "not-a-date" as FlowDeskTopTierReviewVerdictV1["scored_at"] })).ok, false);
 });
 
 test("top tier review verdict supports same-source multi-perspective verdicts", () => {
@@ -75,6 +92,9 @@ test("top tier review verdict rejects authority claims and dispatch fields", () 
   const dispatchClaim = { ...verdict(), dispatch_authority_enabled: true as unknown as false };
   assert.equal(validateTopTierReviewVerdictV1(dispatchClaim).ok, false);
 
+  const guardReplacementClaim = { ...verdict(), guard_replacement_authority_enabled: true as unknown as false };
+  assert.equal(validateTopTierReviewVerdictV1(guardReplacementClaim).ok, false);
+
   const withApprove = { ...verdict(), approve_dispatch: true } as Record<string, unknown>;
   assert.equal(validateTopTierReviewVerdictV1(withApprove).ok, false);
 
@@ -83,6 +103,9 @@ test("top tier review verdict rejects authority claims and dispatch fields", () 
 
   const withGuard = { ...verdict(), guard_approved_dispatch: "guard-1" } as Record<string, unknown>;
   assert.equal(validateTopTierReviewVerdictV1(withGuard).ok, false);
+
+  const withReplaceGuard = { ...verdict(), replace_guard: true } as Record<string, unknown>;
+  assert.equal(validateTopTierReviewVerdictV1(withReplaceGuard).ok, false);
 });
 
 test("top tier review verdict rejects malformed source labels", () => {
@@ -133,6 +156,18 @@ test("top tier review verdict rejects forbidden raw payload markers", () => {
 
   const transcriptLeak = { ...verdict(), findings: [finding("transcript", { required_fix_label: "remove transcript content" })] };
   assert.equal(validateTopTierReviewVerdictV1(transcriptLeak).ok, false);
+
+  const providerPayloadLeak = { ...verdict(), findings: [finding("provider", { summary_label: "raw provider payload included" })] };
+  assert.equal(validateTopTierReviewVerdictV1(providerPayloadLeak).ok, false);
+
+  const stackTraceLeak = { ...verdict(), required_fixes: ["remove stack trace before persisting"] };
+  assert.equal(validateTopTierReviewVerdictV1(stackTraceLeak).ok, false);
+
+  const toolArgsLeak = { ...verdict(), findings: [finding("tool", { required_fix_label: "do not persist tool args" })] };
+  assert.equal(validateTopTierReviewVerdictV1(toolArgsLeak).ok, false);
+
+  const filePathLeak = { ...verdict(), evidence_refs: ["/Users/example/project/src/file.ts"] };
+  assert.equal(validateTopTierReviewVerdictV1(filePathLeak).ok, false);
 });
 
 test("top tier review verdict rejects unknown properties", () => {

@@ -1506,11 +1506,14 @@ export interface FlowDeskTopTierReviewVerdictV1 {
   schema_version: "flowdesk.top_tier_review_verdict.v1";
   verdict_id: OpaqueId;
   workflow_id: OpaqueId;
+  attempt_id: OpaqueId;
+  lane_id: OpaqueId;
   lane_plan_ref: OpaqueRef;
   binding_ref: OpaqueRef;
   perspective: FlowDeskTopTierReviewPerspective;
   source: string;
   created_at: IsoTimestamp;
+  scored_at: IsoTimestamp;
   redaction_version: string;
   findings: FlowDeskTopTierReviewFindingV1[];
   evidence_refs: OpaqueRef[];
@@ -1519,6 +1522,7 @@ export interface FlowDeskTopTierReviewVerdictV1 {
   verdict_label: FlowDeskTopTierReviewVerdictLabel;
   safe_next_actions: SafeNextAction[];
   dispatch_authority_enabled: false;
+  guard_replacement_authority_enabled: false;
 }
 
 export const FLOWDESK_PLANNED_MODE_FIELD_LABELS = ["top_tier_multi_perspective_review_mode"] as const;

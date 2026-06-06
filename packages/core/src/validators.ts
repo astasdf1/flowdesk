@@ -1743,11 +1743,14 @@ export function validateTopTierReviewVerdictV1(value: unknown): ValidationResult
     rejectForbiddenAuthorityKeys(value, "top tier review verdict"),
     validateOpaqueId(value.verdict_id, "verdict_id"),
     validateOpaqueId(value.workflow_id, "workflow_id"),
+    validateOpaqueId(value.attempt_id, "attempt_id"),
+    validateOpaqueId(value.lane_id, "lane_id"),
     validateOpaqueRef(value.lane_plan_ref, "lane_plan_ref"),
     validateOpaqueRef(value.binding_ref, "binding_ref"),
     isEnumValue(value.perspective, TOP_TIER_REVIEWER_PERSPECTIVES) ? valid() : invalid("perspective is invalid"),
     typeof value.source === "string" && value.source.length > 0 && value.source.length <= 64 && /^[a-z][a-z0-9_]*$/.test(value.source) ? validateNoForbiddenRawPayloads(value.source, "source") : invalid("source must be a bounded lowercase reviewer binding label"),
     validateTimestamp(value.created_at, "created_at"),
+    validateTimestamp(value.scored_at, "scored_at"),
     typeof value.redaction_version === "string" && value.redaction_version.length > 0 && value.redaction_version.length <= 128 ? validateNoForbiddenRawPayloads(value.redaction_version, "redaction_version") : invalid("redaction_version is required"),
     Array.isArray(value.findings) ? valid() : invalid("findings must be an array"),
     findingsArray.length <= 20 ? valid() : invalid("findings exceeds max items 20"),
@@ -1761,6 +1764,7 @@ export function validateTopTierReviewVerdictV1(value: unknown): ValidationResult
     isEnumValue(value.verdict_label, TOP_TIER_REVIEW_VERDICT_LABELS) ? valid() : invalid("verdict_label is invalid"),
     validateStringArray(value.safe_next_actions, "safe_next_actions", SAFE_NEXT_ACTIONS, 8),
     value.dispatch_authority_enabled === false ? valid() : invalid("dispatch_authority_enabled must be false for top tier review verdict"),
+    value.guard_replacement_authority_enabled === false ? valid() : invalid("guard_replacement_authority_enabled must be false for top tier review verdict"),
     validateNoForbiddenRawPayloads(value, "top_tier_review_verdict")
   ]);
 }

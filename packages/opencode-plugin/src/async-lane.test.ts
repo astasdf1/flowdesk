@@ -741,11 +741,14 @@ test("executeFlowDeskAgentTaskV1 materializes typed reviewer verdict and complet
 			schema_version: "flowdesk.top_tier_review_verdict.v1",
 			verdict_id: "verdict-sync-agent-task",
 			workflow_id: "workflow-sync-reviewer-verdict",
+			attempt_id: "attempt-sync-agent-task",
+			lane_id: "lane-sync-reviewer-verdict",
 			lane_plan_ref: "lane-plan-sync-agent-task",
 			binding_ref: "binding-sync-agent-task",
 			perspective: "architecture",
 			source: "gpt_frontier",
 			created_at: "2026-05-31T00:00:00.000Z",
+			scored_at: "2026-05-31T00:00:00.000Z",
 			redaction_version: "v1",
 			findings: [],
 			evidence_refs: ["evidence-sync-agent-task"],
@@ -754,6 +757,7 @@ test("executeFlowDeskAgentTaskV1 materializes typed reviewer verdict and complet
 			verdict_label: "pass",
 			safe_next_actions: ["/flowdesk-status"],
 			dispatch_authority_enabled: false,
+			guard_replacement_authority_enabled: false,
 		};
 		const client = makeClient({
 			messages: async () => ([{ role: "assistant", parts: [{ type: "text", text: JSON.stringify(verdict) }, { type: "step-finish", reason: "stop" }] }]),

@@ -392,11 +392,14 @@ function reviewerVerdictRecord(perspective: string) {
 		schema_version: "flowdesk.top_tier_review_verdict.v1",
 		verdict_id: `verdict-${perspective}-runtime-reviewer`,
 		workflow_id: "workflow-runtime-reviewer-execution",
+		attempt_id: "attempt-runtime-reviewer-execution",
+		lane_id: `lane-${perspective}-runtime-reviewer`,
 		lane_plan_ref: `lane-plan-${perspective}-runtime-reviewer`,
 		binding_ref: `binding-${perspective}-runtime-reviewer`,
 		perspective,
 		source: "gpt_frontier",
 		created_at: now,
+		scored_at: now,
 		redaction_version: "redaction-v1",
 		findings: [],
 		evidence_refs: [`evidence-${perspective}-runtime-reviewer`],
@@ -405,6 +408,7 @@ function reviewerVerdictRecord(perspective: string) {
 		verdict_label: "pass",
 		safe_next_actions: ["/flowdesk-status"],
 		dispatch_authority_enabled: false,
+		guard_replacement_authority_enabled: false,
 	};
 }
 

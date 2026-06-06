@@ -115,11 +115,14 @@ function verdict(
 		schema_version: "flowdesk.top_tier_review_verdict.v1",
 		verdict_id: `verdict-${perspective}`,
 		workflow_id: "workflow-1",
+		attempt_id: "attempt-1",
+		lane_id: `lane-${perspective}`,
 		lane_plan_ref: `lane-plan-${perspective}`,
 		binding_ref: "binding-claude_opus",
 		perspective,
 		source: "claude_opus",
 		created_at: "2026-05-21T00:00:00.000Z",
+		scored_at: "2026-05-21T00:00:00.000Z",
 		redaction_version: "redaction-v1",
 		findings: [],
 		evidence_refs: [`review-evidence-${perspective}`],
@@ -128,6 +131,7 @@ function verdict(
 		verdict_label: "pass",
 		safe_next_actions: ["/flowdesk-status"],
 		dispatch_authority_enabled: false,
+		guard_replacement_authority_enabled: false,
 		...overrides,
 	};
 }
