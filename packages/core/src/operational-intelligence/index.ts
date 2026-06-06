@@ -1,0 +1,156 @@
+/**
+ * Barrel export for the operational-intelligence submodule directory.
+ * P7-S13.5: Re-exports all public symbols from all bounded submodules.
+ *
+ * Dependency order (no circular deps):
+ *   shared.ts → (no OI deps)
+ *   proposals.ts → shared.ts
+ *   evaluation-events.ts → shared.ts, proposals.ts
+ *   category-fit.ts → shared.ts
+ *   score-dimensions.ts → shared.ts
+ *   score-oi.ts → shared.ts
+ *   gates.ts → shared.ts
+ *   ledger.ts → shared.ts
+ *   score-reference.ts → shared.ts
+ *   session-summary.ts → shared.ts
+ *   specialist.ts → shared.ts
+ *   mcp-advisory.ts → shared.ts
+ *   federated.ts → shared.ts, evaluation-events.ts
+ */
+
+// proposals (no dependency on evaluation-events)
+export {
+	type FlowDeskWorkflowPlanProposalCandidateV1,
+	type FlowDeskWorkflowPlanProposalV1,
+	type FlowDeskWorkflowPlanProposalSetV1,
+	type FlowDeskWorkflowPlanProposalScoreEventV1,
+	createFlowDeskWorkflowPlanProposalV1,
+	createFlowDeskWorkflowPlanProposalSetV1,
+	createFlowDeskWorkflowPlanProposalScoreEventV1,
+	validateFlowDeskWorkflowPlanProposalV1,
+	validateFlowDeskWorkflowPlanProposalSetV1,
+	validateFlowDeskWorkflowPlanProposalScoreEventV1,
+} from "./proposals.js";
+
+// evaluation-events (depends on proposals)
+export {
+	type FlowDeskEvaluationOutcomeLabelV1,
+	type FlowDeskEvaluationScoreDimensionNameV1,
+	type FlowDeskEvaluationScoreDimensionV1,
+	type FlowDeskEvaluationEventV1,
+	type FlowDeskAdvisoryScoreLedgerEntryV1,
+	type FlowDeskAdvisoryScoreLedgerAppendIntentV1,
+	type FlowDeskAdvisoryScoreLedgerLineResultV1,
+	type FlowDeskAdvisoryScoreLedgerDecodeResultV1,
+	type FlowDeskAdvisoryScoreLedgerAppendIntentResultV1,
+	createFlowDeskEvaluationEventV1,
+	createFlowDeskAdvisoryScoreLedgerEntryV1,
+	validateFlowDeskEvaluationEventV1,
+	validateFlowDeskAdvisoryScoreLedgerEntryV1,
+	encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
+	decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
+	decodeFlowDeskAdvisoryScoreLedgerJsonl,
+	createFlowDeskAdvisoryScoreLedgerAppendIntentV1,
+} from "./evaluation-events.js";
+
+// category-fit
+export {
+	type FlowDeskCategoryFitSnapshotV1,
+	createFlowDeskCategoryFitSnapshotV1,
+	validateFlowDeskCategoryFitSnapshotV1,
+} from "./category-fit.js";
+
+// score-dimensions
+export {
+	type FlowDeskOptimizerScoreDimensionNameV1,
+	type FlowDeskOptimizerScoreDimensionV1,
+	type FlowDeskOptimizerProposalScoreV1,
+	type FlowDeskNormalizedScoreAggregationV1,
+	type FlowDeskNormalizedScoreAggregationResultV1,
+	createFlowDeskOptimizerProposalScoreV1,
+	createFlowDeskNormalizedScoreAggregationV1,
+	validateFlowDeskOptimizerProposalScoreV1,
+	validateFlowDeskNormalizedScoreAggregationV1,
+} from "./score-dimensions.js";
+
+// score-oi
+export {
+	type FlowDeskOperationalIntelligenceScoreV1,
+	type FlowDeskReferencePackV1,
+	createFlowDeskOperationalIntelligenceScoreV1,
+	validateFlowDeskOperationalIntelligenceScoreV1,
+	validateFlowDeskReferencePackV1,
+} from "./score-oi.js";
+
+// gates
+export {
+	type FlowDeskScoreReuseDecisionLabelV1,
+	type FlowDeskScoreReuseThresholdGateV1,
+	type FlowDeskScoreReuseThresholdGateResultV1,
+	createFlowDeskScoreReuseThresholdGateV1,
+	validateFlowDeskScoreReuseThresholdGateV1,
+	type FlowDeskFanoutCadenceDecisionLabelV1,
+	type FlowDeskFanoutCadenceGateV1,
+	type FlowDeskFanoutCadenceGateResultV1,
+	createFlowDeskFanoutCadenceGateV1,
+	validateFlowDeskFanoutCadenceGateV1,
+} from "./gates.js";
+
+// ledger
+export {
+	type FlowDeskLocalLedgerSnapshotV1,
+	type FlowDeskLocalLedgerSnapshotResultV1,
+	createFlowDeskLocalLedgerSnapshotV1,
+	validateFlowDeskLocalLedgerSnapshotV1,
+} from "./ledger.js";
+
+// score-reference
+export {
+	type FlowDeskScoreReferencePackV1,
+	type FlowDeskScoreReferencePackResultV1,
+	createFlowDeskScoreReferencePackV1,
+	validateFlowDeskScoreReferencePackV1,
+	type FlowDeskWorkflowSignatureIndexEntryV1,
+	type FlowDeskWorkflowSignatureIndexEntryResultV1,
+	createFlowDeskWorkflowSignatureIndexEntryV1,
+	validateFlowDeskWorkflowSignatureIndexEntryV1,
+} from "./score-reference.js";
+
+// session-summary
+export {
+	type FlowDeskOIAdvisoryHealthLabelV1,
+	type FlowDeskOISessionSummaryV1,
+	type FlowDeskOISessionSummaryResultV1,
+	createFlowDeskOISessionSummaryV1,
+	validateFlowDeskOISessionSummaryV1,
+} from "./session-summary.js";
+
+// specialist
+export {
+	type FlowDeskSpecialistWorkflowEligibilityDecisionV1,
+	type FlowDeskSpecialistCategoryV1,
+	type FlowDeskSpecialistWorkflowEligibilityV1,
+	type FlowDeskSpecialistWorkflowEligibilityResultV1,
+	createFlowDeskSpecialistWorkflowEligibilityV1,
+	validateFlowDeskSpecialistWorkflowEligibilityV1,
+} from "./specialist.js";
+
+// mcp-advisory
+export {
+	type FlowDeskMCPConnectorKindV1,
+	type FlowDeskMCPConnectorStateV1,
+	type FlowDeskMCPConnectorAdvisoryV1,
+	type FlowDeskMCPConnectorAdvisoryResultV1,
+	createFlowDeskMCPConnectorAdvisoryV1,
+	validateFlowDeskMCPConnectorAdvisoryV1,
+} from "./mcp-advisory.js";
+
+// federated (Phase 8 scaffold; depends on evaluation-events)
+export {
+	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
+	type FlowDeskFederatedScoreRegistryPublicationIntentV1,
+	type FlowDeskFederatedScoreRegistryPublicationIntentResultV1,
+	createFlowDeskFederatedScoreRegistryPublicationIntentV1,
+	validateFlowDeskFederatedScoreRegistryPublicationIntentV1,
+	validateFlowDeskFederatedScoreRegistryPublicationRequestV1,
+} from "./federated.js";
