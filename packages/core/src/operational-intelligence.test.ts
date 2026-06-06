@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	createFlowDeskAdvisoryScoreLedgerAppendIntentV1,
 	createFlowDeskAdvisoryScoreLedgerEntryV1,
+	createFlowDeskEvaluationEventV1,
 	createFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	createFlowDeskOperationalIntelligenceScoreV1,
 	createFlowDeskWorkflowPlanProposalScoreEventV1,
@@ -10,15 +11,20 @@ import {
 	decodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
 	encodeFlowDeskAdvisoryScoreLedgerEntryJsonlLine,
 	validateFlowDeskAdvisoryScoreLedgerEntryV1,
+	validateFlowDeskEvaluationEventV1,
 	validateFlowDeskFederatedScoreRegistryPublicationIntentV1,
 	validateFlowDeskFederatedScoreRegistryPublicationRequestV1,
 	validateFlowDeskOperationalIntelligenceScoreV1,
 	validateFlowDeskReferencePackV1,
+	validateFlowDeskCategoryFitSnapshotV1,
+	createFlowDeskCategoryFitSnapshotV1,
 	validateFlowDeskWorkflowPlanProposalScoreEventV1,
 	validateFlowDeskWorkflowPlanProposalV1,
 	type FlowDeskReferencePackV1,
 	type FlowDeskFederatedScoreRegistryPublicationRequestV1,
 } from "./index.js";
+
+const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 function scoreEvent(overrides: Partial<ReturnType<typeof createFlowDeskWorkflowPlanProposalScoreEventV1>> = {}) {
 	return {
@@ -43,6 +49,33 @@ function ledgerEntry(overrides: Partial<ReturnType<typeof createFlowDeskAdvisory
 			sequence: 0,
 			recordedAt: "2026-06-06T00:00:00.000Z",
 			event: scoreEvent(),
+		}),
+		...overrides,
+	};
+}
+
+function evaluationEvent(overrides: Partial<ReturnType<typeof createFlowDeskEvaluationEventV1>> = {}) {
+	return {
+		...createFlowDeskEvaluationEventV1({
+			evaluationEventId: "evaluation-event-1",
+			workflowId: "workflow-1",
+			taskRef: "task-1",
+			proposalRef: "proposal-1",
+			candidateRef: "candidate-1",
+			dedupeRef: "dedupe-evaluation-1",
+			taxonomyHashRef: sha256Ref,
+			policyHashRef: "hash-policy-1",
+			redactionHashRef: "hash-redaction-1",
+			scorerRef: "scorer-local-evaluator-1",
+			sourceRef: "source-local-evaluation-1",
+			observedAt: "2026-06-06T00:00:09.000Z",
+			scoreDimensions: [
+				{ dimension: "correctness", score: 82, weight: 0.6, outcome_label: "accepted", reason_ref: "reason-correctness-1" },
+				{ dimension: "safety", score: 100, weight: 0.4, outcome_label: "accepted", reason_ref: "reason-safety-1" },
+			],
+			overallOutcomeLabel: "accepted",
+			evidenceRefs: ["evidence-1"],
+			safeNextActions: ["flowdesk-status"],
 		}),
 		...overrides,
 	};
@@ -248,6 +281,97 @@ test("operational intelligence contracts reject unknown authority fields", () =>
 	const forgedPack = validateFlowDeskReferencePackV1({ ...pack, dispatch_authority_enabled: true });
 	assert.equal(forgedPack.ok, false);
 	assert.match(forgedPack.errors.join("|"), /unknown properties/);
+});
+
+test("evaluation events are append-only advisory-only scoring facts", () => {
+	const event = evaluationEvent();
+	assert.equal(validateFlowDeskEvaluationEventV1(event).ok, true);
+	assert.equal(event.schema_version, "flowdesk.evaluation_event.v1");
+	assert.equal(event.local_only, true);
+	assert.equal(event.append_only, true);
+	assert.equal(event.non_authorizing, true);
+	assert.equal(event.advisory_only, true);
+	assert.equal(event.dispatch_authority_enabled, false);
+	assert.equal(event.approval_authority_enabled, false);
+	assert.equal(event.provider_authority_enabled, false);
+	assert.equal(event.runtime_authority_enabled, false);
+	assert.equal(event.lane_launch_authority_enabled, false);
+	assert.equal(event.fallback_authority_enabled, false);
+	assert.equal(event.write_authority_enabled, false);
+	assert.equal(event.external_write_authority_enabled, false);
+	assert.equal(event.remote_write_authority_enabled, false);
+	assert.equal(event.hard_chat_authority_enabled, false);
+});
+
+test("evaluation events reject unknown properties and authority smuggling", () => {
+	const event = evaluationEvent();
+	const unknown = validateFlowDeskEvaluationEventV1({ ...event, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+
+	const dispatch = validateFlowDeskEvaluationEventV1({ ...event, dispatch_authority_enabled: true });
+	assert.equal(dispatch.ok, false);
+	assert.match(dispatch.errors.join("; "), /advisory-only|dispatch/);
+
+	const hardChat = validateFlowDeskEvaluationEventV1({ ...event, hard_chat_authority_enabled: true });
+	assert.equal(hardChat.ok, false);
+	assert.match(hardChat.errors.join("; "), /hard-chat/);
+});
+
+test("evaluation events reject raw markers and malformed refs or hashes", () => {
+	const raw = validateFlowDeskEvaluationEventV1(evaluationEvent({ source_ref: "prompt with token secret" }));
+	assert.equal(raw.ok, false);
+	assert.match(raw.errors.join("; "), /schema-safe|prompt-like|credential-shaped/);
+
+	const malformedRef = validateFlowDeskEvaluationEventV1(evaluationEvent({ dedupe_ref: "../dedupe" }));
+	assert.equal(malformedRef.ok, false);
+	assert.match(malformedRef.errors.join("; "), /schema-safe|traversal/);
+
+	const malformedHash = validateFlowDeskEvaluationEventV1(evaluationEvent({ taxonomy_hash_ref: "sha256-not-hex" }));
+	assert.equal(malformedHash.ok, false);
+	assert.match(malformedHash.errors.join("; "), /sha256/);
+});
+
+test("evaluation events reject invalid score dimensions and outcomes", () => {
+	const invalidDimension = validateFlowDeskEvaluationEventV1(evaluationEvent({
+		score_dimensions: [{ dimension: "provider_call" as "correctness", score: 50, weight: 0.5, outcome_label: "accepted", reason_ref: "reason-1" }],
+	}));
+	assert.equal(invalidDimension.ok, false);
+	assert.match(invalidDimension.errors.join("; "), /dimension is invalid/);
+
+	const invalidOutcome = validateFlowDeskEvaluationEventV1(evaluationEvent({
+		overall_outcome_label: "dispatch" as "accepted",
+	}));
+	assert.equal(invalidOutcome.ok, false);
+	assert.match(invalidOutcome.errors.join("; "), /overall_outcome_label is invalid/);
+
+	const duplicateDimension = validateFlowDeskEvaluationEventV1(evaluationEvent({
+		score_dimensions: [
+			{ dimension: "safety", score: 50, weight: 0.5, outcome_label: "neutral", reason_ref: "reason-1" },
+			{ dimension: "safety", score: 60, weight: 0.5, outcome_label: "neutral", reason_ref: "reason-2" },
+		],
+	}));
+	assert.equal(duplicateDimension.ok, false);
+	assert.match(duplicateDimension.errors.join("; "), /must not duplicate/);
+});
+
+test("evaluation events are compatible with local ledger append idempotency", () => {
+	const entry = createFlowDeskAdvisoryScoreLedgerEntryV1({
+		ledgerEntryId: "ledger-entry-evaluation-1",
+		workflowId: "workflow-1",
+		sequence: 0,
+		recordedAt: "2026-06-06T00:00:10.000Z",
+		event: evaluationEvent(),
+	});
+	assert.equal(entry.event_kind, "evaluation_event");
+	assert.equal(validateFlowDeskAdvisoryScoreLedgerEntryV1(entry).ok, true);
+	const intent = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: "", entry, idempotencyKey: "idem-evaluation-1" });
+	assert.equal(intent.ok, true);
+	assert.equal(intent.intent?.append_only, true);
+	assert.equal(intent.intent?.append_line?.includes("flowdesk.evaluation_event.v1"), true);
+	const replay = createFlowDeskAdvisoryScoreLedgerAppendIntentV1({ existingJsonl: `${intent.intent?.append_line ?? ""}\n`, entry, idempotencyKey: "idem-evaluation-1" });
+	assert.equal(replay.ok, true);
+	assert.equal(replay.intent?.idempotent_replay, true);
 });
 
 test("advisory score ledger entries encode and decode as local JSONL", () => {
@@ -495,4 +619,71 @@ test("federated score registry intent is compatible with local ledger entries", 
 	});
 	assert.equal(mismatched.ok, false);
 	assert.match(mismatched.errors.join("; "), /workflow_id must match/);
+});
+
+test("category fit snapshots remain advisory-only", () => {
+	const snapshot = createFlowDeskCategoryFitSnapshotV1({
+		snapshotId: "snap-1",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		categorySignatureRef: "cat-sig-1",
+		sampleCount: 42,
+		fitnessScore: 85,
+		freshnessTimestamp: "2026-06-06T00:00:00.000Z",
+		evidenceRefs: ["evidence-1", "evidence-2"],
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(validateFlowDeskCategoryFitSnapshotV1(snapshot).ok, true);
+	assert.equal(snapshot.advisory_only, true);
+	assert.equal(snapshot.dispatch_authority_enabled, false);
+	assert.equal(snapshot.external_write_authority_enabled, false);
+	assert.equal(snapshot.remote_write_authority_enabled, false);
+	assert.equal(snapshot.hard_chat_authority_enabled, false);
+});
+
+test("category fit snapshots reject unknown properties and authority smuggling", () => {
+	const snapshot = createFlowDeskCategoryFitSnapshotV1({
+		snapshotId: "snap-1",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		categorySignatureRef: "cat-sig-1",
+		sampleCount: 42,
+		fitnessScore: 85,
+		freshnessTimestamp: "2026-06-06T00:00:00.000Z",
+		evidenceRefs: ["evidence-1"],
+		safeNextActions: ["flowdesk-status"],
+	});
+
+	const forgedDispatch = validateFlowDeskCategoryFitSnapshotV1({ ...snapshot, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only/);
+
+	const forgedWrite = validateFlowDeskCategoryFitSnapshotV1({ ...snapshot, remote_write_authority_enabled: true });
+	assert.equal(forgedWrite.ok, false);
+	assert.match(forgedWrite.errors.join("; "), /advisory-only/);
+
+	const unknown = validateFlowDeskCategoryFitSnapshotV1({ ...snapshot, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+test("category fit snapshots reject malformed hashes and fail-closed validation", () => {
+	const snapshot = createFlowDeskCategoryFitSnapshotV1({
+		snapshotId: "snap-1",
+		workflowId: "workflow-1",
+		taskSignatureRef: "task-sig-1",
+		categorySignatureRef: "cat-sig-1",
+		sampleCount: -1, // invalid
+		fitnessScore: 105, // invalid
+		freshnessTimestamp: "not-a-date",
+		evidenceRefs: ["invalid ref with spaces"],
+		safeNextActions: ["flowdesk-status"],
+	});
+
+	const result = validateFlowDeskCategoryFitSnapshotV1(snapshot);
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /sample_count must be a non-negative integer/);
+	assert.match(result.errors.join("; "), /fitness_score must be 0\.\.100/);
+	assert.match(result.errors.join("; "), /freshness_timestamp must be a parseable timestamp/);
+	assert.match(result.errors.join("; "), /schema-safe/);
 });

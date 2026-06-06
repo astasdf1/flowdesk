@@ -145,6 +145,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.verification_summary.v1", "verification-summary", "FlowDeskVerificationSummaryArtifactV1", "supporting"),
   artifactEntry("flowdesk.usage_snapshot.v1", "usage-snapshot", "FlowDeskUsageSnapshotV1", "supporting"),
   artifactEntry("flowdesk.provider_health_snapshot.v1", "provider-health-snapshot", "FlowDeskProviderHealthSnapshotV1", "supporting"),
+  artifactEntry("flowdesk.evaluation_event.v1", "evaluation-event", "FlowDeskEvaluationEventV1", "later_release"),
   artifactEntry("flowdesk.debug_section_summary.v1", "debug-section-summary", "DebugSectionSummaryV1", "supporting"),
   artifactEntry("flowdesk.audit_ref_summary.v1", "audit-ref-summary", "FlowDeskAuditRefSummaryV1", "audit"),
   artifactEntry("flowdesk.audit_event.v1", "audit-event", "FlowDeskAuditEventV1", "audit"),
@@ -212,6 +213,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.fallback_regate_plan.v1", "fallback-regate-plan", "FlowDeskFallbackRegatePlanV1", "later_release"),
   artifactEntry("flowdesk.advisory_output_firewall.v1", "advisory-output-firewall", "FlowDeskAdvisoryOutputFirewallV1", "later_release"),
   artifactEntry("flowdesk.federated_registry_state.v1", "federated-registry-state", "FlowDeskFederatedRegistryStateV1", "later_release"),
+  artifactEntry("flowdesk.category_fit_snapshot.v1", "category-fit-snapshot", "FlowDeskCategoryFitSnapshotV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",

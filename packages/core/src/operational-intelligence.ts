@@ -1,5 +1,50 @@
 import { invalid, type ValidationResult, valid, validateNoForbiddenRawPayloads, validateOpaqueId, validateOpaqueRef } from "./validators.js";
 
+export type FlowDeskEvaluationOutcomeLabelV1 = "accepted" | "rejected" | "neutral" | "blocked" | "inconclusive";
+export type FlowDeskEvaluationScoreDimensionNameV1 = "correctness" | "safety" | "utility" | "cost" | "latency" | "policy_fit" | "redaction_fit";
+
+export interface FlowDeskEvaluationScoreDimensionV1 {
+	dimension: FlowDeskEvaluationScoreDimensionNameV1;
+	score: number;
+	weight: number;
+	outcome_label: FlowDeskEvaluationOutcomeLabelV1;
+	reason_ref: string;
+}
+
+export interface FlowDeskEvaluationEventV1 {
+	schema_version: "flowdesk.evaluation_event.v1";
+	evaluation_event_id: string;
+	workflow_id: string;
+	task_ref?: string;
+	proposal_ref?: string;
+	candidate_ref?: string;
+	dedupe_ref: string;
+	taxonomy_hash_ref: string;
+	policy_hash_ref: string;
+	redaction_hash_ref: string;
+	scorer_ref: string;
+	source_ref: string;
+	observed_at: string;
+	score_dimensions: FlowDeskEvaluationScoreDimensionV1[];
+	overall_outcome_label: FlowDeskEvaluationOutcomeLabelV1;
+	evidence_refs: string[];
+	safe_next_actions: string[];
+	local_only: true;
+	append_only: true;
+	non_authorizing: true;
+	advisory_only: true;
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	external_write_authority_enabled: false;
+	write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	fallback_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
 export interface FlowDeskOperationalIntelligenceScoreV1 {
 	schema_version: "flowdesk.operational_intelligence_score.v1";
 	score_id: string;
@@ -74,8 +119,8 @@ export interface FlowDeskAdvisoryScoreLedgerEntryV1 {
 	sequence: number;
 	previous_ledger_entry_id?: string;
 	recorded_at: string;
-	event_kind: "workflow_plan_proposal" | "workflow_plan_proposal_score_event";
-	event: FlowDeskWorkflowPlanProposalV1 | FlowDeskWorkflowPlanProposalScoreEventV1;
+	event_kind: "workflow_plan_proposal" | "workflow_plan_proposal_score_event" | "evaluation_event";
+	event: FlowDeskWorkflowPlanProposalV1 | FlowDeskWorkflowPlanProposalScoreEventV1 | FlowDeskEvaluationEventV1;
 	local_only: true;
 	append_only: true;
 	non_authorizing: true;
@@ -204,6 +249,29 @@ export interface FlowDeskReferencePackV1 {
 	external_write_authority_enabled: false;
 }
 
+export interface FlowDeskCategoryFitSnapshotV1 {
+	schema_version: "flowdesk.category_fit_snapshot.v1";
+	snapshot_id: string;
+	workflow_id: string;
+	task_signature_ref: string;
+	category_signature_ref: string;
+	sample_count: number;
+	fitness_score: number;
+	freshness_timestamp: string;
+	evidence_refs: string[];
+	safe_next_actions: string[];
+	advisory_only: true;
+	dispatch_authority_enabled: false;
+	approval_authority_enabled: false;
+	provider_authority_enabled: false;
+	runtime_authority_enabled: false;
+	fallback_authority_enabled: false;
+	external_write_authority_enabled: false;
+	remote_write_authority_enabled: false;
+	lane_launch_authority_enabled: false;
+	hard_chat_authority_enabled: false;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -263,6 +331,32 @@ function validateRegistryPublicationAuthorityFlags(record: Record<string, unknow
 		: invalid(`${label} must remain non-authorizing with connector gate unsatisfied and no dispatch, approval, provider, runtime, external-write, remote-write, fallback, or lane-launch authority`);
 }
 
+function validateEvaluationAuthorityFlags(record: Record<string, unknown>, label: string): ValidationResult {
+	return record.local_only === true
+		&& record.append_only === true
+		&& record.non_authorizing === true
+		&& record.advisory_only === true
+		&& record.dispatch_authority_enabled === false
+		&& record.approval_authority_enabled === false
+		&& record.provider_authority_enabled === false
+		&& record.runtime_authority_enabled === false
+		&& record.external_write_authority_enabled === false
+		&& record.write_authority_enabled === false
+		&& record.remote_write_authority_enabled === false
+		&& record.fallback_authority_enabled === false
+		&& record.lane_launch_authority_enabled === false
+		&& record.hard_chat_authority_enabled === false
+		? valid()
+		: invalid(`${label} must remain local append-only advisory-only with no dispatch, approval, provider, runtime, lane, fallback, write, remote-write, or hard-chat authority`);
+}
+
+function validateHashRef(value: unknown, label: string): ValidationResult {
+	if (typeof value !== "string") return invalid(`${label} must be a string`);
+	if (/^sha256-[a-f0-9]{64}$/.test(value)) return valid();
+	if (/^hash-[A-Za-z0-9][A-Za-z0-9_.:-]{1,122}$/.test(value) && !value.includes("..")) return valid();
+	return invalid(`${label} must be hash-<schema-safe-ref> or sha256-<64 lowercase hex>`);
+}
+
 function validateHardFilterFields(record: { hard_filter_state?: unknown; blocked_labels?: unknown; advisory_score?: unknown }, label: string): ValidationResult {
 	const errors: string[] = [];
 	if (record.hard_filter_state !== "passed" && record.hard_filter_state !== "blocked") errors.push(`${label} hard_filter_state is invalid`);
@@ -274,6 +368,69 @@ function validateHardFilterFields(record: { hard_filter_state?: unknown; blocked
 	if (record.hard_filter_state === "blocked" && Array.isArray(record.blocked_labels) && record.blocked_labels.length === 0) errors.push(`${label} blocked hard filters require blocked_labels`);
 	if (record.hard_filter_state === "blocked" && record.advisory_score !== undefined && record.advisory_score !== 0) errors.push(`${label} blocked hard filters must zero advisory_score`);
 	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+const evaluationDimensionNames = ["correctness", "safety", "utility", "cost", "latency", "policy_fit", "redaction_fit"] as const;
+const evaluationOutcomeLabels = ["accepted", "rejected", "neutral", "blocked", "inconclusive"] as const;
+
+function validateEvaluationOutcomeLabel(value: unknown, label: string): ValidationResult {
+	return typeof value === "string" && (evaluationOutcomeLabels as readonly string[]).includes(value) ? valid() : invalid(`${label} is invalid`);
+}
+
+function validateEvaluationScoreDimensions(value: unknown, label: string): ValidationResult {
+	if (!Array.isArray(value) || value.length === 0 || value.length > 12) return invalid(`${label} must be a non-empty bounded array`);
+	const errors: string[] = [];
+	const seen = new Set<string>();
+	for (const [index, dimension] of value.entries()) {
+		if (!isRecord(dimension)) {
+			errors.push(`${label}[${index}] must be an object`);
+			continue;
+		}
+		errors.push(...rejectUnknownProperties(dimension, ["dimension", "score", "weight", "outcome_label", "reason_ref"], `${label}[${index}]`).errors);
+		if (typeof dimension.dimension !== "string" || !(evaluationDimensionNames as readonly string[]).includes(dimension.dimension)) errors.push(`${label}[${index}].dimension is invalid`);
+		else if (seen.has(dimension.dimension)) errors.push(`${label}[${index}].dimension must not duplicate ${dimension.dimension}`);
+		else seen.add(dimension.dimension);
+		if (typeof dimension.score !== "number" || !Number.isFinite(dimension.score) || dimension.score < 0 || dimension.score > 100) errors.push(`${label}[${index}].score must be 0..100`);
+		if (typeof dimension.weight !== "number" || !Number.isFinite(dimension.weight) || dimension.weight < 0 || dimension.weight > 1) errors.push(`${label}[${index}].weight must be 0..1`);
+		errors.push(...validateEvaluationOutcomeLabel(dimension.outcome_label, `${label}[${index}].outcome_label`).errors);
+		errors.push(...validateOpaqueRef(dimension.reason_ref, `${label}[${index}].reason_ref`).errors);
+	}
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function createFlowDeskCategoryFitSnapshotV1(input: {
+	snapshotId: string;
+	workflowId: string;
+	taskSignatureRef: string;
+	categorySignatureRef: string;
+	sampleCount: number;
+	fitnessScore: number;
+	freshnessTimestamp: string;
+	evidenceRefs: string[];
+	safeNextActions: string[];
+}): FlowDeskCategoryFitSnapshotV1 {
+	return {
+		schema_version: "flowdesk.category_fit_snapshot.v1",
+		snapshot_id: input.snapshotId,
+		workflow_id: input.workflowId,
+		task_signature_ref: input.taskSignatureRef,
+		category_signature_ref: input.categorySignatureRef,
+		sample_count: input.sampleCount,
+		fitness_score: input.fitnessScore,
+		freshness_timestamp: input.freshnessTimestamp,
+		evidence_refs: [...input.evidenceRefs],
+		safe_next_actions: [...input.safeNextActions],
+		advisory_only: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		fallback_authority_enabled: false,
+		external_write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
 }
 
 export function createFlowDeskOperationalIntelligenceScoreV1(input: {
@@ -376,14 +533,72 @@ export function createFlowDeskWorkflowPlanProposalScoreEventV1(input: {
 	};
 }
 
+export function createFlowDeskEvaluationEventV1(input: {
+	evaluationEventId: string;
+	workflowId: string;
+	taskRef?: string;
+	proposalRef?: string;
+	candidateRef?: string;
+	dedupeRef: string;
+	taxonomyHashRef: string;
+	policyHashRef: string;
+	redactionHashRef: string;
+	scorerRef: string;
+	sourceRef: string;
+	observedAt: string;
+	scoreDimensions: FlowDeskEvaluationScoreDimensionV1[];
+	overallOutcomeLabel: FlowDeskEvaluationOutcomeLabelV1;
+	evidenceRefs: string[];
+	safeNextActions: string[];
+}): FlowDeskEvaluationEventV1 {
+	return {
+		schema_version: "flowdesk.evaluation_event.v1",
+		evaluation_event_id: input.evaluationEventId,
+		workflow_id: input.workflowId,
+		...(input.taskRef === undefined ? {} : { task_ref: input.taskRef }),
+		...(input.proposalRef === undefined ? {} : { proposal_ref: input.proposalRef }),
+		...(input.candidateRef === undefined ? {} : { candidate_ref: input.candidateRef }),
+		dedupe_ref: input.dedupeRef,
+		taxonomy_hash_ref: input.taxonomyHashRef,
+		policy_hash_ref: input.policyHashRef,
+		redaction_hash_ref: input.redactionHashRef,
+		scorer_ref: input.scorerRef,
+		source_ref: input.sourceRef,
+		observed_at: input.observedAt,
+		score_dimensions: input.scoreDimensions.map((dimension) => ({ ...dimension })),
+		overall_outcome_label: input.overallOutcomeLabel,
+		evidence_refs: [...input.evidenceRefs],
+		safe_next_actions: [...input.safeNextActions],
+		local_only: true,
+		append_only: true,
+		non_authorizing: true,
+		advisory_only: true,
+		dispatch_authority_enabled: false,
+		approval_authority_enabled: false,
+		provider_authority_enabled: false,
+		runtime_authority_enabled: false,
+		external_write_authority_enabled: false,
+		write_authority_enabled: false,
+		remote_write_authority_enabled: false,
+		fallback_authority_enabled: false,
+		lane_launch_authority_enabled: false,
+		hard_chat_authority_enabled: false,
+	};
+}
+
 export function createFlowDeskAdvisoryScoreLedgerEntryV1(input: {
 	ledgerEntryId: string;
 	workflowId: string;
 	sequence: number;
 	previousLedgerEntryId?: string;
 	recordedAt: string;
-	event: FlowDeskWorkflowPlanProposalV1 | FlowDeskWorkflowPlanProposalScoreEventV1;
+	event: FlowDeskWorkflowPlanProposalV1 | FlowDeskWorkflowPlanProposalScoreEventV1 | FlowDeskEvaluationEventV1;
 }): FlowDeskAdvisoryScoreLedgerEntryV1 {
+	const eventKind = input.event.schema_version === "flowdesk.workflow_plan_proposal.v1"
+		? "workflow_plan_proposal"
+		: input.event.schema_version === "flowdesk.workflow_plan_proposal_score_event.v1"
+			? "workflow_plan_proposal_score_event"
+			: "evaluation_event";
 	return {
 		schema_version: "flowdesk.advisory_score_ledger_entry.v1",
 		ledger_entry_id: input.ledgerEntryId,
@@ -391,7 +606,7 @@ export function createFlowDeskAdvisoryScoreLedgerEntryV1(input: {
 		sequence: input.sequence,
 		...(input.previousLedgerEntryId === undefined ? {} : { previous_ledger_entry_id: input.previousLedgerEntryId }),
 		recorded_at: input.recordedAt,
-		event_kind: input.event.schema_version === "flowdesk.workflow_plan_proposal.v1" ? "workflow_plan_proposal" : "workflow_plan_proposal_score_event",
+		event_kind: eventKind,
 		event: input.event,
 		local_only: true,
 		append_only: true,
@@ -405,6 +620,57 @@ export function createFlowDeskAdvisoryScoreLedgerEntryV1(input: {
 		fallback_authority_enabled: false,
 		lane_launch_authority_enabled: false,
 	};
+}
+
+export function validateFlowDeskCategoryFitSnapshotV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("category fit snapshot must be an object");
+	const record = value as Partial<FlowDeskCategoryFitSnapshotV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"snapshot_id",
+		"workflow_id",
+		"task_signature_ref",
+		"category_signature_ref",
+		"sample_count",
+		"fitness_score",
+		"freshness_timestamp",
+		"evidence_refs",
+		"safe_next_actions",
+		"advisory_only",
+		"dispatch_authority_enabled",
+		"approval_authority_enabled",
+		"provider_authority_enabled",
+		"runtime_authority_enabled",
+		"fallback_authority_enabled",
+		"external_write_authority_enabled",
+		"remote_write_authority_enabled",
+		"lane_launch_authority_enabled",
+		"hard_chat_authority_enabled",
+	], "category fit snapshot").errors);
+	if (record.schema_version !== "flowdesk.category_fit_snapshot.v1") errors.push("category fit snapshot schema_version is invalid");
+	errors.push(...validateOpaqueId(record.snapshot_id, "snapshot_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	errors.push(...validateOpaqueRef(record.task_signature_ref, "task_signature_ref").errors);
+	errors.push(...validateOpaqueRef(record.category_signature_ref, "category_signature_ref").errors);
+	if (typeof record.sample_count !== "number" || !Number.isInteger(record.sample_count) || record.sample_count < 0) errors.push("sample_count must be a non-negative integer");
+	if (typeof record.fitness_score !== "number" || !Number.isFinite(record.fitness_score) || record.fitness_score < 0 || record.fitness_score > 100) errors.push("fitness_score must be 0..100");
+	errors.push(...validateTimestamp(record.freshness_timestamp, "freshness_timestamp").errors);
+	errors.push(...refs(record.evidence_refs, "evidence_refs").errors);
+	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) errors.push("safe_next_actions must be a non-empty bounded array");
+	else for (const [index, action] of record.safe_next_actions.entries()) errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+	if (record.advisory_only !== true
+		|| record.dispatch_authority_enabled !== false
+		|| record.approval_authority_enabled !== false
+		|| record.provider_authority_enabled !== false
+		|| record.runtime_authority_enabled !== false
+		|| record.fallback_authority_enabled !== false
+		|| record.external_write_authority_enabled !== false
+		|| record.remote_write_authority_enabled !== false
+		|| record.lane_launch_authority_enabled !== false
+		|| record.hard_chat_authority_enabled !== false) errors.push("category fit snapshot must remain advisory-only with no authority");
+	errors.push(...validateNoForbiddenRawPayloads(record, "category_fit_snapshot").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
 export function validateFlowDeskOperationalIntelligenceScoreV1(value: unknown): ValidationResult {
@@ -524,6 +790,67 @@ export function validateFlowDeskWorkflowPlanProposalScoreEventV1(value: unknown)
 	return errors.length === 0 ? valid() : invalid(...errors);
 }
 
+export function validateFlowDeskEvaluationEventV1(value: unknown): ValidationResult {
+	if (!isRecord(value)) return invalid("evaluation event must be an object");
+	const record = value as Partial<FlowDeskEvaluationEventV1>;
+	const errors: string[] = [];
+	errors.push(...rejectUnknownProperties(record, [
+		"schema_version",
+		"evaluation_event_id",
+		"workflow_id",
+		"task_ref",
+		"proposal_ref",
+		"candidate_ref",
+		"dedupe_ref",
+		"taxonomy_hash_ref",
+		"policy_hash_ref",
+		"redaction_hash_ref",
+		"scorer_ref",
+		"source_ref",
+		"observed_at",
+		"score_dimensions",
+		"overall_outcome_label",
+		"evidence_refs",
+		"safe_next_actions",
+		"local_only",
+		"append_only",
+		"non_authorizing",
+		"advisory_only",
+		"dispatch_authority_enabled",
+		"approval_authority_enabled",
+		"provider_authority_enabled",
+		"runtime_authority_enabled",
+		"external_write_authority_enabled",
+		"write_authority_enabled",
+		"remote_write_authority_enabled",
+		"fallback_authority_enabled",
+		"lane_launch_authority_enabled",
+		"hard_chat_authority_enabled",
+	], "evaluation event").errors);
+	if (record.schema_version !== "flowdesk.evaluation_event.v1") errors.push("evaluation event schema_version is invalid");
+	errors.push(...validateOpaqueId(record.evaluation_event_id, "evaluation_event_id").errors);
+	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
+	if (record.task_ref !== undefined) errors.push(...validateOpaqueRef(record.task_ref, "task_ref").errors);
+	if (record.proposal_ref !== undefined) errors.push(...validateOpaqueRef(record.proposal_ref, "proposal_ref").errors);
+	if (record.candidate_ref !== undefined) errors.push(...validateOpaqueRef(record.candidate_ref, "candidate_ref").errors);
+	if (record.task_ref === undefined && record.proposal_ref === undefined && record.candidate_ref === undefined) errors.push("evaluation event requires at least one task_ref, proposal_ref, or candidate_ref");
+	errors.push(...validateOpaqueRef(record.dedupe_ref, "dedupe_ref").errors);
+	errors.push(...validateHashRef(record.taxonomy_hash_ref, "taxonomy_hash_ref").errors);
+	errors.push(...validateHashRef(record.policy_hash_ref, "policy_hash_ref").errors);
+	errors.push(...validateHashRef(record.redaction_hash_ref, "redaction_hash_ref").errors);
+	errors.push(...validateOpaqueRef(record.scorer_ref, "scorer_ref").errors);
+	errors.push(...validateOpaqueRef(record.source_ref, "source_ref").errors);
+	errors.push(...validateTimestamp(record.observed_at, "observed_at").errors);
+	errors.push(...validateEvaluationScoreDimensions(record.score_dimensions, "score_dimensions").errors);
+	errors.push(...validateEvaluationOutcomeLabel(record.overall_outcome_label, "overall_outcome_label").errors);
+	errors.push(...refs(record.evidence_refs, "evidence_refs").errors);
+	if (!Array.isArray(record.safe_next_actions) || record.safe_next_actions.length === 0 || record.safe_next_actions.length > 8) errors.push("safe_next_actions must be a non-empty bounded array");
+	else for (const [index, action] of record.safe_next_actions.entries()) errors.push(...validateOpaqueRef(action, `safe_next_actions[${index}]`).errors);
+	errors.push(...validateEvaluationAuthorityFlags(record, "evaluation event").errors);
+	errors.push(...validateNoForbiddenRawPayloads(record, "evaluation_event").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
 export function validateFlowDeskAdvisoryScoreLedgerEntryV1(value: unknown): ValidationResult {
 	if (!isRecord(value)) return invalid("advisory score ledger entry must be an object");
 	const record = value as Partial<FlowDeskAdvisoryScoreLedgerEntryV1>;
@@ -565,6 +892,9 @@ export function validateFlowDeskAdvisoryScoreLedgerEntryV1(value: unknown): Vali
 	} else if (record.event_kind === "workflow_plan_proposal_score_event") {
 		errors.push(...validateFlowDeskWorkflowPlanProposalScoreEventV1(record.event).errors.map((error) => `event.${error}`));
 		if (isRecord(record.event) && record.event.workflow_id !== record.workflow_id) errors.push("advisory score ledger entry workflow_id must match score event workflow_id");
+	} else if (record.event_kind === "evaluation_event") {
+		errors.push(...validateFlowDeskEvaluationEventV1(record.event).errors.map((error) => `event.${error}`));
+		if (isRecord(record.event) && record.event.workflow_id !== record.workflow_id) errors.push("advisory score ledger entry workflow_id must match evaluation event workflow_id");
 	} else errors.push("advisory score ledger entry event_kind is invalid");
 	errors.push(...validateNoForbiddenRawPayloads(record, "advisory_score_ledger_entry").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
