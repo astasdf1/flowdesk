@@ -1,6 +1,14 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import type {
+  FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1,
+  FlowDeskRelease2Phase6AClosureEvidenceV1,
+} from "./production-enablement.js";
+import {
+  validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1,
+  validateFlowDeskRelease2Phase6AClosureEvidenceV1,
+} from "./production-enablement.js";
+import type {
   BootstrapPhaseV1,
   DisabledModeV1,
   DoctorFailureCategoryOutcomeV1,
@@ -34,7 +42,9 @@ export type FlowDeskBootstrapArtifactV1 =
   | FlowDeskBootstrapRollbackResultV1
   | FlowDeskBootstrapReportV1
   | FlowDeskDoctorHandoffV1
-  | FlowDeskDoctorReportV1;
+  | FlowDeskDoctorReportV1
+  | FlowDeskRelease2Phase6AClosureEvidenceV1
+  | FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1;
 
 export type FlowDeskBootstrapSchemaIdV1 = FlowDeskBootstrapArtifactV1["schema_version"];
 
@@ -623,6 +633,10 @@ export function validateFlowDeskBootstrapArtifactV1(value: unknown): ValidationR
       return validateDoctorHandoffV1(value);
     case "flowdesk.doctor_report.v1":
       return validateDoctorReportV1(value);
+    case "flowdesk.release2_phase6a_closure_evidence.v1":
+      return validateFlowDeskRelease2Phase6AClosureEvidenceV1(value);
+    case "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1":
+      return validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1(value);
     default:
       return invalid("unsupported bootstrap artifact schema_version");
   }
@@ -657,6 +671,10 @@ function bootstrapArtifactId(record: FlowDeskBootstrapArtifactV1): string {
       return record.handoff_id;
     case "flowdesk.doctor_report.v1":
       return record.run_id;
+    case "flowdesk.release2_phase6a_closure_evidence.v1":
+      return record.closure_ref;
+    case "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1":
+      return record.workflow_id;
   }
 }
 

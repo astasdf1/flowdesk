@@ -17,6 +17,8 @@ import type {
   FlowDeskDoctorReportV1,
   FlowDeskDoctorResponseV1,
   FlowDeskOmoCleanupSummaryV1,
+  FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1,
+  FlowDeskRelease2Phase6AClosureEvidenceV1,
   FlowDeskProfileMutationSummaryV1
 } from "./index.js";
 import {
@@ -289,6 +291,54 @@ function bootstrapFailureEvidence(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function release2Phase6AClosureEvidence(): FlowDeskRelease2Phase6AClosureEvidenceV1 {
+  return {
+    schema_version: "flowdesk.release2_phase6a_closure_evidence.v1",
+    closure_ref: "phase6a-closure-123",
+    workflow_id: "workflow-123",
+    phase: "phase_6a",
+    result: "passed",
+    closed_at: now,
+    expires_at: "2026-05-18T00:00:00.000Z",
+    closure_labels: ["plugin_sdk_compatibility_closed", "fanout_cap_cache_enforcement_closed", "reviewer_fanout_smoke_closed"],
+    evidence_refs: ["fanout-evidence-123", "wake-evidence-123", "binding-evidence-123", "progress-evidence-123"],
+    dispatch_authority_enabled: false,
+    fallback_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    external_write_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false
+  };
+}
+
+function release2PromotionReadiness(): FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1 {
+  return {
+    schema_version: "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1",
+    workflow_id: "workflow-123",
+    ok: true,
+    errors: [],
+    state: "eligible",
+    blocked_labels: [],
+    evidence_refs: ["phase6a-closure-123", "production-evidence-123"],
+    production_enablement_state: "dispatch_capable",
+    managed_dispatch_ready: true,
+    phase6a_closed: true,
+    scoped_explicit_approval_present: true,
+    fresh_evidence_present: true,
+    release2_managed_dispatch_gate_ready: true,
+    dispatch_authority_enabled: false,
+    fallback_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    external_write_authority_enabled: false,
+    providerCall: false,
+    actualLaneLaunch: false,
+    runtimeExecution: false,
+    safe_next_actions: ["/flowdesk-status"],
+    phase6a_closure_ref: "phase6a-closure-123"
+  };
+}
+
 test("valid redacted Checkpoint 4 bootstrap artifacts and write intents pass", () => {
   const artifacts = [installPlan(), backupManifest(), profileMutation(), cleanupSummary(), commandGeneration(), configScaffold(), rollbackPlan(), rollbackResult(), bootstrapReport(), doctorHandoff(), doctorReport()];
   for (const artifact of artifacts) assert.equal(validateFlowDeskBootstrapArtifactV1(artifact).ok, true, artifact.schema_version);
@@ -333,6 +383,66 @@ test("redacted bootstrap artifacts materialize durable .flowdesk bootstrap files
     assert.equal(existsSync(reportPath), true);
     assert.equal(JSON.parse(readFileSync(reportPath, "utf8")).schema_version, "flowdesk.bootstrap_report.v1");
     assert.equal(JSON.parse(readFileSync(handoffPath, "utf8")).install_plan_ref, "install-plan-123");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Release 2 gate promotion evidence materializes as redacted non-authorizing bootstrap artifacts", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-release2-materialize-"));
+  const otherRoot = mkdtempSync(join(tmpdir(), "flowdesk-release2-other-root-"));
+  try {
+    const closure = prepareRedactedBootstrapArtifactWriteIntent("install-plan-release2", release2Phase6AClosureEvidence());
+    const readiness = prepareRedactedBootstrapArtifactWriteIntent("install-plan-release2", release2PromotionReadiness());
+    assert.equal(closure.ok, true);
+    assert.equal(readiness.ok, true);
+    assert.ok(closure.writeIntent);
+    assert.ok(readiness.writeIntent);
+    assert.match(closure.writeIntent.path, /^\.flowdesk\/bootstrap\/install-plan-release2\/release2-phase6a-closure-evidence\/phase6a-closure-123\.json$/);
+    assert.match(readiness.writeIntent.path, /^\.flowdesk\/bootstrap\/install-plan-release2\/release2-managed-dispatch-gate-promotion-readiness\/workflow-123\.json$/);
+
+    const result = applyBootstrapWriteIntentsToDurableState(root, [closure.writeIntent, readiness.writeIntent]);
+    assert.equal(result.ok, true);
+    assert.equal(result.realOpenCodeDispatch, false);
+    assert.equal(result.dispatchApprovalEligible, false);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+    assert.deepEqual(result.writtenPaths, [closure.writeIntent.path, readiness.writeIntent.path]);
+
+    const writtenClosure = JSON.parse(readFileSync(join(root, closure.writeIntent.path), "utf8")) as Record<string, unknown>;
+    const writtenReadiness = JSON.parse(readFileSync(join(root, readiness.writeIntent.path), "utf8")) as Record<string, unknown>;
+    assert.equal(writtenClosure.schema_version, "flowdesk.release2_phase6a_closure_evidence.v1");
+    assert.equal(writtenReadiness.schema_version, "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1");
+    assert.equal(writtenReadiness.dispatch_authority_enabled, false);
+    assert.equal(writtenReadiness.fallback_authority_enabled, false);
+    assert.equal(existsSync(join(otherRoot, ".flowdesk")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(otherRoot, { recursive: true, force: true });
+  }
+});
+
+test("Release 2 gate promotion materialization rejects malformed and authority-smuggling records fail-closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-release2-materialize-invalid-"));
+  try {
+    const validClosure = prepareRedactedBootstrapArtifactWriteIntent("install-plan-release2", release2Phase6AClosureEvidence()).writeIntent;
+    assert.ok(validClosure);
+    const smuggledReadiness = prepareRedactedBootstrapArtifactWriteIntent("install-plan-release2", {
+      ...release2PromotionReadiness(),
+      dispatch_authority_enabled: true,
+      providerCall: true,
+      rawProviderPayload: "secret-token"
+    } as unknown as FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1);
+    assert.equal(smuggledReadiness.ok, false);
+
+    const malformedClosure = { ...validClosure, record: { ...validClosure.record, actualLaneLaunch: true } } as unknown as typeof validClosure;
+    const result = applyBootstrapWriteIntentsToDurableState(root, [malformedClosure, validClosure]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.writtenPaths, []);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.runtimeExecution, false);
+    assert.equal(existsSync(join(root, validClosure.path)), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
