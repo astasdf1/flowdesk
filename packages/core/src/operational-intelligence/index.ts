@@ -309,3 +309,52 @@ export {
 	validateFlowDeskModelSelectionResultV1,
 	selectModelForBlock,
 } from "./model-selection-result.js";
+
+// block-decomposition (operational intelligence later gate)
+export {
+	type FlowDeskSubBlockEstimateV1,
+	type FlowDeskBlockDecompositionV1,
+	type FlowDeskBlockDecompositionV1Result,
+	createFlowDeskBlockDecompositionV1,
+	validateFlowDeskBlockDecompositionV1,
+} from "./block-decomposition.js";
+
+// block-hierarchy (operational intelligence later gate)
+export {
+	type FlowDeskHierarchyNodeStatusV1,
+	type FlowDeskHierarchyNodeV1,
+	type FlowDeskBlockHierarchyStatusV1,
+	type FlowDeskBlockHierarchyV1,
+	type FlowDeskBlockHierarchyV1Result,
+	createFlowDeskBlockHierarchyV1,
+	validateFlowDeskBlockHierarchyV1,
+} from "./block-hierarchy.js";
+
+// block-score-reconciliation (operational intelligence later gate)
+export {
+	type FlowDeskBlockScoreReconciliationActionV1,
+	type FlowDeskBlockScoreReconciliationV1,
+	type FlowDeskBlockScoreReconciliationV1Result,
+	createFlowDeskBlockScoreReconciliationV1,
+	validateFlowDeskBlockScoreReconciliationV1,
+} from "./block-score-reconciliation.js";
+
+// block-decomposition-failure (operational intelligence later gate)
+export {
+	type FlowDeskBlockDecompositionFailureReasonV1,
+	type FlowDeskBlockDecompositionFailureV1,
+	type FlowDeskBlockDecompositionFailureV1Result,
+	createFlowDeskBlockDecompositionFailureV1,
+	validateFlowDeskBlockDecompositionFailureV1,
+} from "./block-decomposition-failure.js";
+
+// proposal-generator-config (operational intelligence later gate)
+export {
+	type FlowDeskProposalReviewTierV1,
+	type FlowDeskProposalCostBudgetHintV1,
+	type FlowDeskProposalGenerationStrategyV1,
+	type FlowDeskProposalGeneratorConfigV1,
+	type FlowDeskProposalGeneratorConfigV1Result,
+	createFlowDeskProposalGeneratorConfigV1,
+	validateFlowDeskProposalGeneratorConfigV1,
+} from "./proposal-generator-config.js";

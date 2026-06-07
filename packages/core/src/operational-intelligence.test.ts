@@ -152,6 +152,28 @@ import {
 	selectModelForBlock,
 	type FlowDeskModelSelectionResultV1,
 	type FlowDeskModelSelectionReasonV1,
+	// block decomposition contracts
+	createFlowDeskBlockDecompositionV1,
+	validateFlowDeskBlockDecompositionV1,
+	type FlowDeskBlockDecompositionV1,
+	type FlowDeskSubBlockEstimateV1,
+	// block hierarchy contracts
+	createFlowDeskBlockHierarchyV1,
+	validateFlowDeskBlockHierarchyV1,
+	type FlowDeskBlockHierarchyV1,
+	type FlowDeskHierarchyNodeV1,
+	// block score reconciliation contracts
+	createFlowDeskBlockScoreReconciliationV1,
+	validateFlowDeskBlockScoreReconciliationV1,
+	type FlowDeskBlockScoreReconciliationV1,
+	// block decomposition failure contracts
+	createFlowDeskBlockDecompositionFailureV1,
+	validateFlowDeskBlockDecompositionFailureV1,
+	type FlowDeskBlockDecompositionFailureV1,
+	// proposal generator config contracts
+	createFlowDeskProposalGeneratorConfigV1,
+	validateFlowDeskProposalGeneratorConfigV1,
+	type FlowDeskProposalGeneratorConfigV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -6815,4 +6837,410 @@ test("selectModelForBlock: profile_expired fails an expired profile", () => {
 	const expiredEntry = r.ineligible_model_entries.find((e) => e.model_ref === "prof-h");
 	assert.ok(expiredEntry);
 	assert.equal(expiredEntry.failed_threshold, "profile_expired");
+});
+
+// ─── FlowDeskBlockDecompositionV1 tests ─────────────────────────────────────
+
+function makeSubBlock(overrides: Partial<FlowDeskSubBlockEstimateV1> = {}): FlowDeskSubBlockEstimateV1 {
+	return {
+		sub_block_id: "sub-block-1",
+		sub_block_label: "Sub Block One",
+		estimated_scope: 3,
+		estimated_complexity: 4,
+		estimated_coupling: 2,
+		estimated_authority_sensitivity: 1,
+		estimated_novelty: 2,
+		estimated_category: "implementation",
+		estimated_block_score: 12,
+		...overrides,
+	};
+}
+
+function makeDecomposition(overrides: Partial<Parameters<typeof createFlowDeskBlockDecompositionV1>[0]> = {}) {
+	return createFlowDeskBlockDecompositionV1({
+		decompositionId: "decomp-1",
+		parentBlockId: "block-parent-1",
+		parentBlockScoringRef: "scoring-ref-1",
+		triggerScore: 52,
+		triggerConditionMet: "score_gte_50",
+		triggerDimensionsMet: ["complexity", "coupling"],
+		subBlocks: [makeSubBlock({ sub_block_id: "sub-1" }), makeSubBlock({ sub_block_id: "sub-2" })],
+		currentDepth: 0,
+		maxDepth: 1,
+		coverageReviewQuorumRequired: 2,
+		coverageVerdictRefs: ["verdict-1", "verdict-2"],
+		structuralCoveragePass: true,
+		status: "structural_coverage_passed",
+		decompositionModelSelectionRef: "model-sel-ref-1",
+		...overrides,
+	});
+}
+
+test("block decomposition creates valid advisory-only decomposition", () => {
+	const result = makeDecomposition();
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const d = result.decomposition!;
+	assert.equal(d.schema_version, "flowdesk.block_decomposition.v1");
+	assert.equal(d.non_inheriting_parent_authority, true);
+	assert.equal(d.advisory_only, true);
+	assert.equal(d.non_authorizing, true);
+	assert.equal(d.release_gate, "operational_intelligence_later_gate");
+	assert.equal(d.dispatch_authority_enabled, false);
+	assert.equal(d.runtime_authority_enabled, false);
+	assert.equal(validateFlowDeskBlockDecompositionV1(d).ok, true);
+});
+
+test("block decomposition rejects current_depth >= max_depth and invalid sub_blocks count", () => {
+	// current_depth === max_depth
+	const depthViolation = makeDecomposition({ currentDepth: 1, maxDepth: 1 });
+	assert.equal(depthViolation.ok, false);
+	assert.match(depthViolation.errors.join("; "), /current_depth must be less than max_depth/);
+
+	// too few sub_blocks (< 2)
+	const tooFew = makeDecomposition({ subBlocks: [makeSubBlock()] });
+	assert.equal(tooFew.ok, false);
+	assert.match(tooFew.errors.join("; "), /sub_blocks must have 2/);
+
+	// too many sub_blocks (> 6)
+	const tooMany = makeDecomposition({
+		subBlocks: [1,2,3,4,5,6,7].map((i) => makeSubBlock({ sub_block_id: `sub-${i}` })),
+	});
+	assert.equal(tooMany.ok, false);
+	assert.match(tooMany.errors.join("; "), /sub_blocks must have/);
+});
+
+test("block decomposition rejects structural_coverage_pass inconsistencies", () => {
+	// structural_coverage_pass=true with fewer verdicts than quorum
+	const fewerVerdicts = makeDecomposition({
+		coverageReviewQuorumRequired: 3,
+		coverageVerdictRefs: ["verdict-1", "verdict-2"],
+		structuralCoveragePass: true,
+		status: "structural_coverage_passed",
+	});
+	assert.equal(fewerVerdicts.ok, false);
+	assert.match(fewerVerdicts.errors.join("; "), /fewer verdict_refs than quorum/);
+
+	// structural_coverage_pass=true but status !== "structural_coverage_passed"
+	const wrongStatus = makeDecomposition({
+		coverageVerdictRefs: ["verdict-1", "verdict-2"],
+		structuralCoveragePass: true,
+		status: "coverage_pending",
+	});
+	assert.equal(wrongStatus.ok, false);
+	assert.match(wrongStatus.errors.join("; "), /requires status='structural_coverage_passed'/);
+});
+
+test("block decomposition rejects authority smuggling and unknown properties", () => {
+	const result = makeDecomposition();
+	assert.equal(result.ok, true);
+	const d = result.decomposition!;
+
+	const forgedDispatch = validateFlowDeskBlockDecompositionV1({ ...d, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled must be false/);
+
+	const forgedNonInheriting = validateFlowDeskBlockDecompositionV1({ ...d, non_inheriting_parent_authority: false });
+	assert.equal(forgedNonInheriting.ok, false);
+	assert.match(forgedNonInheriting.errors.join("; "), /non_inheriting_parent_authority must be true/);
+
+	const unknown = validateFlowDeskBlockDecompositionV1({ ...d, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+// ─── FlowDeskBlockHierarchyV1 tests ─────────────────────────────────────────
+
+function makeHierarchyNode(overrides: Partial<FlowDeskHierarchyNodeV1> = {}): FlowDeskHierarchyNodeV1 {
+	return {
+		block_id: "block-node-1",
+		depth: 0,
+		node_status: "pending",
+		...overrides,
+	};
+}
+
+function makeHierarchy(overrides: Partial<Parameters<typeof createFlowDeskBlockHierarchyV1>[0]> = {}) {
+	return createFlowDeskBlockHierarchyV1({
+		hierarchyId: "hierarchy-1",
+		rootBlockId: "block-root-1",
+		workflowId: "workflow-1",
+		revisionId: 1,
+		nodes: [makeHierarchyNode({ block_id: "block-1" })],
+		maxDepth: 1,
+		status: "pending",
+		...overrides,
+	});
+}
+
+test("block hierarchy creates valid advisory-only hierarchy", () => {
+	const result = makeHierarchy();
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const h = result.hierarchy!;
+	assert.equal(h.schema_version, "flowdesk.block_hierarchy.v1");
+	assert.equal(h.total_nodes, 1);
+	assert.equal(h.advisory_only, true);
+	assert.equal(h.non_authorizing, true);
+	assert.equal(h.dispatch_authority_enabled, false);
+	assert.equal(h.release_gate, "operational_intelligence_later_gate");
+	assert.equal(validateFlowDeskBlockHierarchyV1(h).ok, true);
+});
+
+test("block hierarchy enforces max_depth=2 requires allow_deep_decomposition", () => {
+	const withDeep = makeHierarchy({ maxDepth: 2 });
+	assert.equal(withDeep.ok, true);
+	assert.equal(withDeep.hierarchy!.allow_deep_decomposition, true);
+	assert.equal(validateFlowDeskBlockHierarchyV1(withDeep.hierarchy!).ok, true);
+
+	// Manually strip allow_deep_decomposition → validator should reject
+	const stripped = validateFlowDeskBlockHierarchyV1({ ...withDeep.hierarchy!, allow_deep_decomposition: undefined });
+	assert.equal(stripped.ok, false);
+	assert.match(stripped.errors.join("; "), /allow_deep_decomposition must be true when max_depth is 2/);
+});
+
+test("block hierarchy rejects total_nodes mismatch and over 40", () => {
+	const result = makeHierarchy();
+	const h = result.hierarchy!;
+
+	// Forge total_nodes to not match nodes.length
+	const mismatch = validateFlowDeskBlockHierarchyV1({ ...h, total_nodes: 5 });
+	assert.equal(mismatch.ok, false);
+	assert.match(mismatch.errors.join("; "), /total_nodes must equal nodes.length/);
+
+	// Forge total_nodes > 40
+	const over40 = validateFlowDeskBlockHierarchyV1({ ...h, total_nodes: 41, nodes: new Array(41).fill(makeHierarchyNode()) });
+	assert.equal(over40.ok, false);
+	assert.match(over40.errors.join("; "), /total_nodes must not exceed 40/);
+});
+
+test("block hierarchy sets soft warning for >= 25 nodes and rejects authority smuggling", () => {
+	const nodes = Array.from({ length: 25 }, (_, i) => makeHierarchyNode({ block_id: `block-${i}` }));
+	const result = makeHierarchy({ nodes });
+	assert.equal(result.ok, true);
+	assert.equal(result.hierarchy!.node_count_warning, "soft_warning_25_nodes");
+	assert.equal(validateFlowDeskBlockHierarchyV1(result.hierarchy!).ok, true);
+
+	const forgedRuntime = validateFlowDeskBlockHierarchyV1({ ...result.hierarchy!, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /runtime_authority_enabled must be false/);
+});
+
+// ─── FlowDeskBlockScoreReconciliationV1 tests ─────────────────────────────────
+
+function makeReconciliation(overrides: Partial<Parameters<typeof createFlowDeskBlockScoreReconciliationV1>[0]> = {}) {
+	return createFlowDeskBlockScoreReconciliationV1({
+		reconciliationId: "reconcile-1",
+		decompositionRef: "decomp-ref-1",
+		subBlockId: "sub-block-1",
+		freshScoringRef: "scoring-ref-fresh-1",
+		divergedDimensions: ["complexity"],
+		dimensionDeltas: { complexity: 2 },
+		authoritySensitivityIncreased: false,
+		...overrides,
+	});
+}
+
+test("block score reconciliation derives accept_fresh for small divergence", () => {
+	const result = makeReconciliation({ dimensionDeltas: { complexity: 1 }, divergedDimensions: ["complexity"] });
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.reconciliation!;
+	assert.equal(r.action_required, "accept_fresh");
+	assert.equal(r.max_divergence, 1);
+	assert.equal(r.advisory_only, true);
+	assert.equal(r.dispatch_authority_enabled, false);
+	assert.equal(validateFlowDeskBlockScoreReconciliationV1(r).ok, true);
+});
+
+test("block score reconciliation derives escalate_authority for authority_sensitivity_increased", () => {
+	const result = makeReconciliation({ authoritySensitivityIncreased: true, dimensionDeltas: { authority_sensitivity: 1 } });
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.reconciliation!.action_required, "escalate_authority");
+	assert.equal(validateFlowDeskBlockScoreReconciliationV1(result.reconciliation!).ok, true);
+
+	// Also escalate for max_divergence >= 5
+	const bigDivergence = makeReconciliation({ dimensionDeltas: { complexity: 5 } });
+	assert.equal(bigDivergence.ok, true);
+	assert.equal(bigDivergence.reconciliation!.action_required, "escalate_authority");
+
+	// require_review for max_divergence >= 3
+	const mediumDivergence = makeReconciliation({ dimensionDeltas: { complexity: 3 } });
+	assert.equal(mediumDivergence.ok, true);
+	assert.equal(mediumDivergence.reconciliation!.action_required, "require_review");
+});
+
+test("block score reconciliation rejects authority smuggling", () => {
+	const result = makeReconciliation();
+	assert.equal(result.ok, true);
+	const r = result.reconciliation!;
+
+	const forgedDispatch = validateFlowDeskBlockScoreReconciliationV1({ ...r, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled must be false/);
+
+	const forgedFallback = validateFlowDeskBlockScoreReconciliationV1({ ...r, fallback_authority_enabled: true });
+	assert.equal(forgedFallback.ok, false);
+	assert.match(forgedFallback.errors.join("; "), /fallback_authority_enabled must be false/);
+});
+
+test("block score reconciliation rejects inconsistent action_required", () => {
+	const result = makeReconciliation();
+	assert.equal(result.ok, true);
+	const r = result.reconciliation!;
+
+	// max_divergence=2, authority_sensitivity_increased=false → should be accept_fresh, not escalate_authority
+	const inconsistent = validateFlowDeskBlockScoreReconciliationV1({ ...r, action_required: "escalate_authority" });
+	assert.equal(inconsistent.ok, false);
+	assert.match(inconsistent.errors.join("; "), /inconsistent/);
+
+	// unknown action_required value
+	const badAction = validateFlowDeskBlockScoreReconciliationV1({ ...r, action_required: "some_unknown_action" });
+	assert.equal(badAction.ok, false);
+	assert.match(badAction.errors.join("; "), /action_required must be one of/);
+});
+
+// ─── FlowDeskBlockDecompositionFailureV1 tests ────────────────────────────────
+
+function makeFailure(overrides: Partial<Parameters<typeof createFlowDeskBlockDecompositionFailureV1>[0]> = {}) {
+	return createFlowDeskBlockDecompositionFailureV1({
+		failureId: "failure-1",
+		decompositionAttemptId: "attempt-decomp-1",
+		parentBlockScoringRef: "scoring-ref-parent-1",
+		failureReason: "validator_rejected",
+		failedAt: "2026-06-07T00:00:00.000Z",
+		retryAllowed: true,
+		...overrides,
+	});
+}
+
+test("block decomposition failure creates valid advisory-only failure record", () => {
+	const result = makeFailure();
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const f = result.failure!;
+	assert.equal(f.schema_version, "flowdesk.block_decomposition_failure.v1");
+	assert.equal(f.advisory_only, true);
+	assert.equal(f.non_authorizing, true);
+	assert.equal(f.dispatch_authority_enabled, false);
+	assert.equal(f.retry_allowed, true);
+	assert.equal(validateFlowDeskBlockDecompositionFailureV1(f).ok, true);
+});
+
+test("block decomposition failure rejects non-distinct attempt id", () => {
+	const result = makeFailure({ failureId: "same-id", decompositionAttemptId: "same-id" });
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /distinct/);
+});
+
+test("block decomposition failure rejects invalid failure_reason", () => {
+	const result = makeFailure();
+	assert.equal(result.ok, true);
+	const f = result.failure!;
+
+	const badReason = validateFlowDeskBlockDecompositionFailureV1({ ...f, failure_reason: "unknown_reason" });
+	assert.equal(badReason.ok, false);
+	assert.match(badReason.errors.join("; "), /failure_reason must be one of/);
+
+	// Valid reason values
+	for (const reason of ["model_error", "validator_rejected", "coverage_review_failed", "depth_cap_exceeded", "budget_exhausted", "orchestration_error"] as const) {
+		const r = makeFailure({ failureReason: reason });
+		assert.equal(r.ok, true, `reason ${reason} should be valid`);
+	}
+});
+
+test("block decomposition failure rejects authority smuggling and unknown properties", () => {
+	const result = makeFailure();
+	assert.equal(result.ok, true);
+	const f = result.failure!;
+
+	const forgedRuntime = validateFlowDeskBlockDecompositionFailureV1({ ...f, runtime_authority_enabled: true });
+	assert.equal(forgedRuntime.ok, false);
+	assert.match(forgedRuntime.errors.join("; "), /runtime_authority_enabled must be false/);
+
+	const unknown = validateFlowDeskBlockDecompositionFailureV1({ ...f, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+// ─── FlowDeskProposalGeneratorConfigV1 tests ─────────────────────────────────
+
+function makeProposalConfig(overrides: Partial<Parameters<typeof createFlowDeskProposalGeneratorConfigV1>[0]> = {}) {
+	return createFlowDeskProposalGeneratorConfigV1({
+		configId: "config-1",
+		blockId: "block-1",
+		blockScoringRef: "scoring-ref-1",
+		workflowId: "workflow-1",
+		isSubBlock: false,
+		decomposeThresholdMet: false,
+		reviewTier: "dual",
+		reviewTierBasis: "block_score_45_dual_tier",
+		costBudgetHint: "moderate",
+		generationStrategy: "parallel",
+		proposalModelSelectionRef: "model-sel-ref-1",
+		...overrides,
+	});
+}
+
+test("proposal generator config creates valid advisory-only config", () => {
+	const result = makeProposalConfig();
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const c = result.config!;
+	assert.equal(c.schema_version, "flowdesk.proposal_generator_config.v1");
+	assert.equal(c.advisory_only, true);
+	assert.equal(c.non_authorizing, true);
+	assert.equal(c.release_gate, "operational_intelligence_later_gate");
+	assert.equal(c.dispatch_authority_enabled, false);
+	assert.equal(c.review_tier, "dual");
+	assert.equal(c.generation_strategy, "parallel");
+	assert.equal(validateFlowDeskProposalGeneratorConfigV1(c).ok, true);
+});
+
+test("proposal generator config supports optional fields and sub-block variant", () => {
+	const result = makeProposalConfig({
+		isSubBlock: true,
+		decomposeThresholdMet: true,
+		decomposeTriggerArm: "score_gte_50",
+		decompositionRef: "decomp-ref-1",
+		proposalSetRef: "proposal-set-ref-1",
+		reviewTier: "triple",
+		costBudgetHint: "thorough",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const c = result.config!;
+	assert.equal(c.is_sub_block, true);
+	assert.equal(c.decompose_threshold_met, true);
+	assert.equal(c.decompose_trigger_arm, "score_gte_50");
+	assert.equal(c.decomposition_ref, "decomp-ref-1");
+	assert.equal(c.proposal_set_ref, "proposal-set-ref-1");
+	assert.equal(c.review_tier, "triple");
+	assert.equal(validateFlowDeskProposalGeneratorConfigV1(c).ok, true);
+});
+
+test("proposal generator config rejects invalid enum values", () => {
+	const badTier = makeProposalConfig({ reviewTier: "quadruple" as "single" });
+	assert.equal(badTier.ok, false);
+	assert.match(badTier.errors.join("; "), /review_tier must be one of/);
+
+	const badHint = makeProposalConfig({ costBudgetHint: "expensive" as "minimal" });
+	assert.equal(badHint.ok, false);
+	assert.match(badHint.errors.join("; "), /cost_budget_hint must be one of/);
+
+	const badStrategy = makeProposalConfig({ generationStrategy: "random" as "parallel" });
+	assert.equal(badStrategy.ok, false);
+	assert.match(badStrategy.errors.join("; "), /generation_strategy must be one of/);
+});
+
+test("proposal generator config rejects authority smuggling and unknown properties", () => {
+	const result = makeProposalConfig();
+	assert.equal(result.ok, true);
+	const c = result.config!;
+
+	const forgedDispatch = validateFlowDeskProposalGeneratorConfigV1({ ...c, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /dispatch_authority_enabled must be false/);
+
+	const forgedWrite = validateFlowDeskProposalGeneratorConfigV1({ ...c, write_authority_enabled: true });
+	assert.equal(forgedWrite.ok, false);
+	assert.match(forgedWrite.errors.join("; "), /write_authority_enabled must be false/);
+
+	const unknown = validateFlowDeskProposalGeneratorConfigV1({ ...c, providerCall: true });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
 });

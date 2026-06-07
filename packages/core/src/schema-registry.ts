@@ -246,6 +246,11 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.model_capability_profile.v1", "model-capability-profile", "FlowDeskModelCapabilityProfileV1", "later_release"),
   artifactEntry("flowdesk.block_selection_criteria.v1", "block-selection-criteria", "FlowDeskBlockSelectionCriteriaV1", "later_release"),
   artifactEntry("flowdesk.model_selection_result.v1", "model-selection-result", "FlowDeskModelSelectionResultV1", "later_release"),
+  artifactEntry("flowdesk.block_decomposition.v1", "block-decomposition", "FlowDeskBlockDecompositionV1", "later_release"),
+  artifactEntry("flowdesk.block_hierarchy.v1", "block-hierarchy", "FlowDeskBlockHierarchyV1", "later_release"),
+  artifactEntry("flowdesk.block_score_reconciliation.v1", "block-score-reconciliation", "FlowDeskBlockScoreReconciliationV1", "later_release"),
+  artifactEntry("flowdesk.block_decomposition_failure.v1", "block-decomposition-failure", "FlowDeskBlockDecompositionFailureV1", "later_release"),
+  artifactEntry("flowdesk.proposal_generator_config.v1", "proposal-generator-config", "FlowDeskProposalGeneratorConfigV1", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
