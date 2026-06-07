@@ -42,9 +42,13 @@ import {
 import {
 	type Plugin,
 	type PluginModule,
-	type PluginOptions,
+	type PluginOptions as BasePluginOptions,
 	tool,
 } from "@opencode-ai/plugin";
+
+export interface PluginOptions extends BasePluginOptions {
+	model?: string;
+}
 import type { z } from "zod";
 import {
 	flowdeskPluginId,
@@ -3495,7 +3499,7 @@ function durableStateRootFromOptions(
 		: undefined;
 }
 
-function completionWakeMainSessionConfigFromOptions(options?: PluginOptions): FlowDeskCompletionWakeMainSessionConfigV1 | undefined {
+export function completionWakeMainSessionConfigFromOptions(options?: PluginOptions): FlowDeskCompletionWakeMainSessionConfigV1 | undefined {
 	const value = options?.[flowdeskCompletionWakeMainSessionOption];
 	if (!isRecord(value) || value.enabled !== true) return undefined;
 	const rootDir = typeof value.rootDir === "string" && value.rootDir.trim().length > 0
@@ -3506,7 +3510,9 @@ function completionWakeMainSessionConfigFromOptions(options?: PluginOptions): Fl
 		: "flowdesk-main";
 	const providerQualifiedModelId = typeof value.providerQualifiedModelId === "string" && value.providerQualifiedModelId.includes("/")
 		? value.providerQualifiedModelId.trim()
-		: "openai/gpt-5.5";
+		: (typeof options?.model === "string" && options.model.includes("/")
+			? options.model.trim()
+			: "openai/gpt-5.5");
 	if (rootDir === undefined) return undefined;
 	return {
 		enabled: true,

@@ -89,7 +89,9 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskWorkflowDispatchToolName,
 	flowdeskWriteToolName,
 	flowdeskOperationalIntelligenceOption,
+	flowdeskCompletionWakeMainSessionOption,
 	operationalIntelligenceConfigFromOptions,
+	completionWakeMainSessionConfigFromOptions,
 } from "./server.js";
 import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
@@ -11653,3 +11655,15 @@ test("OI config gate is reflected in pre-spike doctor output", async () => {
 		persistAdvisoryEvidence: false,
 	});
 });
+
+test("completionWakeMainSessionConfigFromOptions falls back to global model when specific model is missing", () => {
+	const options = {
+		model: "anthropic/claude-sonnet-4-6",
+		[flowdeskCompletionWakeMainSessionOption]: { enabled: true },
+		[flowdeskDurableStateRootOption]: "/tmp/flowdesk-test",
+	};
+	const result = completionWakeMainSessionConfigFromOptions(options);
+	assert.ok(result);
+	assert.equal(result.providerQualifiedModelId, "anthropic/claude-sonnet-4-6");
+});
+
