@@ -150,6 +150,11 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"workflow_dispatch_plan",
 	"coordinator_retry_decision",
 	"oi_session_summary",
+	"block_decomposition",
+	"block_decomposition_failure",
+	"block_score_reconciliation",
+	"proposal_generator_config",
+	"block_hierarchy",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -205,6 +210,11 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	workflow_dispatch_plan: "workflow-dispatch-plan",
 	coordinator_retry_decision: "coordinator-retry-decision",
 	oi_session_summary: "oi-session-summary",
+	block_decomposition: "block-decomposition",
+	block_decomposition_failure: "block-decomposition-failure",
+	block_score_reconciliation: "block-score-reconciliation",
+	proposal_generator_config: "proposal-generator-config",
+	block_hierarchy: "block-hierarchy",
 };
 
 export function sessionEvidenceDirectoryPath(

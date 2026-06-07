@@ -175,6 +175,10 @@ import {
 	createFlowDeskProposalGeneratorConfigV1,
 	validateFlowDeskProposalGeneratorConfigV1,
 	type FlowDeskProposalGeneratorConfigV1,
+	// R3-S2.3: proposal generator function
+	planFlowDeskWorkflowPlanProposalSetV1,
+	type FlowDeskProposalGenerationInputV1,
+	type FlowDeskProposalGenerationResultV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -7346,4 +7350,83 @@ test("proposal generator config rejects authority smuggling and unknown properti
 	const unknown = validateFlowDeskProposalGeneratorConfigV1({ ...c, providerCall: true });
 	assert.equal(unknown.ok, false);
 	assert.match(unknown.errors.join("; "), /unknown properties/);
+});
+
+// ─── R3-S2.3: planFlowDeskWorkflowPlanProposalSetV1 tests ────────────────────
+
+test("planFlowDeskWorkflowPlanProposalSetV1 creates a valid advisory-only proposal set from a config", () => {
+	const configResult = makeProposalConfig();
+	assert.equal(configResult.ok, true);
+	const config = configResult.config!;
+
+	const input: FlowDeskProposalGenerationInputV1 = {
+		config,
+		workflowId: "workflow-propgen-test-1",
+		blockScoringRef: "scoring-ref-propgen-test-1",
+		proposalSetId: "propset-test-1",
+		createdAt: "2026-06-07T00:00:00.000Z",
+	};
+
+	const result: FlowDeskProposalGenerationResultV1 = planFlowDeskWorkflowPlanProposalSetV1(input);
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.ok(result.proposalSet !== undefined, "proposalSet must be defined on success");
+
+	const set = result.proposalSet!;
+	assert.equal(set.schema_version, "flowdesk.workflow_plan_proposal_set.v1");
+	assert.equal(set.proposal_set_id, "propset-test-1");
+	assert.equal(set.workflow_id, "workflow-propgen-test-1");
+	assert.equal(set.advisory_only, true);
+	assert.equal(set.dispatch_authority_enabled, false);
+	assert.equal(set.approval_authority_enabled, false);
+	assert.equal(set.provider_authority_enabled, false);
+	assert.equal(set.runtime_authority_enabled, false);
+	assert.equal(set.simple_proposal.variant, "simple");
+	assert.equal(set.standard_proposal.variant, "standard");
+	assert.equal(set.detailed_proposal.variant, "detailed");
+	assert.equal(set.high_assurance_proposal.variant, "high_assurance");
+	// Each proposal references the config's model selection ref as the candidate
+	assert.equal(set.simple_proposal.candidates[0].candidate_ref, config.proposal_model_selection_ref);
+	// Evidence refs includes blockScoringRef
+	assert.ok(set.evidence_refs.includes("scoring-ref-propgen-test-1"), "evidence_refs must include blockScoringRef");
+	// Metadata refs includes config_id
+	assert.ok(set.metadata_refs.includes(config.config_id), "metadata_refs must include config_id");
+});
+
+test("planFlowDeskWorkflowPlanProposalSetV1 rejects missing or invalid inputs", () => {
+	const configResult = makeProposalConfig();
+	assert.equal(configResult.ok, true);
+	const config = configResult.config!;
+
+	// Missing workflowId
+	const missingWorkflow = planFlowDeskWorkflowPlanProposalSetV1({
+		config,
+		workflowId: "",
+		blockScoringRef: "scoring-ref-propgen-test-2",
+		proposalSetId: "propset-test-2",
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(missingWorkflow.ok, false);
+	assert.match(missingWorkflow.errors.join("; "), /workflowId is required/);
+
+	// Missing blockScoringRef
+	const missingRef = planFlowDeskWorkflowPlanProposalSetV1({
+		config,
+		workflowId: "workflow-propgen-test-2",
+		blockScoringRef: "",
+		proposalSetId: "propset-test-2",
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(missingRef.ok, false);
+	assert.match(missingRef.errors.join("; "), /blockScoringRef is required/);
+
+	// Invalid config (wrong schema_version)
+	const badConfig = planFlowDeskWorkflowPlanProposalSetV1({
+		config: { ...config, schema_version: "flowdesk.proposal_generator_config.v2" as typeof config.schema_version },
+		workflowId: "workflow-propgen-test-2",
+		blockScoringRef: "scoring-ref-propgen-test-2",
+		proposalSetId: "propset-test-2",
+		createdAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(badConfig.ok, false);
+	assert.match(badConfig.errors.join("; "), /config must be a valid FlowDeskProposalGeneratorConfigV1/);
 });

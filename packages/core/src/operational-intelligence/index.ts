@@ -359,3 +359,10 @@ export {
 	createFlowDeskProposalGeneratorConfigV1,
 	validateFlowDeskProposalGeneratorConfigV1,
 } from "./proposal-generator-config.js";
+
+// proposal-generator (R3-S2: planning bridge from config → proposal set)
+export {
+	type FlowDeskProposalGenerationInputV1,
+	type FlowDeskProposalGenerationResultV1,
+	planFlowDeskWorkflowPlanProposalSetV1,
+} from "./proposal-generator.js";

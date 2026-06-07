@@ -1560,3 +1560,328 @@ test("session evidence reload blocks redaction failures and reports inventory", 
     assert.match(telemetry?.lastBlockedReason ?? "", /forbidden raw payload|token|credential-shaped/i);
   });
 });
+
+// ─── R3-S2.3: New evidence class tests ───────────────────────────────────────
+
+function blockDecompositionRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.block_decomposition.v1",
+    decomposition_id: "decomp-1",
+    parent_block_id: "block-parent-1",
+    parent_block_scoring_ref: "scoring-ref-parent-1",
+    trigger_score: 52,
+    trigger_condition_met: "score_gte_50",
+    trigger_dimensions_met: ["scope"],
+    sub_blocks: [
+      {
+        sub_block_id: "sub-block-a-1",
+        sub_block_label: "sub-block-a",
+        estimated_scope: 5,
+        estimated_complexity: 4,
+        estimated_coupling: 3,
+        estimated_authority_sensitivity: 2,
+        estimated_novelty: 3,
+        estimated_category: "implementation",
+        estimated_block_score: 28.5,
+      },
+      {
+        sub_block_id: "sub-block-b-1",
+        sub_block_label: "sub-block-b",
+        estimated_scope: 4,
+        estimated_complexity: 3,
+        estimated_coupling: 2,
+        estimated_authority_sensitivity: 1,
+        estimated_novelty: 2,
+        estimated_category: "verification",
+        estimated_block_score: 20.0,
+      },
+    ],
+    current_depth: 0,
+    max_depth: 1,
+    coverage_review_quorum_required: 1,
+    coverage_verdict_refs: [],
+    structural_coverage_pass: false,
+    status: "draft",
+    decomposition_model_selection_ref: "model-sel-decomp-1",
+    non_inheriting_parent_authority: true,
+    advisory_only: true,
+    non_authorizing: true,
+    release_gate: "operational_intelligence_later_gate",
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    model_selection_authority_enabled: false,
+    ranking_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+function blockDecompositionFailureRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.block_decomposition_failure.v1",
+    failure_id: "failure-decomp-1",
+    decomposition_attempt_id: "attempt-decomp-1",
+    parent_block_scoring_ref: "scoring-ref-failure-parent-1",
+    failure_reason: "model_error",
+    failed_at: now,
+    retry_allowed: true,
+    advisory_only: true,
+    non_authorizing: true,
+    release_gate: "operational_intelligence_later_gate",
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    model_selection_authority_enabled: false,
+    ranking_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+function blockScoreReconciliationRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.block_score_reconciliation.v1",
+    reconciliation_id: "reconcile-1",
+    decomposition_ref: "decomp-ref-reconcile-1",
+    sub_block_id: "sub-block-reconcile-1",
+    fresh_scoring_ref: "scoring-ref-fresh-1",
+    diverged_dimensions: ["scope"],
+    dimension_deltas: { scope: 1.5 },
+    max_divergence: 1.5,
+    authority_sensitivity_increased: false,
+    action_required: "accept_fresh",
+    advisory_only: true,
+    non_authorizing: true,
+    release_gate: "operational_intelligence_later_gate",
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    model_selection_authority_enabled: false,
+    ranking_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+function proposalGeneratorConfigRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.proposal_generator_config.v1",
+    config_id: "config-propgen-1",
+    block_id: "block-propgen-1",
+    block_scoring_ref: "scoring-ref-propgen-1",
+    workflow_id: workflowId,
+    is_sub_block: false,
+    decompose_threshold_met: false,
+    review_tier: "dual",
+    review_tier_basis: "standard-dual-review",
+    cost_budget_hint: "moderate",
+    generation_strategy: "parallel",
+    proposal_model_selection_ref: "model-sel-propgen-1",
+    advisory_only: true,
+    non_authorizing: true,
+    release_gate: "operational_intelligence_later_gate",
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    model_selection_authority_enabled: false,
+    ranking_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+function blockHierarchyRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.block_hierarchy.v1",
+    hierarchy_id: "hierarchy-1",
+    root_block_id: "block-root-1",
+    workflow_id: workflowId,
+    revision_id: 1,
+    nodes: [
+      {
+        block_id: "block-root-1",
+        depth: 0,
+        node_status: "pending",
+      },
+    ],
+    total_nodes: 1,
+    max_depth: 1,
+    status: "pending",
+    advisory_only: true,
+    non_authorizing: true,
+    release_gate: "operational_intelligence_later_gate",
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    model_selection_authority_enabled: false,
+    ranking_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+test("session evidence reload accepts a valid block_decomposition record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_decomposition", "decomp-good-1"), JSON.stringify(blockDecompositionRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "block_decomposition");
+    assert.equal(result.entries[0].evidenceId, "decomp-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects block_decomposition with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_decomposition", "decomp-forged-1"), JSON.stringify(blockDecompositionRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence reload accepts a valid block_decomposition_failure record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_decomposition_failure", "failure-good-1"), JSON.stringify(blockDecompositionFailureRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "block_decomposition_failure");
+    assert.equal(result.entries[0].evidenceId, "failure-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects block_decomposition_failure with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_decomposition_failure", "failure-forged-1"), JSON.stringify(blockDecompositionFailureRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence reload accepts a valid block_score_reconciliation record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_score_reconciliation", "reconcile-good-1"), JSON.stringify(blockScoreReconciliationRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "block_score_reconciliation");
+    assert.equal(result.entries[0].evidenceId, "reconcile-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects block_score_reconciliation with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_score_reconciliation", "reconcile-forged-1"), JSON.stringify(blockScoreReconciliationRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence reload accepts a valid proposal_generator_config record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "proposal_generator_config", "config-good-1"), JSON.stringify(proposalGeneratorConfigRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "proposal_generator_config");
+    assert.equal(result.entries[0].evidenceId, "config-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects proposal_generator_config with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "proposal_generator_config", "config-forged-1"), JSON.stringify(proposalGeneratorConfigRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+test("session evidence reload accepts a valid block_hierarchy record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_hierarchy", "hierarchy-good-1"), JSON.stringify(blockHierarchyRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "block_hierarchy");
+    assert.equal(result.entries[0].evidenceId, "hierarchy-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects block_hierarchy with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "block_hierarchy", "hierarchy-forged-1"), JSON.stringify(blockHierarchyRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});

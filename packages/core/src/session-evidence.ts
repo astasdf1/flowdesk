@@ -48,6 +48,13 @@ import { validateFlowDeskWorkflowAuthoringResultV1 } from "./workflow-authoring-
 import { validateFlowDeskWorkflowDispatchPlanV1 } from "./workflow-dispatch-plan.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskOISessionSummaryV1 } from "./operational-intelligence/session-summary.js";
+import {
+	validateFlowDeskBlockDecompositionV1,
+	validateFlowDeskBlockHierarchyV1,
+	validateFlowDeskBlockScoreReconciliationV1,
+	validateFlowDeskBlockDecompositionFailureV1,
+	validateFlowDeskProposalGeneratorConfigV1,
+} from "./operational-intelligence/index.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
 import {
@@ -150,6 +157,11 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	workflow_dispatch_plan: "flowdesk.workflow_dispatch_plan.v1",
 	coordinator_retry_decision: "flowdesk.coordinator_retry_decision.v1",
 	oi_session_summary: "flowdesk.oi_session_summary.v1",
+	block_decomposition: "flowdesk.block_decomposition.v1",
+	block_decomposition_failure: "flowdesk.block_decomposition_failure.v1",
+	block_score_reconciliation: "flowdesk.block_score_reconciliation.v1",
+	proposal_generator_config: "flowdesk.proposal_generator_config.v1",
+	block_hierarchy: "flowdesk.block_hierarchy.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -894,6 +906,16 @@ function validateEvidenceShape(
 		return validateFlowDeskManagedDispatchBetaTelemetryCorrelationShapeV1(record);
 	if (evidenceClass === "oi_session_summary")
 		return validateFlowDeskOISessionSummaryV1(record);
+	if (evidenceClass === "block_decomposition")
+		return validateFlowDeskBlockDecompositionV1(record);
+	if (evidenceClass === "block_decomposition_failure")
+		return validateFlowDeskBlockDecompositionFailureV1(record);
+	if (evidenceClass === "block_score_reconciliation")
+		return validateFlowDeskBlockScoreReconciliationV1(record);
+	if (evidenceClass === "proposal_generator_config")
+		return validateFlowDeskProposalGeneratorConfigV1(record);
+	if (evidenceClass === "block_hierarchy")
+		return validateFlowDeskBlockHierarchyV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))
