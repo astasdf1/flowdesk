@@ -382,3 +382,13 @@ export {
 	type FlowDeskR3AdmissionOrchestrationResultV1,
 	evaluateR3AdmissionV1,
 } from "./r3-admission-orchestrator.js";
+
+// multi-variant-executor (R3-S4: multi-variant test executor)
+export {
+	type VariantLabel,
+	type PerVariantScoreSummary,
+	type FlowDeskMultiVariantAggregationV1,
+	type ExecuteMultiVariantTestV1Result,
+	type ExecuteMultiVariantTestV1Input,
+	executeMultiVariantTestV1,
+} from "./multi-variant-executor.js";

@@ -252,6 +252,8 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.block_decomposition_failure.v1", "block-decomposition-failure", "FlowDeskBlockDecompositionFailureV1", "later_release"),
   artifactEntry("flowdesk.proposal_generator_config.v1", "proposal-generator-config", "FlowDeskProposalGeneratorConfigV1", "later_release"),
   artifactEntry("flowdesk.r3_reservation_lifecycle_event.v1", "r3-reservation-lifecycle-event", "FlowDeskR3ReservationLifecycleEventV1", "later_release"),
+  artifactEntry("flowdesk.multi_variant_aggregation.v1", "multi-variant-aggregation", "FlowDeskMultiVariantAggregationV1", "later_release"),
+  artifactEntry("flowdesk.multi_variant_test_result.v1", "multi-variant-test-result", "ExecuteMultiVariantTestV1Result", "later_release"),
   {
     schemaId: "flowdesk.reference_search.request.v1",
     fixturePrefix: "reference-search",
