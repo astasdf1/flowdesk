@@ -162,7 +162,9 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.proposal_generator_config.v1": ["schema_version", "config_id", "block_id", "block_scoring_ref", "workflow_id", "is_sub_block", "decompose_threshold_met", "review_tier", "review_tier_basis", "cost_budget_hint", "generation_strategy", "proposal_model_selection_ref", "advisory_only", "non_authorizing", "release_gate", "dispatch_authority_enabled", "approval_authority_enabled", "provider_authority_enabled", "runtime_authority_enabled", "external_write_authority_enabled", "remote_write_authority_enabled", "fallback_authority_enabled", "lane_launch_authority_enabled", "write_authority_enabled", "hard_chat_authority_enabled", "model_selection_authority_enabled", "ranking_authority_enabled"],
   "flowdesk.r3_reservation_lifecycle_event.v1": ["schema_version", "event_id", "reservation_id", "workflow_id", "attempt_id", "previous_status", "next_status", "event_kind", "event_at", "day_key", "reason_ref", "release_gate", "advisory_only", "non_authorizing", "dispatch_authority_enabled", "approval_authority_enabled", "provider_authority_enabled", "runtime_authority_enabled", "external_write_authority_enabled", "remote_write_authority_enabled", "fallback_authority_enabled", "lane_launch_authority_enabled", "write_authority_enabled", "hard_chat_authority_enabled"],
   "flowdesk.multi_variant_aggregation.v1": ["schema_version", "aggregation_id", "source_variant_result_refs", "per_variant_scores", "best_variant_label", "best_variant_normalized_score", "mean_normalized_score", "score_spread", "aggregation_strategy", "model_profile_ref", "aggregated_at", "advisory_only", "non_authorizing", "dispatch_authority_enabled"],
-  "flowdesk.multi_variant_test_result.v1": ["schema_version", "execution_id", "variant_results", "reconciliations", "aggregation", "lifecycle_event", "signature_index_update", "errors", "advisory_only"]
+  "flowdesk.multi_variant_test_result.v1": ["schema_version", "execution_id", "variant_results", "reconciliations", "aggregation", "lifecycle_event", "signature_index_update", "errors", "advisory_only"],
+  "flowdesk.multi_model_aggregation.v1": ["schema_version", "aggregation_id", "best_model_ref", "best_provider_qualified_model_id", "best_composite_score", "model_results", "scored_model_count", "skipped_model_count", "score_delta", "election_confidence", "tie_break_applied", "aggregated_at", "advisory_only", "non_authorizing", "dispatch_authority_enabled"],
+  "flowdesk.multi_model_fanout_result_envelope.v1": ["schema_version", "execution_id", "execution_mode", "admission_ref", "reservation_ref", "workflow_signature", "variant_used", "aggregation", "reservation_consumed", "execution_status", "evaluated_at", "advisory_only"]
 } satisfies Record<string, readonly string[]>;
 
 const optionalFields: Record<string, readonly string[]> = {
@@ -258,7 +260,9 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.block_decomposition_failure.v1": ["partial_decomposition_ref", "failure_detail_ref"],
   "flowdesk.proposal_generator_config.v1": ["decomposition_ref", "decompose_trigger_arm", "proposal_set_ref"],
   "flowdesk.multi_variant_aggregation.v1": [],
-  "flowdesk.multi_variant_test_result.v1": []
+  "flowdesk.multi_variant_test_result.v1": [],
+  "flowdesk.multi_model_aggregation.v1": ["tie_break_reason"],
+  "flowdesk.multi_model_fanout_result_envelope.v1": ["failure_reason"]
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {

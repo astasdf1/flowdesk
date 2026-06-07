@@ -392,3 +392,13 @@ export {
 	type ExecuteMultiVariantTestV1Input,
 	executeMultiVariantTestV1,
 } from "./multi-variant-executor.js";
+
+// multi-model-fanout-executor (R3-S5: multi-model fanout executor)
+export {
+	type ElectionConfidence,
+	type FlowDeskModelFanoutResultV1,
+	type FlowDeskMultiModelAggregationV1,
+	type FlowDeskMultiModelFanoutResultEnvelopeV1,
+	type ExecuteMultiModelFanoutTestV1Input,
+	executeMultiModelFanoutTestV1,
+} from "./multi-model-fanout-executor.js";
