@@ -160,6 +160,9 @@ import {
 	validateFlowDeskRoutingInfluencePolicyV1,
 	validateFlowDeskRoutingAdvisoryEvaluationV1,
 	type FlowDeskRoutingAdvisoryLedgerEntryV1,
+	compactFlowDeskAdvisoryLedgerV1,
+	validateFlowDeskLedgerCompactionSnapshotV1,
+	decodeFlowDeskRoutingAdvisoryLedgerJsonlV1,
 	// block decomposition contracts
 	createFlowDeskBlockDecompositionV1,
 	validateFlowDeskBlockDecompositionV1,
@@ -7007,6 +7010,191 @@ test("TC-RET-2: Cap pruning keeps newest routing advisory entries", () => {
 	assert.equal(evaluation.model_summaries.length, 1);
 	assert.equal(evaluation.model_summaries[0].sample_count, 2);
 	assert.equal(evaluation.model_summaries[0].weighted_score, 0.8);
+});
+
+test("TC-RET-3: Ledger compaction snapshot prunes TTL-expired entries", () => {
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [
+			routingEntry({ signature_ref: "signature-compact-ttl", model_ref: "prof-routing-a", weighted_score: 0.2, recorded_at: "2026-05-01T00:00:00.000Z" }),
+			routingEntry({ signature_ref: "signature-compact-ttl", model_ref: "prof-routing-b", weighted_score: 0.9, recorded_at: "2026-06-06T00:00:00.000Z" }),
+		],
+		policy: createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 20 }),
+		policyRef: "policy-compact-ttl",
+		compactionId: "compaction-ttl-1",
+		workflowId: "workflow-compact-ttl",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.retainedEntries!.length, 1);
+	assert.equal(result.retainedEntries![0].model_ref, "prof-routing-b");
+	assert.equal(result.snapshot!.original_entry_count, 2);
+	assert.equal(result.snapshot!.retained_entry_count, 1);
+	assert.equal(result.snapshot!.pruned_entry_count, 1);
+	assert.equal(result.snapshot!.pruned_ttl_count, 1);
+	assert.equal(result.snapshot!.pruned_cap_count, 0);
+	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1(result.snapshot).ok, true);
+});
+
+test("TC-RET-4: Ledger compaction cap keeps newest entries per signature", () => {
+	const entries = [
+		routingEntry({ signature_ref: "signature-compact-cap-a", model_ref: "prof-routing-a", weighted_score: 0.1, recorded_at: "2026-06-01T00:00:00.000Z" }),
+		routingEntry({ signature_ref: "signature-compact-cap-a", model_ref: "prof-routing-a", weighted_score: 0.2, recorded_at: "2026-06-02T00:00:00.000Z" }),
+		routingEntry({ signature_ref: "signature-compact-cap-a", model_ref: "prof-routing-a", weighted_score: 0.3, recorded_at: "2026-06-03T00:00:00.000Z" }),
+		routingEntry({ signature_ref: "signature-compact-cap-b", model_ref: "prof-routing-b", weighted_score: 0.4, recorded_at: "2026-06-01T00:00:00.000Z" }),
+		routingEntry({ signature_ref: "signature-compact-cap-b", model_ref: "prof-routing-b", weighted_score: 0.5, recorded_at: "2026-06-02T00:00:00.000Z" }),
+		routingEntry({ signature_ref: "signature-compact-cap-b", model_ref: "prof-routing-b", weighted_score: 0.6, recorded_at: "2026-06-03T00:00:00.000Z" }),
+	];
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries,
+		policy: createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 2 }),
+		policyRef: "policy-compact-cap",
+		compactionId: "compaction-cap-1",
+		triggerReason: "count_limit",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.deepEqual(result.retainedEntries!.map((entry) => `${entry.signature_ref}:${entry.recorded_at}`), [
+		"signature-compact-cap-a:2026-06-02T00:00:00.000Z",
+		"signature-compact-cap-a:2026-06-03T00:00:00.000Z",
+		"signature-compact-cap-b:2026-06-02T00:00:00.000Z",
+		"signature-compact-cap-b:2026-06-03T00:00:00.000Z",
+	]);
+	assert.equal(result.snapshot!.original_entry_count, 6);
+	assert.equal(result.snapshot!.retained_entry_count, 4);
+	assert.equal(result.snapshot!.pruned_ttl_count, 0);
+	assert.equal(result.snapshot!.pruned_cap_count, 2);
+	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1(result.snapshot).ok, true);
+});
+
+test("TC-RET-5: Ledger compaction blocks linked ledger entries", () => {
+	const linked = { ...routingEntry({ signature_ref: "signature-linked", recorded_at: "2026-06-06T00:00:00.000Z" }), sequence: 0 } as FlowDeskRoutingAdvisoryLedgerEntryV1;
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [linked],
+		policyRef: "policy-linked",
+		compactionId: "compaction-linked-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /linked ledger fields are unsupported/);
+});
+
+test("TC-RET-6: Ledger compaction reports byte sizes and JSONL decode streams lines", () => {
+	const jsonl = [
+		JSON.stringify(routingEntry({ signature_ref: "signature-jsonl", model_ref: "prof-routing-a", weighted_score: 0.1, recorded_at: "2026-06-01T00:00:00.000Z" })),
+		JSON.stringify(routingEntry({ signature_ref: "signature-jsonl", model_ref: "prof-routing-b", weighted_score: 0.9, recorded_at: "2026-06-06T00:00:00.000Z" })),
+	].join("\n") + "\n";
+	const decoded = decodeFlowDeskRoutingAdvisoryLedgerJsonlV1(jsonl);
+	assert.equal(decoded.ok, true, decoded.errors.join("; "));
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: decoded.entries!,
+		policy: createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 1 }),
+		policyRef: "policy-byte-size",
+		compactionId: "compaction-byte-size-1",
+		triggerReason: "size_limit",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.snapshot!.byte_size_pre > result.snapshot!.byte_size_post, true);
+	assert.match(result.snapshot!.ledger_hash_before, /^sha256-[a-f0-9]{64}$/);
+	assert.match(result.snapshot!.ledger_hash_after, /^sha256-[a-f0-9]{64}$/);
+	assert.notEqual(result.snapshot!.ledger_hash_before, result.snapshot!.ledger_hash_after);
+	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1({ ...result.snapshot!, retained_entry_count: 99 }).ok, false);
+});
+
+test("TC-RET-7: Ledger compaction snapshot rejects authority smuggling", () => {
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [routingEntry({ signature_ref: "signature-auth", recorded_at: "2026-06-06T00:00:00.000Z" })],
+		policyRef: "policy-auth",
+		compactionId: "compaction-auth-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1({ ...result.snapshot!, dispatch_authority_enabled: true }).ok, false);
+	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1({ ...result.snapshot!, advisory_only: false }).ok, false);
+});
+
+test("TC-RET-8: Ledger compaction snapshot rejects count invariant drift", () => {
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [routingEntry({ signature_ref: "signature-count", recorded_at: "2026-05-01T00:00:00.000Z" })],
+		policyRef: "policy-count",
+		compactionId: "compaction-count-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const validation = validateFlowDeskLedgerCompactionSnapshotV1({ ...result.snapshot!, original_entry_count: 3 });
+	assert.equal(validation.ok, false);
+	assert.match(validation.errors.join("; "), /original_entry_count must equal/);
+});
+
+test("TC-RET-9: Ledger compaction snapshot rejects prune breakdown drift", () => {
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [routingEntry({ signature_ref: "signature-breakdown", recorded_at: "2026-05-01T00:00:00.000Z" })],
+		policyRef: "policy-breakdown",
+		compactionId: "compaction-breakdown-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const validation = validateFlowDeskLedgerCompactionSnapshotV1({ ...result.snapshot!, pruned_cap_count: 4 });
+	assert.equal(validation.ok, false);
+	assert.match(validation.errors.join("; "), /pruned_entry_count must equal/);
+});
+
+test("TC-RET-10: Routing advisory JSONL decoder rejects malformed lines", () => {
+	const decoded = decodeFlowDeskRoutingAdvisoryLedgerJsonlV1(`${JSON.stringify(routingEntry({ signature_ref: "signature-malformed" }))}\n{not-json}\n`);
+	assert.equal(decoded.ok, false);
+	assert.match(decoded.errors.join("; "), /malformed JSON/);
+});
+
+test("TC-RET-11: Ledger compaction blocks previous_ledger_entry_id linked entries", () => {
+	const linked = { ...routingEntry({ signature_ref: "signature-prev", recorded_at: "2026-06-06T00:00:00.000Z" }), previous_ledger_entry_id: "ledger-prev-1" } as FlowDeskRoutingAdvisoryLedgerEntryV1;
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [linked],
+		policyRef: "policy-prev",
+		compactionId: "compaction-prev-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(result.ok, false);
+	assert.match(result.errors.join("; "), /linked ledger fields are unsupported/);
+});
+
+test("TC-RET-12: Ledger compaction with no pruning preserves hashes and counts", () => {
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [routingEntry({ signature_ref: "signature-no-prune", recorded_at: "2026-06-06T00:00:00.000Z" })],
+		policy: createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 20 }),
+		policyRef: "policy-no-prune",
+		compactionId: "compaction-no-prune-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.snapshot!.retained_entry_count, 1);
+	assert.equal(result.snapshot!.pruned_entry_count, 0);
+	assert.equal(result.snapshot!.byte_size_pre, result.snapshot!.byte_size_post);
+	assert.equal(result.snapshot!.ledger_hash_before, result.snapshot!.ledger_hash_after);
+});
+
+test("TC-RET-13: Ledger compaction retains entries exactly at TTL cutoff", () => {
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [routingEntry({ signature_ref: "signature-cutoff", recorded_at: "2026-05-24T00:00:00.000Z" })],
+		policy: createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 20 }),
+		policyRef: "policy-cutoff",
+		compactionId: "compaction-cutoff-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.retainedEntries!.length, 1);
+	assert.equal(result.snapshot!.pruned_ttl_count, 0);
 });
 
 test("TC-TIE-1: Advisory tie-break wins on exact quota and fitness tie", () => {

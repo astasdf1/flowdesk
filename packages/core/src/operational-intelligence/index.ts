@@ -326,6 +326,17 @@ export {
 	validateFlowDeskRoutingAdvisoryEvaluationV1,
 } from "./routing-advisory.js";
 
+// ledger-compaction (R3-S6.5: retention/compaction snapshot, pure advisory logic)
+export {
+	type FlowDeskLedgerCompactionTriggerReasonV1,
+	type FlowDeskLedgerCompactionSnapshotV1,
+	type FlowDeskLedgerCompactionResultV1,
+	type FlowDeskRoutingAdvisoryLedgerDecodeResultV1,
+	compactFlowDeskAdvisoryLedgerV1,
+	validateFlowDeskLedgerCompactionSnapshotV1,
+	decodeFlowDeskRoutingAdvisoryLedgerJsonlV1,
+} from "./ledger-compaction.js";
+
 // block-decomposition (operational intelligence later gate)
 export {
 	type FlowDeskSubBlockEstimateV1,
