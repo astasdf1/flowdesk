@@ -152,6 +152,7 @@ import {
 	selectModelForBlock,
 	type FlowDeskModelSelectionResultV1,
 	type FlowDeskModelSelectionReasonV1,
+	type FlowDeskModelSelectionPurposeV1,
 	// block decomposition contracts
 	createFlowDeskBlockDecompositionV1,
 	validateFlowDeskBlockDecompositionV1,
@@ -6837,6 +6838,108 @@ test("selectModelForBlock: profile_expired fails an expired profile", () => {
 	const expiredEntry = r.ineligible_model_entries.find((e) => e.model_ref === "prof-h");
 	assert.ok(expiredEntry);
 	assert.equal(expiredEntry.failed_threshold, "profile_expired");
+});
+
+// ─── R3-S2.2: selectModelForBlock purpose parameter tests ────────────────────
+
+test("selectModelForBlock: purpose=block_decomposition rejects models with complexity_handling_score < 7", () => {
+	// Model with complexity_handling_score=6 should be rejected when purpose=block_decomposition
+	const profileLow = makeProfile({
+		profile_id: "prof-purpose-low",
+		model_ref: "prof-purpose-low",
+		provider_qualified_model_id: "openai/gpt-4",
+		complexity_handling_score: 6, // below the boosted threshold of 7
+	});
+	// Model with complexity_handling_score=7 should pass when purpose=block_decomposition
+	const profileHigh = makeProfile({
+		profile_id: "prof-purpose-high",
+		model_ref: "prof-purpose-high",
+		provider_qualified_model_id: "anthropic/claude-sonnet-4-6",
+		complexity_handling_score: 7, // meets the boosted threshold
+	});
+	const quotaMap = new Map([["prof-purpose-low", 90], ["prof-purpose-high", 70]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria({ min_complexity_handling_required: 2 }), // base criteria allows score=2+
+		profiles: [profileLow, profileHigh],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-purpose-1",
+		quotaSnapshotRef: "quota-snap-purpose-1",
+		criteriaRef: "criteria-select-1",
+		purpose: "block_decomposition",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	// Low-complexity model is ineligible due to boosted block_decomposition threshold
+	assert.equal(r.selection_reason, "only_eligible");
+	assert.equal(r.selected_model_ref, "prof-purpose-high");
+	assert.equal(r.selection_failed, false);
+	const lowEntry = r.ineligible_model_entries.find((e) => e.model_ref === "prof-purpose-low");
+	assert.ok(lowEntry, "low-complexity model must appear in ineligible entries");
+	assert.equal(lowEntry!.failed_threshold, "complexity_handling");
+	assert.equal(lowEntry!.actual_score, 6);
+	assert.equal(lowEntry!.required_score, 7);
+	// selection_purpose is propagated to result
+	assert.equal(r.selection_purpose, "block_decomposition");
+});
+
+test("selectModelForBlock: purpose=proposal_generation uses normal selection (no boosted threshold)", () => {
+	// Model with complexity_handling_score=5 — would be rejected by block_decomposition but OK here
+	const profileMid = makeProfile({
+		profile_id: "prof-proposal-mid",
+		model_ref: "prof-proposal-mid",
+		provider_qualified_model_id: "anthropic/claude-sonnet-4-6",
+		complexity_handling_score: 5,
+	});
+	const quotaMap = new Map([["prof-proposal-mid", 80]]);
+	const result = selectModelForBlock({
+		criteria: makeCriteria({ min_complexity_handling_required: 2 }),
+		profiles: [profileMid],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-purpose-2",
+		quotaSnapshotRef: "quota-snap-purpose-2",
+		criteriaRef: "criteria-select-1",
+		purpose: "proposal_generation",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	// Normal selection — complexity 5 >= 2 base threshold so model is eligible
+	assert.equal(r.selection_reason, "only_eligible");
+	assert.equal(r.selected_model_ref, "prof-proposal-mid");
+	assert.equal(r.selection_failed, false);
+	assert.equal(r.ineligible_model_entries.length, 0);
+	assert.equal(r.selection_purpose, "proposal_generation");
+});
+
+test("selectModelForBlock: without purpose falls back to normal selection (backward compatible)", () => {
+	// Model with complexity_handling_score=5 — normal behavior, no purpose-boosted filter
+	const profileCompat = makeProfile({
+		profile_id: "prof-compat",
+		model_ref: "prof-compat",
+		provider_qualified_model_id: "anthropic/claude-sonnet-4-6",
+		complexity_handling_score: 5,
+	});
+	const quotaMap = new Map([["prof-compat", 80]]);
+	// No purpose field provided
+	const result = selectModelForBlock({
+		criteria: makeCriteria({ min_complexity_handling_required: 2 }),
+		profiles: [profileCompat],
+		quotaMap,
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-purpose-3",
+		quotaSnapshotRef: "quota-snap-purpose-3",
+		criteriaRef: "criteria-select-1",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const r = result.result!;
+	// Normal selection without purpose — complexity 5 passes base threshold of 2
+	assert.equal(r.selection_reason, "only_eligible");
+	assert.equal(r.selected_model_ref, "prof-compat");
+	assert.equal(r.selection_failed, false);
+	assert.equal(r.ineligible_model_entries.length, 0);
+	// selection_purpose is absent when not provided
+	assert.equal(r.selection_purpose, undefined);
 });
 
 // ─── FlowDeskBlockDecompositionV1 tests ─────────────────────────────────────

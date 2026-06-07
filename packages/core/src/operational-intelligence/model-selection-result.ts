@@ -19,6 +19,15 @@ import type { FlowDeskBlockSelectionCriteriaV1 } from "./block-selection-criteri
 
 // ─── Supporting types ─────────────────────────────────────────────────────────
 
+export type FlowDeskModelSelectionPurposeV1 =
+	| "block_decomposition"   // selects high-performance model for decomposing complex blocks
+	| "proposal_generation";  // selects appropriate model for generating proposals
+
+const VALID_SELECTION_PURPOSES: readonly FlowDeskModelSelectionPurposeV1[] = [
+	"block_decomposition",
+	"proposal_generation",
+];
+
 export type FlowDeskModelSelectionReasonV1 =
 	| "highest_quota_among_eligible"
 	| "best_fitness_eligible"
@@ -71,6 +80,7 @@ export interface FlowDeskModelSelectionResultV1 {
 	quota_snapshot_ref: string;
 	selection_failed: boolean;
 	escalation_required: boolean;
+	selection_purpose?: FlowDeskModelSelectionPurposeV1;
 	// 12 authority flags + advisory + non-authorizing + release gate
 	advisory_only: true;
 	non_authorizing: true;
@@ -104,6 +114,7 @@ const ALLOWED_FIELDS: readonly string[] = [
 	"quota_snapshot_ref",
 	"selection_failed",
 	"escalation_required",
+	"selection_purpose",
 	"advisory_only",
 	"non_authorizing",
 	"release_gate",
@@ -161,6 +172,7 @@ export function createFlowDeskModelSelectionResultV1(input: {
 	selectionReason: FlowDeskModelSelectionReasonV1;
 	ineligibleModelEntries: FlowDeskIneligibleModelEntryV1[];
 	quotaSnapshotRef: string;
+	selectionPurpose?: FlowDeskModelSelectionPurposeV1;
 }): { ok: boolean; errors: string[]; result?: FlowDeskModelSelectionResultV1 } {
 	const errors: string[] = [];
 
@@ -224,6 +236,7 @@ export function createFlowDeskModelSelectionResultV1(input: {
 		quota_snapshot_ref: input.quotaSnapshotRef,
 		selection_failed: selectionFailed,
 		escalation_required: escalationRequired,
+		...(input.selectionPurpose !== undefined ? { selection_purpose: input.selectionPurpose } : {}),
 		advisory_only: true,
 		non_authorizing: true,
 		release_gate: "operational_intelligence_later_gate",
@@ -318,6 +331,13 @@ export function validateFlowDeskModelSelectionResultV1(value: unknown): Validati
 		errors.push("escalation_required must be true when selection_failed=true");
 	}
 
+	// selection_purpose (optional)
+	if (record.selection_purpose !== undefined) {
+		if (typeof record.selection_purpose !== "string" || !VALID_SELECTION_PURPOSES.includes(record.selection_purpose as FlowDeskModelSelectionPurposeV1)) {
+			errors.push(`selection_purpose must be one of: ${VALID_SELECTION_PURPOSES.join(", ")}`);
+		}
+	}
+
 	// selected_model_ref must be in eligible_model_refs when not ""
 	if (typeof record.selected_model_ref === "string" && record.selected_model_ref !== "") {
 		if (Array.isArray(record.eligible_model_refs) && !(record.eligible_model_refs as string[]).includes(record.selected_model_ref)) {
@@ -363,6 +383,7 @@ export function selectModelForBlock(input: {
 	selectionId: string;
 	quotaSnapshotRef: string;
 	criteriaRef: string;
+	purpose?: FlowDeskModelSelectionPurposeV1;
 }): { ok: boolean; errors: string[]; result?: FlowDeskModelSelectionResultV1 } {
 	const errors: string[] = [];
 
@@ -428,6 +449,18 @@ export function selectModelForBlock(input: {
 				failed_threshold: "authority_score",
 				actual_score: profile.authority_sensitivity_score,
 				required_score: criteria.min_authority_score_required,
+			});
+			continue;
+		}
+
+		// Step 4b: Purpose-based boosted threshold for block_decomposition
+		// Requires complexity_handling_score >= 7 (boosted minimum for high-performance decomposition models)
+		if (input.purpose === "block_decomposition" && profile.complexity_handling_score < 7) {
+			ineligibleEntries.push({
+				model_ref: profile.model_ref,
+				failed_threshold: "complexity_handling",
+				actual_score: profile.complexity_handling_score,
+				required_score: 7,
 			});
 			continue;
 		}
@@ -499,5 +532,6 @@ export function selectModelForBlock(input: {
 		selectionReason,
 		ineligibleModelEntries: ineligibleEntries,
 		quotaSnapshotRef: input.quotaSnapshotRef,
+		selectionPurpose: input.purpose,
 	});
 }

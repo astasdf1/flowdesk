@@ -301,6 +301,7 @@ export {
 
 // model-selection-result (P7-S13.7)
 export {
+	type FlowDeskModelSelectionPurposeV1,
 	type FlowDeskModelSelectionReasonV1,
 	type FlowDeskIneligibleModelFailedThresholdV1,
 	type FlowDeskIneligibleModelEntryV1,

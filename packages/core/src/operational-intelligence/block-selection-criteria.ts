@@ -18,6 +18,7 @@ import {
 	type FlowDeskTaskBlockScoringV1,
 	type FlowDeskTaskBlockCategoryV1,
 } from "./task-block-scoring.js";
+import type { FlowDeskModelSelectionPurposeV1 } from "./model-selection-result.js";
 
 // Re-export for consumers
 export type { FlowDeskTaskBlockCategoryV1 };
@@ -75,6 +76,7 @@ export interface FlowDeskBlockSelectionCriteriaV1 {
 	source_category: string;
 	source_complexity: number;
 	source_authority_sensitivity: number;
+	selection_purpose?: FlowDeskModelSelectionPurposeV1;
 	// 12 authority flags + advisory + non-authorizing + release gate
 	advisory_only: true;
 	non_authorizing: true;
@@ -108,6 +110,7 @@ const ALLOWED_FIELDS: readonly string[] = [
 	"source_category",
 	"source_complexity",
 	"source_authority_sensitivity",
+	"selection_purpose",
 	"advisory_only",
 	"non_authorizing",
 	"release_gate",
@@ -129,11 +132,17 @@ export function createFlowDeskBlockSelectionCriteriaV1(input: {
 	criteriaId: string;
 	blockScoring: FlowDeskTaskBlockScoringV1;
 	derivedAt: string;
+	selectionPurpose?: FlowDeskModelSelectionPurposeV1;
 }): { ok: boolean; errors: string[]; criteria?: FlowDeskBlockSelectionCriteriaV1 } {
 	const errors: string[] = [];
 
 	errors.push(...validateOpaqueId(input.criteriaId, "criteriaId").errors);
 	errors.push(...validateTimestamp(input.derivedAt, "derivedAt").errors);
+
+	const VALID_PURPOSES: readonly string[] = ["block_decomposition", "proposal_generation"];
+	if (input.selectionPurpose !== undefined && !VALID_PURPOSES.includes(input.selectionPurpose)) {
+		errors.push(`selectionPurpose must be one of: ${VALID_PURPOSES.join(", ")}`);
+	}
 
 	if (errors.length > 0) return { ok: false, errors };
 
@@ -157,6 +166,7 @@ export function createFlowDeskBlockSelectionCriteriaV1(input: {
 		source_category: block.category,
 		source_complexity: block.complexity,
 		source_authority_sensitivity: block.authority_sensitivity,
+		...(input.selectionPurpose !== undefined ? { selection_purpose: input.selectionPurpose } : {}),
 		advisory_only: true,
 		non_authorizing: true,
 		release_gate: "operational_intelligence_later_gate",
@@ -217,6 +227,14 @@ export function validateFlowDeskBlockSelectionCriteriaV1(value: unknown): Valida
 
 	if (typeof record.source_category !== "string" || !(VALID_CATEGORIES as readonly string[]).includes(record.source_category)) {
 		errors.push(`source_category must be one of: ${VALID_CATEGORIES.join(", ")}`);
+	}
+
+	// selection_purpose (optional)
+	const VALID_PURPOSES_VALIDATION: readonly string[] = ["block_decomposition", "proposal_generation"];
+	if (record.selection_purpose !== undefined) {
+		if (typeof record.selection_purpose !== "string" || !VALID_PURPOSES_VALIDATION.includes(record.selection_purpose)) {
+			errors.push(`selection_purpose must be one of: ${VALID_PURPOSES_VALIDATION.join(", ")}`);
+		}
 	}
 
 	// Authority flags
