@@ -11253,6 +11253,133 @@ test("flowdesk_agent_task_run binds blank parentSessionId to current ctx session
 	}
 });
 
+test("flowdesk_agent_task_run records parent session model from ctx.model in agent_task_context", async () => {
+	const assistantText = "Recorded parent model";
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "child-agent-task-parent-model-1" });
+			},
+			prompt() {
+				return Promise.resolve([{ role: "assistant", parts: [{ type: "text", text: assistantText }] }]);
+			},
+			messages() {
+				return Promise.resolve([{ role: "assistant", parts: [{ type: "text", text: assistantText }] }]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-parent-model-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-parent-model-1",
+						taskDescription: "Check parent model recording.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "current-session-1",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					{ sessionID: "current-session-1", model: "anthropic/claude-opus-4-7" } as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_completed");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-task-parent-model-1",
+			rootDir: root,
+		});
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.parent_wake_provider_qualified_model_id === "anthropic/claude-opus-4-7",
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run records parent session model from options.model in agent_task_context", async () => {
+	const assistantText = "Recorded parent model from options";
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "child-agent-task-parent-model-options-1" });
+			},
+			prompt() {
+				return Promise.resolve([{ role: "assistant", parts: [{ type: "text", text: assistantText }] }]);
+			},
+			messages() {
+				return Promise.resolve([{ role: "assistant", parts: [{ type: "text", text: assistantText }] }]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-parent-model-options-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				model: "anthropic/claude-sonnet-3-5",
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId: "workflow-task-parent-model-options-1",
+						taskDescription: "Check parent model recording from options.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "current-session-1",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					{ sessionID: "current-session-1" } as never, // no model in ctx
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_completed");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-task-parent-model-options-1",
+			rootDir: root,
+		});
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.parent_wake_provider_qualified_model_id === "anthropic/claude-sonnet-3-5",
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("flowdesk_agent_task_run fails fast for FlowDesk session refs used as parentSessionId", async () => {
 	let createCalls = 0;
 	let promptCalls = 0;

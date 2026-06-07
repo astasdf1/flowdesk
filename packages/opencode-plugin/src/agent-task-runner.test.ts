@@ -195,6 +195,50 @@ test("OI summary with oiEnabled=false has advisory_health_label disabled_by_conf
 	}
 });
 
+// ─── Test 6: parentSessionProviderQualifiedModelId is recorded ────────────────
+
+test("parentSessionProviderQualifiedModelId is recorded in agent_task_context", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-parent-model-recorded-"));
+	try {
+		const client = makeSuccessClient();
+		const parentModel = "anthropic/claude-opus-4-7";
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-parent-model-1",
+			taskId: "task-parent-model-1",
+			laneId: "lane-parent-model-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			promptText: "test parent model recording",
+			parentSessionId: "parent-oi-test",
+			parentSessionProviderQualifiedModelId: parentModel,
+			rootDir: root,
+			client,
+			asyncMode: false,
+			oiEnabled: true,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed");
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			rootDir: root,
+			workflowId: "workflow-parent-model-1",
+		});
+		assert.ok(reloaded.ok);
+
+		const contextEntries = reloaded.entries.filter((e) => e.evidenceClass === "agent_task_context");
+		assert.ok(contextEntries.length >= 1);
+
+		const contextRecord = contextEntries[0]!.record as Record<string, unknown>;
+		assert.equal(contextRecord.parent_wake_provider_qualified_model_id, parentModel);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 // ─── Test 4: OI accumulator increment / toSummary round-trip ─────────────────
 
 test("createOISessionAccumulator increment and toSummary round-trip", () => {

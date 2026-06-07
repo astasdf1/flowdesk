@@ -46,6 +46,7 @@ export interface FlowDeskAgentTaskContextV1 {
 	agent_ref: string;
 	provider_qualified_model_id: string;
 	parent_session_ref: string;
+	parent_wake_provider_qualified_model_id?: string;
 	prompt_text: string;
 	prompt_text_truncated: boolean;
 	prompt_text_sha256: string;
@@ -221,6 +222,7 @@ export function validateFlowDeskAgentTaskContextV1(value: unknown): ValidationRe
 		"agent_ref",
 		"provider_qualified_model_id",
 		"parent_session_ref",
+		"parent_wake_provider_qualified_model_id",
 		"prompt_text",
 		"prompt_text_truncated",
 		"prompt_text_sha256",
@@ -236,6 +238,9 @@ export function validateFlowDeskAgentTaskContextV1(value: unknown): ValidationRe
 	errors.push(...nonEmptyString(record.agent_ref, "agent_ref").errors);
 	errors.push(...nonEmptyString(record.provider_qualified_model_id, "provider_qualified_model_id").errors);
 	errors.push(...nonEmptyString(record.parent_session_ref, "parent_session_ref").errors);
+	if (record.parent_wake_provider_qualified_model_id !== undefined) {
+		errors.push(...nonEmptyString(record.parent_wake_provider_qualified_model_id, "parent_wake_provider_qualified_model_id").errors);
+	}
 	if (typeof record.prompt_text !== "string")
 		errors.push("prompt_text must be a string");
 	else if (record.prompt_text.length > 32_768)

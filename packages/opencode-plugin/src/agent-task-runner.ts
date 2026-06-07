@@ -39,6 +39,7 @@ export interface FlowDeskAgentTaskInputV1 {
 	providerQualifiedModelId: string;
 	promptText: string;
 	parentSessionId: string;
+	parentSessionProviderQualifiedModelId?: string;
 	rootDir: string;
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	timeoutMs?: number;
@@ -754,10 +755,11 @@ export async function executeFlowDeskAgentTaskV1(
 		workflow_id: input.workflowId,
 		lane_id: input.laneId,
 		task_id: input.taskId,
-		agent_ref: input.agentRef,
-		provider_qualified_model_id: input.providerQualifiedModelId,
-		parent_session_ref: parentSessionRef,
-		prompt_text: promptTextTruncated
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			parent_session_ref: parentSessionRef,
+			parent_wake_provider_qualified_model_id: input.parentSessionProviderQualifiedModelId,
+			prompt_text: promptTextTruncated
 			? input.promptText.slice(0, AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT)
 			: input.promptText,
 		prompt_text_truncated: promptTextTruncated,

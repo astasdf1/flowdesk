@@ -4178,9 +4178,11 @@ export function createFlowDeskQuickReviewerRunOptInTools(
 export function createFlowDeskAgentTaskRunOptInTools(input: {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined;
 	durableStateRoot: string | undefined;
+	options?: PluginOptions;
 }): Record<string, FlowDeskOpenCodeTool> {
 	const client = input.client;
 	const rootDir = input.durableStateRoot;
+	const options = input.options;
 	const promptPreview = (text: string, max = 120) => {
 		const compact = text.replace(/\s+/g, " ").trim();
 		return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
@@ -4268,6 +4270,12 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				if (!workflowId || !taskDescription || !agentName || !providerQualifiedModelId)
 					return JSON.stringify({ status: "blocked", reason: "workflowId, taskDescription, agentName, and providerQualifiedModelId are required" });
 				const ctxRecord: Record<string, unknown> = isRecord(ctx) ? ctx : {};
+				const parentSessionProviderQualifiedModelId =
+					typeof ctxRecord.model === "string" && ctxRecord.model.includes("/")
+						? ctxRecord.model.trim()
+						: typeof options?.model === "string" && options.model.includes("/")
+							? options.model.trim()
+							: undefined;
 				const requestedParentSessionId = typeof record.parentSessionId === "string"
 					? record.parentSessionId.trim()
 					: "";
@@ -4292,6 +4300,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					providerQualifiedModelId,
 					promptText: taskDescription,
 					parentSessionId,
+					parentSessionProviderQualifiedModelId,
 					rootDir,
 					client,
 					asyncMode,
@@ -6196,6 +6205,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		Object.assign(tools, createFlowDeskAgentTaskRunOptInTools({
 			client: agentTaskRunClient,
 			durableStateRoot: agentTaskRunRoot,
+			options,
 		}));
 	}
 	if (managedDispatchBetaClient !== undefined)
