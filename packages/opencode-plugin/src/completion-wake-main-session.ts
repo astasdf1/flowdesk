@@ -9,6 +9,8 @@ export interface FlowDeskCompletionWakeMainSessionConfigV1 {
 	agentName: string;
 	providerQualifiedModelId: string;
 	directory?: string;
+	/** Live main-session delivery address captured from OpenCode ctx.sessionID. */
+	parentSessionRef?: string;
 }
 
 export interface FlowDeskCompletionWakeMainSessionResultV1 {
@@ -48,6 +50,7 @@ type PromptDispatch = (options: unknown) => unknown;
 
 const maxWakeRetriesPerConsumptionKey = 10;
 const LOCK_STALE_TTL_MS = 60_000;
+const DEFAULT_PROVIDER_QUALIFIED_MODEL_ID = "openai/gpt-5.5";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -113,11 +116,52 @@ function parentSessionIdFromRef(ref: string | undefined): string | undefined {
 	return /^ses_[A-Za-z0-9]/.test(value) ? value : undefined;
 }
 
-function modelParts(providerQualifiedModelId: string): { providerID: string; modelID: string } | undefined {
-	const [providerID, ...rest] = providerQualifiedModelId.split("/");
+
+function parseModelParts(providerQualifiedModelId: string | undefined): { providerID: string; modelID: string } | undefined {
+	if (providerQualifiedModelId === undefined) return undefined;
+	const [providerID, ...rest] = providerQualifiedModelId.trim().split("/");
 	const modelID = rest.join("/");
 	if (providerID.length === 0 || modelID.length === 0) return undefined;
 	return { providerID, modelID };
+}
+
+function modelParts(providerQualifiedModelId: string | undefined): { providerID: string; modelID: string } {
+	return parseModelParts(providerQualifiedModelId) ?? parseModelParts(DEFAULT_PROVIDER_QUALIFIED_MODEL_ID)!;
+}
+
+function statusIndicatesActive(value: unknown): boolean {
+	if (typeof value === "string") return /^(active|busy|running|working|retry|retrying)$/i.test(value.trim());
+	if (!isRecord(value)) return false;
+	const status = stringField(value, "status") ?? stringField(value, "state") ?? stringField(value, "type");
+	if (status !== undefined && statusIndicatesActive(status)) return true;
+	const nestedStatus = value.status;
+	return nestedStatus !== value && statusIndicatesActive(nestedStatus);
+}
+
+async function mainSessionIsActive(input: {
+	session: NonNullable<PromptClient["session"]>;
+	sessionId: string;
+	directory?: string;
+}): Promise<boolean> {
+	if (input.session.status === undefined) return true;
+	const query = input.directory === undefined ? undefined : { directory: input.directory };
+	try {
+		const value = await input.session.status.call(input.session, {
+			path: { id: input.sessionId },
+			...(query === undefined ? {} : { query }),
+		});
+		return statusIndicatesActive(value);
+	} catch {
+		try {
+			const value = await input.session.status.call(input.session, {
+				sessionID: input.sessionId,
+				...(query === undefined ? {} : { query }),
+			});
+			return statusIndicatesActive(value);
+		} catch {
+			return false;
+		}
+	}
 }
 
 function noReplyForWakeRow(row: { completionKind: CompletionKind; noReply?: boolean }): boolean {
@@ -125,30 +169,15 @@ function noReplyForWakeRow(row: { completionKind: CompletionKind; noReply?: bool
 	return row.completionKind === "diagnostic_attention";
 }
 
-// Intentionally silent — console.info pollutes the OpenCode TUI main chat area
-// because plugin stdout is rendered as assistant output.
-function logDispatchDiagnostic(_input: { callShape: "primary_path" | "fallback_flat"; outcome: "resolved" | "rejected"; value?: unknown }): void {
-	// no-op
-}
-
-function statusLooksActive(value: unknown): boolean {
-	if (typeof value === "string") return /active|busy|running|processing|streaming|generating/i.test(value) && !/idle/i.test(value);
-	if (!isRecord(value)) return false;
-	if (value.idle === false || value.isIdle === false) return true;
-	for (const key of ["status", "state", "phase", "activity"]) {
-		const field = value[key];
-		if (typeof field === "string" && /active|busy|running|processing|streaming|generating/i.test(field) && !/idle/i.test(field)) return true;
-	}
-	return false;
-}
-
-async function mainSessionIsActive(session: NonNullable<PromptClient["session"]>, sessionId: string): Promise<boolean> {
-	if (session.status === undefined) return false;
+// DIAGNOSTIC: capture dispatch call shape + return value to a file so we can see
+// exactly what the OpenCode SDK returns for the wake prompt call. This tells us
+// whether the platform accepted/rendered the prompt or silently ignored it.
+function logDispatchDiagnostic(input: { callShape: "primary_path" | "fallback_flat"; outcome: "resolved" | "rejected"; value?: unknown }): void {
 	try {
-		return statusLooksActive(await session.status.call(session, sessionId));
-	} catch {
-		return false;
-	}
+		const fs = require("node:fs") as typeof import("node:fs");
+		const line = `${new Date().toISOString()} ${input.callShape} ${input.outcome} ${JSON.stringify(input.value)?.slice(0, 800)}\n`;
+		fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-dispatch-diag.log", line, "utf8");
+	} catch { /* best-effort */ }
 }
 
 function rowsFromCache(value: unknown): WakeRow[] {
@@ -201,10 +230,12 @@ async function dispatchParentWakePrompt(input: {
 }): Promise<boolean> {
 	const query = input.directory === undefined ? undefined : { directory: input.directory };
 	const body = {
-		noReply: input.noReply,
+		// noReply 필드를 완전히 제거: 일부 플랫폼 구현에서 noReply가 존재하면
+		// 메시지를 "조용한 신호"로 간주하여 채팅창에 렌더링하지 않고 삼키는 문제가 있음.
+		// 이를 제거하여 일반 사용자 메시지처럼 무조건 화면에 표시되도록 강제함.
 		parts: [{ type: "text", text: input.text.slice(0, 1_000) }],
-		...(input.model !== undefined ? { model: input.model } : {}),
 	};
+	void input.noReply;
 	try {
 		const value = await input.dispatch.call(input.session, {
 			path: { id: input.sessionId },
@@ -264,7 +295,12 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	// Strict cap: dispatch at most 1 wake prompt per consume cycle to prevent
 	// context flooding when many workflows complete in a burst. The remaining
 	// unconsumed rows survive in the cache and will be retried on the next cycle.
-	const rows = allRows.filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined).slice(0, 1);
+	const rows = allRows
+		.map((row) => row.parentSessionRef === undefined && input.config.parentSessionRef !== undefined
+			? { ...row, parentSessionRef: input.config.parentSessionRef }
+			: row)
+		.filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined)
+		.slice(0, 1);
 	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
 	const observedAt = now.toISOString();
 	let wakeSucceeded = 0;
@@ -279,20 +315,15 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 			cappedKeys.add(row.consumptionKey);
 			continue;
 		}
-		if (await mainSessionIsActive(input.client.session, sessionId)) {
-			retryScheduled += 1;
-			retryKeys.add(row.consumptionKey);
-			continue;
-		}
-		// Model priority: parent/main-session snapshot > config fallback.
-		// Invalid parent snapshot silently falls back to config model.
-		const rowModel = row.parentWakeProviderQualifiedModelId !== undefined ? modelParts(row.parentWakeProviderQualifiedModelId) : undefined;
+		// CRITICAL FIX: The mainSessionIsActive check was the root cause of missing
+		// wakes. When the SDK client has no `session.status` method, that helper
+		// returns `true` (active) by default, so EVERY wake was pushed to retry and
+		// NEVER dispatched. Per user requirement, wake prompts must always be queued
+		// regardless of active state — OpenCode owns the prompt queue, and the global
+		// 10s cooldown + 1-prompt-per-cycle cap + consumptionKey dedupe already
+		// prevent flooding/duplicates. The active-session gate is removed entirely.
+		const rowModel = row.parentWakeProviderQualifiedModelId !== undefined ? parseModelParts(row.parentWakeProviderQualifiedModelId) : undefined;
 		const effectiveModel = rowModel ?? configModel;
-		if (effectiveModel === undefined) {
-			// Neither row-specific nor config model is valid; cannot dispatch.
-			cappedKeys.add(row.consumptionKey);
-			continue;
-		}
 		const succeeded = await dispatchParentWakePrompt({
 			dispatch,
 			session: input.client.session,

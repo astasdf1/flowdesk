@@ -264,6 +264,46 @@ test("completion UI cache writes provider-free completion wake-ready row for syn
 	}
 });
 
+test("completion UI cache workflow wake-ready row inherits parentSessionRef from child-session when context omits it", () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-wake-parent-child-"));
+	try {
+		const workflowId = "workflow-wake-parent-child-1";
+		const laneId = "lane-task-wake-parent-child-1";
+		const taskId = "task-wake-parent-child-1";
+		writeEvidence(rootDir, workflowId, "agent_task_context", "context-wake-parent-child-1", {
+			...agentTaskContext(workflowId, laneId, taskId, "2026-06-06T00:00:00.000Z"),
+			parent_session_ref: undefined,
+		});
+		writeEvidence(rootDir, workflowId, "agent_task_child_session", "child-wake-parent-child-1", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: taskId,
+			child_session_id: "ses-child-wake-parent-child-1",
+			parent_session_ref: "ses-parent-wake-parent-child-1",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 0,
+			last_nudge_at: null,
+			created_at: "2026-06-06T00:00:01.000Z",
+			dispatch_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "task_result", "task-result-wake-parent-child-1", taskResult(workflowId, laneId, taskId, "2026-06-06T00:02:00.000Z"));
+
+		refreshFlowDeskCompletionUiCachesV1({ rootDir, workflowId, observedAt: "2026-06-06T00:02:01.000Z" });
+
+		const wake = readCache(rootDir, "completion-wake-ready.json");
+		const rows = wake.rows as Array<Record<string, unknown>>;
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0].workflowId, workflowId);
+		assert.equal(rows[0].parentSessionRef, "ses-parent-wake-parent-child-1");
+		assert.equal(rows[0].dedupeKey, `ses-parent-wake-parent-child-1\u0000${workflowId}`);
+		assert.equal(rows[0].consumptionKey, `ses-parent-wake-parent-child-1:${workflowId}:2026-06-06T00:02:00.000Z:1:0`);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("completion UI cache writes wake-ready row for final partial_findings task_result", () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-completion-partial-findings-wake-"));
 	try {

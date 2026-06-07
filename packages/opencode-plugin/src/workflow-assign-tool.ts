@@ -7,11 +7,15 @@ import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
+	evaluateOIRoutingAdvisoryV1,
+	createFlowDeskRoutingInfluencePolicyV1,
+	createFlowDeskLedgerRetentionPolicyV1,
 	type FlowDeskAgentRegistryRoleCategoryV1,
 } from "@flowdesk/core";
 import type { FlowDeskTuiUsageProviderRowV1 } from "./tui-usage-snapshot.js";
 import { selectModelForTask, buildUsageMapFromProviders } from "./model-selection-engine.js";
 import { buildOIAssignmentAdvisoryV1, type OIAssignmentAdvisoryInputV1 } from "./oi-assignment-advisor.js";
+import { loadRoutingAdvisoryLedgerV1 } from "./oi-ledger-reader.js";
 
 export interface FlowDeskWorkflowAssignToolResultV1 {
 	status: "assignments_written" | "blocked_before_assignments";
@@ -83,6 +87,23 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 	}
 	if (workingModelIds.length === 0) return blocked("working-model cache empty – run models refresh first", input.workflowId);
 
+	const taskSignatureRef = "signature-default"; // TODO: Derive real signature from task properties
+	const routingLedger = loadRoutingAdvisoryLedgerV1(input.rootDir);
+	const routingAdvisory = evaluateOIRoutingAdvisoryV1(
+		routingLedger,
+		taskSignatureRef,
+		createFlowDeskLedgerRetentionPolicyV1(),
+		createFlowDeskRoutingInfluencePolicyV1({ enabled: true, min_sample_threshold: 1 }),
+		new Date().toISOString()
+	);
+
+	const oiPerformanceScores = new Map<string, number>();
+	if (routingAdvisory.model_summaries) {
+		for (const summary of routingAdvisory.model_summaries) {
+			oiPerformanceScores.set(summary.model_ref, summary.weighted_score);
+		}
+	}
+
 	const selectionNow = new Date();
 	const createdAt = selectionNow.toISOString();
 	const evidenceRefs: string[] = [];
@@ -102,7 +123,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		if (!taskId) continue;
 
 		const usageMap = buildUsageMapFromProviders(rows, () => selectionNow);
-		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds, availabilitySource: "durable_cache" }, () => selectionNow);
+		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds, availabilitySource: "durable_cache", oiPerformanceScores }, () => selectionNow);
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		// ── OI Advisory annotation (AFTER selection — must not influence it) ─────

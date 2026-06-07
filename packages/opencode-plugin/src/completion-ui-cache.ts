@@ -141,6 +141,15 @@ function getString(record: Record<string, unknown>, key: string): string | undef
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function firstStringField(key: string, ...records: readonly (Record<string, unknown> | undefined)[]): string | undefined {
+	for (const record of records) {
+		if (record === undefined) continue;
+		const value = getString(record, key);
+		if (value !== undefined) return value;
+	}
+	return undefined;
+}
+
 function latestByLane(entries: readonly FlowDeskSessionEvidenceReloadEntryV1[], evidenceClass: string): Map<string, FlowDeskSessionEvidenceReloadEntryV1> {
 	const byLane = new Map<string, FlowDeskSessionEvidenceReloadEntryV1>();
 	for (const entry of entries) {
@@ -536,6 +545,21 @@ function mergeCompletionWakeReadyRows(input: {
 		.slice(0, 8);
 }
 
+function inheritedWakeParentSessionRef(input: {
+	rows: readonly UiRow[];
+	existingWakeRows: unknown;
+	workflowId: string;
+}): string | undefined {
+	const rowParentSessionRefs = [...new Set(input.rows.map((row) => row.parentSessionRef).filter((value): value is string => typeof value === "string" && value.length > 0))];
+	if (rowParentSessionRefs.length === 1) return rowParentSessionRefs[0];
+	if (rowParentSessionRefs.length > 1 || !Array.isArray(input.existingWakeRows)) return undefined;
+	const existingParentSessionRefs = [...new Set(input.existingWakeRows
+		.filter((row): row is Record<string, unknown> => isRecord(row) && getString(row, "workflowId") === input.workflowId)
+		.map((row) => getString(row, "parentSessionRef"))
+		.filter((value): value is string => typeof value === "string" && value.length > 0))];
+	return existingParentSessionRefs.length === 1 ? existingParentSessionRefs[0] : undefined;
+}
+
 function evidenceEntriesByLane(entries: readonly FlowDeskSessionEvidenceReloadEntryV1[], evidenceClass: string): Map<string, FlowDeskSessionEvidenceReloadEntryV1[]> {
 	const byLane = new Map<string, FlowDeskSessionEvidenceReloadEntryV1[]>();
 	for (const entry of entries) {
@@ -598,13 +622,14 @@ function buildAgentTaskLogIndexRows(input: {
 		const sessionDiffPath = getString(childSession ?? {}, "session_diff_path") ?? getString(lifecycle ?? {}, "session_diff_path");
 		const nudgeCount = typeof childSession?.nudge_count === "number" && Number.isFinite(childSession.nudge_count) ? childSession.nudge_count : 0;
 		const terminalAt = getString(result ?? failed ?? lifecycle ?? {}, "updated_at") ?? getString(result ?? failed ?? lifecycle ?? {}, "created_at");
+		const parentSessionRef = firstStringField("parent_session_ref", context, childSession, lifecycle);
 		return {
 			workflowId: input.workflowId,
 			laneId,
 			...(getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "task_id") === undefined ? {} : { taskId: getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "task_id") }),
 			...(childSessionId === undefined ? {} : { childSessionId }),
 			...(getString(childSession ?? lifecycle ?? {}, "child_session_ref") === undefined ? {} : { childSessionRef: getString(childSession ?? lifecycle ?? {}, "child_session_ref") }),
-			...(getString(context ?? childSession ?? lifecycle ?? {}, "parent_session_ref") === undefined ? {} : { parentSessionRef: getString(context ?? childSession ?? lifecycle ?? {}, "parent_session_ref") }),
+			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
 			...(getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "agent_ref") === undefined ? {} : { agentRef: getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "agent_ref") }),
 			...(getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "provider_qualified_model_id") === undefined ? {} : { providerQualifiedModelId: getString(result ?? failed ?? context ?? childSession ?? lifecycle ?? {}, "provider_qualified_model_id") }),
 			...(getString(context ?? childSession ?? lifecycle ?? {}, "created_at") === undefined ? {} : { createdAt: getString(context ?? childSession ?? lifecycle ?? {}, "created_at") }),
@@ -710,7 +735,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			// parentSessionRef and the session-scoped TUI sidebar filtered them out,
 			// so a launched subtask only became visible after it terminated. Including
 			// childSession keeps running rows correctly scoped to the current session.
-			const parentSessionRef = getString(context ?? lifecycle ?? childSession ?? {}, "parent_session_ref");
+			const parentSessionRef = firstStringField("parent_session_ref", context, lifecycle, childSession);
 			const taskSummary = compactTaskSummary(getString(context ?? {}, "prompt_text"));
 			const state = result !== undefined
 				? "task_result"
@@ -795,8 +820,11 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 
 		const ready = !synthesisAlreadyRecorded && rows.length > 0 && rows.every(isUsableTerminalTaskResultRow);
 		const readyAt = rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0);
-		const parentSessionRefs = [...new Set(rows.map((row) => row.parentSessionRef).filter((value): value is string => typeof value === "string" && value.length > 0))];
-		const parentSessionRef = parentSessionRefs.length === 1 ? parentSessionRefs[0] : undefined;
+		const parentSessionRef = inheritedWakeParentSessionRef({
+			rows: sidebarRows.filter((row) => row.workflowId === input.workflowId),
+			existingWakeRows: existingWakeReady?.rows,
+			workflowId: input.workflowId,
+		}) ?? inheritedWakeParentSessionRef({ rows, existingWakeRows: existingWakeReady?.rows, workflowId: input.workflowId });
 		const readyWorkflow = ready ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),

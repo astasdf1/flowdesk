@@ -20,6 +20,7 @@ import {
 	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskRelease1MinimumPortableCommandName,
 	type FlowDeskRelease1MinimumToolName,
+	type FlowDeskGitHubDryRunPublicationResultV1,
 	type FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
 	type FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
 	type FlowDeskSanitizedAuthCaptureResultV1,
@@ -36,6 +37,7 @@ import {
 	type SafeNextAction,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
 	validateConformanceRuntimeMetadataV1,
+	validateFlowDeskGitHubDryRunPublicationResultV1,
 	validateProjectConfigV1,
 	validateRunRequestV1,
 } from "@flowdesk/core";
@@ -161,6 +163,7 @@ import {
 	hasPassingFds1SchemaConversionSpike,
 	runFlowDeskPreSpikePluginToolStub,
 } from "./tool-stubs.js";
+import { publishToGitHubV1, type GitHubPublicationTargetV1 } from "./federated-registry-connector.js";
 
 export const flowdeskPreSpikeDoctorToolName =
 	"flowdesk_pre_spike_doctor" as const;
@@ -251,6 +254,8 @@ export const flowdeskContinueToolName = "flowdesk_continue" as const;
 export const flowdeskUiProbeToolName = "flowdesk_ui_probe" as const;
 export const flowdeskOperationalIntelligenceOption =
 	"operationalIntelligence" as const;
+export const flowdeskFederatedRegistryPublishToolName =
+	"flowdesk_federated_registry_publish" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -3254,6 +3259,85 @@ export function operationalIntelligenceConfigFromOptions(options?: PluginOptions
 	return { enabled, exposeMcpTools, persistAdvisoryEvidence };
 }
 
+function flowdeskFederatedRegistryPublishInvalidInputEnvelope(reason: string) {
+	return {
+		ok: false,
+		errors: [reason],
+		remoteWrite: { state: "skipped", endpointKind: "github_issue", redactedReason: "invalid-tool-input" },
+		authority: {
+			advisoryOnlyRecord: true,
+			remoteWriteAuthorityEnabledInRecord: false,
+			dispatchAuthorityEnabled: false,
+			laneLaunchAuthorityEnabled: false,
+		},
+	};
+}
+
+function isFlowDeskGitHubDryRunPublicationResultRecordV1(value: unknown): value is FlowDeskGitHubDryRunPublicationResultV1 {
+	if (!isRecord(value)) return false;
+	return validateFlowDeskGitHubDryRunPublicationResultV1(value).ok;
+}
+
+function isGitHubPublicationTargetRecordV1(value: unknown): value is GitHubPublicationTargetV1 {
+	if (!isRecord(value)) return false;
+	const kind = value.kind;
+	const owner = value.owner;
+	const repo = value.repo;
+	if (kind !== "github_issue" && kind !== "github_pr_comment") return false;
+	if (typeof owner !== "string" || typeof repo !== "string") return false;
+	if (kind === "github_pr_comment" && !Number.isInteger(value.issueNumber)) return false;
+	if (kind === "github_issue" && typeof value.title !== "string") return false;
+	return true;
+}
+
+export function createFlowDeskFederatedRegistryPublishTools(): Record<string, FlowDeskOpenCodeTool> {
+	return {
+		[flowdeskFederatedRegistryPublishToolName]: tool({
+			description: [
+				"Publish a FlowDesk federated registry dry-run result to GitHub only when an explicit later-gate flag allows remote writes.",
+				"Release 1 default is advisory-only: allowActualRemoteWrite=false skips the GitHub API call and returns an advisory publication record with all authority flags false.",
+				"WHEN TO USE: only for Phase 8 GitHub/OAuth connector publication testing or later gated publication flows with an existing dry-run result.",
+				"WHEN NOT TO USE: do not use for managed dispatch, provider calls, lane launch, fallback, or bypassing FlowDesk-owned lane boundaries.",
+				"INVOKE WITH: dryRunResult, ledgerIdempotencyRef, guardApprovalRef, target, contentMarkdown, connectorGateSatisfied, and allowActualRemoteWrite. Main Release 1 flows must keep allowActualRemoteWrite=false.",
+				"AFTER CALLING: surface publicationResult as advisory evidence and remoteWrite as transient side-effect status; never treat the advisory record as remote-write authority.",
+			].join(" "),
+			args: {
+				dryRunResult: tool.schema
+					.record(tool.schema.string(), tool.schema.unknown())
+					.describe("FlowDeskGitHubDryRunPublicationResultV1 record to publish from."),
+				ledgerIdempotencyRef: tool.schema.string().describe("Opaque ledger idempotency ref."),
+				guardApprovalRef: tool.schema.string().describe("Opaque Guard approval ref for a later gate."),
+				target: tool.schema
+					.record(tool.schema.string(), tool.schema.unknown())
+					.describe("GitHub target: { kind, owner, repo, issueNumber? for comments, title? for issues }."),
+				contentMarkdown: tool.schema.string().describe("Markdown body to send to GitHub when the remote-write flag and connector gate are both true."),
+				connectorGateSatisfied: tool.schema.boolean().optional().describe("Hypothetical later connector gate signal. Keep false for Release 1 main flow."),
+				allowActualRemoteWrite: tool.schema.boolean().describe("Must be true to permit the actual GitHub API call; false records advisory skip only."),
+			},
+			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				if (!isFlowDeskGitHubDryRunPublicationResultRecordV1(record.dryRunResult)) {
+					return JSON.stringify(flowdeskFederatedRegistryPublishInvalidInputEnvelope("dryRunResult must be a valid FlowDeskGitHubDryRunPublicationResultV1 record"));
+				}
+				if (!isGitHubPublicationTargetRecordV1(record.target)) {
+					return JSON.stringify(flowdeskFederatedRegistryPublishInvalidInputEnvelope("target must be a valid GitHub publication target record"));
+				}
+				const result = await publishToGitHubV1({
+					dryRunResult: record.dryRunResult,
+					ledgerIdempotencyRef: typeof record.ledgerIdempotencyRef === "string" ? record.ledgerIdempotencyRef : "ledger-idempotency-ref-missing",
+					guardApprovalRef: typeof record.guardApprovalRef === "string" ? record.guardApprovalRef : "guard-approval-ref-missing",
+					target: record.target,
+					contentMarkdown: typeof record.contentMarkdown === "string" ? record.contentMarkdown : "",
+					allowActualRemoteWrite: record.allowActualRemoteWrite === true,
+					connectorGateSatisfied: record.connectorGateSatisfied === true,
+					env: process.env,
+				});
+				return JSON.stringify(result);
+			},
+		}),
+	};
+}
+
 interface FlowDeskProjectConfigLoadResultV1 {
 	enabled: boolean;
 	status: "disabled" | "loaded" | "missing" | "blocked";
@@ -3499,7 +3583,7 @@ function durableStateRootFromOptions(
 		: undefined;
 }
 
-export function completionWakeMainSessionConfigFromOptions(options?: PluginOptions): FlowDeskCompletionWakeMainSessionConfigV1 | undefined {
+export function completionWakeMainSessionConfigFromOptions(options?: PluginOptions, ctx?: unknown): FlowDeskCompletionWakeMainSessionConfigV1 | undefined {
 	const value = options?.[flowdeskCompletionWakeMainSessionOption];
 	if (!isRecord(value) || value.enabled !== true) return undefined;
 	const rootDir = typeof value.rootDir === "string" && value.rootDir.trim().length > 0
@@ -3508,19 +3592,39 @@ export function completionWakeMainSessionConfigFromOptions(options?: PluginOptio
 	const agentName = typeof value.agentName === "string" && value.agentName.trim().length > 0
 		? value.agentName.trim()
 		: "flowdesk-main";
-	const providerQualifiedModelId = typeof value.providerQualifiedModelId === "string" && value.providerQualifiedModelId.includes("/")
-		? value.providerQualifiedModelId.trim()
-		: (typeof options?.model === "string" && options.model.includes("/")
-			? options.model.trim()
+	const providerQualifiedModelId = typeof options?.model === "string" && options.model.includes("/")
+		? options.model.trim()
+		: (typeof value.providerQualifiedModelId === "string" && value.providerQualifiedModelId.includes("/")
+			? value.providerQualifiedModelId.trim()
 			: "openai/gpt-5.5");
+	const liveSessionId = liveSessionIdFromContext(ctx);
+	const configuredParentSessionRef = typeof value.parentSessionRef === "string" && value.parentSessionRef.trim().length > 0
+		? value.parentSessionRef.trim()
+		: undefined;
+	const parentSessionRef = liveSessionId.length > 0
+		? `ses-${liveSessionId}`
+		: configuredParentSessionRef;
+	
 	if (rootDir === undefined) return undefined;
 	return {
 		enabled: true,
 		rootDir,
 		agentName,
 		providerQualifiedModelId,
+		parentSessionRef,
 		...(typeof value.directory === "string" && value.directory.trim().length > 0 ? { directory: value.directory.trim() } : {}),
 	};
+}
+
+function liveSessionIdFromContext(ctx: unknown): string {
+	const record: Record<string, unknown> = isRecord(ctx) ? ctx : {};
+	const candidates = [record.sessionID, record.sessionId, record.session_id];
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string") continue;
+		const trimmed = candidate.trim();
+		if (trimmed.length > 0) return trimmed;
+	}
+	return "";
 }
 
 function productionEnablementFromOptions(
@@ -4231,7 +4335,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				taskDescription: tool.schema.string().max(20_000).describe("The task prompt to send to the agent"),
 				agentName: tool.schema.string().describe("Agent name (e.g. reviewer-claude-opus, reviewer-gpt-frontier)"),
 				providerQualifiedModelId: tool.schema.string().describe("Concrete model id (e.g. anthropic/claude-opus-4-7)"),
-				parentSessionId: tool.schema.string().optional().describe("Parent session id. When omitted or blank, FlowDesk binds to the current OpenCode ctx.sessionID when available."),
+				parentSessionId: tool.schema.string().describe("Parent session id. Use an empty string to bind to current session."),
 				developerModeAcknowledged: tool.schema.boolean(),
 				allowProviderCall: tool.schema.boolean(),
 				nudgeQuietPeriodMs: tool.schema.number().optional().describe(input.compactArgs === true
@@ -4279,9 +4383,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				const requestedParentSessionId = typeof record.parentSessionId === "string"
 					? record.parentSessionId.trim()
 					: "";
-				const currentSessionId = typeof ctxRecord.sessionID === "string"
-					? ctxRecord.sessionID.trim()
-					: "";
+				const currentSessionId = liveSessionIdFromContext(ctx);
 				const parentSessionId = requestedParentSessionId.length > 0
 					? requestedParentSessionId
 					: currentSessionId;
@@ -6155,6 +6257,16 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					hasPassingFds1SchemaConversionSpike(),
 				operationalIntelligence:
 					operationalIntelligenceConfigFromOptions(options),
+				federatedRegistry: {
+					enabled: true,
+					publishToolRegistered: true,
+					githubOAuthAvailable: (
+						typeof process.env.GITHUB_TOKEN === "string" ||
+						typeof process.env.FLOWDESK_GITHUB_OAUTH_TOKEN === "string"
+					),
+					publicationState: "pending_gate_promotion",
+					note: "Federated registry publication records remain advisory-only; flowdesk_federated_registry_publish performs a real GitHub write only when an explicit internal later-gate flag is true.",
+				},
 				realOpenCodeDispatch:
 					flowdeskPluginScaffold.runtimeBoundary.realOpenCodeDispatch,
 				providerCall: false,
@@ -6166,6 +6278,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			},
 		}),
 	};
+	const federatedRegistryConfig = isRecord(options?.federatedRegistry) ? options.federatedRegistry : { enabled: false };
+	if (federatedRegistryConfig.enabled === true) {
+		Object.assign(tools, createFlowDeskFederatedRegistryPublishTools());
+	}
 	if (isFds1SchemaConversionProbeEnabled(options))
 		Object.assign(tools, createFlowDeskFds1SchemaConversionProbeTools());
 	if (isLocalNonDispatchAdapterEnabled(options))
@@ -6334,7 +6450,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 
 	// P8 Background Watchdog
 	const watchdogConfig = watchdogConfigFromOptions(options);
-	const completionWakeMainSessionConfig = completionWakeMainSessionConfigFromOptions(options);
+	const completionWakeMainSessionConfig = completionWakeMainSessionConfigFromOptions(options, input);
 	const chatStallAlertRaw = (options as Record<string, unknown> | undefined)?.[flowdeskChatMessageStallAlertOption];
 	const guardedAutoAbortForWatchdog = isRecord(chatStallAlertRaw) && isRecord(chatStallAlertRaw.guardedAutoAbort)
 		? (() => {
@@ -6493,18 +6609,28 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 									abortThresholdMs: 10 * 60_000,
 									absoluteLaneAgeMs: 60 * 60_000,
 								});
-								if (completionWakeMainSessionConfig !== undefined) {
-									// Advisory-only wake: consume ready rows after the monitor pass has
-									// persisted task_result and refreshed completion UI caches. This only
-									// prompts the main coordinator to inspect durable status; it does not
-									// auto-continue, synthesize, dispatch, fallback, write, or hard-cancel.
-									await consumeFlowDeskCompletionWakeForMainSessionV1({
-										config: completionWakeMainSessionConfig,
-										client: eventMonitorClient,
-									});
-								}
 							} catch {
 								// best-effort; event hook must not crash the plugin
+							}
+						}
+						// CRITICAL FIX: The wake consumer MUST run on every finalization-relevant
+						// event, regardless of whether the watchdog was poked or a direct monitor
+						// pass ran. Previously this was trapped inside the `else if` branch, so when
+						// the watchdog was enabled (pokeWatchdogCycle defined), the wake prompt was
+						// NEVER dispatched. Moving it here ensures the notification fires in both modes.
+						try {
+							const fs = require("node:fs") as typeof import("node:fs");
+							fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-cond-diag.log",
+								`${new Date().toISOString()} finalizationRelevant config=${completionWakeMainSessionConfig !== undefined} client=${eventMonitorClient !== undefined} parentRef=${completionWakeMainSessionConfig?.parentSessionRef ?? "NONE"}\n`, "utf8");
+						} catch { /* best-effort */ }
+						if (completionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
+							try {
+								await consumeFlowDeskCompletionWakeForMainSessionV1({
+									config: completionWakeMainSessionConfig,
+									client: eventMonitorClient,
+								});
+							} catch {
+								// best-effort; advisory wake must not crash the plugin
 							}
 						}
 					}

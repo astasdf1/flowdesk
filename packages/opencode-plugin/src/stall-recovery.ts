@@ -3529,7 +3529,16 @@ export async function monitorChildSessionsV1(input: {
 		//  - G2: an absolute lane-age cap guarantees a true zero-event lane still
 		//    terminates even though the meaningful-activity silence gate never trips.
 		const unknownForceTerminate = false;
-		const laneAgeForceTerminate = totalAgeMs >= absoluteLaneAgeMs && !toolRunningNow && !toolStateUnknown && !coordinatorReviewRequestedThisCycle;
+		// Phase 7.5: auto-mark inconsistent lanes as orphaned after 1h (3,600,000ms)
+		const inconsistentOrphanMs = 3_600_000;
+		const latestInconsistencyAtMs = latestLifecycleStateChangeAtMs !== undefined && 
+			reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId)
+			? latestLifecycleStateChangeAtMs
+			: (reloaded.entries.find(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId) 
+				? Date.parse((reloaded.entries.find(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId)!.record as any).observed_at)
+				: NaN);
+		const inconsistentForceTerminate = Number.isFinite(latestInconsistencyAtMs) && (nowMs - latestInconsistencyAtMs >= inconsistentOrphanMs);
+		const laneAgeForceTerminate = (totalAgeMs >= absoluteLaneAgeMs || (inconsistentForceTerminate && workflowPrefixAllowed(input.workflowId))) && !toolRunningNow && !toolStateUnknown && !coordinatorReviewRequestedThisCycle;
 		const normalAbortEligible = silenceMs >= abortThresholdMs && !continuationBudgetPending && !toolRunningNow && !toolStateUnknown && !coordinatorReviewRequestedThisCycle;
 		if (toolStateUnknown) {
 			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
@@ -3634,15 +3643,19 @@ export async function monitorChildSessionsV1(input: {
 			// this slice); the precise cause is recorded in redacted_reason below.
 			const failureCategory = unknownForceTerminate
 				? "sdk_prompt_timeout"
-				: laneAgeForceTerminate
-					? "no_response"
-					: totalAgeMs > abortThresholdMs * 2
-						? "network_interrupted"
-						: "sdk_prompt_timeout";
+				: inconsistentForceTerminate
+					? "orphaned"
+					: laneAgeForceTerminate
+						? "no_response"
+						: totalAgeMs > abortThresholdMs * 2
+							? "network_interrupted"
+							: "sdk_prompt_timeout";
 			const abortReason = unknownForceTerminate
 				? `watchdog force-terminated child session: tool state unrecoverable (open tool had no settle event for ${Math.round(unknownDwellMs / 1000)}s)`
-				: laneAgeForceTerminate
-					? `watchdog force-terminated child session after ${Math.round(totalAgeMs / 1000)}s reaching the absolute lane-age cap with no response`
+				: inconsistentForceTerminate
+					? `watchdog force-terminated child session after ${Math.round((nowMs - latestInconsistencyAtMs) / 1000)}s in inconsistent finalizing_without_terminal state (orphaned)`
+					: laneAgeForceTerminate
+						? `watchdog force-terminated child session after ${Math.round(totalAgeMs / 1000)}s reaching the absolute lane-age cap with no response`
 					: idleContinuationsUsed > 0
 						? `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no final answer following ${idleContinuationsUsed} idle continuation attempt(s)`
 						: `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no response`;

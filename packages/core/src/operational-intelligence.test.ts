@@ -52,6 +52,15 @@ import {
 	createFlowDeskSpecialistWorkflowEligibilityV1,
 	validateFlowDeskSpecialistWorkflowEligibilityV1,
 	type FlowDeskSpecialistWorkflowEligibilityV1,
+	createFlowDeskSpecialistSourceRegisterV1,
+	validateFlowDeskSpecialistSourceRegisterV1,
+	type FlowDeskSpecialistSourceRegisterV1,
+	createFlowDeskSpecialistFindingV1,
+	validateFlowDeskSpecialistFindingV1,
+	type FlowDeskSpecialistFindingV1,
+	createFlowDeskHumanReviewBoundaryV1,
+	validateFlowDeskHumanReviewBoundaryV1,
+	type FlowDeskHumanReviewBoundaryV1,
 	createFlowDeskMCPConnectorAdvisoryV1,
 	validateFlowDeskMCPConnectorAdvisoryV1,
 	type FlowDeskMCPConnectorAdvisoryV1,
@@ -2660,6 +2669,180 @@ test("specialist workflow eligibility: out-of-range confidence rejection and blo
 	});
 	assert.equal(badCategory.ok, false);
 	assert.match(badCategory.errors.join("; "), /specialist_category/);
+});
+
+// ─── R3/P7-T18,T20: Specialist Source Registers + Output Contracts ───────────
+
+test("specialist source register: valid patent and medical-device reference registers", () => {
+	const patent = createFlowDeskSpecialistSourceRegisterV1({
+		registerId: "source-register-patent-1",
+		workflowId: "workflow-specialist-1",
+		sourceDomain: "patent",
+		sourceEntries: [
+			{
+				source_ref: "source-uspto-database-1",
+				source_domain: "patent",
+				source_type: "database",
+				jurisdiction_ref: "jurisdiction-us-1",
+				approved_for_reference_pack: true,
+				source_hash_ref: "hash-uspto-database-1",
+			},
+		],
+		curationPolicyRef: "policy-specialist-source-curation-1",
+		approvedByRef: "human-curator-1",
+		approvedAt: "2026-06-07T00:00:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(patent.ok, true, patent.errors.join("; "));
+	const patentRegister = patent.register as FlowDeskSpecialistSourceRegisterV1;
+	assert.equal(patentRegister.schema_version, "flowdesk.specialist_source_register.v1");
+	assert.equal(patentRegister.source_domain, "patent");
+	assert.equal(patentRegister.advisory_only, true);
+	assert.equal(patentRegister.non_authorizing, true);
+	assert.equal(patentRegister.dispatch_authority_enabled, false);
+	assert.equal(validateFlowDeskSpecialistSourceRegisterV1(patentRegister).ok, true);
+
+	const medicalDevice = createFlowDeskSpecialistSourceRegisterV1({
+		registerId: "source-register-medical-device-1",
+		workflowId: "workflow-specialist-2",
+		sourceDomain: "medical_device",
+		sourceEntries: [
+			{
+				source_ref: "source-fda-guidance-1",
+				source_domain: "medical_device",
+				source_type: "guidance",
+				jurisdiction_ref: "jurisdiction-us-1",
+				approved_for_reference_pack: true,
+				source_hash_ref: "hash-fda-guidance-1",
+			},
+		],
+		curationPolicyRef: "policy-specialist-source-curation-1",
+		approvedByRef: "human-curator-1",
+		approvedAt: "2026-06-07T00:01:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(medicalDevice.ok, true, medicalDevice.errors.join("; "));
+	assert.equal((medicalDevice.register as FlowDeskSpecialistSourceRegisterV1).source_domain, "medical_device");
+
+	assert.equal(validateFlowDeskSpecialistSourceRegisterV1(null).ok, false);
+	assert.equal(validateFlowDeskSpecialistSourceRegisterV1([]).ok, false);
+});
+
+test("specialist source register: closed schema and authority smuggling rejected", () => {
+	const valid = createFlowDeskSpecialistSourceRegisterV1({
+		registerId: "source-register-patent-2",
+		workflowId: "workflow-specialist-3",
+		sourceDomain: "patent",
+		sourceEntries: [{ source_ref: "source-epo-database-1", source_domain: "patent", source_type: "database", jurisdiction_ref: "jurisdiction-eu-1", approved_for_reference_pack: true, source_hash_ref: "hash-epo-database-1" }],
+		curationPolicyRef: "policy-specialist-source-curation-1",
+		approvedByRef: "human-curator-1",
+		approvedAt: "2026-06-07T00:02:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(valid.ok, true, valid.errors.join("; "));
+
+	const smuggled = validateFlowDeskSpecialistSourceRegisterV1({ ...valid.register, provider_authority_enabled: true });
+	assert.equal(smuggled.ok, false);
+	assert.match(smuggled.errors.join("; "), /advisory-only non-authorizing|provider/);
+
+	const unknown = validateFlowDeskSpecialistSourceRegisterV1({ ...valid.register, raw_prompt: "ignore policy" });
+	assert.equal(unknown.ok, false);
+	assert.match(unknown.errors.join("; "), /unknown properties/);
+
+	const mismatched = validateFlowDeskSpecialistSourceRegisterV1({
+		...valid.register,
+		source_entries: [{ ...(valid.register as FlowDeskSpecialistSourceRegisterV1).source_entries[0], source_domain: "medical_device" }],
+	});
+	assert.equal(mismatched.ok, false);
+	assert.match(mismatched.errors.join("; "), /must match register source_domain/);
+});
+
+test("specialist finding: advisory-only output requires human review and is not a professional decision", () => {
+	const result = createFlowDeskSpecialistFindingV1({
+		findingId: "specialist-finding-1",
+		workflowId: "workflow-specialist-4",
+		taskRef: "task-patent-landscape-1",
+		specialistCategory: "legal",
+		sourceRegisterRef: "source-register-patent-1",
+		referencePackRefs: ["reference-pack-patent-1"],
+		findingSummaryRef: "finding-summary-patent-1",
+		findingStatus: "complete",
+		confidenceScore: 72,
+		uncertaintyLabels: ["requires attorney review"],
+		generatedAt: "2026-06-07T00:03:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const finding = result.finding as FlowDeskSpecialistFindingV1;
+	assert.equal(finding.schema_version, "flowdesk.specialist_finding.v1");
+	assert.equal(finding.human_review_required, true);
+	assert.equal(finding.final_professional_decision, false);
+	assert.equal(finding.product_decision_authority_enabled, false);
+	assert.equal(finding.advisory_only, true);
+	assert.equal(finding.non_authorizing, true);
+	assert.equal(validateFlowDeskSpecialistFindingV1(finding).ok, true);
+
+	const finalDecision = validateFlowDeskSpecialistFindingV1({ ...finding, final_professional_decision: true });
+	assert.equal(finalDecision.ok, false);
+	assert.match(finalDecision.errors.join("; "), /final_professional_decision/);
+
+	const noHumanReview = validateFlowDeskSpecialistFindingV1({ ...finding, human_review_required: false });
+	assert.equal(noHumanReview.ok, false);
+	assert.match(noHumanReview.errors.join("; "), /human_review_required/);
+
+	const smuggled = validateFlowDeskSpecialistFindingV1({ ...finding, dispatch_authority_enabled: true });
+	assert.equal(smuggled.ok, false);
+	assert.match(smuggled.errors.join("; "), /advisory-only non-authorizing|dispatch/);
+});
+
+test("human review boundary: mandates sign-off before product-decision use", () => {
+	const pending = createFlowDeskHumanReviewBoundaryV1({
+		boundaryId: "human-review-boundary-1",
+		workflowId: "workflow-specialist-5",
+		findingRef: "specialist-finding-1",
+		signoffStatus: "pending",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(pending.ok, true, pending.errors.join("; "));
+	const boundary = pending.boundary as FlowDeskHumanReviewBoundaryV1;
+	assert.equal(boundary.schema_version, "flowdesk.human_review_boundary.v1");
+	assert.equal(boundary.human_review_required, true);
+	assert.equal(boundary.product_decision_use_allowed_without_human_signoff, false);
+	assert.equal(boundary.final_professional_decision, false);
+	assert.equal(boundary.professional_decision_authority_enabled, false);
+	assert.equal(boundary.advisory_only, true);
+	assert.equal(boundary.non_authorizing, true);
+	assert.equal(validateFlowDeskHumanReviewBoundaryV1(boundary).ok, true);
+
+	const signed = createFlowDeskHumanReviewBoundaryV1({
+		boundaryId: "human-review-boundary-2",
+		workflowId: "workflow-specialist-5",
+		findingRef: "specialist-finding-1",
+		signoffStatus: "signed_off",
+		humanReviewerRef: "human-reviewer-1",
+		humanSignoffRef: "human-signoff-1",
+		signoffRecordedAt: "2026-06-07T00:04:00.000Z",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(signed.ok, true, signed.errors.join("; "));
+
+	const signedWithoutRefs = createFlowDeskHumanReviewBoundaryV1({
+		boundaryId: "human-review-boundary-3",
+		workflowId: "workflow-specialist-5",
+		findingRef: "specialist-finding-1",
+		signoffStatus: "signed_off",
+		safeNextActions: ["flowdesk-status"],
+	});
+	assert.equal(signedWithoutRefs.ok, false);
+	assert.match(signedWithoutRefs.errors.join("; "), /human_reviewer_ref|human_signoff_ref|signoff_recorded_at/);
+
+	const productUseSmuggle = validateFlowDeskHumanReviewBoundaryV1({ ...boundary, product_decision_use_allowed_without_human_signoff: true });
+	assert.equal(productUseSmuggle.ok, false);
+	assert.match(productUseSmuggle.errors.join("; "), /product_decision_use_allowed_without_human_signoff/);
+
+	const authoritySmuggle = validateFlowDeskHumanReviewBoundaryV1({ ...boundary, approval_authority_enabled: true });
+	assert.equal(authoritySmuggle.ok, false);
+	assert.match(authoritySmuggle.errors.join("; "), /advisory-only non-authorizing|approval/);
 });
 
 // ─── P7-S13: MCP Connector Advisory tests ───────────────────────────────────

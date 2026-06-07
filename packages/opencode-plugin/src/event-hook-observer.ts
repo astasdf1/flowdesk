@@ -332,8 +332,19 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 }): Promise<FlowDeskEventHookObservationResultV1> {
 	const type = eventType(input.event);
 	const sessionId = eventSessionId(input.event);
+	// DIAGNOSTIC: log every event reaching the hook to trace why wakes never fire.
+	try {
+		const fs = require("node:fs") as typeof import("node:fs");
+		fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/event-hook-diag.log",
+			`${new Date().toISOString()} type=${type} sessionId=${sessionId} rootDir=${input.rootDir}\n`, "utf8");
+	} catch { /* best-effort */ }
 	if (type === undefined || sessionId === undefined) return { matched: false, eventType: type, sessionId, evidenceWritten: 0 };
 	const binding = findChildSessionBinding(input.rootDir, sessionId);
+	try {
+		const fs = require("node:fs") as typeof import("node:fs");
+		fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/event-hook-diag.log",
+			`${new Date().toISOString()}   -> binding=${binding === undefined ? "NOT_FOUND" : binding.laneId} finalizationRelevant=${eventIsFinalizationRelevant(type, eventProgress(input.event)?.label)}\n`, "utf8");
+	} catch { /* best-effort */ }
 	if (binding === undefined) return { matched: false, eventType: type, sessionId, evidenceWritten: 0 };
 	const progress = eventProgress(input.event);
 	const progressWritten = progress === undefined ? false : writeProgress(input.rootDir, binding, input.event, progress.phase, progress.label);

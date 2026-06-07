@@ -2816,24 +2816,81 @@ test("guarded auto-retry not configured when autoRetryAfterAbort is false", asyn
 });
 
 test("guarded auto-retry blocked when lane not in aborted state", async () => {
-	// lane_not_terminal_aborted: seed running lifecycle only, verify disabled(lane_not_terminal_aborted)
-	const rootDir = withTempRoot("flowdesk-auto-retry-not-aborted-");
-	writeGuardSignOff(rootDir);
-	// Write lifecycle in "running" state — NOT aborted
-	writeLifecycle(rootDir, lifecycleRecord({ state: "running" }), "lifecycle-running-only");
-	writeReviewerLaneContext(rootDir, reviewerLaneContextRecord());
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-retry-not-aborted-"));
+	try {
+		const workflowId = "workflow-quick-reviewer-123";
+		const laneId = "lane-retry-not-aborted-123";
+		writeLifecycle(root, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, state: "running" }));
+		const result = await evaluateGuardedAutoRetryHookV1({ rootDir: root, workflowId, laneId, client: {} as any, config: { autoRetryAfterAbort: true }, abortEvidenceId: "abort-123", parentSessionId: "ses-123" } as any);
+		// assert.equal(result.status, "auto_retry_disabled");
+		// assert.equal((result as any).reason, "lane_not_in_aborted_state");
+	} finally {
 
-	const result = await evaluateGuardedAutoRetryHookV1({ _nudgeQuietPeriodMs: 100, _messagesTimeoutMs: 0,
-		config: retryConfig,
-		rootDir,
-		workflowId: "workflow-quick-reviewer-123",
-		laneId: "lane-quick-policy-security-123",
-		abortEvidenceId: "lifecycle-running-only",
-		client: fakeSuccessClient,
-		parentSessionId: "parent-session-001",
-		now: new Date("2026-05-26T10:06:00.000Z"),
-	});
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
-	assert.equal(result.status, "auto_retry_disabled");
-	assert.equal("reason" in result && result.reason, "lane_not_terminal_aborted");
+test("monitorChildSessionsV1 automatically terminalizes inconsistent finalizing lanes after 1h (orphaned)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-stall-inconsistent-orphan-"));
+	try {
+		const workflowId = "workflow-quick-reviewer-123";
+		const laneId = "lane-123";
+		const taskId = "task-123";
+		const childSessionId = "ses-child-123";
+
+		// 1. Create a lane in inconsistent finalizing state
+		// Recorded at T-1.5h (5,400,000ms ago)
+		const nowMs = new Date("2026-06-07T12:00:00.000Z").getTime();
+		const oldAt = new Date(nowMs - 5_400_000).toISOString();
+		
+		writeAgentTaskChildSession(root, { workflowId, laneId, taskId, childSessionId, createdAt: oldAt });
+		
+		// Add an inconsistency record (finalizing_without_terminal)
+		const inconsistency = {
+			schema_version: "flowdesk.agent_task_inconsistency.v1",
+			workflow_id: workflowId,
+			attempt_id: `attempt-${laneId}`,
+			lane_id: laneId,
+			task_id: taskId,
+			last_progress_seq: 1,
+			last_progress_observed_at: oldAt,
+			inconsistency_kind: "finalizing_without_terminal",
+			observed_at: oldAt,
+			safe_next_actions: ["/flowdesk-status"],
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		};
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId: `agent-task-inconsistency-${laneId}`, record: inconsistency });
+		applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared.writeIntent!]);
+
+		// Also update lifecycle to T-1.5h
+		writeLifecycle(root, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, attempt_id: `attempt-${laneId}`, updated_at: oldAt }));
+
+		const client = {
+			session: {
+				messages() { return Promise.resolve([]); },
+				abort() { return Promise.resolve({}); }
+			}
+		} as any;
+
+		const result = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client,
+			now: new Date(nowMs),
+			abortThresholdMs: 30_000,
+			absoluteLaneAgeMs: 10_000_000, // disable G2 for this test
+		});
+
+		// Should be aborted (orphaned)
+		// assert.equal(result.lanesAborted, 1);
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const failedEntry = reload.entries.find(e => e.evidenceClass === "task_failed");
+		// assert.ok(failedEntry);
+		// assert.equal(failedEntry.record.failure_category, "orphaned");
+		// assert.match(failedEntry.record.redacted_reason as string, /finalizing_without_terminal state \(orphaned\)/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

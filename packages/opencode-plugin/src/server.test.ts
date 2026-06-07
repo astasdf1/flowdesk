@@ -17,6 +17,7 @@ import {
 	consumeFlowDeskProductionApprovalSourceV1,
 	FLOWDESK_FDS1_FIXTURE_CATALOG,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
+	createFlowDeskGitHubDryRunPublicationResultV1,
 	planFlowDeskExactModelAvailabilityCacheAcquisitionV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
@@ -31,6 +32,7 @@ import { createFlowDeskLocalNonDispatchAdapterSession } from "./local-adapter.js
 import flowdeskOpenCodeServerPlugin, {
 	createFlowDeskChatHookAuthorityProbeFromObservationV1,
 	createFlowDeskFds1SchemaConversionProbeTools,
+	createFlowDeskFederatedRegistryPublishTools,
 	createFlowDeskNaturalLanguageChatMessageHook,
 	createFlowDeskLocalNonDispatchAdapterTools,
 	flowdeskAbortCmdToolName,
@@ -90,6 +92,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskWriteToolName,
 	flowdeskOperationalIntelligenceOption,
 	flowdeskCompletionWakeMainSessionOption,
+	flowdeskFederatedRegistryPublishToolName,
 	operationalIntelligenceConfigFromOptions,
 	completionWakeMainSessionConfigFromOptions,
 } from "./server.js";
@@ -288,6 +291,87 @@ interface ChatMessageHooks {
 function toolOutput(value: string | { output: string }): string {
 	return typeof value === "string" ? value : value.output;
 }
+
+function githubDryRunPublicationResultForServerTest() {
+	const result = createFlowDeskGitHubDryRunPublicationResultV1({
+		dryRunResultId: "dry-run-server-test",
+		preflightRef: "preflight-ref-server-test",
+		writePlanRef: "write-plan-ref-server-test",
+		workflowId: "workflow-server-test",
+		attemptId: "attempt-server-test",
+		connectorKind: "github_pr_comment",
+		redactedTargetLabel: "github target",
+		redactedContentPreview: "federated score preview",
+		contentHashRef: "hash-server-test",
+		dryRunState: "dry_run_recorded",
+		blockedLabels: [],
+		fakeRemoteWriteAttempted: true,
+	});
+	assert.equal(result.ok, true);
+	assert.ok(result.result);
+	return result.result;
+}
+
+test("flowdesk_federated_registry_publish tool wraps advisory GitHub publication and skips remote write by default", async () => {
+	const tools = createFlowDeskFederatedRegistryPublishTools();
+	const publishTool = tools[flowdeskFederatedRegistryPublishToolName];
+	assert.ok(publishTool);
+	const parsed = JSON.parse(
+		toolOutput(
+			await publishTool.execute(
+				{
+					dryRunResult: githubDryRunPublicationResultForServerTest(),
+					ledgerIdempotencyRef: "ledger-idempotency-ref-server-test",
+					guardApprovalRef: "guard-approval-ref-server-test",
+					target: { kind: "github_pr_comment", owner: "flowdesk", repo: "repo", issueNumber: 7 },
+					contentMarkdown: "FlowDesk publication body",
+					connectorGateSatisfied: false,
+					allowActualRemoteWrite: false,
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(parsed.ok, false);
+	assert.deepEqual(parsed.authority, {
+		advisoryOnlyRecord: true,
+		remoteWriteAuthorityEnabledInRecord: false,
+		dispatchAuthorityEnabled: false,
+		laneLaunchAuthorityEnabled: false,
+	});
+	assert.equal((parsed.remoteWrite as Record<string, unknown>).state, "skipped");
+	assert.equal((parsed.publicationResult as Record<string, unknown>).remote_write_attempted, false);
+});
+
+test("flowdesk_federated_registry_publish tool rejects malformed records with redacted error envelope", async () => {
+	const tools = createFlowDeskFederatedRegistryPublishTools();
+	const publishTool = tools[flowdeskFederatedRegistryPublishToolName];
+	assert.ok(publishTool);
+	const parsed = JSON.parse(
+		toolOutput(
+			await publishTool.execute(
+				{
+					dryRunResult: { dry_run_result_id: 42 },
+					target: "not-a-target-record",
+					contentMarkdown: "FlowDesk publication body",
+					allowActualRemoteWrite: true,
+				},
+				undefined as never,
+			),
+		),
+	) as Record<string, unknown>;
+	assert.equal(parsed.ok, false);
+	assert.deepEqual(parsed.authority, {
+		advisoryOnlyRecord: true,
+		remoteWriteAuthorityEnabledInRecord: false,
+		dispatchAuthorityEnabled: false,
+		laneLaunchAuthorityEnabled: false,
+	});
+	assert.deepEqual(parsed.remoteWrite, { state: "skipped", endpointKind: "github_issue", redactedReason: "invalid-tool-input" });
+	assert.equal((parsed.errors as string[]).length, 1);
+	assert.match((parsed.errors as string[])[0] ?? "", /dryRunResult must be a valid/);
+	assert.equal("publicationResult" in parsed, false);
+});
 
 function exactModelAvailabilityCacheRecord(
 	overrides: Record<string, unknown> = {},
@@ -11783,14 +11867,23 @@ test("OI config gate is reflected in pre-spike doctor output", async () => {
 	});
 });
 
-test("completionWakeMainSessionConfigFromOptions falls back to global model when specific model is missing", () => {
+test("completionWakeMainSessionConfigFromOptions prefers the global main model over the wake-specific override", () => {
 	const options = {
-		model: "anthropic/claude-sonnet-4-6",
-		[flowdeskCompletionWakeMainSessionOption]: { enabled: true },
+		model: "openai/gpt-5.4-mini-fast",
+		[flowdeskCompletionWakeMainSessionOption]: { enabled: true, providerQualifiedModelId: "anthropic/claude-sonnet-4-6" },
+		[flowdeskDurableStateRootOption]: "/tmp/flowdesk-test",
+	};
+	const result = completionWakeMainSessionConfigFromOptions(options);
+	assert.ok(result);
+	assert.equal(result.providerQualifiedModelId, "openai/gpt-5.4-mini-fast");
+});
+
+test("completionWakeMainSessionConfigFromOptions falls back to the wake-specific model when global model is missing", () => {
+	const options = {
+		[flowdeskCompletionWakeMainSessionOption]: { enabled: true, providerQualifiedModelId: "anthropic/claude-sonnet-4-6" },
 		[flowdeskDurableStateRootOption]: "/tmp/flowdesk-test",
 	};
 	const result = completionWakeMainSessionConfigFromOptions(options);
 	assert.ok(result);
 	assert.equal(result.providerQualifiedModelId, "anthropic/claude-sonnet-4-6");
 });
-

@@ -224,7 +224,27 @@ test("model selection prefers period-normalized quota over raw percent", () => {
 	assert.equal(result?.candidate.providerFamily, "openai");
 });
 
-test("selectModelForTask result is byte-identical regardless of OI advisory presence", () => {
+test("model selection prefers higher OI performance scores as a tertiary tie-breaker", () => {
+	// Two candidates with same alertLevel (ok) and same weight (1.0)
+	const usageMap = new Map([
+		["openai", usage("openai", 80, "ok")],
+		["claude", usage("claude", 80, "ok")],
+	]);
+	const available: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["openai/gpt-5.5", "anthropic/claude-opus-4-7"],
+		oiPerformanceScores: new Map([
+			["openai/gpt-5.5", 70],
+			["anthropic/claude-opus-4-7", 95], // higher OI score
+		]),
+	};
+	// security role: candidates [anthropic/claude-opus-4-7, openai/gpt-5.5]
+	const result = selectModelForTask("security", usageMap, available, now);
+	assert.ok(result);
+	assert.equal(result.candidate.providerQualifiedModelId, "anthropic/claude-opus-4-7", "higher OI performance score should win tie-break");
+});
+
+test("model selection result is byte-identical regardless of OI advisory presence", () => {
 	// Fixed deterministic inputs — no randomness in these usage/model values.
 	const usageMap = new Map([
 		["claude", usage("claude", 80, "ok")],

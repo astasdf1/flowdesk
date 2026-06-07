@@ -986,7 +986,6 @@ export async function executeFlowDeskAgentTaskV1(
 	// ── Async mode: return immediately, watchdog handles polling/nudging/abort ──
 	if (input.asyncMode === true) {
 		const resolvedChildId = childSessionId ?? "";
-		// Write child session evidence so watchdog can find it
 		writeAgentTaskChildSessionIndex({
 			rootDir: input.rootDir,
 			workflowId: input.workflowId,

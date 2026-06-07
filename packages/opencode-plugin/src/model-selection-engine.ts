@@ -37,6 +37,11 @@ export interface ModelSelectionResult {
 export interface WorkingModelSelectionInput {
 	availableModelIds: readonly string[];
 	availabilitySource?: "local_db" | "durable_cache" | "cloud_cache" | "test_fixture";
+	/**
+	 * Tertiary tie-breaker: model performance scores from operational intelligence.
+	 * Key is providerQualifiedModelId, value is mean weighted score (0..100).
+	 */
+	oiPerformanceScores?: Map<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +198,13 @@ export function selectModelForTask(
 		if (byAlert !== 0) return byAlert;
 		const byWeight = b.weight - a.weight;
 		if (byWeight !== 0) return byWeight;
+		// Phase 7.5: Tertiary tie-breaker – prefer models with higher OI performance scores
+		if (selectionContext.oiPerformanceScores !== undefined) {
+			const aScore = selectionContext.oiPerformanceScores.get(a.candidate.providerQualifiedModelId) ?? 0;
+			const bScore = selectionContext.oiPerformanceScores.get(b.candidate.providerQualifiedModelId) ?? 0;
+			const byOI = bScore - aScore;
+			if (byOI !== 0) return byOI;
+		}
 		const byTier = tierRank(a.candidate.tier) - tierRank(b.candidate.tier);
 		if (byTier !== 0) return byTier;
 		const byCatalogPreference = mapping.candidates.findIndex((candidate) => candidate.providerQualifiedModelId === a.candidate.providerQualifiedModelId) - mapping.candidates.findIndex((candidate) => candidate.providerQualifiedModelId === b.candidate.providerQualifiedModelId);
