@@ -79,6 +79,9 @@ const FLOWDESK_ABORT_WORKFLOW_PREFIXES = [
 	"workflow-quick-fallback-",
 	"workflow-stall-recovery-",
 	"workflow-provider-usage-",
+	"workflow-r3-",
+	"workflow-p7-",
+	"workflow-p8-",
 ] as const;
 
 const TERMINAL_LANE_STATES = new Set([

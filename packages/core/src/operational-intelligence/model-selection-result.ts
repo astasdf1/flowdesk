@@ -16,6 +16,7 @@ import {
 } from "./shared.js";
 import type { FlowDeskModelCapabilityProfileV1, FlowDeskModelCapabilityProfileCategoryV1 } from "./model-capability-profile.js";
 import type { FlowDeskBlockSelectionCriteriaV1 } from "./block-selection-criteria.js";
+import type { FlowDeskRoutingAdvisoryEvaluationV1, FlowDeskRoutingInfluencePolicyV1 } from "./routing-advisory.js";
 
 // ─── Supporting types ─────────────────────────────────────────────────────────
 
@@ -384,6 +385,8 @@ export function selectModelForBlock(input: {
 	quotaSnapshotRef: string;
 	criteriaRef: string;
 	purpose?: FlowDeskModelSelectionPurposeV1;
+	routingAdvisory?: FlowDeskRoutingAdvisoryEvaluationV1;
+	routingInfluencePolicy?: FlowDeskRoutingInfluencePolicyV1;
 }): { ok: boolean; errors: string[]; result?: FlowDeskModelSelectionResultV1 } {
 	const errors: string[] = [];
 
@@ -496,7 +499,14 @@ export function selectModelForBlock(input: {
 		selectedProviderQualifiedModelId = selected.provider_qualified_model_id;
 		selectionReason = "only_eligible";
 	} else {
-		// Step 9: Multiple eligible — sort by quota DESC
+		// Step 9: Multiple eligible — sort by quota DESC, then fitness DESC.
+		// R3-S6: only when quota and fitness are exact ties, an explicitly enabled
+		// routing influence policy may use advisory weighted_score as a third-level
+		// tie-breaker. Otherwise deterministic input order is preserved by sort index.
+		const advisoryByModel = new Map((input.routingAdvisory?.model_summaries ?? []).map((summary) => [summary.model_ref, summary]));
+		const routingInfluenceEnabled = input.routingInfluencePolicy?.enabled === true && input.routingInfluencePolicy.tie_quota_delta_percent === 0;
+		const minSampleThreshold = input.routingInfluencePolicy?.min_sample_threshold ?? Number.POSITIVE_INFINITY;
+		const indexed = eligibleProfiles.map((profile, index) => ({ profile, index }));
 		const sorted = [...eligibleProfiles].sort((a, b) => {
 			const quotaA = input.quotaMap.get(a.model_ref) ?? 0;
 			const quotaB = input.quotaMap.get(b.model_ref) ?? 0;
@@ -504,7 +514,16 @@ export function selectModelForBlock(input: {
 			// Tiebreak: sum of relevant fitness scores DESC
 			const fitA = a.category_fitness[sourceCategory] + a.complexity_handling_score + a.authority_sensitivity_score;
 			const fitB = b.category_fitness[sourceCategory] + b.complexity_handling_score + b.authority_sensitivity_score;
-			return fitB - fitA;
+			if (fitB !== fitA) return fitB - fitA;
+			if (routingInfluenceEnabled) {
+				const advisoryA = advisoryByModel.get(a.model_ref);
+				const advisoryB = advisoryByModel.get(b.model_ref);
+				const advisoryAEligible = advisoryA !== undefined && advisoryA.sample_count >= minSampleThreshold;
+				const advisoryBEligible = advisoryB !== undefined && advisoryB.sample_count >= minSampleThreshold;
+				if (advisoryAEligible && advisoryBEligible && advisoryA!.weighted_score !== advisoryB!.weighted_score) return advisoryB!.weighted_score - advisoryA!.weighted_score;
+				if (advisoryAEligible !== advisoryBEligible) return advisoryAEligible ? -1 : 1;
+			}
+			return indexed.find((entry) => entry.profile === a)!.index - indexed.find((entry) => entry.profile === b)!.index;
 		});
 
 		const topQuota = input.quotaMap.get(sorted[0].model_ref) ?? 0;

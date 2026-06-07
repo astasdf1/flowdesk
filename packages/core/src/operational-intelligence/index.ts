@@ -311,6 +311,21 @@ export {
 	selectModelForBlock,
 } from "./model-selection-result.js";
 
+// routing-advisory (R3-S6: read-side ledger retention + advisory tie-break input)
+export {
+	type FlowDeskLedgerRetentionPolicyV1,
+	type FlowDeskRoutingInfluencePolicyV1,
+	type FlowDeskRoutingAdvisoryModelSummaryV1,
+	type FlowDeskRoutingAdvisoryEvaluationV1,
+	type FlowDeskRoutingAdvisoryLedgerEntryV1,
+	createFlowDeskLedgerRetentionPolicyV1,
+	createFlowDeskRoutingInfluencePolicyV1,
+	evaluateOIRoutingAdvisoryV1,
+	validateFlowDeskLedgerRetentionPolicyV1,
+	validateFlowDeskRoutingInfluencePolicyV1,
+	validateFlowDeskRoutingAdvisoryEvaluationV1,
+} from "./routing-advisory.js";
+
 // block-decomposition (operational intelligence later gate)
 export {
 	type FlowDeskSubBlockEstimateV1,

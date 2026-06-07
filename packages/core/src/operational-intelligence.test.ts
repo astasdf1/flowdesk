@@ -153,6 +153,13 @@ import {
 	type FlowDeskModelSelectionResultV1,
 	type FlowDeskModelSelectionReasonV1,
 	type FlowDeskModelSelectionPurposeV1,
+	createFlowDeskLedgerRetentionPolicyV1,
+	createFlowDeskRoutingInfluencePolicyV1,
+	evaluateOIRoutingAdvisoryV1,
+	validateFlowDeskLedgerRetentionPolicyV1,
+	validateFlowDeskRoutingInfluencePolicyV1,
+	validateFlowDeskRoutingAdvisoryEvaluationV1,
+	type FlowDeskRoutingAdvisoryLedgerEntryV1,
 	// block decomposition contracts
 	createFlowDeskBlockDecompositionV1,
 	validateFlowDeskBlockDecompositionV1,
@@ -6958,6 +6965,118 @@ test("selectModelForBlock: without purpose falls back to normal selection (backw
 	assert.equal(r.ineligible_model_entries.length, 0);
 	// selection_purpose is absent when not provided
 	assert.equal(r.selection_purpose, undefined);
+});
+
+// ─── R3-S6: Routing Advisory + Ledger Retention tests ───────────────────────
+
+function routingEntry(overrides: Partial<FlowDeskRoutingAdvisoryLedgerEntryV1>): FlowDeskRoutingAdvisoryLedgerEntryV1 {
+	return {
+		signature_ref: "signature-routing-1",
+		model_ref: "prof-routing-a",
+		weighted_score: 0.5,
+		recorded_at: "2026-06-07T00:00:00.000Z",
+		...overrides,
+	};
+}
+
+test("TC-RET-1: TTL pruning removes old routing advisory entries", () => {
+	const retentionPolicy = createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 20 });
+	const influencePolicy = createFlowDeskRoutingInfluencePolicyV1({ enabled: false });
+	assert.equal(validateFlowDeskLedgerRetentionPolicyV1(retentionPolicy).ok, true);
+	assert.equal(validateFlowDeskRoutingInfluencePolicyV1(influencePolicy).ok, true);
+
+	const evaluation = evaluateOIRoutingAdvisoryV1([
+		routingEntry({ model_ref: "prof-routing-a", weighted_score: 1, recorded_at: "2026-06-06T00:00:00.000Z" }),
+		routingEntry({ model_ref: "prof-routing-a", weighted_score: 0, recorded_at: "2026-05-01T00:00:00.000Z" }),
+	], "signature-routing-1", retentionPolicy, influencePolicy, "2026-06-07T00:00:00.000Z");
+
+	assert.equal(validateFlowDeskRoutingAdvisoryEvaluationV1(evaluation).ok, true);
+	assert.equal(evaluation.model_summaries.length, 1);
+	assert.equal(evaluation.model_summaries[0].model_ref, "prof-routing-a");
+	assert.equal(evaluation.model_summaries[0].sample_count, 1);
+	assert.equal(evaluation.model_summaries[0].weighted_score, 1);
+});
+
+test("TC-RET-2: Cap pruning keeps newest routing advisory entries", () => {
+	const evaluation = evaluateOIRoutingAdvisoryV1([
+		routingEntry({ model_ref: "prof-routing-a", weighted_score: 0.1, recorded_at: "2026-06-01T00:00:00.000Z" }),
+		routingEntry({ model_ref: "prof-routing-a", weighted_score: 0.9, recorded_at: "2026-06-06T00:00:00.000Z" }),
+		routingEntry({ model_ref: "prof-routing-a", weighted_score: 0.7, recorded_at: "2026-06-05T00:00:00.000Z" }),
+	], "signature-routing-1", createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 2 }), createFlowDeskRoutingInfluencePolicyV1({ enabled: false }), "2026-06-07T00:00:00.000Z");
+
+	assert.equal(evaluation.model_summaries.length, 1);
+	assert.equal(evaluation.model_summaries[0].sample_count, 2);
+	assert.equal(evaluation.model_summaries[0].weighted_score, 0.8);
+});
+
+test("TC-TIE-1: Advisory tie-break wins on exact quota and fitness tie", () => {
+	const profileA = makeProfile({ profile_id: "prof-routing-a", model_ref: "prof-routing-a", provider_qualified_model_id: "anthropic/claude-sonnet-4-6" });
+	const profileB = makeProfile({ profile_id: "prof-routing-b", model_ref: "prof-routing-b", provider_qualified_model_id: "openai/gpt-5.5" });
+	const advisory = evaluateOIRoutingAdvisoryV1([
+		...Array.from({ length: 5 }, (_, i) => routingEntry({ model_ref: "prof-routing-a", weighted_score: 0.4, recorded_at: `2026-06-06T00:00:0${i}.000Z` })),
+		...Array.from({ length: 5 }, (_, i) => routingEntry({ model_ref: "prof-routing-b", weighted_score: 0.9, recorded_at: `2026-06-06T00:01:0${i}.000Z` })),
+	], "signature-routing-1", createFlowDeskLedgerRetentionPolicyV1(), createFlowDeskRoutingInfluencePolicyV1({ enabled: true }), "2026-06-07T00:00:00.000Z");
+
+	const result = selectModelForBlock({
+		criteria: makeCriteria(),
+		profiles: [profileA, profileB],
+		quotaMap: new Map([["prof-routing-a", 80], ["prof-routing-b", 80]]),
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-routing-tie-1",
+		quotaSnapshotRef: "quota-snap-routing-1",
+		criteriaRef: "criteria-select-1",
+		routingAdvisory: advisory,
+		routingInfluencePolicy: createFlowDeskRoutingInfluencePolicyV1({ enabled: true }),
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.result!.selected_model_ref, "prof-routing-b");
+	assert.equal(result.result!.selection_reason, "best_fitness_eligible");
+});
+
+test("TC-TIE-2: Advisory ignored if quota or fitness is not tied", () => {
+	const profileA = makeProfile({ profile_id: "prof-routing-c", model_ref: "prof-routing-c", provider_qualified_model_id: "anthropic/claude-sonnet-4-6" });
+	const profileB = makeProfile({ profile_id: "prof-routing-d", model_ref: "prof-routing-d", provider_qualified_model_id: "openai/gpt-5.5" });
+	const advisory = evaluateOIRoutingAdvisoryV1([
+		...Array.from({ length: 5 }, (_, i) => routingEntry({ model_ref: "prof-routing-d", weighted_score: 1, recorded_at: `2026-06-06T00:02:0${i}.000Z` })),
+	], "signature-routing-1", createFlowDeskLedgerRetentionPolicyV1(), createFlowDeskRoutingInfluencePolicyV1({ enabled: true }), "2026-06-07T00:00:00.000Z");
+
+	const result = selectModelForBlock({
+		criteria: makeCriteria(),
+		profiles: [profileA, profileB],
+		quotaMap: new Map([["prof-routing-c", 90], ["prof-routing-d", 80]]),
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-routing-tie-2",
+		quotaSnapshotRef: "quota-snap-routing-2",
+		criteriaRef: "criteria-select-1",
+		routingAdvisory: advisory,
+		routingInfluencePolicy: createFlowDeskRoutingInfluencePolicyV1({ enabled: true }),
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.result!.selected_model_ref, "prof-routing-c");
+	assert.equal(result.result!.selection_reason, "highest_quota_among_eligible");
+});
+
+test("TC-TIE-3: Deterministic fallback if advisory scores tied", () => {
+	const profileA = makeProfile({ profile_id: "prof-routing-e", model_ref: "prof-routing-e", provider_qualified_model_id: "anthropic/claude-sonnet-4-6" });
+	const profileB = makeProfile({ profile_id: "prof-routing-f", model_ref: "prof-routing-f", provider_qualified_model_id: "openai/gpt-5.5" });
+	const advisory = evaluateOIRoutingAdvisoryV1([
+		...Array.from({ length: 5 }, (_, i) => routingEntry({ model_ref: "prof-routing-e", weighted_score: 0.7, recorded_at: `2026-06-06T00:03:0${i}.000Z` })),
+		...Array.from({ length: 5 }, (_, i) => routingEntry({ model_ref: "prof-routing-f", weighted_score: 0.7, recorded_at: `2026-06-06T00:04:0${i}.000Z` })),
+	], "signature-routing-1", createFlowDeskLedgerRetentionPolicyV1(), createFlowDeskRoutingInfluencePolicyV1({ enabled: true }), "2026-06-07T00:00:00.000Z");
+
+	const result = selectModelForBlock({
+		criteria: makeCriteria(),
+		profiles: [profileA, profileB],
+		quotaMap: new Map([["prof-routing-e", 80], ["prof-routing-f", 80]]),
+		evaluatedAt: "2026-06-07T01:00:00.000Z",
+		selectionId: "sel-routing-tie-3",
+		quotaSnapshotRef: "quota-snap-routing-3",
+		criteriaRef: "criteria-select-1",
+		routingAdvisory: advisory,
+		routingInfluencePolicy: createFlowDeskRoutingInfluencePolicyV1({ enabled: true }),
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.equal(result.result!.selected_model_ref, "prof-routing-e");
 });
 
 // ─── FlowDeskBlockDecompositionV1 tests ─────────────────────────────────────
