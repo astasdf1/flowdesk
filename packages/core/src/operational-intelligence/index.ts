@@ -366,3 +366,19 @@ export {
 	type FlowDeskProposalGenerationResultV1,
 	planFlowDeskWorkflowPlanProposalSetV1,
 } from "./proposal-generator.js";
+
+// r3-reservation-lifecycle-event (R3-S3: reservation lifecycle event)
+export {
+	type FlowDeskR3ReservationLifecycleEventKindV1,
+	type FlowDeskR3ReservationLifecycleEventV1,
+	type FlowDeskR3ReservationLifecycleEventResultV1,
+	createFlowDeskR3ReservationLifecycleEventV1,
+	validateFlowDeskR3ReservationLifecycleEventV1,
+} from "./r3-reservation-lifecycle-event.js";
+
+// r3-admission-orchestrator (R3-S3: cadence orchestrator + reservation lifecycle)
+export {
+	type FlowDeskR3AdmissionOrchestrationInputV1,
+	type FlowDeskR3AdmissionOrchestrationResultV1,
+	evaluateR3AdmissionV1,
+} from "./r3-admission-orchestrator.js";

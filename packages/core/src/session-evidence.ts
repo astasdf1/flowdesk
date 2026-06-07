@@ -54,7 +54,10 @@ import {
 	validateFlowDeskBlockScoreReconciliationV1,
 	validateFlowDeskBlockDecompositionFailureV1,
 	validateFlowDeskProposalGeneratorConfigV1,
+	validateFlowDeskR3AdmissionDecisionV1,
+	validateFlowDeskR3FanoutReservationV1,
 } from "./operational-intelligence/index.js";
+import { validateFlowDeskR3ReservationLifecycleEventV1 } from "./operational-intelligence/r3-reservation-lifecycle-event.js";
 import { validateFlowDeskConfiguredVerificationResultV1 } from "./production-verification.js";
 import { validateFlowDeskSanitizedAuthCaptureResultV1 } from "./sanitized-auth-capture.js";
 import {
@@ -162,6 +165,9 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	block_score_reconciliation: "flowdesk.block_score_reconciliation.v1",
 	proposal_generator_config: "flowdesk.proposal_generator_config.v1",
 	block_hierarchy: "flowdesk.block_hierarchy.v1",
+	r3_admission_decision: "flowdesk.r3_admission_decision.v1",
+	r3_fanout_reservation: "flowdesk.r3_fanout_reservation.v1",
+	r3_reservation_lifecycle_event: "flowdesk.r3_reservation_lifecycle_event.v1",
 };
 
 const CLASS_BY_SCHEMA: Record<string, FlowDeskSessionEvidenceClass> =
@@ -916,6 +922,12 @@ function validateEvidenceShape(
 		return validateFlowDeskProposalGeneratorConfigV1(record);
 	if (evidenceClass === "block_hierarchy")
 		return validateFlowDeskBlockHierarchyV1(record);
+	if (evidenceClass === "r3_admission_decision")
+		return validateFlowDeskR3AdmissionDecisionV1(record);
+	if (evidenceClass === "r3_fanout_reservation")
+		return validateFlowDeskR3FanoutReservationV1(record);
+	if (evidenceClass === "r3_reservation_lifecycle_event")
+		return validateFlowDeskR3ReservationLifecycleEventV1(record);
 	const requiredCommon = ["schema_version"] as const;
 	for (const key of requiredCommon)
 		if (!(key in record))

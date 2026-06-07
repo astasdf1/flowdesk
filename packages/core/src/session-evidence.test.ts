@@ -1885,3 +1885,126 @@ test("session evidence reload rejects block_hierarchy with forged authority flag
     assert.equal(result.actualLaneLaunch, false);
   });
 });
+
+// ─── R3-S3: r3_admission_decision evidence class tests ───────────────────────
+
+function r3AdmissionDecisionRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.r3_admission_decision.v1",
+    decision_id: "decision-se-1",
+    workflow_id: workflowId,
+    workflow_signature_ref: "sig-se-1",
+    attempt_id: "attempt-se-1",
+    surplus_gate_ref: "surplus-gate-se-1",
+    surplus_gate_verdict: "allow",
+    reuse_gate_ref: "reuse-gate-se-1",
+    reuse_gate_decision: "recompute",
+    cadence_gate_ref: "cadence-gate-se-1",
+    cadence_gate_decision: "allow",
+    execution_mode: "multi_model_fanout",
+    combined_snapshot_hash: "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    decided_at: "2026-06-07T12:00:00.000Z",
+    config_ref: "config-se-1",
+    reservation_id: "reservation-se-1",
+    release_gate: "operational_intelligence_later_gate",
+    advisory_only: true,
+    non_authorizing: true,
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+test("session evidence reload accepts a valid r3_admission_decision record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "r3_admission_decision", "decision-good-1"), JSON.stringify(r3AdmissionDecisionRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "r3_admission_decision");
+    assert.equal(result.entries[0].evidenceId, "decision-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects r3_admission_decision with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "r3_admission_decision", "decision-forged-1"), JSON.stringify(r3AdmissionDecisionRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});
+
+// ─── R3-S3: r3_reservation_lifecycle_event evidence class tests ──────────────
+
+function r3ReservationLifecycleEventRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: "flowdesk.r3_reservation_lifecycle_event.v1",
+    event_id: "event-se-1",
+    reservation_id: "res-abcdef1234567890",
+    workflow_id: workflowId,
+    attempt_id: "attempt-se-1",
+    previous_status: "reserved",
+    next_status: "consumed",
+    event_kind: "consumed",
+    event_at: "2026-06-07T12:00:00.000Z",
+    day_key: "2026-06-07",
+    reason_ref: "reason-se-1",
+    release_gate: "operational_intelligence_later_gate",
+    advisory_only: true,
+    non_authorizing: true,
+    dispatch_authority_enabled: false,
+    approval_authority_enabled: false,
+    provider_authority_enabled: false,
+    runtime_authority_enabled: false,
+    external_write_authority_enabled: false,
+    remote_write_authority_enabled: false,
+    fallback_authority_enabled: false,
+    lane_launch_authority_enabled: false,
+    write_authority_enabled: false,
+    hard_chat_authority_enabled: false,
+    ...overrides,
+  };
+}
+
+test("session evidence reload accepts a valid r3_reservation_lifecycle_event record", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "r3_reservation_lifecycle_event", "event-good-1"), JSON.stringify(r3ReservationLifecycleEventRecord()));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.ok, true, result.errors.join("; "));
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceClass, "r3_reservation_lifecycle_event");
+    assert.equal(result.entries[0].evidenceId, "event-good-1");
+    assert.equal(result.blocked.length, 0);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+    assert.equal(result.runtimeExecution, false);
+  });
+});
+
+test("session evidence reload rejects r3_reservation_lifecycle_event with forged authority flag", () => {
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(workflowId, "r3_reservation_lifecycle_event", "event-forged-1"), JSON.stringify(r3ReservationLifecycleEventRecord({ dispatch_authority_enabled: true })));
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir });
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.blocked.length, 1);
+    assert.match(result.blocked[0].reason, /dispatch_authority_enabled must be false|advisory-only|authority/i);
+    assert.equal(result.providerCall, false);
+    assert.equal(result.actualLaneLaunch, false);
+  });
+});

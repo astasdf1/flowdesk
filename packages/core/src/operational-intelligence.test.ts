@@ -179,6 +179,12 @@ import {
 	planFlowDeskWorkflowPlanProposalSetV1,
 	type FlowDeskProposalGenerationInputV1,
 	type FlowDeskProposalGenerationResultV1,
+	// R3-S3: reservation lifecycle event + admission orchestrator
+	createFlowDeskR3ReservationLifecycleEventV1,
+	validateFlowDeskR3ReservationLifecycleEventV1,
+	type FlowDeskR3ReservationLifecycleEventV1,
+	evaluateR3AdmissionV1,
+	type FlowDeskR3AdmissionOrchestrationInputV1,
 } from "./index.js";
 
 const sha256Ref = "sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -7429,4 +7435,210 @@ test("planFlowDeskWorkflowPlanProposalSetV1 rejects missing or invalid inputs", 
 	});
 	assert.equal(badConfig.ok, false);
 	assert.match(badConfig.errors.join("; "), /config must be a valid FlowDeskProposalGeneratorConfigV1/);
+});
+
+// ─── R3-S3: FlowDeskR3ReservationLifecycleEventV1 tests ──────────────────────
+
+test("r3 reservation lifecycle event: valid consumed event", () => {
+	const result = createFlowDeskR3ReservationLifecycleEventV1({
+		eventId: "event-lifecycle-1",
+		reservationId: "res-abcdef1234567890",
+		workflowId: "workflow-lc-1",
+		attemptId: "attempt-lc-1",
+		previousStatus: "reserved",
+		nextStatus: "consumed",
+		eventKind: "consumed",
+		eventAt: "2026-06-07T12:00:00.000Z",
+		reasonRef: "reason-consumed-1",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const event = result.event!;
+	assert.equal(event.schema_version, "flowdesk.r3_reservation_lifecycle_event.v1");
+	assert.equal(event.previous_status, "reserved");
+	assert.equal(event.next_status, "consumed");
+	assert.equal(event.event_kind, "consumed");
+	assert.equal(event.day_key, "2026-06-07");
+	assert.equal(event.release_gate, "operational_intelligence_later_gate");
+	assert.equal(event.advisory_only, true);
+	assert.equal(event.non_authorizing, true);
+	assert.equal(event.dispatch_authority_enabled, false);
+	assert.equal(event.runtime_authority_enabled, false);
+	assert.equal(event.fallback_authority_enabled, false);
+	assert.equal(validateFlowDeskR3ReservationLifecycleEventV1(event).ok, true);
+});
+
+test("r3 reservation lifecycle event: rejects invalid transitions and authority smuggling", () => {
+	// Terminal state as previous_status: consumed cannot transition
+	const terminalPrev = createFlowDeskR3ReservationLifecycleEventV1({
+		eventId: "event-lifecycle-2",
+		reservationId: "res-abcdef1234567890",
+		workflowId: "workflow-lc-1",
+		attemptId: "attempt-lc-1",
+		previousStatus: "consumed",
+		nextStatus: "released",
+		eventKind: "released",
+		eventAt: "2026-06-07T12:00:00.000Z",
+		reasonRef: "reason-double-transition",
+	});
+	assert.equal(terminalPrev.ok, false);
+	assert.match(terminalPrev.errors.join("; "), /previous_status must be 'reserved'|terminal states cannot/);
+
+	// next_status mismatch with event_kind
+	const mismatch = createFlowDeskR3ReservationLifecycleEventV1({
+		eventId: "event-lifecycle-3",
+		reservationId: "res-abcdef1234567890",
+		workflowId: "workflow-lc-1",
+		attemptId: "attempt-lc-1",
+		previousStatus: "reserved",
+		nextStatus: "consumed",
+		eventKind: "released",
+		eventAt: "2026-06-07T12:00:00.000Z",
+		reasonRef: "reason-mismatch",
+	});
+	assert.equal(mismatch.ok, false);
+	assert.match(mismatch.errors.join("; "), /next_status must match event_kind/);
+
+	// Authority smuggling via validator
+	const goodResult = createFlowDeskR3ReservationLifecycleEventV1({
+		eventId: "event-lifecycle-4",
+		reservationId: "res-abcdef1234567890",
+		workflowId: "workflow-lc-1",
+		attemptId: "attempt-lc-1",
+		previousStatus: "reserved",
+		nextStatus: "released",
+		eventKind: "released",
+		eventAt: "2026-06-07T12:00:00.000Z",
+		reasonRef: "reason-released-1",
+	});
+	assert.equal(goodResult.ok, true);
+	const event = goodResult.event!;
+	const forgedDispatch = validateFlowDeskR3ReservationLifecycleEventV1({ ...event, dispatch_authority_enabled: true });
+	assert.equal(forgedDispatch.ok, false);
+	assert.match(forgedDispatch.errors.join("; "), /advisory-only non-authorizing/);
+});
+
+// ─── R3-S3: evaluateR3AdmissionV1 orchestrator tests ─────────────────────────
+
+const ctxHashOrc = "sha256-0000000000000000000000000000000000000000000000000000000000000001";
+const ctxHashOrc2 = "sha256-0000000000000000000000000000000000000000000000000000000000000002";
+const snapshotHashOrc = "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+function makeAdmissionInput(overrides: Partial<FlowDeskR3AdmissionOrchestrationInputV1> = {}): FlowDeskR3AdmissionOrchestrationInputV1 {
+	return {
+		workflowId: "workflow-orch-1",
+		attemptId: "attempt-orch-1",
+		workflowSignatureRef: "sig-orch-1",
+		blockScoring: {} as FlowDeskR3AdmissionOrchestrationInputV1["blockScoring"],
+		// Reuse gate — context hash mismatch → recompute (do not skip by reuse)
+		previousScoreRef: "score-ref-orch-1",
+		previousContextHash: ctxHashOrc,
+		currentContextHash: ctxHashOrc2, // different → recompute
+		scoreAgeSeconds: 60,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 80,
+		reasonRefsReuse: ["reason-reuse-orch-1"],
+		// Surplus gate — sufficient surplus, fresh snapshot, ok alert level
+		usageSnapshotRef: "snapshot-ref-orch-1",
+		usageSnapshotHash: snapshotHashOrc,
+		snapshotCapturedAt: "2026-06-07T11:59:00.000Z",
+		providerFamily: "claude",
+		bucketLabel: "claude-5h",
+		remainingPercent: 80,
+		surplusThresholdPercent: 50,
+		alertLevel: "ok",
+		maxSnapshotAgeSeconds: 120,
+		reasonRefsSurplus: ["reason-surplus-orch-1"],
+		// Cadence gate — 1 lane, 4 max concurrent, 0 active → allow
+		requestedLaneCount: 1,
+		maxConcurrentLanes: 4,
+		activeLaneCount: 0,
+		cadenceWindowSeconds: 60,
+		cooldownSeconds: 0,
+		secondsSinceLastBurst: 120,
+		reasonRefsCadence: ["reason-cadence-orch-1"],
+		// Reservation
+		estimatedTokensReserved: 1000,
+		dailyHardCapTokens: 100000,
+		reservationTtlSeconds: 300,
+		configRef: "config-orch-1",
+		evaluatedAt: "2026-06-07T12:00:00.000Z",
+		...overrides,
+	};
+}
+
+test("evaluateR3AdmissionV1: skips when reuse gate decision is reuse", () => {
+	// Same context hashes and low score age → reuse
+	const input = makeAdmissionInput({
+		previousContextHash: ctxHashOrc,
+		currentContextHash: ctxHashOrc, // same → context match
+		scoreAgeSeconds: 30,
+		maxAgeThresholdSeconds: 300,
+		previousAdvisoryScore: 85,
+	});
+	const result = evaluateR3AdmissionV1(input);
+	assert.equal(result.status, "admission_skipped");
+	assert.ok(result.admissionDecision, "should produce admission decision");
+	assert.equal(result.admissionDecision!.execution_mode, "skipped");
+	assert.match(result.admissionDecision!.skip_reason ?? "", /skip-reuse/);
+	assert.equal(result.reservation, undefined, "no reservation when skipped");
+	assert.equal(result.advisory_only, true);
+	assert.equal(result.dispatch_authority_enabled, false);
+});
+
+test("evaluateR3AdmissionV1: skips when surplus blocked", () => {
+	// Remaining percent below threshold → surplus blocked
+	const input = makeAdmissionInput({
+		remainingPercent: 20,
+		surplusThresholdPercent: 50, // 20 < 50 → blocked_insufficient_surplus
+	});
+	const result = evaluateR3AdmissionV1(input);
+	assert.equal(result.status, "admission_skipped");
+	assert.ok(result.admissionDecision, "should produce admission decision");
+	assert.equal(result.admissionDecision!.execution_mode, "skipped");
+	assert.match(result.admissionDecision!.skip_reason ?? "", /skip-surplus/);
+	assert.equal(result.reservation, undefined);
+	assert.equal(result.advisory_only, true);
+	assert.equal(result.dispatch_authority_enabled, false);
+});
+
+test("evaluateR3AdmissionV1: skips when cadence blocked", () => {
+	// requestedLaneCount > maxConcurrentLanes → cadence blocked
+	const input = makeAdmissionInput({
+		requestedLaneCount: 10,
+		maxConcurrentLanes: 4,
+	});
+	const result = evaluateR3AdmissionV1(input);
+	assert.equal(result.status, "admission_skipped");
+	assert.ok(result.admissionDecision, "should produce admission decision");
+	assert.equal(result.admissionDecision!.execution_mode, "skipped");
+	assert.match(result.admissionDecision!.skip_reason ?? "", /skip-cadence/);
+	assert.equal(result.reservation, undefined);
+	assert.equal(result.advisory_only, true);
+	assert.equal(result.dispatch_authority_enabled, false);
+});
+
+test("evaluateR3AdmissionV1: admission_reserved when all pass with cadence allow → multi_model_fanout", () => {
+	// All gates pass + reuse gate recompute (different hashes) + cadence allow
+	const input = makeAdmissionInput({
+		// Ensure cadence is "allow": requestedLaneCount <= floor(maxConcurrentLanes/2)
+		// floor(4/2)=2; requesting 1 ≤ 2 → allow
+		requestedLaneCount: 1,
+		maxConcurrentLanes: 4,
+		activeLaneCount: 0,
+		cooldownSeconds: 0,
+		// Reuse recompute (different hashes)
+		previousContextHash: ctxHashOrc,
+		currentContextHash: ctxHashOrc2,
+	});
+	const result = evaluateR3AdmissionV1(input);
+	assert.equal(result.status, "admission_reserved");
+	assert.ok(result.admissionDecision, "should produce admission decision");
+	assert.equal(result.admissionDecision!.execution_mode, "multi_model_fanout");
+	assert.ok(result.reservation, "should produce reservation");
+	assert.equal(result.reservation!.status, "reserved");
+	assert.ok(result.reservation!.reservation_id.startsWith("res-"), "reservation_id must start with res-");
+	assert.equal(result.errors.length, 0);
+	assert.equal(result.advisory_only, true);
+	assert.equal(result.non_authorizing, true);
+	assert.equal(result.dispatch_authority_enabled, false);
 });

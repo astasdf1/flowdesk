@@ -155,6 +155,9 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"block_score_reconciliation",
 	"proposal_generator_config",
 	"block_hierarchy",
+	"r3_admission_decision",
+	"r3_fanout_reservation",
+	"r3_reservation_lifecycle_event",
 ] as const;
 export type FlowDeskSessionEvidenceClass =
 	(typeof FLOWDESK_SESSION_EVIDENCE_CLASSES)[number];
@@ -215,6 +218,9 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	block_score_reconciliation: "block-score-reconciliation",
 	proposal_generator_config: "proposal-generator-config",
 	block_hierarchy: "block-hierarchy",
+	r3_admission_decision: "r3-admission-decision",
+	r3_fanout_reservation: "r3-fanout-reservation",
+	r3_reservation_lifecycle_event: "r3-reservation-lifecycle-event",
 };
 
 export function sessionEvidenceDirectoryPath(
