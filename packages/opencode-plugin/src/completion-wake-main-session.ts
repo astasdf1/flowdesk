@@ -34,6 +34,8 @@ interface WakeRow {
 	noReply?: boolean;
 	taskSummaries: readonly string[];
 	notificationLabel: string;
+	/** Task ids covered by this wake row (task-unit rows have exactly one). */
+	taskIds?: readonly string[];
 	/** Parent/main-session model snapshot; preferred over config fallback. */
 	parentWakeProviderQualifiedModelId?: string;
 }
@@ -50,7 +52,9 @@ type PromptDispatch = (options: unknown) => unknown;
 
 const maxWakeRetriesPerConsumptionKey = 10;
 const LOCK_STALE_TTL_MS = 60_000;
+const WAKE_ROW_MAX_AGE_MS = 300_000;
 const DEFAULT_PROVIDER_QUALIFIED_MODEL_ID = "openai/gpt-5.5";
+const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -173,6 +177,7 @@ function noReplyForWakeRow(row: { completionKind: CompletionKind; noReply?: bool
 // exactly what the OpenCode SDK returns for the wake prompt call. This tells us
 // whether the platform accepted/rendered the prompt or silently ignored it.
 function logDispatchDiagnostic(input: { callShape: "primary_path" | "fallback_flat"; outcome: "resolved" | "rejected"; value?: unknown }): void {
+	if (!WAKE_DIAG_ENABLED) return;
 	try {
 		const fs = require("node:fs") as typeof import("node:fs");
 		const line = `${new Date().toISOString()} ${input.callShape} ${input.outcome} ${JSON.stringify(input.value)?.slice(0, 800)}\n`;
@@ -207,6 +212,7 @@ function rowsFromCache(value: unknown): WakeRow[] {
 			...(typeof raw.noReply === "boolean" ? { noReply: raw.noReply } : {}),
 			taskSummaries: Array.isArray(raw.taskSummaries) ? raw.taskSummaries.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim().slice(0, 20)).slice(0, 3) : [],
 			notificationLabel: stringField(raw, "notificationLabel")?.slice(0, 80) ?? "FlowDesk task completed",
+			...(Array.isArray(raw.taskIds) ? { taskIds: raw.taskIds.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).slice(0, 8) } : {}),
 			...(wakeModel !== undefined && wakeModel.includes("/") ? { parentWakeProviderQualifiedModelId: wakeModel } : {}),
 		});
 	}
@@ -216,7 +222,14 @@ function rowsFromCache(value: unknown): WakeRow[] {
 function wakePrompt(row: WakeRow): string {
 	const kind = row.completionKind;
 	const tag = kind === "awaiting_permission" ? "permission" : kind === "diagnostic_attention" ? "attention" : kind === "task_failed" ? "failed" : "done";
-	return `[FlowDesk:${tag}] ${row.workflowId}. Check /flowdesk-status.`;
+	// For task-unit rows (single taskId), include the task id so the user
+	// immediately knows which task completed/failed without checking status.
+	const taskSuffix = row.taskIds !== undefined && row.taskIds.length === 1
+		? ` task:${row.taskIds[0]}`
+		: row.taskIds !== undefined && row.taskIds.length > 1
+			? ` tasks:${row.taskIds.slice(0, 3).join(",")}`
+			: "";
+	return `[FlowDesk:${tag}] ${row.workflowId}${taskSuffix}. Check /flowdesk-status.`;
 }
 
 async function dispatchParentWakePrompt(input: {
@@ -234,6 +247,7 @@ async function dispatchParentWakePrompt(input: {
 		// 메시지를 "조용한 신호"로 간주하여 채팅창에 렌더링하지 않고 삼키는 문제가 있음.
 		// 이를 제거하여 일반 사용자 메시지처럼 무조건 화면에 표시되도록 강제함.
 		parts: [{ type: "text", text: input.text.slice(0, 1_000) }],
+		...(input.model === undefined ? {} : { model: { providerID: input.model.providerID, modelID: input.model.modelID } }),
 	};
 	void input.noReply;
 	try {
@@ -269,7 +283,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	if (input.client?.session === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "opencode_sdk_client_unavailable" };
 	const dispatch = input.client.session.promptAsync ?? input.client.session.prompt;
 	if (dispatch === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "session_prompt_unavailable" };
-	const configModel = modelParts(input.config.providerQualifiedModelId);
+	const configModel = parseModelParts(input.config.providerQualifiedModelId);
 	const uiDir = join(input.config.rootDir, ".flowdesk", "ui");
 	const readyPath = join(uiDir, "completion-wake-ready.json");
 	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_ready_cache_missing" };
@@ -291,17 +305,28 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		const consumedAt = typeof (row as unknown as Record<string, unknown>).consumedAt === "string" ? Date.parse(String((row as unknown as Record<string, unknown>).consumedAt)) : 0;
 		return Number.isFinite(consumedAt) && nowMs - consumedAt < WAKE_COOLDOWN_MS;
 	});
-	if (recentlyConsumed) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_cooldown_active" };
+	const diag = (msg: string) => { if (!WAKE_DIAG_ENABLED) return; try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-step-diag.log", `${new Date().toISOString()} ${msg}\n`, "utf8"); } catch {} };
+	if (recentlyConsumed) { diag("SKIP cooldown_active"); return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_cooldown_active" }; }
 	// Strict cap: dispatch at most 1 wake prompt per consume cycle to prevent
 	// context flooding when many workflows complete in a burst. The remaining
 	// unconsumed rows survive in the cache and will be retried on the next cycle.
 	const rows = allRows
-		.map((row) => row.parentSessionRef === undefined && input.config.parentSessionRef !== undefined
-			? { ...row, parentSessionRef: input.config.parentSessionRef }
-			: row)
+		.map((row) => {
+			// Preserve the wake row's origin session whenever it exists. The live/config
+			// parentSessionRef is only a fallback for legacy/cache rows with no origin.
+			if (row.parentSessionRef !== undefined && row.parentSessionRef.trim().length > 0) return row;
+			return input.config.parentSessionRef !== undefined ? { ...row, parentSessionRef: input.config.parentSessionRef } : row;
+		})
 		.filter((row) => row.consumed !== true && parentSessionIdFromRef(row.parentSessionRef) !== undefined)
+		.filter((row) => {
+			const readyAtMs = Date.parse(row.readyAt);
+			return Number.isFinite(readyAtMs) && nowMs - readyAtMs <= WAKE_ROW_MAX_AGE_MS;
+		})
+		.sort((left, right) => Date.parse(right.readyAt) - Date.parse(left.readyAt))
 		.slice(0, 1);
-	if (rows.length === 0) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" };
+	diag(`allRows=${allRows.length} eligibleRows=${rows.length} configParentRef=${input.config.parentSessionRef ?? "NONE"}`);
+	if (rows.length === 0) { diag("SKIP no_unconsumed_parent_scoped_rows"); return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" }; }
+	diag(`PROCEED to dispatch with ${rows.length} row(s)`);
 	const observedAt = now.toISOString();
 	let wakeSucceeded = 0;
 	let retryScheduled = 0;

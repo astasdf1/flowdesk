@@ -88,6 +88,38 @@ const FORBIDDEN_SUMMARY_MARKERS = /system prompt|provider payload|raw token|hidd
 const SUBTASK_ACTIVITY_CACHE_GLOBAL_ROW_LIMIT = 100;
 const SUBTASK_ACTIVITY_CACHE_SESSION_PROTECTED_ROW_LIMIT = 20;
 
+const SIDEBAR_TASK_SUMMARY_STOP_WORDS = new Set([
+	"only",
+	"in",
+	"the",
+	"a",
+	"an",
+	"of",
+	"to",
+	"and",
+	"or",
+	"for",
+	"with",
+	"from",
+	"by",
+	"is",
+	"are",
+	"was",
+	"were",
+	"be",
+	"do",
+	"does",
+	"at",
+	"on",
+	"as",
+	"it",
+	"its",
+	"this",
+	"that",
+	"just",
+	"run",
+]);
+
 const GENERIC_TASK_SUMMARY_WORDS = new Set([
 	"architecture",
 	"architectural",
@@ -317,13 +349,29 @@ function compactTaskSummary(value: string | undefined): string | undefined {
 		.replace(/\s+/g, " ")
 		.trim();
 	const source = firstSentence.length > 0 ? firstSentence : value.replace(/\s+/g, " ").trim();
-	const words = source.match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
-	const usefulWords = words.filter((word) => !GENERIC_TASK_SUMMARY_WORDS.has(word.toLocaleLowerCase()));
-	const labelWords = usefulWords.length > 0 ? usefulWords : words;
+	const words = source.split(/\s+/).map((word) => word.trim()).filter((word) => word.length > 0);
+	const nonStopWords = words.filter((word) => !isSidebarTaskSummaryStopWord(word, words.length));
+	if (words.length > 0 && nonStopWords.length === 0) return compactTaskSummaryWords(words, source);
+	const wordsAfterStopWords = nonStopWords.length > 0 ? nonStopWords : words;
+	const usefulWords = wordsAfterStopWords.filter((word) => !GENERIC_TASK_SUMMARY_WORDS.has(normalizedSummaryWord(word)));
+	const labelWords = usefulWords.length > 0 ? usefulWords : wordsAfterStopWords;
+	return compactTaskSummaryWords(labelWords, source);
+}
+
+function compactTaskSummaryWords(labelWords: readonly string[], source: string): string | undefined {
 	const joined = labelWords.slice(0, SIDEBAR_TASK_LABEL_MAX_WORDS).join(" ");
 	const compact = (joined.length > 0 ? joined : source).replace(/[^\p{L}\p{N}_ -]/gu, "").trim();
 	if (compact.length === 0 || FORBIDDEN_SUMMARY_MARKERS.test(compact)) return undefined;
 	return compact.slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS);
+}
+
+function isSidebarTaskSummaryStopWord(word: string, totalWordCount: number): boolean {
+	if (totalWordCount <= 1) return false;
+	return SIDEBAR_TASK_SUMMARY_STOP_WORDS.has(normalizedSummaryWord(word));
+}
+
+function normalizedSummaryWord(word: string): string {
+	return word.replace(/^[^\p{L}\p{N}_-]+|[^\p{L}\p{N}_-]+$/gu, "").toLocaleLowerCase();
 }
 
 function safeSummaryPreview(value: string | undefined): string | undefined {
@@ -488,6 +536,46 @@ function mergeSynthesisRows(input: {
 		.slice(0, 5);
 }
 
+function stableWakeIdentityFingerprint(row: CompletionWakeReadyRow): string {
+	const stableList = (values: readonly string[]): readonly string[] => [...values].filter((value) => value.length > 0).sort();
+	const parentScope = row.parentSessionRef ?? "global";
+	const workflowLevelDedupeKey = `${parentScope}\u0000${row.workflowId}`;
+	const appendWorkflowActions = (parts: unknown[]): unknown[] => {
+		if (row.dedupeKey === workflowLevelDedupeKey && row.nextActionRefs.length > 0) parts.push(stableList(row.nextActionRefs));
+		return parts;
+	};
+	if (row.completionKind === "task_result") {
+		return JSON.stringify(appendWorkflowActions([
+			row.workflowId,
+			parentScope,
+			row.completionKind,
+			stableList(row.taskResultRefs),
+			row.notificationLabel,
+		]));
+	}
+	if (row.completionKind === "task_failed") {
+		return JSON.stringify(appendWorkflowActions([
+			row.workflowId,
+			parentScope,
+			row.completionKind,
+			stableList(row.taskResultRefs),
+			stableList(row.taskFailedRefs),
+			row.notificationLabel,
+		]));
+	}
+	const parts: unknown[] = [
+		row.workflowId,
+		parentScope,
+		row.completionKind,
+		stableList(row.laneIds),
+		stableList(row.taskIds),
+		stableList(row.taskResultRefs),
+		stableList(row.taskFailedRefs),
+		row.notificationLabel,
+	];
+	return JSON.stringify(appendWorkflowActions(parts));
+}
+
 function mergeCompletionWakeReadyRows(input: {
 	existing: unknown;
 	row: CompletionWakeReadyRow | undefined;
@@ -516,8 +604,8 @@ function mergeCompletionWakeReadyRows(input: {
 				...(getString(row, "consumedAt") === undefined ? {} : { consumedAt: getString(row, "consumedAt") }),
 				laneIds: Array.isArray(row.laneIds) ? row.laneIds.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
 				taskIds: Array.isArray(row.taskIds) ? row.taskIds.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
-				taskResultRefs: Array.isArray(row.taskResultRefs) ? row.taskResultRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
-				taskFailedRefs: Array.isArray(row.taskFailedRefs) ? row.taskFailedRefs.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32) : [],
+				taskResultRefs: Array.isArray(row.taskResultRefs) ? row.taskResultRefs.filter((value): value is string => typeof value === "string" && value.length > 0) : [],
+				taskFailedRefs: Array.isArray(row.taskFailedRefs) ? row.taskFailedRefs.filter((value): value is string => typeof value === "string" && value.length > 0) : [],
 				taskSummaries: Array.isArray(row.taskSummaries) ? row.taskSummaries.filter((value): value is string => typeof value === "string" && value.length > 0 && !FORBIDDEN_SUMMARY_MARKERS.test(value)).map((value) => value.slice(0, SIDEBAR_TASK_LABEL_MAX_CHARS)).slice(0, 3) : [],
 				notificationLabel: getString(row, "notificationLabel")?.slice(0, 80) ?? "FlowDesk completion ready",
 				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
@@ -536,7 +624,7 @@ function mergeCompletionWakeReadyRows(input: {
 		}
 		const existing = merged.get(input.row.dedupeKey);
 		if (existing === undefined || observedTime(input.row.readyAt) >= observedTime(existing.readyAt)) {
-			const consumedCarryover = existing?.consumed === true && existing.consumptionKey === input.row.consumptionKey;
+			const consumedCarryover = existing?.consumed === true && (existing.consumptionKey === input.row.consumptionKey || stableWakeIdentityFingerprint(existing) === stableWakeIdentityFingerprint(input.row));
 			merged.set(input.row.dedupeKey, consumedCarryover ? { ...input.row, consumed: true, ...(existing.consumedAt === undefined ? {} : { consumedAt: existing.consumedAt }) } : input.row);
 		}
 	}
@@ -550,14 +638,34 @@ function inheritedWakeParentSessionRef(input: {
 	existingWakeRows: unknown;
 	workflowId: string;
 }): string | undefined {
-	const rowParentSessionRefs = [...new Set(input.rows.map((row) => row.parentSessionRef).filter((value): value is string => typeof value === "string" && value.length > 0))];
-	if (rowParentSessionRefs.length === 1) return rowParentSessionRefs[0];
-	if (rowParentSessionRefs.length > 1 || !Array.isArray(input.existingWakeRows)) return undefined;
-	const existingParentSessionRefs = [...new Set(input.existingWakeRows
+	// Only consider VALID parent session refs. Failed lanes record a sentinel
+	// "ses-invalid-parent-session-binding" ref; including those made the set size
+	// > 1 and forced this helper to return undefined, which blanked the Global
+	// wake row's parentSessionRef and silently dropped every wake. Filter the
+	// sentinel out and pick the most frequent valid ref so a mix of healthy and
+	// failed lanes still resolves the real parent session.
+	const isValidParentRef = (value: string | undefined): value is string =>
+		typeof value === "string" && value.length > 0 && !value.includes("invalid-parent-session-binding");
+	const validRowRefs = input.rows.map((row) => row.parentSessionRef).filter(isValidParentRef);
+	const pickMostFrequent = (refs: readonly string[]): string | undefined => {
+		if (refs.length === 0) return undefined;
+		const counts = new Map<string, number>();
+		for (const ref of refs) counts.set(ref, (counts.get(ref) ?? 0) + 1);
+		let best: string | undefined;
+		let bestCount = 0;
+		for (const [ref, count] of counts) {
+			if (count > bestCount) { best = ref; bestCount = count; }
+		}
+		return best;
+	};
+	const fromRows = pickMostFrequent(validRowRefs);
+	if (fromRows !== undefined) return fromRows;
+	if (!Array.isArray(input.existingWakeRows)) return undefined;
+	const existingRefs = input.existingWakeRows
 		.filter((row): row is Record<string, unknown> => isRecord(row) && getString(row, "workflowId") === input.workflowId)
 		.map((row) => getString(row, "parentSessionRef"))
-		.filter((value): value is string => typeof value === "string" && value.length > 0))];
-	return existingParentSessionRefs.length === 1 ? existingParentSessionRefs[0] : undefined;
+		.filter(isValidParentRef);
+	return pickMostFrequent(existingRefs);
 }
 
 function evidenceEntriesByLane(entries: readonly FlowDeskSessionEvidenceReloadEntryV1[], evidenceClass: string): Map<string, FlowDeskSessionEvidenceReloadEntryV1[]> {
@@ -855,20 +963,15 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			const progressLabel = row.progressLabel ?? "";
 			return progressLabel.includes("tool_run_overdue_observed") || progressLabel.includes("tool_execution_aborted_observed") || progressLabel.includes("coordinator_attention_observed");
 		});
-		const resultRefs = rows.filter((row) => row.state === "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
-		const failedRefs = rows.filter((row) => row.state !== "task_result").map((row) => row.taskId ?? row.laneId).slice(0, 32);
 		const wakeReadyAt = terminalComplete
 			? rows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0)
 			: awaitingPermissionRows.length > 0
 				? awaitingPermissionRows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0)
 				: toolDiagnosticRows.reduce((max, row) => Math.max(max, observedTime(row.lastObservedAt)), 0);
-		const wakeKind = ready ? "auto_next_ready" : failedRefs.length > 0 ? "task_failed" : "task_result";
 		const wakeParentScope = parentSessionRef ?? "global";
 		const wakeReadyIso = wakeReadyAt > 0 ? new Date(wakeReadyAt).toISOString() : observedAt;
-		const wakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}`;
 		const permissionWakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}\u0000awaiting_permission`;
 		const diagnosticWakeDedupeKey = `${wakeParentScope}\u0000${input.workflowId}\u0000diagnostic_attention`;
-		const wakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:${wakeReadyIso}:${resultRefs.length}:${failedRefs.length}`;
 		const permissionWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:awaiting_permission:${wakeReadyIso}:${awaitingPermissionRows.length}`;
 		const diagnosticWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:diagnostic_attention:${wakeReadyIso}:${toolDiagnosticRows.length}`;
 		const terminalCompletedRows = rows.filter((row) => row.classification === "terminal" && (row.state === "task_result" || row.state === "invocation_failed" || row.state === "task_failed" || row.state === "no_output"));
@@ -883,23 +986,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			.map((entry) => getString(entry.record, "parent_session_provider_qualified_model_id"))
 			.filter((value): value is string => typeof value === "string" && value.includes("/"));
 		const parentWakeModelId = parentWakeModelCandidates[0] ?? parentSessionModelCandidates[0];
-		const workflowWakeReadyRow: CompletionWakeReadyRow | undefined = terminalComplete ? {
-			workflowId: input.workflowId,
-			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
-			completionKind: wakeKind,
-			readyAt: wakeReadyIso,
-			dedupeKey: wakeDedupeKey,
-			consumptionKey: wakeConsumptionKey,
-			consumed: false,
-			laneIds: rows.map((row) => row.laneId).slice(0, 32),
-			taskIds: rows.map((row) => row.taskId).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 32),
-			taskResultRefs: resultRefs,
-			taskFailedRefs: failedRefs,
-			taskSummaries: rows.map((row) => row.taskSummary).filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 3),
-			notificationLabel: ready ? "FlowDesk synthesis ready" : failedRefs.length > 0 ? "FlowDesk task completed with failures" : "FlowDesk task completed",
-			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
-			...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
-		} : awaitingPermissionRows.length > 0 ? {
+		const workflowWakeReadyRow: CompletionWakeReadyRow | undefined = !terminalComplete && awaitingPermissionRows.length > 0 ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),
 			completionKind: "awaiting_permission",
@@ -932,14 +1019,22 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
 			...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
 		} : undefined;
-		const laneWakeRows: CompletionWakeReadyRow[] = terminalComplete ? [] : terminalCompletedRows.map((row) => {
+		// Task-unit wake rows: emit one row per terminal lane regardless of whether
+		// the workflow as a whole is complete. This replaces the old workflow-level
+		// grouping (path A) so every task gets its own independent wake and verdict.
+		const laneWakeRows: CompletionWakeReadyRow[] = terminalCompletedRows.map((row) => {
 			const rowParentScope = row.parentSessionRef ?? "global";
 			const rowReadyAt = row.lastObservedAt ?? observedAt;
 			const rowFailed = row.state !== "task_result";
+			// A task-unit row is synthesis-ready when it is the only usable terminal
+			// result and synthesis has not yet been recorded. This mirrors the old
+			// workflow-level groupReady logic but at the individual lane level.
+			const rowReady = !synthesisAlreadyRecorded && isUsableTerminalTaskResultRow(row);
+			const rowKind: CompletionWakeReadyRow["completionKind"] = rowFailed ? "task_failed" : rowReady ? "auto_next_ready" : "task_result";
 			return {
 				workflowId: input.workflowId,
 				...(row.parentSessionRef === undefined ? {} : { parentSessionRef: row.parentSessionRef }),
-				completionKind: rowFailed ? "task_failed" : "task_result",
+				completionKind: rowKind,
 				readyAt: rowReadyAt,
 				dedupeKey: `${rowParentScope}\u0000${input.workflowId}\u0000${row.laneId}`,
 				consumptionKey: `${rowParentScope}:${input.workflowId}:${row.laneId}:${rowReadyAt}:${row.taskId ?? row.laneId}:${row.state ?? "terminal"}`,
@@ -949,7 +1044,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 				taskResultRefs: row.state === "task_result" ? [row.taskId ?? row.laneId] : [],
 				taskFailedRefs: rowFailed ? [row.taskId ?? row.laneId] : [],
 				taskSummaries: row.taskSummary === undefined ? [] : [row.taskSummary],
-				notificationLabel: rowFailed ? "FlowDesk lane completed with failure" : "FlowDesk lane result ready",
+				notificationLabel: rowFailed ? "FlowDesk lane completed with failure" : rowReady ? "FlowDesk lane result ready" : "FlowDesk lane result ready",
 				nextActionRefs: ["/flowdesk-status", "/flowdesk-export-debug"],
 				...(parentWakeModelId !== undefined ? { parentWakeProviderQualifiedModelId: parentWakeModelId } : {}),
 			};
@@ -961,7 +1056,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		for (const row of laneWakeRows) {
 			wakeReadyRows = mergeCompletionWakeReadyRows({ existing: wakeReadyRows, row });
 		}
-		if (workflowWakeReadyRow === undefined && laneWakeRows.length === 0) {
+		if (workflowWakeReadyRow === undefined && terminalCompletedRows.length === 0) {
 			const activeParentScopes = new Set(rows.map((row) => row.parentSessionRef ?? "global"));
 			wakeReadyRows = wakeReadyRows.filter((row) => {
 				if (row.workflowId !== input.workflowId) return true;

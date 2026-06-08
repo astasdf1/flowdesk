@@ -60,6 +60,12 @@ const installedReadOnlyGitCapableProfiles = new Set<string>([
   "flowdesk-verifier-testing",
 ]);
 
+test("bootstrap installer profile fixture includes language specialist exactly once", () => {
+	assert.equal(installedAgentProfiles.filter((profile) => profile === "flowdesk-code-language-specialist").length, 1);
+	assert.equal(installedWriteCapableProfiles.has("flowdesk-code-language-specialist"), true);
+	assert.equal(installedBuildTestCapableProfiles.has("flowdesk-code-language-specialist"), true);
+});
+
 function typedConfirmation(targetProfileRef: string, profileRootDir: string, suffix: string) {
   const confirmationRef = `confirmation-release1-${suffix}`;
   const profileRootRef = flowDeskBootstrapProfileRootRef(profileRootDir);
@@ -169,9 +175,18 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /^  lsr: allow$/m);
 		assert.match(mainAgent, /^  external_directory:\n    "\*": allow$/m);
 		assert.match(mainAgent, /model: openai\/gpt-5\.4-mini-fast/);
+		assert.match(mainAgent, /Permanent delegation-only policy: for non-trivial work, the main coordinator must not perform workflow authoring\/workflow writing, detailed design\/detailed planning, or actual implementation\/code changes itself/);
+		assert.match(mainAgent, /break that work into boundary-aligned slices and delegate each slice to the appropriate FlowDesk subtask lane/);
 		assert.match(mainAgent, /Mandatory dispatch boundary/);
+		assert.match(mainAgent, /delegated analysis, workflow authoring\/workflow writing, detailed design\/detailed planning, actual implementation\/code changes, search, review, verification, and documentation subtasks must use `flowdesk_task`/);
 		assert.match(mainAgent, /flowdesk_task.*agent-facing short wrapper.*mandatory FlowDesk-owned lane boundary/s);
+		assert.match(mainAgent, /must not directly author workflow bodies, write detailed designs\/plans, or edit\/implement code for non-trivial work/);
+		assert.match(mainAgent, /Those three work classes are always FlowDesk subtask-lane work/);
 		assert.doesNotMatch(mainAgent, /flowdesk_agent_task_run/);
+		assert.match(mainAgent, /Non-trivial work is always delegated\./);
+		assert.match(mainAgent, /Workflow authoring, detailed design, and actual implementation must be split by task nature and sent to subagents\./);
+		assert.match(mainAgent, /must not do the detailed design or the code changes itself\./);
+		assert.match(mainAgent, /route workflow writing, detailed design, and actual implementation through subagents/);
 		assert.match(mainAgent, /quarantined reviewer fan-out helper.*flowdesk_task/s);
 		assert.doesNotMatch(mainAgent, /flowdesk_quick_reviewer_run/);
 		assert.match(mainAgent, /Release 2 managed dispatch gate semantics/);
@@ -181,6 +196,12 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /Lane Size Gate — apply before every dispatch/);
 		assert.match(mainAgent, /exactly 1 primary objective/);
 		assert.match(mainAgent, /exactly 1 clear deliverable/);
+		assert.match(mainAgent, /compact scope: one subsystem, one failure mode, one bug, one test file, one verification command family, or one tightly related file group/);
+		assert.match(mainAgent, /Split by task nature and boundary whenever a request spans more than one concern/);
+		assert.match(mainAgent, /workflow authoring\/workflow writing, detailed design\/detailed planning, and actual implementation\/code changes are each delegated as their own FlowDesk subtask-lane slice/);
+		assert.match(mainAgent, /workflow authoring\/writing, detailed design\/planning, or implementation\/code changes in the same request/);
+		assert.match(mainAgent, /Workflow authoring\/writing \| flowdesk-architecture/);
+		assert.match(mainAgent, /Detailed design\/planning \| flowdesk-architecture/);
 		assert.match(mainAgent, /installer\/materialization behavior/);
 		assert.match(mainAgent, /read-only root-cause slice/);
 		assert.match(mainAgent, /progress events without a final answer/);
@@ -198,6 +219,8 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /next decision, synthesis, approval, or verification depends on their aggregate result/);
 		assert.match(mainAgent, /Never mark an aggregate todo complete until all required dependent lanes are terminal/);
 		assert.match(mainAgent, /one lane per perspective and stay within the 5-concurrent-lane cap/);
+		assert.match(mainAgent, /Prefer the smallest capable specialist agent for the slice/);
+		assert.match(mainAgent, /Small models are appropriate for tightly scoped tasks with explicit boundaries, concrete inputs, and a narrow output contract/);
 		assert.match(mainAgent, /usage\/quota\/remaining\/reset → `flowdesk_quota`/);
 		assert.match(mainAgent, /status\/progress\/recent result\/stalled → `flowdesk_now`; see Status, nudge, and result handling/);
 		assert.match(mainAgent, /explicit provider switch\/retry on another provider → `flowdesk_rebind`.*planning-only regate/s);
@@ -206,6 +229,8 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /delegated subtask to a specific agent\/model → `flowdesk_task`/);
 		assert.match(mainAgent, /Agent prompt\/template changes require restarting or reloading OpenCode/);
 		assert.match(mainAgent, /do not mark todos completed from launch ack alone/);
+		assert.match(mainAgent, /For workflow authoring\/writing, detailed design\/planning, or actual implementation\/code changes, do not fill gaps in the main session/);
+		assert.match(mainAgent, /delegate a smaller follow-up FlowDesk subtask lane if substantive work remains/);
 		assert.doesNotMatch(mainAgent, /After launching work, call `flowdesk_status_live`/);
 		assert.doesNotMatch(mainAgent, /not quarantined reviewer fan-out/);
 		assert.match(mainAgent, /Auto-invocation rules/);
@@ -401,8 +426,6 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 					"gemini/gemini-3-pro-preview",
 					"google/gemini-3.1-flash-lite",
 					"gemini/gemini-3.1-flash-lite",
-					"google/gemini-3.1-flash-lite-preview",
-					"gemini/gemini-3.1-flash-lite-preview",
 					"google/gemini-3.1-pro-preview",
 					"gemini/gemini-3.1-pro-preview",
 				],
@@ -566,8 +589,6 @@ test("Release 1 bootstrap installer preserves existing plugin entries and fills 
 					"gemini/gemini-3-pro-preview",
 					"google/gemini-3.1-flash-lite",
 					"gemini/gemini-3.1-flash-lite",
-					"google/gemini-3.1-flash-lite-preview",
-					"gemini/gemini-3.1-flash-lite-preview",
 					"google/gemini-3.1-pro-preview",
 					"gemini/gemini-3.1-pro-preview",
 				],

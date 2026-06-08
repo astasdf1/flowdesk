@@ -66,6 +66,10 @@ import {
 	persistTerminalEvidence,
 	type PersistTerminalEvidenceResult,
 } from "./terminal-evidence-writer.js";
+import {
+	isOpenCodeSupportedProviderQualifiedModelId,
+	resolveSameFamilyOpenCodeSupportedModelFallback,
+} from "./model-selection-engine.js";
 
 export const flowdeskManagedDispatchBetaAdapterProfile =
 	"managed_dispatch_beta_real_opencode_dispatch_adapter" as const;
@@ -444,6 +448,7 @@ export interface FlowDeskManagedDispatchBetaDispatchResultV1 {
 	childSessionRef?: string;
 	messageRef?: string;
 	response?: unknown;
+	modelSelectionFallback?: FlowDeskSelectionPhaseModelFallbackEvidenceV1;
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1;
 	verification: FlowDeskManagedDispatchBetaVerificationStatusV1;
 }
@@ -464,8 +469,18 @@ export interface FlowDeskManagedDispatchBetaDispatchFailedResultV1 {
 	redactedErrorCategory: "provider_api" | "runtime" | "unknown";
 	terminalEvidenceId?: string;
 	terminalEvidenceConflict?: boolean;
+	modelSelectionFallback?: FlowDeskSelectionPhaseModelFallbackEvidenceV1;
 	authority: FlowDeskManagedDispatchBetaAuthoritySummaryV1;
 	verification: FlowDeskManagedDispatchBetaVerificationStatusV1;
+}
+
+export interface FlowDeskSelectionPhaseModelFallbackEvidenceV1 {
+	requestedProviderQualifiedModelId: string;
+	selectedProviderQualifiedModelId?: string;
+	attemptedProviderQualifiedModelIds: readonly string[];
+	selectionPhaseOnly: true;
+	runtimeRetryAttempted: false;
+	fallbackAuthorityEnabled: false;
 }
 
 export type FlowDeskManagedDispatchBetaAdapterResultV1 =
@@ -3244,7 +3259,7 @@ function parseProviderQualifiedModelId(
 function workingModelCacheAllowsDispatch(input: {
 	durableStateRootDir?: string;
 	providerQualifiedModelId: string;
-}): { ok: true } | { ok: false; reason: string } {
+}): { ok: true; selectedProviderQualifiedModelId: string; fallbackEvidence: FlowDeskSelectionPhaseModelFallbackEvidenceV1 } | { ok: false; reason: string; fallbackEvidence?: FlowDeskSelectionPhaseModelFallbackEvidenceV1 } {
 	if (input.durableStateRootDir === undefined || input.durableStateRootDir.trim().length === 0) {
 		return {
 			ok: false,
@@ -3277,15 +3292,47 @@ function workingModelCacheAllowsDispatch(input: {
 			? raw.available_model_ids.filter((value): value is string => typeof value === "string")
 			: [];
 
-		if (!availableModelIds.includes(input.providerQualifiedModelId)) {
+		const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			availableModelIds,
+		});
+		const fallbackEvidence: FlowDeskSelectionPhaseModelFallbackEvidenceV1 = {
+			requestedProviderQualifiedModelId: input.providerQualifiedModelId,
+			...(resolution.selectedProviderQualifiedModelId === undefined ? {} : { selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId }),
+			attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds,
+			selectionPhaseOnly: true,
+			runtimeRetryAttempted: false,
+			fallbackAuthorityEnabled: false,
+		};
+
+		if (!availableModelIds.includes(input.providerQualifiedModelId) && resolution.selectedProviderQualifiedModelId === undefined) {
 			return {
 				ok: false,
+				fallbackEvidence,
 				reason:
 					"Requested provider-qualified model is not present in cached working-model snapshot; refresh working-model evidence before managed dispatch.",
 			};
 		}
 
-		return { ok: true };
+		if (resolution.selectedProviderQualifiedModelId === undefined) {
+			return {
+				ok: false,
+				fallbackEvidence,
+				reason:
+					"Requested provider-qualified model is cached as available but no same-family OpenCode-supported fallback is present in working-model evidence; refresh model catalog/evidence before managed dispatch.",
+			};
+		}
+
+		if (!isOpenCodeSupportedProviderQualifiedModelId(resolution.selectedProviderQualifiedModelId)) {
+			return {
+				ok: false,
+				fallbackEvidence,
+				reason:
+					"Requested provider-qualified model resolution did not produce an OpenCode-supported model; refresh model catalog/evidence before managed dispatch.",
+			};
+		}
+
+		return { ok: true, selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId, fallbackEvidence };
 	} catch (error) {
 		const errorName = typeof (error as { name?: unknown })?.name === "string"
 			? (error as { name: string }).name
@@ -4683,7 +4730,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 		);
 	}
 
-	const runtimeModel = opencodeRuntimeModelForFlowDeskModel(model);
+	let runtimeModel = opencodeRuntimeModelForFlowDeskModel(model);
 	if (runtimeModel === undefined) {
 		return blocked(
 			input.boundaryInput,
@@ -4832,6 +4879,30 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			"Injected OpenCode client is missing the requested session prompt method.",
 		);
 
+	const workingModelGate = workingModelCacheAllowsDispatch({
+		durableStateRootDir: input.durableStateRootDir,
+		providerQualifiedModelId: approvedProviderQualifiedModelId,
+	});
+	if (!workingModelGate.ok) {
+		return blocked(input.boundaryInput, guardDecision, workingModelGate.reason);
+	}
+	const selectedProviderQualifiedModelId = workingModelGate.selectedProviderQualifiedModelId;
+	const selectedModel = parseProviderQualifiedModelId(selectedProviderQualifiedModelId);
+	const selectedRuntimeModel = selectedModel === undefined
+		? undefined
+		: opencodeRuntimeModelForFlowDeskModel(selectedModel);
+	if (selectedRuntimeModel === undefined) {
+		return blocked(
+			input.boundaryInput,
+			guardDecision,
+			"Selection-phase model fallback resolved to an invalid OpenCode runtime model.",
+		);
+	}
+	runtimeModel = selectedRuntimeModel;
+	const resolvedRequest = selectedProviderQualifiedModelId === input.request.provider_qualified_model_id
+		? input.request
+		: { ...input.request, provider_qualified_model_id: selectedProviderQualifiedModelId };
+
 	if (input.reservationStore === undefined) {
 		return blocked(
 			input.boundaryInput,
@@ -4850,18 +4921,11 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			`Dispatch idempotency reservation materialization blocked: ${reservation.redactedFailureReason ?? "reload not proven"}.`,
 		);
 	}
-	const workingModelGate = workingModelCacheAllowsDispatch({
-		durableStateRootDir: input.durableStateRootDir,
-		providerQualifiedModelId: approvedProviderQualifiedModelId,
-	});
-	if (!workingModelGate.ok) {
-		return blocked(input.boundaryInput, guardDecision, workingModelGate.reason);
-	}
 	const dispatchMode = input.request.dispatchMode ?? "prompt";
 	if (dispatchMode === "lane_launch") {
 		const launchPlan = managedDispatchLaneLaunchPlan({
 			boundaryInput: input.boundaryInput,
-			request: input.request,
+			request: resolvedRequest,
 			manifest: input.dispatchManifest,
 			sdkClientAvailable: input.client.session.create !== undefined,
 		});
@@ -4895,6 +4959,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 					? {}
 					: { directory: input.request.directory }),
 				redactedErrorCategory: "runtime",
+				modelSelectionFallback: workingModelGate.fallbackEvidence,
 				authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 				verification: verificationFor(input.boundaryInput),
 			};
@@ -4924,6 +4989,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 						? {}
 						: { directory: input.request.directory }),
 					redactedErrorCategory: "runtime",
+					modelSelectionFallback: workingModelGate.fallbackEvidence,
 					authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 					verification: verificationFor(input.boundaryInput),
 				};
@@ -4950,6 +5016,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 					? {}
 					: { directory: input.request.directory }),
 				redactedErrorCategory: "runtime",
+				modelSelectionFallback: workingModelGate.fallbackEvidence,
 				authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 				verification: verificationFor(input.boundaryInput),
 			};
@@ -4973,12 +5040,13 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			...(launchResult.messageRef === undefined
 				? {}
 				: { messageRef: launchResult.messageRef }),
+			modelSelectionFallback: workingModelGate.fallbackEvidence,
 			authority: { ...enabledDispatchAuthority(), actualLaneLaunch: true },
 			verification: verificationFor(input.boundaryInput),
 		};
 	}
 
-	const options = dispatchOptions(input.request, runtimeModel, text);
+	const options = dispatchOptions(resolvedRequest, runtimeModel, text);
 	let response: unknown;
 	try {
 		response = await dispatch.call(input.client.session, options);
@@ -5016,6 +5084,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 				terminalEvidenceId: terminalEvidence.evidenceId,
 				terminalEvidenceConflict: terminalEvidence.conflict === true,
 			}),
+			modelSelectionFallback: workingModelGate.fallbackEvidence,
 			authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 			verification: verificationFor(input.boundaryInput),
 		};
@@ -5041,6 +5110,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 				? {}
 				: { directory: input.request.directory }),
 			redactedErrorCategory: "runtime",
+			modelSelectionFallback: workingModelGate.fallbackEvidence,
 			authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 			verification: verificationFor(input.boundaryInput),
 		};
@@ -5061,6 +5131,7 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			? {}
 			: { directory: input.request.directory }),
 		...(response === undefined ? {} : { response }),
+		modelSelectionFallback: workingModelGate.fallbackEvidence,
 		authority: enabledDispatchAuthority(),
 		verification: verificationFor(input.boundaryInput),
 	};

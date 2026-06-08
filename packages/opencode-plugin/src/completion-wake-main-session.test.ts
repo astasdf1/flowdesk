@@ -38,7 +38,6 @@ test("completion wake main-session consumer uses primary path prompt shape and m
 		assert.equal(prompts.length, 1);
 		assert.equal((prompts[0] as { path: { id: string } }).path.id, "ses_parent123");
 		assert.equal((prompts[0] as { query: { directory: string } }).query.directory, "/workspace/flowdesk");
-		assert.equal((prompts[0] as { body: { noReply: boolean } }).body.noReply, false);
 		assert.equal((prompts[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]?.text, "[FlowDesk:done] workflow-main-wake. Check /flowdesk-status.");
 		assert.doesNotMatch(JSON.stringify(prompts[0]), /Review API|FlowDesk synthesis ready/);
 
@@ -247,17 +246,20 @@ test("completion wake main-session consumer falls back to flat prompt shape on p
 				if ((options as { path?: { id: string } }).path !== undefined) throw new Error("path unsupported");
 				return {};
 			} } },
+			now: new Date("2026-06-04T00:01:00.000Z"),
 		});
 		assert.equal(result.status, "main_session_wake_completed");
 		assert.equal(prompts.length, 2);
 		assert.equal((prompts[0] as { path: { id: string } }).path.id, "ses_parent123");
 		assert.equal((prompts[1] as { sessionID: string }).sessionID, "ses_parent123");
+		assert.deepEqual((prompts[0] as { body: { model?: unknown } }).body.model, { providerID: "openai", modelID: "gpt-5.5" });
+		assert.deepEqual((prompts[1] as { body: { model?: unknown } }).body.model, { providerID: "openai", modelID: "gpt-5.5" });
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("completion wake main-session consumer schedules retry without consuming active sessions", async () => {
+test("completion wake main-session consumer queues wake even when session reports active", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-active-"));
 	try {
 		const uiDir = join(root, ".flowdesk", "ui");
@@ -280,25 +282,29 @@ test("completion wake main-session consumer schedules retry without consuming ac
 			}],
 		}, null, 2)}\n`, "utf8");
 		const prompts: unknown[] = [];
+		let statusCalls = 0;
 		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
 			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
-			client: { session: { status: async () => ({ state: "busy" }), promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			client: { session: { status: async () => { statusCalls += 1; return { state: "busy" }; }, promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
 			now: new Date("2026-06-04T00:01:00.000Z"),
 		});
 		assert.equal(result.status, "main_session_wake_completed");
-		assert.equal(result.wakeSucceeded, 0);
-		assert.equal(result.retryScheduled, 1);
-		assert.equal(prompts.length, 0);
-		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; retryCount?: number; retryScheduledAt?: string }> };
-		assert.equal(ready.rows[0]?.consumed, false);
-		assert.equal(ready.rows[0]?.retryCount, 3);
-		assert.equal(ready.rows[0]?.retryScheduledAt, "2026-06-04T00:01:00.000Z");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(result.retryScheduled, 0);
+		assert.equal(prompts.length, 1);
+		assert.equal(statusCalls, 0);
+		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedAt?: string; consumedBy?: string; retryCount?: number; retryScheduledAt?: string }> };
+		assert.equal(ready.rows[0]?.consumed, true);
+		assert.equal(ready.rows[0]?.consumedAt, "2026-06-04T00:01:00.000Z");
+		assert.equal(ready.rows[0]?.consumedBy, "main_session_prompt");
+		assert.equal(ready.rows[0]?.retryCount, 2);
+		assert.equal(ready.rows[0]?.retryScheduledAt, undefined);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("completion wake main-session consumer sets noReply by completion kind", async () => {
+test("completion wake main-session consumer omits noReply while preserving burst cap", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-noreply-"));
 	try {
 		const uiDir = join(root, ".flowdesk", "ui");
@@ -336,10 +342,14 @@ test("completion wake main-session consumer sets noReply by completion kind", as
 		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
 			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
 			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-04T00:01:00.000Z"),
 		});
 		// Only 1 wake dispatched per cycle (burst cap). The second row stays unconsumed.
 		assert.equal(result.wakeSucceeded, 1);
-		assert.equal((prompts[0] as { body: { noReply: boolean } }).body.noReply, false);
+		assert.equal(prompts.length, 1);
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.equal("noReply" in body, false);
+		assert.equal((body.parts as Array<{ text: string }>)[0]?.text, "[FlowDesk:attention] workflow-main-wake-diagnostic. Check /flowdesk-status.");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -415,10 +425,9 @@ test("completion wake main-session consumer uses parent wake model over config f
 		assert.equal(result.status, "main_session_wake_completed");
 		assert.equal(result.wakeSucceeded, 1);
 		assert.equal(prompts.length, 1);
-		// Parent wake model must override the config model
-		const body = (prompts[0] as { body: { model: { providerID: string; modelID: string } } }).body;
-		assert.equal(body.model.providerID, "anthropic");
-		assert.equal(body.model.modelID, "claude-opus-4-20250514");
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "anthropic", modelID: "claude-opus-4-20250514" });
+		assert.equal((body.parts as Array<{ text: string }>)[0]?.text, "[FlowDesk:done] workflow-rowmodel-wake. Check /flowdesk-status.");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -455,16 +464,15 @@ test("completion wake main-session consumer falls back to config model when pare
 		assert.equal(result.status, "main_session_wake_completed");
 		assert.equal(result.wakeSucceeded, 1);
 		assert.equal(prompts.length, 1);
-		// Invalid parent wake model should fall back to config model
-		const body = (prompts[0] as { body: { model: { providerID: string; modelID: string } } }).body;
-		assert.equal(body.model.providerID, "openai");
-		assert.equal(body.model.modelID, "gpt-5.5");
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "openai", modelID: "gpt-5.5" });
+		assert.equal((body.parts as Array<{ text: string }>)[0]?.text, "[FlowDesk:done] workflow-badmodel-wake. Check /flowdesk-status.");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("completion wake main-session consumer skips row when both row model and config model are invalid", async () => {
+test("completion wake main-session consumer defaults when both row model and config model are invalid", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-nomodel-"));
 	try {
 		const uiDir = join(root, ".flowdesk", "ui");
@@ -488,17 +496,18 @@ test("completion wake main-session consumer skips row when both row model and co
 		}, null, 2)}\n`, "utf8");
 		const prompts: unknown[] = [];
 		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
-			// Config model is also invalid (no slash)
+			// Config model is also invalid (no slash), so no explicit model is sent.
 			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "broken" },
 			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
 			now: new Date("2026-06-05T00:01:00.000Z"),
 		});
-		// Row should be marked consumed via cap (no valid model), not dispatched
-		assert.equal(result.wakeSucceeded, 0);
-		assert.equal(prompts.length, 0);
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(prompts.length, 1);
+		assert.equal("model" in (prompts[0] as { body: Record<string, unknown> }).body, false);
 		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedBy?: string }> };
 		assert.equal(ready.rows[0]?.consumed, true);
-		assert.equal(ready.rows[0]?.consumedBy, "main_session_prompt_retry_cap");
+		assert.equal(ready.rows[0]?.consumedBy, "main_session_prompt");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

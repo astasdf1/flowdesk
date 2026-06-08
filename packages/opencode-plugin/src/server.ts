@@ -165,6 +165,8 @@ import {
 } from "./tool-stubs.js";
 import { publishToGitHubV1, type GitHubPublicationTargetV1 } from "./federated-registry-connector.js";
 
+const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
+
 export const flowdeskPreSpikeDoctorToolName =
 	"flowdesk_pre_spike_doctor" as const;
 export const flowdeskCheckToolName = "flowdesk_check" as const;
@@ -2525,6 +2527,24 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		output: FlowDeskChatMessageOutput,
 	): Promise<void> {
 		const inputRecord = isRecord(input) ? input : {};
+		const liveMainSessionId = typeof inputRecord.sessionID === "string"
+			? inputRecord.sessionID.trim()
+			: "";
+		if (liveMainSessionId.length > 0) {
+			lastCompletionWakeParentSessionRef = liveMainSessionId.startsWith("ses-")
+				? liveMainSessionId
+				: `ses-${liveMainSessionId}`;
+			completionWakeParentSessionRefLockedFromChat = true;
+		}
+		if (WAKE_DIAG_ENABLED) {
+			try {
+				(require("node:fs") as typeof import("node:fs")).appendFileSync(
+					"/Users/bagel_macpro_055/.flowdesk/chat-session-diag.log",
+					`${new Date().toISOString()} liveMainSessionId=${liveMainSessionId || "EMPTY"} lastRef=${lastCompletionWakeParentSessionRef ?? "NONE"}\n`,
+					"utf8",
+				);
+			} catch {}
+		}
 		const partSessionID =
 			typeof inputRecord.sessionID === "string" ? inputRecord.sessionID : "";
 		const partMessageID =
@@ -3574,6 +3594,75 @@ function isNaturalLanguageRoutingAllowedByProjectConfig(
 	return false;
 }
 
+let lastCompletionWakeParentSessionRef: string | undefined;
+let completionWakeParentSessionRefLockedFromChat = false;
+
+export function __resetCompletionWakeParentSessionRefForTest(): void {
+	lastCompletionWakeParentSessionRef = undefined;
+	completionWakeParentSessionRefLockedFromChat = false;
+}
+
+function isCompletionWakeCacheParentSessionRef(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const trimmed = value.trim();
+	return trimmed !== "global" && /^ses-ses_[A-Za-z0-9_-]+$/.test(trimmed);
+}
+
+function initializeCompletionWakeParentSessionRefFromReadyCache(rootDir: string): void {
+	if (
+		completionWakeParentSessionRefLockedFromChat ||
+		lastCompletionWakeParentSessionRef !== undefined
+	)
+		return;
+	try {
+		const readyPath = join(rootDir, ".flowdesk", "ui", "completion-wake-ready.json");
+		const parsed = JSON.parse(readFileSync(readyPath, "utf8")) as unknown;
+		if (!isRecord(parsed) || !Array.isArray(parsed.rows)) return;
+		let selectedParentSessionRef: string | undefined;
+		let selectedSortKey = Number.NEGATIVE_INFINITY;
+		parsed.rows.forEach((row, index) => {
+			if (!isRecord(row) || !isCompletionWakeCacheParentSessionRef(row.parentSessionRef))
+				return;
+			if (row.consumed === true) return;
+			const readyAtMs = typeof row.readyAt === "string" ? Date.parse(row.readyAt) : NaN;
+			const sortKey = Number.isFinite(readyAtMs) ? readyAtMs : index;
+			if (sortKey >= selectedSortKey) {
+				selectedSortKey = sortKey;
+				selectedParentSessionRef = row.parentSessionRef.trim();
+			}
+		});
+		if (
+			selectedParentSessionRef !== undefined &&
+			!completionWakeParentSessionRefLockedFromChat &&
+			lastCompletionWakeParentSessionRef === undefined
+		) {
+			lastCompletionWakeParentSessionRef = selectedParentSessionRef;
+			if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} SEEDED lastRef=${selectedParentSessionRef}\n`, "utf8"); } catch {} }
+		} else {
+			if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} SEED_SKIPPED locked=${completionWakeParentSessionRefLockedFromChat} alreadySet=${lastCompletionWakeParentSessionRef !== undefined} selected=${selectedParentSessionRef ?? "NONE"}\n`, "utf8"); } catch {} }
+		}
+	} catch(e) {
+		if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} SEED_ERROR ${String(e)}\n`, "utf8"); } catch {} }
+		// Best-effort startup cache seeding only; missing or malformed cache is safe.
+	}
+}
+
+function lastCompletionWakeParentSessionId(): string {
+	const parentSessionRef = lastCompletionWakeParentSessionRef?.trim();
+	if (parentSessionRef === undefined || parentSessionRef.length === 0) return "";
+	const parentSessionId = parentSessionRef.startsWith("ses-")
+		? parentSessionRef.slice("ses-".length)
+		: parentSessionRef;
+	return parentSessionId.trim();
+}
+
+function parentSessionIdWithCompletionWakeFallback(parentSessionId: string | undefined): string | undefined {
+	const requestedParentSessionId = parentSessionId?.trim() ?? "";
+	if (requestedParentSessionId.length > 0) return requestedParentSessionId;
+	const fallbackParentSessionId = lastCompletionWakeParentSessionId();
+	return fallbackParentSessionId.length > 0 ? fallbackParentSessionId : parentSessionId;
+}
+
 function durableStateRootFromOptions(
 	options?: PluginOptions,
 ): string | undefined {
@@ -3601,9 +3690,17 @@ export function completionWakeMainSessionConfigFromOptions(options?: PluginOptio
 	const configuredParentSessionRef = typeof value.parentSessionRef === "string" && value.parentSessionRef.trim().length > 0
 		? value.parentSessionRef.trim()
 		: undefined;
-	const parentSessionRef = liveSessionId.length > 0
-		? `ses-${liveSessionId}`
-		: configuredParentSessionRef;
+	if (
+		liveSessionId.length > 0 &&
+		!completionWakeParentSessionRefLockedFromChat &&
+		lastCompletionWakeParentSessionRef === undefined
+	) {
+		lastCompletionWakeParentSessionRef = liveSessionId.startsWith("ses-")
+			? liveSessionId
+			: `ses-${liveSessionId}`;
+		if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} OVERWRITE_FROM_CTX liveSessionId=${liveSessionId} stack=${new Error().stack?.split("\n").slice(1,4).join("|")}\n`, "utf8"); } catch {} }
+	}
+	const parentSessionRef = lastCompletionWakeParentSessionRef ?? configuredParentSessionRef;
 	
 	if (rootDir === undefined) return undefined;
 	return {
@@ -4386,7 +4483,11 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				const currentSessionId = liveSessionIdFromContext(ctx);
 				const parentSessionId = requestedParentSessionId.length > 0
 					? requestedParentSessionId
-					: currentSessionId;
+					: input.compactArgs === true
+						? currentSessionId.length > 0
+							? currentSessionId
+							: lastCompletionWakeParentSessionId()
+						: currentSessionId;
 				const nudgeQuietPeriodMs = typeof record.nudgeQuietPeriodMs === "number" && record.nudgeQuietPeriodMs > 0
 					? Math.floor(record.nudgeQuietPeriodMs) : input.defaultNudgeQuietPeriodMs;
 				const asyncMode = typeof record.asyncMode === "boolean"
@@ -5100,13 +5201,14 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 	const executeAutoContinue = async (input: unknown, defaults?: { parentSessionId?: string }) => {
 		const record: Record<string, unknown> = isRecord(input) ? input : {};
 		const task = isRecord(record.task) ? record.task : undefined;
+		const parentSessionId = parentSessionIdWithCompletionWakeFallback(
+			typeof record.parentSessionId === "string"
+				? record.parentSessionId
+				: defaults?.parentSessionId,
+		);
 		const request: FlowDeskAutoContinueExecutionToolRequestV1 = {
 			...(typeof record.workflowId === "string" ? { workflowId: record.workflowId } : {}),
-			...(typeof record.parentSessionId === "string"
-				? { parentSessionId: record.parentSessionId }
-				: defaults?.parentSessionId === undefined
-					? {}
-					: { parentSessionId: defaults.parentSessionId }),
+			...(parentSessionId === undefined ? {} : { parentSessionId }),
 			...(task === undefined ? {} : {
 				task: {
 					...(typeof task.taskId === "string" ? { taskId: task.taskId } : {}),
@@ -5206,9 +5308,16 @@ export function createFlowDeskWorkflowDispatchOptInTools(
 				allowActualLaneLaunch: tool.schema.boolean().describe("Must be true to allow actual one-lane runtime launch."),
 			},
 			async execute(input) {
+				const record: Record<string, unknown> = isRecord(input) ? input : {};
+				const parentSessionId = parentSessionIdWithCompletionWakeFallback(
+					typeof record.parentSessionId === "string" ? record.parentSessionId : undefined,
+				);
+				const rawInput = parentSessionId === undefined
+					? input
+					: { ...record, parentSessionId };
 				const result = await executeFlowDeskWorkflowDispatchToolV1({
 					config,
-					rawInput: input,
+					rawInput,
 				});
 				return JSON.stringify(result);
 			},
@@ -6450,7 +6559,12 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 
 	// P8 Background Watchdog
 	const watchdogConfig = watchdogConfigFromOptions(options);
-	const completionWakeMainSessionConfig = completionWakeMainSessionConfigFromOptions(options, input);
+	const durableStateRoot = durableStateRootFromOptions(options);
+	if (durableStateRoot !== undefined)
+		initializeCompletionWakeParentSessionRefFromReadyCache(durableStateRoot);
+	const completionWakeMainSessionConfigFor = (ctx?: unknown) =>
+		completionWakeMainSessionConfigFromOptions(options, ctx);
+	completionWakeMainSessionConfigFor(input);
 	const chatStallAlertRaw = (options as Record<string, unknown> | undefined)?.[flowdeskChatMessageStallAlertOption];
 	const guardedAutoAbortForWatchdog = isRecord(chatStallAlertRaw) && isRecord(chatStallAlertRaw.guardedAutoAbort)
 		? (() => {
@@ -6467,7 +6581,6 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				return cfg;
 			})()
 		: undefined;
-	const durableStateRoot = durableStateRootFromOptions(options);
 	// V11.3 event-awakened watchdog: when the event hook observes a
 	// finalization-relevant child-session event, it pokes this debounced trigger
 	// so the watchdog cycle runs immediately instead of waiting up to the full
@@ -6618,15 +6731,18 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						// pass ran. Previously this was trapped inside the `else if` branch, so when
 						// the watchdog was enabled (pokeWatchdogCycle defined), the wake prompt was
 						// NEVER dispatched. Moving it here ensures the notification fires in both modes.
-						try {
-							const fs = require("node:fs") as typeof import("node:fs");
-							fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-cond-diag.log",
-								`${new Date().toISOString()} finalizationRelevant config=${completionWakeMainSessionConfig !== undefined} client=${eventMonitorClient !== undefined} parentRef=${completionWakeMainSessionConfig?.parentSessionRef ?? "NONE"}\n`, "utf8");
-						} catch { /* best-effort */ }
-						if (completionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
+						const currentCompletionWakeMainSessionConfig = completionWakeMainSessionConfigFor(input);
+						if (WAKE_DIAG_ENABLED) {
+							try {
+								const fs = require("node:fs") as typeof import("node:fs");
+								fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-cond-diag.log",
+									`${new Date().toISOString()} finalizationRelevant config=${currentCompletionWakeMainSessionConfig !== undefined} client=${eventMonitorClient !== undefined} parentRef=${currentCompletionWakeMainSessionConfig?.parentSessionRef ?? "NONE"}\n`, "utf8");
+							} catch { /* best-effort */ }
+						}
+						if (currentCompletionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
 							try {
 								await consumeFlowDeskCompletionWakeForMainSessionV1({
-									config: completionWakeMainSessionConfig,
+									config: currentCompletionWakeMainSessionConfig,
 									client: eventMonitorClient,
 								});
 							} catch {
@@ -6634,10 +6750,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							}
 						}
 					}
-					if (observed.matched && observed.permissionAttentionRelevant === true && completionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
+					const permissionCompletionWakeMainSessionConfig = completionWakeMainSessionConfigFor(input);
+					if (observed.matched && observed.permissionAttentionRelevant === true && permissionCompletionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
 						try {
 							await consumeFlowDeskCompletionWakeForMainSessionV1({
-								config: completionWakeMainSessionConfig,
+								config: permissionCompletionWakeMainSessionConfig,
 								client: eventMonitorClient,
 							});
 						} catch {

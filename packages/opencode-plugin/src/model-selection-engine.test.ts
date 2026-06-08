@@ -3,6 +3,8 @@ import test from "node:test";
 import {
 	selectModelForTask,
 	buildUsageMapFromProviders,
+	resolveSameFamilyOpenCodeSupportedModelFallback,
+	SAME_FAMILY_MODEL_FALLBACK_CHAINS,
 	type ProviderUsageInput,
 	type WorkingModelSelectionInput,
 } from "./model-selection-engine.js";
@@ -14,6 +16,36 @@ function usage(family: ProviderUsageInput["providerFamily"], pct: number | null,
 
 const now = () => new Date("2026-05-31T00:00:00.000Z");
 
+test("same-family fallback chain ordering is stable", () => {
+	assert.deepEqual(SAME_FAMILY_MODEL_FALLBACK_CHAINS.claude, ["opus", "sonnet", "haiku"]);
+	assert.deepEqual(SAME_FAMILY_MODEL_FALLBACK_CHAINS.openai, ["normal", "mini", "fast", "spark"]);
+	assert.deepEqual(SAME_FAMILY_MODEL_FALLBACK_CHAINS.gemini, ["pro", "flash", "flash-lite"]);
+});
+
+test("same-family fallback resolves the first supported downgrade model", () => {
+	const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: "google/gemini-3.1-pro-preview-unsupported",
+		availableModelIds: ["google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite"],
+	});
+	assert.equal(resolution.selectedProviderQualifiedModelId, "google/gemini-3-flash-preview");
+	assert.deepEqual(resolution.attemptedProviderQualifiedModelIds.slice(0, 2), [
+		"google/gemini-3.1-pro-preview-unsupported",
+		"google/gemini-3.1-pro-preview",
+	]);
+	assert.ok(resolution.attemptedProviderQualifiedModelIds.includes("google/gemini-3-flash-preview"));
+});
+
+test("same-family fallback fails closed when no supported family member is available", () => {
+	const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: "openai/gpt-5.5-unsupported",
+		availableModelIds: ["openai/not-supported-mini", "openai/not-supported-fast"],
+	});
+	assert.equal(resolution.selectedProviderQualifiedModelId, undefined);
+	assert.equal(resolution.attemptedProviderQualifiedModelIds[0], "openai/gpt-5.5-unsupported");
+	assert.ok(resolution.attemptedProviderQualifiedModelIds.includes("openai/gpt-5.4-mini"));
+	assert.ok(resolution.attemptedProviderQualifiedModelIds.includes("openai/gpt-5.3-codex-spark"));
+});
+
 const storedAvailableModels: WorkingModelSelectionInput = {
 	availabilitySource: "test_fixture",
 	availableModelIds: [
@@ -23,7 +55,7 @@ const storedAvailableModels: WorkingModelSelectionInput = {
 		"google/gemini-2.5-pro",
 		"google/gemini-3-pro-preview",
 		"google/gemini-3.1-pro-preview",
-		"google/gemini-3.1-flash-lite-preview",
+		"google/gemini-3.1-flash-lite",
 	],
 };
 
@@ -142,7 +174,7 @@ test("model selection respects allowed model ids from working cache", () => {
 	assert.equal(result?.candidate.providerQualifiedModelId, "openai/gpt-5.5");
 });
 
-test("Gemini model selection falls back to Flash Lite when Gemini Pro quota is exhausted", () => {
+test("Gemini model selection falls back to supported Flash Lite when Gemini Pro quota is exhausted", () => {
 	const usageMap = buildUsageMapFromProviders([
 		row("claude", 0, "exhausted"),
 		row("openai", 0, "exhausted"),
@@ -165,7 +197,7 @@ test("Gemini model selection falls back to Flash Lite when Gemini Pro quota is e
 	assert.equal(usageMap.get("gemini-flash")?.remainingPercent, 80);
 	assert.equal(usageMap.get("gemini-flash-lite")?.remainingPercent, 90);
 	const implementation = selectModelForTask("implementation", usageMap, storedAvailableModels, now)?.candidate;
-	assert.equal(implementation?.providerQualifiedModelId, "google/gemini-3.1-flash-lite-preview");
+	assert.equal(implementation?.providerQualifiedModelId, "google/gemini-3.1-flash-lite");
 	assert.equal(implementation?.usageKey, "gemini-flash-lite");
 
 	const proOnly = selectModelForTask("implementation", usageMap, { availableModelIds: ["google/gemini-3.1-pro-preview"], availabilitySource: "test_fixture" }, now);
@@ -174,6 +206,60 @@ test("Gemini model selection falls back to Flash Lite when Gemini Pro quota is e
 	const liteOnlyUsageMap = new Map(usageMap);
 	liteOnlyUsageMap.set("gemini-flash", usage("gemini", 0, "exhausted"));
 	assert.equal(selectModelForTask("documentation", liteOnlyUsageMap, storedAvailableModels, now)?.candidate.usageKey, "gemini-flash-lite");
+});
+
+test("model selection intersects cached working models with OpenCode-supported exact models", () => {
+	const usageMap = buildUsageMapFromProviders([
+		row("claude", 0, "exhausted"),
+		row("openai", 0, "exhausted"),
+		{
+			providerFamily: "gemini",
+			remainingPercent: 95,
+			alertLevel: "ok",
+			freshness: "fresh",
+			resetBucket: "gemini-pro-daily",
+			resetTime: "2026-05-31T23:00:00.000Z",
+			buckets: [
+				{ resetBucket: "95% gemini-pro-daily", resetTime: "2026-05-31T23:00:00.000Z", remainingPercent: 95, freshness: "fresh" },
+			],
+		},
+	], now);
+
+	const result = selectModelForTask("implementation", usageMap, {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["google/not-opencode-supported", "google/gemini-3.1-pro-preview"],
+	}, now);
+	assert.equal(result?.candidate.providerQualifiedModelId, "google/gemini-3.1-pro-preview");
+
+	const unsupportedOnly = selectModelForTask("implementation", usageMap, {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["google/not-opencode-supported"],
+	}, now);
+	assert.equal(unsupportedOnly, undefined);
+});
+
+test("deprecated Gemini Flash Lite preview can never be selected even when cached available", () => {
+	const usageMap = buildUsageMapFromProviders([
+		row("claude", 0, "exhausted"),
+		row("openai", 0, "exhausted"),
+		{
+			providerFamily: "gemini",
+			remainingPercent: 90,
+			alertLevel: "ok",
+			freshness: "fresh",
+			resetBucket: "gemini-flash-lite-daily",
+			resetTime: "2026-05-31T23:00:00.000Z",
+			buckets: [
+				{ resetBucket: "90% gemini-flash-lite-daily", resetTime: "2026-05-31T23:00:00.000Z", remainingPercent: 90, freshness: "fresh" },
+			],
+		},
+	], now);
+
+	const deprecatedOnly = selectModelForTask("documentation", usageMap, {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["google/gemini-3.1-flash-lite-preview"],
+	}, now);
+	assert.equal(deprecatedOnly, undefined);
 });
 
 test("Gemini model selection prefers the highest available Pro exact model", () => {
@@ -196,12 +282,12 @@ test("Gemini model selection prefers the highest available Pro exact model", () 
 
 	assert.equal(selectModelForTask("implementation", usageMap, {
 		availabilitySource: "test_fixture",
-		availableModelIds: ["google/gemini-2.5-pro", "google/gemini-3-pro-preview", "google/gemini-3.1-pro-preview", "google/gemini-3.1-flash-lite-preview"],
+		availableModelIds: ["google/gemini-2.5-pro", "google/gemini-3-pro-preview", "google/gemini-3.1-pro-preview", "google/gemini-3.1-flash-lite"],
 	}, now)?.candidate.providerQualifiedModelId, "google/gemini-3.1-pro-preview");
 
 	assert.equal(selectModelForTask("implementation", usageMap, {
 		availabilitySource: "test_fixture",
-		availableModelIds: ["google/gemini-2.5-pro", "google/gemini-3-pro-preview", "google/gemini-3.1-flash-lite-preview"],
+		availableModelIds: ["google/gemini-2.5-pro", "google/gemini-3-pro-preview", "google/gemini-3.1-flash-lite"],
 	}, now)?.candidate.providerQualifiedModelId, "google/gemini-3-pro-preview");
 });
 

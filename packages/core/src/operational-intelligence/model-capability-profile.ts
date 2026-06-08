@@ -504,7 +504,7 @@ export const FLOWDESK_INITIAL_MODEL_PROFILES: FlowDeskModelCapabilityProfileV1[]
 		schema_version: "flowdesk.model_capability_profile.v1",
 		profile_id: "cap-profile-gemini-3-1-flash-lite",
 		model_ref: "cap-profile-gemini-3-1-flash-lite",
-		provider_qualified_model_id: "google/gemini-3.1-flash-lite-preview",
+		provider_qualified_model_id: "google/gemini-3.1-flash-lite",
 		scored_at: "2026-06-07T00:00:00.000Z",
 		category_fitness: {
 			schema_only: 4,

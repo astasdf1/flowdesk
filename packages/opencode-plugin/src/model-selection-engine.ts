@@ -32,6 +32,12 @@ export interface ModelSelectionResult {
 	candidate: ModelCandidate;
 	weight: number;
 	usageNote: string;
+	/**
+	 * Ordered exact models considered during same-family selection fallback.
+	 * This is selection evidence only; it does not authorize runtime retry or
+	 * managed provider/model fallback.
+	 */
+	attemptedProviderQualifiedModelIds: readonly string[];
 }
 
 export interface WorkingModelSelectionInput {
@@ -42,6 +48,171 @@ export interface WorkingModelSelectionInput {
 	 * Key is providerQualifiedModelId, value is mean weighted score (0..100).
 	 */
 	oiPerformanceScores?: Map<string, number>;
+}
+
+const DEPRECATED_PROVIDER_QUALIFIED_MODEL_IDS = new Set<string>([
+	"google/gemini-3.1-flash-lite-preview",
+	"gemini/gemini-3.1-flash-lite-preview",
+]);
+
+const OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS = new Set<string>([
+	"anthropic/claude-opus-4-7",
+	"claude/claude-opus-4-7",
+	"anthropic/claude-opus-4-5",
+	"claude/claude-opus-4-5",
+	"anthropic/claude-opus-4-1",
+	"claude/claude-opus-4-1",
+	"anthropic/claude-opus-4-0",
+	"claude/claude-opus-4-0",
+	"anthropic/claude-sonnet-4-6",
+	"claude/claude-sonnet-4-6",
+	"anthropic/claude-sonnet-4-5",
+	"claude/claude-sonnet-4-5",
+	"anthropic/claude-sonnet-4-0",
+	"claude/claude-sonnet-4-0",
+	"anthropic/claude-haiku-4-5",
+	"claude/claude-haiku-4-5",
+	"claude/sonnet-4",
+	"openai/gpt-5.5",
+	"openai/gpt-5.5-fast",
+	"openai/gpt-5.4",
+	"openai/gpt-5.4-fast",
+	"openai/gpt-5.4-mini",
+	"openai/gpt-5.4-mini-fast",
+	"openai/gpt-5.3-codex",
+	"openai/gpt-5.3-codex-spark",
+	"openai/gpt-5.2",
+	"google/gemini-2.5-flash",
+	"gemini/gemini-2.5-flash",
+	"google/gemini-2.5-flash-lite",
+	"gemini/gemini-2.5-flash-lite",
+	"google/gemini-2.5-pro",
+	"gemini/gemini-2.5-pro",
+	"google/gemini-3-flash-preview",
+	"gemini/gemini-3-flash-preview",
+	"google/gemini-3-pro-preview",
+	"gemini/gemini-3-pro-preview",
+	"google/gemini-3.1-pro-preview",
+	"gemini/gemini-3.1-pro-preview",
+	"google/gemini-3.1-flash-lite",
+	"gemini/gemini-3.1-flash-lite",
+]);
+
+export const SAME_FAMILY_MODEL_FALLBACK_CHAINS = {
+	claude: ["opus", "sonnet", "haiku"],
+	openai: ["normal", "mini", "fast", "spark"],
+	gemini: ["pro", "flash", "flash-lite"],
+} as const;
+
+const SAME_FAMILY_EXACT_MODEL_FALLBACK_CHAINS: Record<ModelCandidate["providerFamily"], readonly (readonly string[])[]> = {
+	claude: [
+		["anthropic/claude-opus-4-7", "claude/claude-opus-4-7", "anthropic/claude-opus-4-5", "claude/claude-opus-4-5", "anthropic/claude-opus-4-1", "claude/claude-opus-4-1", "anthropic/claude-opus-4-0", "claude/claude-opus-4-0"],
+		["anthropic/claude-sonnet-4-6", "claude/claude-sonnet-4-6", "anthropic/claude-sonnet-4-5", "claude/claude-sonnet-4-5", "anthropic/claude-sonnet-4-0", "claude/claude-sonnet-4-0", "claude/sonnet-4"],
+		["anthropic/claude-haiku-4-5", "claude/claude-haiku-4-5"],
+	],
+	openai: [
+		["openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.3-codex", "openai/gpt-5.2"],
+		["openai/gpt-5.4-mini"],
+		["openai/gpt-5.5-fast", "openai/gpt-5.4-fast", "openai/gpt-5.4-mini-fast"],
+		["openai/gpt-5.3-codex-spark"],
+	],
+	gemini: [
+		["google/gemini-3.1-pro-preview", "gemini/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "gemini/gemini-3-pro-preview", "google/gemini-2.5-pro", "gemini/gemini-2.5-pro"],
+		["google/gemini-3-flash-preview", "gemini/gemini-3-flash-preview", "google/gemini-2.5-flash", "gemini/gemini-2.5-flash"],
+		["google/gemini-3.1-flash-lite", "gemini/gemini-3.1-flash-lite", "google/gemini-2.5-flash-lite", "gemini/gemini-2.5-flash-lite"],
+	],
+};
+
+export function isDeprecatedProviderQualifiedModelId(modelId: string): boolean {
+	return DEPRECATED_PROVIDER_QUALIFIED_MODEL_IDS.has(modelId);
+}
+
+export function isOpenCodeSupportedProviderQualifiedModelId(modelId: string): boolean {
+	return OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS.has(modelId) && !isDeprecatedProviderQualifiedModelId(modelId);
+}
+
+export function intersectWorkingAndOpenCodeSupportedModelIds(availableModelIds: readonly string[]): string[] {
+	return availableModelIds
+		.filter((modelId, index, array) => array.indexOf(modelId) === index)
+		.filter(isOpenCodeSupportedProviderQualifiedModelId);
+}
+
+export interface SameFamilyModelFallbackResolution {
+	selectedProviderQualifiedModelId?: string;
+	attemptedProviderQualifiedModelIds: readonly string[];
+	providerFamily?: ModelCandidate["providerFamily"];
+}
+
+export function resolveSameFamilyOpenCodeSupportedModelFallback(input: {
+	providerQualifiedModelId: string;
+	availableModelIds: readonly string[];
+}): SameFamilyModelFallbackResolution {
+	const family = providerFamilyForModelId(input.providerQualifiedModelId);
+	if (family === undefined) {
+		return { attemptedProviderQualifiedModelIds: [input.providerQualifiedModelId] };
+	}
+	const chain = SAME_FAMILY_EXACT_MODEL_FALLBACK_CHAINS[family];
+	const stageIndex = fallbackStageIndexForModelId(family, input.providerQualifiedModelId);
+	if (stageIndex === undefined) {
+		return { providerFamily: family, attemptedProviderQualifiedModelIds: [input.providerQualifiedModelId] };
+	}
+	const available = new Set(input.availableModelIds);
+	const attempted: string[] = [];
+	const addAttempt = (modelId: string) => {
+		if (!attempted.includes(modelId)) attempted.push(modelId);
+	};
+	for (let index = stageIndex; index < chain.length; index++) {
+		const stageModels = index === stageIndex
+			? [input.providerQualifiedModelId, ...chain[index].filter((modelId) => modelId !== input.providerQualifiedModelId)]
+			: chain[index];
+		for (const modelId of stageModels) {
+			addAttempt(modelId);
+			if (available.has(modelId) && isOpenCodeSupportedProviderQualifiedModelId(modelId)) {
+				return { providerFamily: family, selectedProviderQualifiedModelId: modelId, attemptedProviderQualifiedModelIds: attempted };
+			}
+		}
+	}
+	return { providerFamily: family, attemptedProviderQualifiedModelIds: attempted };
+}
+
+function providerFamilyForModelId(modelId: string): ModelCandidate["providerFamily"] | undefined {
+	if (modelId.startsWith("anthropic/") || modelId.startsWith("claude/")) return "claude";
+	if (modelId.startsWith("openai/")) return "openai";
+	if (modelId.startsWith("google/") || modelId.startsWith("gemini/")) return "gemini";
+	return undefined;
+}
+
+function fallbackStageIndexForModelId(family: ModelCandidate["providerFamily"], modelId: string): number | undefined {
+	const chain = SAME_FAMILY_EXACT_MODEL_FALLBACK_CHAINS[family];
+	const explicitIndex = chain.findIndex((stage) => stage.includes(modelId));
+	if (explicitIndex >= 0) return explicitIndex;
+	const normalized = modelId.toLowerCase();
+	if (family === "claude") {
+		if (normalized.includes("opus")) return 0;
+		if (normalized.includes("sonnet")) return 1;
+		if (normalized.includes("haiku")) return 2;
+	}
+	if (family === "openai") {
+		if (normalized.includes("spark")) return 3;
+		if (normalized.includes("mini")) return 1;
+		if (normalized.includes("fast")) return 2;
+		if (normalized.includes("gpt")) return 0;
+	}
+	if (family === "gemini") {
+		if (normalized.includes("flash-lite")) return 2;
+		if (normalized.includes("flash")) return 1;
+		if (normalized.includes("pro")) return 0;
+	}
+	return undefined;
+}
+
+function usageKeyForResolvedModel(candidate: ModelCandidate, modelId: string): ModelCandidate["usageKey"] {
+	if (candidate.providerFamily !== "gemini") return candidate.usageKey;
+	const normalized = modelId.toLowerCase();
+	if (normalized.includes("flash-lite")) return "gemini-flash-lite";
+	if (normalized.includes("flash")) return "gemini-flash";
+	if (normalized.includes("pro")) return "gemini-pro";
+	return candidate.usageKey;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,13 +230,13 @@ const MEDIUM_MODELS: ModelCandidate[] = [
 	{ providerQualifiedModelId: "google/gemini-3.1-pro-preview", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
 	{ providerQualifiedModelId: "google/gemini-3-pro-preview", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
 	{ providerQualifiedModelId: "google/gemini-2.5-pro", providerFamily: "gemini", usageKey: "gemini-pro", agentName: "reviewer-gemini-pro", tier: "medium" },
-	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite-preview", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "medium" },
+	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "medium" },
 ];
 
 const LIGHT_MODELS: ModelCandidate[] = [
 	{ providerQualifiedModelId: "openai/gpt-5.5", providerFamily: "openai", agentName: "reviewer-gpt-frontier", tier: "light" },
 	{ providerQualifiedModelId: "anthropic/claude-sonnet-4-6", providerFamily: "claude", agentName: "reviewer-claude-opus", tier: "light" },
-	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite-preview", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "light" },
+	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "light" },
 ];
 
 // Role → preferred tier + candidate pool
@@ -172,21 +343,29 @@ export function selectModelForTask(
 	const nowMs = (now ? now() : new Date()).getTime();
 	const mapping = ROLE_TIER_MAP[role];
 	if (!mapping) return undefined;
-	const allowedModelIds = new Set(selectionContext.availableModelIds);
-	if (allowedModelIds.size === 0) return undefined;
+	if (intersectWorkingAndOpenCodeSupportedModelIds(selectionContext.availableModelIds).length === 0) return undefined;
 
 	// Deduplicate by providerQualifiedModelId and compute weights
 	const seen = new Set<string>();
 	const weighted: ModelSelectionResult[] = [];
 	for (const candidate of mapping.candidates) {
-		if (!allowedModelIds.has(candidate.providerQualifiedModelId)) continue;
-		if (seen.has(candidate.providerQualifiedModelId)) continue;
-		seen.add(candidate.providerQualifiedModelId);
-		const usage = usageByFamily.get(candidate.usageKey ?? candidate.providerFamily) ?? usageByFamily.get(candidate.providerFamily);
+		const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
+			providerQualifiedModelId: candidate.providerQualifiedModelId,
+			availableModelIds: selectionContext.availableModelIds,
+		});
+		if (resolution.selectedProviderQualifiedModelId === undefined) continue;
+		if (seen.has(resolution.selectedProviderQualifiedModelId)) continue;
+		seen.add(resolution.selectedProviderQualifiedModelId);
+		const resolvedCandidate: ModelCandidate = {
+			...candidate,
+			providerQualifiedModelId: resolution.selectedProviderQualifiedModelId,
+			usageKey: usageKeyForResolvedModel(candidate, resolution.selectedProviderQualifiedModelId),
+		};
+		const usage = usageByFamily.get(resolvedCandidate.usageKey ?? resolvedCandidate.providerFamily) ?? usageByFamily.get(resolvedCandidate.providerFamily);
 		const qhs = quotaHealthScore(usage, nowMs);
 		const weight = qhs === undefined ? 0 : Math.max(0.01, qhs + 1);
 		if (weight <= 0) continue; // exhausted – skip entirely
-		weighted.push({ candidate, weight, usageNote: usageNote(usage, nowMs) });
+		weighted.push({ candidate: resolvedCandidate, weight, usageNote: usageNote(usage, nowMs), attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds });
 	}
 
 	if (weighted.length === 0) return undefined;

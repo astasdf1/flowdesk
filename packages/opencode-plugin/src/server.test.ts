@@ -95,6 +95,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskFederatedRegistryPublishToolName,
 	operationalIntelligenceConfigFromOptions,
 	completionWakeMainSessionConfigFromOptions,
+	__resetCompletionWakeParentSessionRefForTest,
 } from "./server.js";
 import { computeGuardSignOffHmacV1, runFlowDeskWatchdogCycleV1, type FlowDeskGuardSignOffV1 } from "./stall-recovery.js";
 
@@ -11136,6 +11137,239 @@ test("flowdesk_task normalizes safe defaults and adds no authority claims", asyn
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("flowdesk_task prefers live ctx session over stale startup-seeded wake parent", async () => {
+	const createOptions: unknown[] = [];
+	const dummyClient = {
+		session: {
+			create(options: unknown) {
+				createOptions.push(options);
+				return Promise.resolve({ id: "child-short-task-live-over-seed-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-short-task-live-over-seed-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-short-task-live-over-seed-"));
+	try {
+		__resetCompletionWakeParentSessionRefForTest();
+		mkdirSync(join(root, ".flowdesk", "ui"), { recursive: true });
+		writeFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			rows: [{
+				parentSessionRef: "ses-ses_stale_compact_seed_1",
+				readyAt: "2026-05-17T00:00:00.000Z",
+			}],
+		}), "utf8");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+		assert.ok(shortTaskTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-short-task-live-over-seed-1",
+						taskDescription: "Check live compact parent precedence.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					{ sessionID: "live-compact-parent-1" } as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_launched");
+		assert.equal((createOptions[0] as Record<string, unknown>).parentID, "live-compact-parent-1");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-short-task-live-over-seed-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.parent_session_ref === "ses-live-compact-parent-1",
+			),
+		);
+	} finally {
+		__resetCompletionWakeParentSessionRefForTest();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_task falls back to startup-seeded wake parent when live ctx session is missing", async () => {
+	const createOptions: unknown[] = [];
+	const dummyClient = {
+		session: {
+			create(options: unknown) {
+				createOptions.push(options);
+				return Promise.resolve({ id: "child-short-task-seed-fallback-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-short-task-seed-fallback-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-short-task-seed-fallback-"));
+	try {
+		__resetCompletionWakeParentSessionRefForTest();
+		mkdirSync(join(root, ".flowdesk", "ui"), { recursive: true });
+		writeFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			rows: [{
+				parentSessionRef: "ses-ses_stale_compact_seed_1",
+				readyAt: "2026-05-17T00:01:00.000Z",
+			}],
+		}), "utf8");
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+		assert.ok(shortTaskTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-short-task-seed-fallback-1",
+						taskDescription: "Check compact parent seed fallback.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						parentSessionId: "",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_launched");
+		assert.equal((createOptions[0] as Record<string, unknown>).parentID, "ses_stale_compact_seed_1");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId: "workflow-short-task-seed-fallback-1",
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		assert.ok(
+			evidence.entries.some(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.lane_id === result.laneId &&
+					entry.record.parent_session_ref === "ses-ses_stale_compact_seed_1",
+			),
+		);
+	} finally {
+		__resetCompletionWakeParentSessionRefForTest();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_task seeds wake parent only from unconsumed ready-cache rows", async () => {
+	async function runReadyCacheCase(
+		suffix: string,
+		rows: readonly Record<string, unknown>[],
+	): Promise<Record<string, unknown> | undefined> {
+		const createOptions: unknown[] = [];
+		const dummyClient = {
+			session: {
+				create(options: unknown) {
+					createOptions.push(options);
+					return Promise.resolve({ id: `child-short-task-${suffix}` });
+				},
+				prompt() {
+					return Promise.resolve({ info: { id: `message-short-task-${suffix}` } });
+				},
+				messages() {
+					return Promise.resolve([]);
+				},
+			},
+		};
+		const root = mkdtempSync(join(tmpdir(), `flowdesk-short-task-${suffix}-`));
+		try {
+			__resetCompletionWakeParentSessionRefForTest();
+			mkdirSync(join(root, ".flowdesk", "ui"), { recursive: true });
+			writeFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), JSON.stringify({
+				schema_version: "flowdesk.completion_wake_ready_cache.v1",
+				rows,
+			}), "utf8");
+			const hooks = await flowdeskOpenCodeServerPlugin.server(
+				{ client: dummyClient } as never,
+				{
+					[flowdeskAgentTaskRunOption]: { enabled: true },
+					[flowdeskDurableStateRootOption]: root,
+					localNonDispatchAdapter: false,
+					naturalLanguageRouting: false,
+				},
+			);
+			const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+			assert.ok(shortTaskTool);
+			await shortTaskTool.execute(
+				{
+					workflowId: `workflow-short-task-${suffix}`,
+					taskDescription: "Check consumed ready-cache seed filtering.",
+					agentName: "reviewer-gpt-frontier",
+					providerQualifiedModelId: "openai/gpt-5.5",
+					parentSessionId: "",
+					developerModeAcknowledged: true,
+					allowProviderCall: true,
+				},
+				undefined as never,
+			);
+			return createOptions[0] as Record<string, unknown> | undefined;
+		} finally {
+			__resetCompletionWakeParentSessionRefForTest();
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+
+	const consumedOnlyCreateOptions = await runReadyCacheCase("consumed-only-seed", [{
+		parentSessionRef: "ses-ses_consumed_only_seed_1",
+		readyAt: "2026-05-17T00:03:00.000Z",
+		consumed: true,
+	}]);
+	assert.ok(consumedOnlyCreateOptions);
+	assert.equal(consumedOnlyCreateOptions.parentID, undefined);
+	assert.equal((await runReadyCacheCase("mixed-consumed-unconsumed-seed", [{
+		parentSessionRef: "ses-ses_older_unconsumed_seed_1",
+		readyAt: "2026-05-17T00:02:00.000Z",
+	}, {
+		parentSessionRef: "ses-ses_consumed_newest_seed_1",
+		readyAt: "2026-05-17T00:04:00.000Z",
+		consumed: true,
+	}]))?.parentID, "ses_older_unconsumed_seed_1");
+	assert.equal((await runReadyCacheCase("single-unconsumed-seed", [{
+		parentSessionRef: "ses-ses_single_unconsumed_seed_1",
+		readyAt: "2026-05-17T00:05:00.000Z",
+	}]))?.parentID, "ses_single_unconsumed_seed_1");
 });
 
 test("flowdesk_agent_task_run executes task and returns result text", async () => {

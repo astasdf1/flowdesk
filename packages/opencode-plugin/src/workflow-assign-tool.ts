@@ -13,7 +13,7 @@ import {
 	type FlowDeskAgentRegistryRoleCategoryV1,
 } from "@flowdesk/core";
 import type { FlowDeskTuiUsageProviderRowV1 } from "./tui-usage-snapshot.js";
-import { selectModelForTask, buildUsageMapFromProviders } from "./model-selection-engine.js";
+import { selectModelForTask, buildUsageMapFromProviders, intersectWorkingAndOpenCodeSupportedModelIds } from "./model-selection-engine.js";
 import { buildOIAssignmentAdvisoryV1, type OIAssignmentAdvisoryInputV1 } from "./oi-assignment-advisor.js";
 import { loadRoutingAdvisoryLedgerV1 } from "./oi-ledger-reader.js";
 
@@ -86,6 +86,8 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		return blocked("working-model cache missing – run models refresh first", input.workflowId);
 	}
 	if (workingModelIds.length === 0) return blocked("working-model cache empty – run models refresh first", input.workflowId);
+	const selectableModelIds = intersectWorkingAndOpenCodeSupportedModelIds(workingModelIds);
+	if (selectableModelIds.length === 0) return blocked("working-model cache has no OpenCode-supported exact models – refresh working-model evidence before assignment", input.workflowId);
 
 	const taskSignatureRef = "signature-default"; // TODO: Derive real signature from task properties
 	const routingLedger = loadRoutingAdvisoryLedgerV1(input.rootDir);
@@ -123,7 +125,7 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		if (!taskId) continue;
 
 		const usageMap = buildUsageMapFromProviders(rows, () => selectionNow);
-		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: workingModelIds, availabilitySource: "durable_cache", oiPerformanceScores }, () => selectionNow);
+		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: selectableModelIds, availabilitySource: "durable_cache", oiPerformanceScores }, () => selectionNow);
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		// ── OI Advisory annotation (AFTER selection — must not influence it) ─────
@@ -153,6 +155,11 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		const agentName = selected.candidate.agentName;
 		const modelId = selected.candidate.providerQualifiedModelId;
 		const selectedFamily = selected.candidate.providerFamily;
+		const selectionRecordProviderFamily = modelId.startsWith("anthropic/")
+			? "anthropic"
+			: modelId.startsWith("google/")
+				? "google"
+				: selectedFamily;
 		const selectedRemaining = rows.find(r => r.providerFamily === selectedFamily)?.remainingPercent ?? null;
 
 		const assignmentRecord = {
@@ -184,8 +191,9 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 			workflow_id: input.workflowId,
 			task_id: taskId,
 			selection_id: selectionId,
-			provider_family: selectedFamily,
+			provider_family: selectionRecordProviderFamily,
 			provider_qualified_model_id: modelId,
+			attempted_provider_qualified_model_ids: selected.attemptedProviderQualifiedModelIds,
 			usage_snapshot_ref: `usage-${selectedFamily}-recent`,
 			usage_snapshot_freshness: "fresh",
 			provider_health_ref: `health-${selectedFamily}-recent`,

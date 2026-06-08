@@ -11,7 +11,6 @@ import {
 	validatePlanningNoForbiddenPayloads,
 	validatePlanningOpaqueId,
 	validatePlanningOpaqueRef,
-	validatePlanningOpaqueRefArray,
 	validatePlanningSafeLabelArray,
 	validatePlanningSafeText,
 	validatePlanningTimestamp,
@@ -31,6 +30,7 @@ export interface FlowDeskTaskModelSelectionV1 {
 	selection_id: OpaqueId;
 	provider_family: ProviderFamily;
 	provider_qualified_model_id: string;
+	attempted_provider_qualified_model_ids?: string[];
 	usage_snapshot_ref: OpaqueRef;
 	usage_snapshot_freshness: FlowDeskTaskModelFreshnessV1;
 	provider_health_ref: OpaqueRef;
@@ -60,6 +60,7 @@ const ALLOWED_KEYS = new Set([
 	"selection_id",
 	"provider_family",
 	"provider_qualified_model_id",
+	"attempted_provider_qualified_model_ids",
 	"usage_snapshot_ref",
 	"usage_snapshot_freshness",
 	"provider_health_ref",
@@ -119,6 +120,17 @@ export function validateFlowDeskTaskModelSelectionV1(value: unknown): Validation
 	errors.push(...validatePlanningOpaqueId(value.selection_id, "selection_id").errors);
 	errors.push(...validateProviderFamily(value.provider_family).errors);
 	errors.push(...validateConcreteProviderQualifiedModelId(value.provider_qualified_model_id, "provider_qualified_model_id").errors);
+	if (value.attempted_provider_qualified_model_ids !== undefined) {
+		if (!Array.isArray(value.attempted_provider_qualified_model_ids)) {
+			errors.push("attempted_provider_qualified_model_ids must be an array");
+		} else if (value.attempted_provider_qualified_model_ids.length > 16) {
+			errors.push("attempted_provider_qualified_model_ids exceeds 16 items");
+		} else {
+			for (const [index, modelId] of value.attempted_provider_qualified_model_ids.entries()) {
+				errors.push(...validateConcreteProviderQualifiedModelId(modelId, `attempted_provider_qualified_model_ids[${index}]`).errors);
+			}
+		}
+	}
 	if (typeof value.provider_family === "string" && typeof value.provider_qualified_model_id === "string" && !value.provider_qualified_model_id.startsWith(`${value.provider_family}/`)) errors.push("provider_qualified_model_id must match provider_family");
 	errors.push(...validatePlanningOpaqueRef(value.usage_snapshot_ref, "usage_snapshot_ref").errors);
 	if (!FRESHNESS.has(value.usage_snapshot_freshness as FlowDeskTaskModelFreshnessV1)) errors.push("usage_snapshot_freshness is invalid");

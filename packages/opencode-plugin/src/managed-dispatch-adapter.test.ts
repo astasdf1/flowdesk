@@ -172,7 +172,9 @@ function managedDispatchTerminalEvidencePath(rootDir: string, input: {
 	);
 }
 
-function dispatchableUsage(): FlowDeskUsageSnapshotV1 {
+function dispatchableUsage(
+	overrides: Partial<FlowDeskUsageSnapshotV1> = {},
+): FlowDeskUsageSnapshotV1 {
 	return {
 		schema_version: "flowdesk.usage_snapshot.v1",
 		snapshot_id: "usage-123",
@@ -185,10 +187,13 @@ function dispatchableUsage(): FlowDeskUsageSnapshotV1 {
 		dispatchability: "dispatchable",
 		uncertainty_flags: [],
 		source_ref: "usage-source-123",
+		...overrides,
 	};
 }
 
-function dispatchableHealth(): FlowDeskProviderHealthSnapshotV1 {
+function dispatchableHealth(
+	overrides: Partial<FlowDeskProviderHealthSnapshotV1> = {},
+): FlowDeskProviderHealthSnapshotV1 {
 	return {
 		schema_version: "flowdesk.provider_health_snapshot.v1",
 		snapshot_id: "health-123",
@@ -204,6 +209,7 @@ function dispatchableHealth(): FlowDeskProviderHealthSnapshotV1 {
 		dispatchability: "dispatchable",
 		source_ref: "health-source-123",
 		safe_remediation: "No action needed.",
+		...overrides,
 	};
 }
 
@@ -654,6 +660,7 @@ function consumedApproval(
 	overrides: Partial<FlowDeskProductionApprovalSourceV1> = {},
 ): FlowDeskProductionApprovalSourceV1 {
 	const source = approvalSource(overrides);
+	const providerQualifiedModelId = overrides.provider_qualified_model_id ?? "claude/sonnet-4";
 	const result = consumeFlowDeskProductionApprovalSourceV1({
 		approval: source,
 		workflowId: "workflow-123",
@@ -661,7 +668,7 @@ function consumedApproval(
 		actionType: source.action_type,
 		actorRef: "actor-user-123",
 		profileRef: "profile-prod-123",
-		providerQualifiedModelId: "claude/sonnet-4",
+		providerQualifiedModelId,
 		providerBindingHash: "hash-provider-binding-123",
 		evidenceBundleHash: "hash-evidence-bundle-123",
 		guardDecisionRef: "guard-decision-123",
@@ -2923,9 +2930,124 @@ test("managed dispatch beta adapter requires working-model evidence when durable
 		});
 
 		assert.equal(result.status, "dispatch_accepted");
+		if (result.status !== "dispatch_accepted") throw new Error("expected dispatch_accepted");
 		assert.equal(promptCalls.length, 0);
 		assert.equal(promptAsyncCalls.length, 1);
 		assert.equal(reservation.reserveCalls.length, 1);
+	});
+});
+
+test("managed dispatch beta adapter rejects cached models outside the OpenCode-supported intersection", async () => {
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir, ["claude/not-opencode-supported"]);
+		const { client, promptCalls, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const model = "claude/not-opencode-supported";
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput({
+				guardApproval: guardApproval({ provider_qualified_model_id: model }),
+				bindingEvidence: bindingEvidence({ provider_qualified_model_id: model }),
+				usageSnapshot: dispatchableUsage({ model_family: "not-opencode-supported" }),
+				usageAuthorityEvidence: usageAuthorityEvidence({ provider_qualified_model_id: model, model_family: "not-opencode-supported" }),
+				providerHealthSnapshot: dispatchableHealth({ model_family: "not-opencode-supported" }),
+				runtimeEchoEvidence: runtimeEchoEvidence({ provider_qualified_model_id: model }),
+			}),
+			request: dispatchRequest({ provider_qualified_model_id: model }),
+			dispatchManifest: dispatchManifest({ provider_qualified_model_id: model }),
+			reloadedEvidence: reloadedEvidence({
+				entries: reloadedEvidence().entries.map((entry) => entry.evidenceClass === "production_approval_source"
+					? { ...entry, record: consumedApproval({ provider_qualified_model_id: model }) as unknown as Record<string, unknown> }
+					: entry),
+			}),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
+
+		assert.equal(result.status, "blocked_before_dispatch");
+		assert.match(result.redactedBlockReason, /no same-family OpenCode-supported fallback/);
+		assert.equal(promptCalls.length, 0);
+		assert.equal(promptAsyncCalls.length, 0);
+		assert.equal(reservation.reserveCalls.length, 0);
+		assert.equal(reservation.completedCalls.length, 0);
+		assert.equal(reservation.failureCalls.length, 0);
+	});
+});
+
+test("managed dispatch beta adapter rejects deprecated Gemini Flash Lite preview even when cached available", async () => {
+	await withTempRoot(async (rootDir) => {
+		const model = "google/gemini-3.1-flash-lite-preview";
+		writeWorkingModels(rootDir, [model]);
+		const { client, promptCalls, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput({
+				guardApproval: guardApproval({ provider_family: "google", provider_qualified_model_id: model }),
+				bindingEvidence: bindingEvidence({ provider_family: "google", provider_qualified_model_id: model }),
+				usageSnapshot: dispatchableUsage({ provider_family: "google", model_family: "gemini-3.1-flash-lite-preview" }),
+				usageAuthorityEvidence: usageAuthorityEvidence({ provider_family: "google", provider_qualified_model_id: model, model_family: "gemini-3.1-flash-lite-preview" }),
+				providerHealthSnapshot: dispatchableHealth({ provider_family: "google", model_family: "gemini-3.1-flash-lite-preview" }),
+				runtimeEchoEvidence: runtimeEchoEvidence({ provider_family: "google", provider_qualified_model_id: model }),
+			}),
+			request: dispatchRequest({ provider_qualified_model_id: model }),
+			dispatchManifest: dispatchManifest({ provider_qualified_model_id: model }),
+			reloadedEvidence: reloadedEvidence({
+				entries: reloadedEvidence().entries.map((entry) => entry.evidenceClass === "production_approval_source"
+					? { ...entry, record: consumedApproval({ provider_qualified_model_id: model }) as unknown as Record<string, unknown> }
+					: entry),
+			}),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
+
+		assert.equal(result.status, "blocked_before_dispatch");
+		assert.match(result.redactedBlockReason, /no same-family OpenCode-supported fallback/);
+		assert.equal(promptCalls.length, 0);
+		assert.equal(promptAsyncCalls.length, 0);
+		assert.equal(reservation.reserveCalls.length, 0);
+		assert.equal(reservation.completedCalls.length, 0);
+		assert.equal(reservation.failureCalls.length, 0);
+	});
+});
+
+test("managed dispatch beta adapter uses selection-phase same-family fallback before SDK launch", async () => {
+	await withTempRoot(async (rootDir) => {
+		const requested = "google/gemini-3.1-pro-preview-unsupported";
+		const fallback = "google/gemini-3-flash-preview";
+		writeWorkingModels(rootDir, [requested, fallback]);
+		const { client, promptCalls, promptAsyncCalls } = fakeClient();
+		const reservation = fakeReservationStore();
+		const result = await dispatchManagedDispatchBetaPromptV1({
+			client,
+			boundaryInput: managedDispatchInput({
+				guardApproval: guardApproval({ provider_family: "google", provider_qualified_model_id: requested }),
+				bindingEvidence: bindingEvidence({ provider_family: "google", provider_qualified_model_id: requested }),
+				usageSnapshot: dispatchableUsage({ provider_family: "google", model_family: "gemini-3.1-pro-preview-unsupported" }),
+				usageAuthorityEvidence: usageAuthorityEvidence({ provider_family: "google", provider_qualified_model_id: requested, model_family: "gemini-3.1-pro-preview-unsupported" }),
+				providerHealthSnapshot: dispatchableHealth({ provider_family: "google", model_family: "gemini-3.1-pro-preview-unsupported" }),
+				runtimeEchoEvidence: runtimeEchoEvidence({ provider_family: "google", provider_qualified_model_id: requested }),
+			}),
+			request: dispatchRequest({ provider_qualified_model_id: requested }),
+			dispatchManifest: dispatchManifest({ provider_qualified_model_id: requested }),
+			reloadedEvidence: reloadedEvidence({
+				entries: reloadedEvidence().entries.map((entry) => entry.evidenceClass === "production_approval_source"
+					? { ...entry, record: consumedApproval({ provider_qualified_model_id: requested }) as unknown as Record<string, unknown> }
+					: entry),
+			}),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
+
+		assert.equal(result.status, "dispatch_accepted");
+		assert.equal(promptCalls.length, 0);
+		assert.equal(promptAsyncCalls.length, 1);
+		assert.deepEqual(promptAsyncCalls[0].body.model, { providerID: "google", modelID: "gemini-3-flash-preview" });
+		assert.deepEqual(result.model, { providerID: "google", modelID: "gemini-3-flash-preview" });
+		assert.equal(result.modelSelectionFallback?.requestedProviderQualifiedModelId, requested);
+		assert.equal(result.modelSelectionFallback?.selectedProviderQualifiedModelId, fallback);
+		assert.equal(result.modelSelectionFallback?.runtimeRetryAttempted, false);
+		assert.equal(result.authority.fallbackAuthority, false);
 	});
 });
 
@@ -3410,41 +3532,46 @@ test("durable reservation store records dispatch_failed after SDK failure", asyn
 });
 
 test("managed dispatch beta adapter requires reservation materialization before fake client calls", async () => {
-	const missingStoreClient = fakeClient();
-	const missingStore = await dispatchManagedDispatchBetaPromptV1({
-		client: missingStoreClient.client,
-		boundaryInput: managedDispatchInput(),
-		request: dispatchRequest(),
-		dispatchManifest: dispatchManifest(),
-		reloadedEvidence: reloadedEvidence(),
-	});
-	assert.equal(missingStore.status, "blocked_before_dispatch");
-	assert.match(
-		missingStore.redactedBlockReason,
-		/reservation materialization is required/,
-	);
-	assert.equal(missingStoreClient.promptCalls.length, 0);
-	assert.equal(missingStoreClient.promptAsyncCalls.length, 0);
+	await withTempRoot(async (rootDir) => {
+		writeWorkingModels(rootDir);
+		const missingStoreClient = fakeClient();
+		const missingStore = await dispatchManagedDispatchBetaPromptV1({
+			client: missingStoreClient.client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			durableStateRootDir: rootDir,
+		});
+		assert.equal(missingStore.status, "blocked_before_dispatch");
+		assert.match(
+			missingStore.redactedBlockReason,
+			/reservation materialization is required/,
+		);
+		assert.equal(missingStoreClient.promptCalls.length, 0);
+		assert.equal(missingStoreClient.promptAsyncCalls.length, 0);
 
-	const failedReservationClient = fakeClient();
-	const reservation = fakeReservationStore({ reserveOk: false });
-	const failedReservation = await dispatchManagedDispatchBetaPromptV1({
-		client: failedReservationClient.client,
-		boundaryInput: managedDispatchInput(),
-		request: dispatchRequest(),
-		dispatchManifest: dispatchManifest(),
-		reloadedEvidence: reloadedEvidence(),
-		reservationStore: reservation.store,
+		const failedReservationClient = fakeClient();
+		const reservation = fakeReservationStore({ reserveOk: false });
+		const failedReservation = await dispatchManagedDispatchBetaPromptV1({
+			client: failedReservationClient.client,
+			boundaryInput: managedDispatchInput(),
+			request: dispatchRequest(),
+			dispatchManifest: dispatchManifest(),
+			reloadedEvidence: reloadedEvidence(),
+			reservationStore: reservation.store,
+			durableStateRootDir: rootDir,
+		});
+		assert.equal(failedReservation.status, "blocked_before_dispatch");
+		assert.match(
+			failedReservation.redactedBlockReason,
+			/reservation materialization blocked/,
+		);
+		assert.equal(reservation.reserveCalls.length, 1);
+		assert.equal(reservation.failureCalls.length, 0);
+		assert.equal(failedReservationClient.promptCalls.length, 0);
+		assert.equal(failedReservationClient.promptAsyncCalls.length, 0);
 	});
-	assert.equal(failedReservation.status, "blocked_before_dispatch");
-	assert.match(
-		failedReservation.redactedBlockReason,
-		/reservation materialization blocked/,
-	);
-	assert.equal(reservation.reserveCalls.length, 1);
-	assert.equal(reservation.failureCalls.length, 0);
-	assert.equal(failedReservationClient.promptCalls.length, 0);
-	assert.equal(failedReservationClient.promptAsyncCalls.length, 0);
 });
 
 test("managed dispatch beta adapter records reservation failure state after SDK failure", async () => {
