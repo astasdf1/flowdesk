@@ -2497,6 +2497,8 @@ export interface FlowDeskChildSessionMonitorResultV1 {
 	lanesCompleted: number;
 	lanesNudged: number;
 	lanesAborted: number;
+	/** Lanes still awaiting body capture (turn completed but body not yet readable). */
+	lanesAwaitingCapture: number;
 }
 
 /**
@@ -2611,7 +2613,7 @@ export async function monitorChildSessionsV1(input: {
 	const coordinatorAttentionMs = typeof input.coordinatorAttentionMs === "number" && input.coordinatorAttentionMs > 0
 		? Math.floor(input.coordinatorAttentionMs)
 		: Math.max(300_000, Math.floor(abortThresholdMs));
-	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 };
+	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0, lanesAwaitingCapture: 0 };
 
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
 	if (!reloaded.ok) return result;
@@ -3141,6 +3143,7 @@ export async function monitorChildSessionsV1(input: {
 						progressLabel: `async agent task awaiting body capture after turn completed event (attempt ${nextAttempts}/${bodyRetryMax})`,
 						observedAt: nowIso,
 					});
+					result.lanesAwaitingCapture++;
 					continue;
 				}
 				// Retries exhausted: before terminalizing, inject one narrow final-report

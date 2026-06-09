@@ -7008,18 +7008,33 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 							// bounded capture-oriented monitor pass for the affected workflow only.
 							// Use wide termination clocks so this event-poked path captures completed
 							// child output but does not act as a hidden auto-abort loop.
-							try {
-								await monitorChildSessionsV1({
-									rootDir: eventRootDir,
-									workflowId: observed.workflowId,
-									client: eventMonitorClient,
-									now: new Date(),
-									abortThresholdMs: 10 * 60_000,
-									absoluteLaneAgeMs: 60 * 60_000,
-								});
-							} catch {
-								// best-effort; event hook must not crash the plugin
-							}
+							//
+							// Body capture retry: if the first pass finds lanes still awaiting body
+							// capture (turn completed but SDK buffer not yet readable), reschedule up
+							// to 3 times at 5-second intervals — without relying on another user event.
+							const capturedWorkflowId = observed.workflowId;
+							const runMonitorWithBodyCaptureRetry = async (retriesLeft: number): Promise<void> => {
+								try {
+									const monResult = await monitorChildSessionsV1({
+										rootDir: eventRootDir,
+										workflowId: capturedWorkflowId,
+										client: eventMonitorClient,
+										now: new Date(),
+										abortThresholdMs: 10 * 60_000,
+										absoluteLaneAgeMs: 60 * 60_000,
+									});
+									if (monResult.lanesAwaitingCapture > 0 && retriesLeft > 0) {
+										const retryTimer = setTimeout(
+											() => runMonitorWithBodyCaptureRetry(retriesLeft - 1),
+											5_000,
+										);
+										retryTimer.unref?.();
+									}
+								} catch {
+									// best-effort; event hook must not crash the plugin
+								}
+							};
+							await runMonitorWithBodyCaptureRetry(3);
 						}
 						// CRITICAL FIX: The wake consumer MUST run on every finalization-relevant
 						// event, regardless of whether the watchdog was poked or a direct monitor
