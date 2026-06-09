@@ -1841,12 +1841,7 @@ test("abortFlowDeskAgentTaskV1 calls session.abort and writes task_failed + term
 		const abortResult = await abortFlowDeskAgentTaskV1({
 			rootDir: root,
 			workflowId: "workflow-abort-test-1",
-			laneId: "lane-abort-test-1",
 			taskId: "task-abort-test-1",
-			childSessionId,
-			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5",
-			attemptId: "attempt-abort-test-1",
 			reason: "coordinator requested abort",
 			client,
 		});
@@ -1894,15 +1889,19 @@ test("abortFlowDeskAgentTaskV1 returns abort_skipped when client.session.abort i
 			},
 		} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
 
+		// First launch a lane so evidence exists to look up
+		await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-abort-skipped-1", taskId: "task-abort-skipped-1",
+			laneId: "lane-abort-skipped-1", agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5", promptText: "hello",
+			parentSessionId: "parent-skip", rootDir: root, client: clientWithoutAbort,
+			asyncMode: true, _launchTimeoutMs: 5_000, _messagesTimeoutMs: 100,
+		});
+
 		const result = await abortFlowDeskAgentTaskV1({
 			rootDir: root,
 			workflowId: "workflow-abort-skipped-1",
-			laneId: "lane-abort-skipped-1",
 			taskId: "task-abort-skipped-1",
-			childSessionId: "ses-child-no-abort-01",
-			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5",
-			attemptId: "attempt-abort-skipped-1",
 			reason: "test abort with no SDK abort support",
 			client: clientWithoutAbort,
 		});

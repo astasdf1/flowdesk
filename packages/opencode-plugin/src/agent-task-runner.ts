@@ -1537,37 +1537,56 @@ export async function executeFlowDeskAgentTaskV1(
 export async function abortFlowDeskAgentTaskV1(input: {
 	rootDir: string;
 	workflowId: string;
-	laneId: string;
 	taskId: string;
-	childSessionId: string;
-	agentRef: string;
-	providerQualifiedModelId: string;
-	attemptId: string;
 	reason: string;
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	now?: Date;
-}): Promise<{ status: "aborted" | "abort_skipped" | "abort_failed"; redactedReason?: string }> {
+}): Promise<{ status: "aborted" | "abort_skipped" | "abort_failed" | "task_not_found"; redactedReason?: string }> {
 	const now = input.now ?? new Date();
 	const observedAt = now.toISOString();
 	const redactedReason = input.reason.slice(0, 500);
-	const token = createHash("sha256").update(`abort-${input.laneId}-${observedAt}`).digest("hex").slice(0, 12);
+
+	// 1. Reload evidence to find laneId, childSessionId, agentRef, providerQualifiedModelId, attemptId
+	const reload = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
+	if (!reload.ok) return { status: "task_not_found", redactedReason: "evidence reload failed" };
+
+	// Find child-session record for this taskId
+	const getString = (record: Record<string, unknown>, key: string): string | undefined => {
+		const value = record[key];
+		return typeof value === "string" && value.length > 0 ? value : undefined;
+	};
+	const childSessionEntry = reload.entries
+		.filter((e) => e.evidenceClass === "agent_task_child_session")
+		.find((e) => getString(e.record, "task_id") === input.taskId);
+
+	if (childSessionEntry === undefined) return { status: "task_not_found", redactedReason: `no child session found for taskId ${input.taskId}` };
+
+	const laneId = getString(childSessionEntry.record, "lane_id") ?? input.taskId;
+	const childSessionId = getString(childSessionEntry.record, "child_session_id") ?? "";
+	const agentRef = getString(childSessionEntry.record, "agent_ref") ?? "agent-unknown";
+	const providerQualifiedModelId = getString(childSessionEntry.record, "provider_qualified_model_id") ?? "unknown/unknown";
+	// Find attemptId from lane_lifecycle or fall back to generated
+	const lifecycleEntry = reload.entries.find((e) => e.evidenceClass === "lane_lifecycle" && getString(e.record, "lane_id") === laneId);
+	const attemptId = getString(lifecycleEntry?.record ?? {}, "attempt_id") ?? `attempt-abort-${createHash("sha256").update(laneId).digest("hex").slice(0, 8)}`;
+
+	const token = createHash("sha256").update(`abort-${laneId}-${observedAt}`).digest("hex").slice(0, 12);
 
 	let sdkAbortStatus: "aborted" | "abort_skipped" | "abort_failed" = "aborted";
 
-	// 1. Attempt SDK abort — best-effort, must not throw
-	if (typeof input.client.session.abort !== "function") {
+	// 2. Attempt SDK abort — best-effort, must not throw
+	if (childSessionId.length === 0 || typeof input.client.session.abort !== "function") {
 		sdkAbortStatus = "abort_skipped";
 	} else {
 		try {
 			await (input.client.session.abort as (o: unknown) => unknown).call(input.client.session, {
-				sessionID: input.childSessionId,
+				sessionID: childSessionId,
 			});
 		} catch {
 			sdkAbortStatus = "abort_failed";
 		}
 	}
 
-	// 2. Write task_failed evidence (failure_category "unknown" used for coordinator-initiated abort)
+	// 3. Write task_failed evidence
 	const taskFailedEvidenceId = `task-failed-${input.taskId}-abort-${token}`;
 	writeSessionEvidence({
 		rootDir: input.rootDir,
@@ -1576,10 +1595,10 @@ export async function abortFlowDeskAgentTaskV1(input: {
 		record: {
 			schema_version: "flowdesk.task_failed.v1",
 			workflow_id: input.workflowId,
-			lane_id: input.laneId,
+			lane_id: laneId,
 			task_id: input.taskId,
-			agent_ref: input.agentRef,
-			provider_qualified_model_id: input.providerQualifiedModelId,
+			agent_ref: agentRef,
+			provider_qualified_model_id: providerQualifiedModelId,
 			failure_category: "unknown",
 			redacted_reason: `coordinator_abort: ${redactedReason}`,
 			created_at: observedAt,
@@ -1587,24 +1606,23 @@ export async function abortFlowDeskAgentTaskV1(input: {
 		} satisfies FlowDeskTaskFailedV1,
 	});
 
-	// 3. Write terminal lane_lifecycle evidence (invocation_failed is the closest
-	//    supported state for a coordinator-initiated abort before completion)
+	// 4. Write terminal lane_lifecycle evidence
 	writeAgentTaskTerminalLifecycle({
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,
-		laneId: input.laneId,
-		attemptId: input.attemptId,
-		parentSessionRef: `ses-${input.childSessionId}`,
-		childSessionRef: `ses-${input.childSessionId}`,
-		agentRef: input.agentRef,
-		providerQualifiedModelId: input.providerQualifiedModelId,
+		laneId,
+		attemptId,
+		parentSessionRef: childSessionId.length > 0 ? `ses-${childSessionId}` : `ses-unattached-abort-${token}`,
+		childSessionRef: childSessionId.length > 0 ? `ses-${childSessionId}` : undefined,
+		agentRef,
+		providerQualifiedModelId,
 		state: "invocation_failed",
-		evidenceId: `lifecycle-abort-${input.laneId}-${token}`,
+		evidenceId: `lifecycle-abort-${laneId}-${token}`,
 		createdAt: observedAt,
 		updatedAt: observedAt,
 	});
 
-	// 4. Refresh sidebar cache
+	// 5. Refresh sidebar cache
 	refreshFlowDeskCompletionUiCachesV1({
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,

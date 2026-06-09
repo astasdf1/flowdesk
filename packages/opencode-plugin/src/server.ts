@@ -1054,70 +1054,30 @@ export function createFlowDeskFds1SchemaConversionProbeTools(): Record<
 export function createFlowDeskTaskAbortTool(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	durableStateRootDir: string | undefined,
-	options: {
-		agentTaskRun?: {
-			agentRef?: string;
-			providerQualifiedModelId?: string;
-		};
-	},
 ): FlowDeskOpenCodeTool {
 	return tool({
 		description:
-			"Abort a running FlowDesk agent task lane by calling OpenCode SDK session.abort and recording task_failed + terminal lifecycle evidence. Use when a lane is stalled, stuck, or needs to be cancelled. Requires laneId, workflowId, childSessionId, and reason.",
+			"Abort a stalled or stuck FlowDesk agent task. Looks up the lane automatically from workflowId + taskId, calls OpenCode SDK session.abort, and writes task_failed + terminal lifecycle evidence. Use when a lane is stalled, taking too long, or needs to be cancelled.",
 		args: {
-			workflowId: tool.schema.string().describe("FlowDesk workflow ID."),
-			laneId: tool.schema.string().describe("FlowDesk lane ID."),
-			taskId: tool.schema.string().describe("FlowDesk task ID."),
-			childSessionId: tool.schema.string().describe("OpenCode SDK child session ID."),
-			agentRef: tool.schema
-				.string()
-				.optional()
-				.describe('Agent name (e.g., "reviewer-claude-opus")'),
-			providerQualifiedModelId: tool.schema
-				.string()
-				.optional()
-				.describe('Concrete model ID (e.g., "anthropic/claude-opus-4-7")'),
-			attemptId: tool.schema
-				.string()
-				.optional()
-				.describe("FlowDesk attempt ID (default generated)."),
-			reason: tool.schema.string().describe("Reason for aborting the task."),
+			workflowId: tool.schema.string().describe("FlowDesk workflow ID containing the task (e.g. workflow-xxx)."),
+			taskId: tool.schema.string().describe("FlowDesk task ID to abort (e.g. task-xxx)."),
+			reason: tool.schema.string().describe("Reason for aborting (e.g. 'stalled after 1 hour with no response')."),
 		},
 		async execute(request) {
 			const record: Record<string, unknown> = isRecord(request) ? request : {};
-			const workflowId = String(record.workflowId);
-			const laneId = String(record.laneId);
-			const taskId = String(record.taskId);
-			const childSessionId = String(record.childSessionId);
-			const reason = String(record.reason);
-
-			const agentRef =
-				(typeof record.agentRef === "string" && record.agentRef) ||
-				options.agentTaskRun?.agentRef ||
-				"agent-unknown";
-			const providerQualifiedModelId =
-				(typeof record.providerQualifiedModelId === "string" &&
-					record.providerQualifiedModelId) ||
-				options.agentTaskRun?.providerQualifiedModelId ||
-				"openai/gpt-5.5";
-			const attemptId =
-				(typeof record.attemptId === "string" && record.attemptId) ||
-				`attempt-${randomUUID()}`;
-
+			const workflowId = typeof record.workflowId === "string" ? record.workflowId : "";
+			const taskId = typeof record.taskId === "string" ? record.taskId : "";
+			const reason = typeof record.reason === "string" ? record.reason : "coordinator requested abort";
+			if (!workflowId || !taskId) return JSON.stringify({ status: "abort_skipped", redactedReason: "workflowId and taskId are required" });
 			if (!durableStateRootDir) return JSON.stringify({ status: "abort_skipped", redactedReason: "durable state root not configured" });
 			const result = await abortFlowDeskAgentTaskV1({
 				rootDir: durableStateRootDir,
 				workflowId,
-				laneId,
 				taskId,
-				childSessionId,
-				agentRef,
-				providerQualifiedModelId,
-				attemptId,
 				reason,
 				client,
 			});
-			return JSON.stringify(result);
+			return JSON.stringify({ ...result, workflowId, taskId });
 		},
 	});
 }
@@ -4849,7 +4809,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 			defaultNudgeQuietPeriodMs: 10_000,
 			compactArgs: true,
 		}),
-		...(client !== undefined ? { [flowdeskTaskAbortToolName]: createFlowDeskTaskAbortTool(client, rootDir, { agentTaskRun: isRecord(options?.[flowdeskAgentTaskRunOption]) ? (options[flowdeskAgentTaskRunOption] as Record<string, unknown>) as never : undefined }) } : {}),
+		...(client !== undefined ? { [flowdeskTaskAbortToolName]: createFlowDeskTaskAbortTool(client, rootDir) } : {}),
 	};
 }
 
