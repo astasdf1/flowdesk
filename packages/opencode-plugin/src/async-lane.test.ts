@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, isFlowDeskHeavyFirstTokenModelV1 } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, abortFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, isFlowDeskHeavyFirstTokenModelV1 } from "./agent-task-runner.js";
 import { flowDeskTextLooksLikeRefusalOrErrorV1 } from "./agent-task-output.js";
 import { deriveFlowDeskLaneToolStateV1, monitorChildSessionsV1 } from "./stall-recovery.js";
 import { applyFlowDeskSessionEvidenceWriteIntentsV1, prepareFlowDeskSessionEvidenceWriteIntentV1, reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
@@ -1807,6 +1807,112 @@ test("monitorChildSessions refreshes UI cache for terminal lanes without task_re
 		assert.equal(rows[0]?.laneId, "lane-terminal-failed-1");
 		assert.equal(rows[0]?.state, "invocation_failed", "row should be cached as terminal (invocation_failed)");
 		assert.equal(rows[0]?.classification, "terminal");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("abortFlowDeskAgentTaskV1 calls session.abort and writes task_failed + terminal lifecycle evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-abort-task-"));
+	try {
+		let abortCalls = 0;
+		const client = makeClient({
+			abort: async (_o: unknown) => { abortCalls += 1; },
+		});
+		// Launch async lane first to populate child session evidence
+		const launched = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-abort-test-1",
+			taskId: "task-abort-test-1",
+			laneId: "lane-abort-test-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "hello",
+			parentSessionId: "parent-abort-test",
+			rootDir: root,
+			client,
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		assert.equal(launched.status, "task_launched");
+		const childSessionId = launched.status === "task_launched" ? launched.childSessionId : "";
+
+		// Now abort
+		const abortResult = await abortFlowDeskAgentTaskV1({
+			rootDir: root,
+			workflowId: "workflow-abort-test-1",
+			laneId: "lane-abort-test-1",
+			taskId: "task-abort-test-1",
+			childSessionId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			attemptId: "attempt-abort-test-1",
+			reason: "coordinator requested abort",
+			client,
+		});
+
+		assert.equal(abortResult.status, "aborted");
+		assert.equal(abortCalls, 1, "session.abort must have been called once");
+
+		// Verify task_failed evidence written
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-abort-test-1" });
+		assert.ok(reloaded.ok);
+		const failed = reloaded.entries.find((e) => e.evidenceClass === "task_failed");
+		assert.ok(failed, "task_failed evidence must exist");
+		// failure_category is "unknown" (coordinator-initiated abort maps to unknown per schema)
+		assert.equal((failed.record as Record<string, unknown>).failure_category, "unknown");
+		assert.ok(String((failed.record as Record<string, unknown>).redacted_reason).includes("coordinator_abort"));
+
+		// Verify lane_lifecycle evidence written (invocation_failed is the mapped state)
+		const lifecycle = reloaded.entries.find(
+			(e) => e.evidenceClass === "lane_lifecycle" &&
+			(e.record as Record<string, unknown>).state === "invocation_failed",
+		);
+		assert.ok(lifecycle, "terminal lane_lifecycle evidence must exist");
+
+		// Verify sidebar cache updated
+		const sidebarRaw = readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8");
+		const sidebar = JSON.parse(sidebarRaw) as Record<string, unknown>;
+		const rows = (sidebar.rows as Array<Record<string, unknown>>);
+		const row = rows.find((r) => r.laneId === "lane-abort-test-1");
+		assert.ok(row, "sidebar row must exist");
+		assert.equal(row?.classification, "terminal");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("abortFlowDeskAgentTaskV1 returns abort_skipped when client.session.abort is missing", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-abort-skipped-"));
+	try {
+		// Client without abort method
+		const clientWithoutAbort = {
+			session: {
+				create: async () => ({ id: "ses-no-abort-01" }),
+				prompt: async () => ({}),
+				messages: async () => [],
+			},
+		} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
+
+		const result = await abortFlowDeskAgentTaskV1({
+			rootDir: root,
+			workflowId: "workflow-abort-skipped-1",
+			laneId: "lane-abort-skipped-1",
+			taskId: "task-abort-skipped-1",
+			childSessionId: "ses-child-no-abort-01",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			attemptId: "attempt-abort-skipped-1",
+			reason: "test abort with no SDK abort support",
+			client: clientWithoutAbort,
+		});
+
+		assert.equal(result.status, "abort_skipped");
+		// Evidence should still be written even when SDK abort is unavailable
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-abort-skipped-1" });
+		assert.ok(reloaded.ok);
+		const failed = reloaded.entries.find((e) => e.evidenceClass === "task_failed");
+		assert.ok(failed, "task_failed evidence must be written even on abort_skipped");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

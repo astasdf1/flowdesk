@@ -112,7 +112,11 @@ import {
 	redactedRuntimeReviewerExecutionBlocked,
 	runtimeReviewerExecutionExpectationsFromValue,
 } from "./runtime-reviewer-execution-bridge.js";
-import { executeFlowDeskAgentTaskV1, type FlowDeskAgentTaskResultV1 } from "./agent-task-runner.js";
+import {
+	abortFlowDeskAgentTaskV1,
+	executeFlowDeskAgentTaskV1,
+	type FlowDeskAgentTaskResultV1,
+} from "./agent-task-runner.js";
 import {
 	executeFlowDeskAutoContinuePreviewToolV1,
 	type FlowDeskAutoContinuePreviewToolConfigV1,
@@ -253,6 +257,7 @@ export const flowdeskWriteToolName = "flowdesk_write" as const;
 export const flowdeskAgentTaskRunOption = "agentTaskRun" as const;
 export const flowdeskAgentTaskRunToolName = "flowdesk_agent_task_run" as const;
 export const flowdeskTaskToolName = "flowdesk_task" as const;
+export const flowdeskTaskAbortToolName = "flowdesk_task_abort" as const;
 export const flowdeskWorkflowSynthesisPreviewToolName = "flowdesk_workflow_synthesis_preview" as const;
 export const flowdeskAutoContinuePreviewToolName = "flowdesk_auto_continue_preview" as const;
 export const flowdeskAutoContinueExecutionOption = "autoContinueExecution" as const;
@@ -1045,11 +1050,84 @@ export function createFlowDeskFds1SchemaConversionProbeTools(): Record<
 	);
 }
 
+
+export function createFlowDeskTaskAbortTool(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	durableStateRootDir: string | undefined,
+	options: {
+		agentTaskRun?: {
+			agentRef?: string;
+			providerQualifiedModelId?: string;
+		};
+	},
+): FlowDeskOpenCodeTool {
+	return tool({
+		description:
+			"Abort a running FlowDesk agent task lane by calling OpenCode SDK session.abort and recording task_failed + terminal lifecycle evidence. Use when a lane is stalled, stuck, or needs to be cancelled. Requires laneId, workflowId, childSessionId, and reason.",
+		args: {
+			workflowId: tool.schema.string().describe("FlowDesk workflow ID."),
+			laneId: tool.schema.string().describe("FlowDesk lane ID."),
+			taskId: tool.schema.string().describe("FlowDesk task ID."),
+			childSessionId: tool.schema.string().describe("OpenCode SDK child session ID."),
+			agentRef: tool.schema
+				.string()
+				.optional()
+				.describe('Agent name (e.g., "reviewer-claude-opus")'),
+			providerQualifiedModelId: tool.schema
+				.string()
+				.optional()
+				.describe('Concrete model ID (e.g., "anthropic/claude-opus-4-7")'),
+			attemptId: tool.schema
+				.string()
+				.optional()
+				.describe("FlowDesk attempt ID (default generated)."),
+			reason: tool.schema.string().describe("Reason for aborting the task."),
+		},
+		async execute(request) {
+			const record: Record<string, unknown> = isRecord(request) ? request : {};
+			const workflowId = String(record.workflowId);
+			const laneId = String(record.laneId);
+			const taskId = String(record.taskId);
+			const childSessionId = String(record.childSessionId);
+			const reason = String(record.reason);
+
+			const agentRef =
+				(typeof record.agentRef === "string" && record.agentRef) ||
+				options.agentTaskRun?.agentRef ||
+				"agent-unknown";
+			const providerQualifiedModelId =
+				(typeof record.providerQualifiedModelId === "string" &&
+					record.providerQualifiedModelId) ||
+				options.agentTaskRun?.providerQualifiedModelId ||
+				"openai/gpt-5.5";
+			const attemptId =
+				(typeof record.attemptId === "string" && record.attemptId) ||
+				`attempt-${randomUUID()}`;
+
+			if (!durableStateRootDir) return JSON.stringify({ status: "abort_skipped", redactedReason: "durable state root not configured" });
+			const result = await abortFlowDeskAgentTaskV1({
+				rootDir: durableStateRootDir,
+				workflowId,
+				laneId,
+				taskId,
+				childSessionId,
+				agentRef,
+				providerQualifiedModelId,
+				attemptId,
+				reason,
+				client,
+			});
+			return JSON.stringify(result);
+		},
+	});
+}
+
 export function createFlowDeskLocalNonDispatchAdapterTools(
 	now = new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
 	managedDispatchRunRoute: FlowDeskManagedDispatchRunRouteOptionsV1 = {},
 ): Record<string, FlowDeskOpenCodeTool> {
+
 	type FlowDeskOpenCodeToolEntry = [string, FlowDeskOpenCodeTool];
 	const entries: FlowDeskOpenCodeToolEntry[] = FLOWDESK_PRE_SPIKE_PLUGIN_TOOL_STUBS.flatMap((stub): FlowDeskOpenCodeToolEntry[] => {
 			const artifact = getRelease1SchemaArtifact(stub.requestSchemaId);
@@ -4771,6 +4849,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 			defaultNudgeQuietPeriodMs: 10_000,
 			compactArgs: true,
 		}),
+		...(client !== undefined ? { [flowdeskTaskAbortToolName]: createFlowDeskTaskAbortTool(client, rootDir, { agentTaskRun: isRecord(options?.[flowdeskAgentTaskRunOption]) ? (options[flowdeskAgentTaskRunOption] as Record<string, unknown>) as never : undefined }) } : {}),
 	};
 }
 

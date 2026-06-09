@@ -1524,3 +1524,94 @@ export async function executeFlowDeskAgentTaskV1(
 		taskResultEvidenceId,
 	};
 }
+
+/**
+ * Abort a running agent task lane by calling the OpenCode SDK session.abort and
+ * writing terminal task_failed + lane_lifecycle(aborted) evidence.
+ *
+ * Returns:
+ *   "aborted"      — SDK abort was attempted and terminal evidence was written.
+ *   "abort_skipped" — client.session.abort is unavailable; evidence still written.
+ *   "abort_failed"  — unexpected error; evidence still written where possible.
+ */
+export async function abortFlowDeskAgentTaskV1(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	childSessionId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	attemptId: string;
+	reason: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	now?: Date;
+}): Promise<{ status: "aborted" | "abort_skipped" | "abort_failed"; redactedReason?: string }> {
+	const now = input.now ?? new Date();
+	const observedAt = now.toISOString();
+	const redactedReason = input.reason.slice(0, 500);
+	const token = createHash("sha256").update(`abort-${input.laneId}-${observedAt}`).digest("hex").slice(0, 12);
+
+	let sdkAbortStatus: "aborted" | "abort_skipped" | "abort_failed" = "aborted";
+
+	// 1. Attempt SDK abort — best-effort, must not throw
+	if (typeof input.client.session.abort !== "function") {
+		sdkAbortStatus = "abort_skipped";
+	} else {
+		try {
+			await (input.client.session.abort as (o: unknown) => unknown).call(input.client.session, {
+				sessionID: input.childSessionId,
+			});
+		} catch {
+			sdkAbortStatus = "abort_failed";
+		}
+	}
+
+	// 2. Write task_failed evidence (failure_category "unknown" used for coordinator-initiated abort)
+	const taskFailedEvidenceId = `task-failed-${input.taskId}-abort-${token}`;
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: taskFailedEvidenceId,
+		record: {
+			schema_version: "flowdesk.task_failed.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: input.taskId,
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			failure_category: "unknown",
+			redacted_reason: `coordinator_abort: ${redactedReason}`,
+			created_at: observedAt,
+			dispatch_authority_enabled: false,
+		} satisfies FlowDeskTaskFailedV1,
+	});
+
+	// 3. Write terminal lane_lifecycle evidence (invocation_failed is the closest
+	//    supported state for a coordinator-initiated abort before completion)
+	writeAgentTaskTerminalLifecycle({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		attemptId: input.attemptId,
+		parentSessionRef: `ses-${input.childSessionId}`,
+		childSessionRef: `ses-${input.childSessionId}`,
+		agentRef: input.agentRef,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		state: "invocation_failed",
+		evidenceId: `lifecycle-abort-${input.laneId}-${token}`,
+		createdAt: observedAt,
+		updatedAt: observedAt,
+	});
+
+	// 4. Refresh sidebar cache
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		observedAt,
+	});
+
+	return sdkAbortStatus === "aborted"
+		? { status: "aborted" }
+		: { status: sdkAbortStatus, redactedReason };
+}
