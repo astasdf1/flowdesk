@@ -512,3 +512,222 @@ test("completion wake main-session consumer defaults when both row model and con
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+// Wake model precedence chain (live session > parent-recorded > config > none):
+//   - When session.messages() exposes a current model, it wins over both the
+//     recorded wake row model and any configured wake model.
+//   - When the live session model is unavailable and the row carries
+//     `parentWakeProviderQualifiedModelId`, the row model wins over any
+//     configured wake model — even when the configured model is valid.
+//   - When both live and row models are missing/unparseable, fall back to the
+//     `config.providerQualifiedModelId` resolved by
+//     `completionWakeMainSessionConfigFromOptions()` (which defaults to the
+//     `FLOWDESK_MAIN_COORDINATOR_MODEL` set by the bootstrap installer).
+//   - When all candidates are missing/unparseable, omit the `model` body field so
+//     OpenCode picks its own routing default.
+test("completion wake precedence: row model wins over a valid config model", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-precedence-row-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-precedence-row",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-precedence-row",
+				consumptionKey: "ses-ses_parent123:workflow-precedence-row:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				// Row carries the parent's recorded coordinator model.
+				parentWakeProviderQualifiedModelId: "openai/gpt-5.4-mini-fast",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			// Config model is valid but DIFFERENT — row model must still win.
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(prompts.length, 1);
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "openai", modelID: "gpt-5.4-mini-fast" });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake precedence: live session messages model wins over row and config models", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-precedence-live-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-precedence-live",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-precedence-live",
+				consumptionKey: "ses-ses_parent123:workflow-precedence-live:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				parentWakeProviderQualifiedModelId: "anthropic/claude-opus-4-20250514",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const messageCalls: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: {
+				messages: async (options: unknown) => {
+					messageCalls.push(options);
+					return { data: [
+						{ info: { model: { providerID: "openai", modelID: "older" } } },
+						{ info: { model: { providerID: "google", modelID: "gemini-2.5-pro" } } },
+					] };
+				},
+				promptAsync: async (options: unknown) => { prompts.push(options); return {}; },
+			} },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(messageCalls.length, 1);
+		assert.equal((messageCalls[0] as { path: { id: string } }).path.id, "ses_parent123");
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "google", modelID: "gemini-2.5-pro" });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake precedence: row model used when session messages throws", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-precedence-live-throws-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-precedence-live-throws",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-precedence-live-throws",
+				consumptionKey: "ses-ses_parent123:workflow-precedence-live-throws:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				parentWakeProviderQualifiedModelId: "anthropic/claude-opus-4-20250514",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: {
+				messages: async () => { throw new Error("messages unavailable"); },
+				promptAsync: async (options: unknown) => { prompts.push(options); return {}; },
+			} },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "anthropic", modelID: "claude-opus-4-20250514" });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake precedence: config model used when row recorded model is absent", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-precedence-config-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-precedence-config",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-precedence-config",
+				consumptionKey: "ses-ses_parent123:workflow-precedence-config:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+				// Intentionally no parentWakeProviderQualifiedModelId field.
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			// Config model is the bootstrap-installer FLOWDESK_MAIN_COORDINATOR_MODEL default.
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.4-mini-fast" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(prompts.length, 1);
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "openai", modelID: "gpt-5.4-mini-fast" });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake precedence: config model used when session messages are empty and row model is absent", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-precedence-live-empty-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-05T00:00:00.000Z",
+			expires_at: "2026-06-05T00:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-precedence-live-empty",
+				parentSessionRef: "ses-ses_parent123",
+				completionKind: "task_result",
+				readyAt: "2026-06-05T00:00:30.000Z",
+				dedupeKey: "ses-ses_parent123\u0000workflow-precedence-live-empty",
+				consumptionKey: "ses-ses_parent123:workflow-precedence-live-empty:2026-06-05T00:00:30.000Z:1:0",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "FlowDesk task completed",
+			}],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: {
+				messages: async () => [],
+				promptAsync: async (options: unknown) => { prompts.push(options); return {}; },
+			} },
+			now: new Date("2026-06-05T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		const body = (prompts[0] as { body: Record<string, unknown> }).body;
+		assert.deepEqual(body.model, { providerID: "openai", modelID: "gpt-5.5" });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

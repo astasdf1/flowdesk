@@ -166,6 +166,9 @@ export const FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_BLOCKER_LABELS = [
 	"sdk_client_unavailable",
 	"default_release_enablement_missing",
 	"promotion_uncertainty_present",
+	"release2_gate_evidence_missing",
+	"release2_gate_evidence_invalid",
+	"release2_gate_not_ready",
 ] as const;
 export type FlowDeskDefaultManagedDispatchPromotionBlockerLabelV1 =
 	(typeof FLOWDESK_DEFAULT_MANAGED_DISPATCH_PROMOTION_BLOCKER_LABELS)[number];
@@ -274,6 +277,20 @@ export interface FlowDeskDefaultManagedDispatchPromotionReadinessInputV1 {
 	sdkClientRef?: string;
 	defaultReleaseEnablementRef?: string;
 	allowUncertainty?: boolean;
+	/**
+	 * Opaque durable evidence ref pointing at a persisted Release 2 managed
+	 * dispatch gate promotion readiness record. When provided without a
+	 * corresponding `release2GateReadinessResult`, the promotion readiness
+	 * evaluation reports `release2_gate_evidence_missing`.
+	 */
+	release2GateReadinessRef?: string;
+	/**
+	 * In-memory Release 2 managed dispatch gate promotion readiness result. The
+	 * promotion readiness evaluator validates this record and requires
+	 * `release2_managed_dispatch_gate_ready === true` before becoming a default
+	 * dispatch candidate.
+	 */
+	release2GateReadinessResult?: FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1;
 }
 
 export interface FlowDeskDefaultManagedDispatchPromotionReadinessV1
@@ -296,6 +313,13 @@ export interface FlowDeskDefaultManagedDispatchPromotionReadinessV1
 	runtimeExecution: false;
 	safe_next_actions: string[];
 	release_enablement_ref?: string;
+	/**
+	 * True when an injected Release 2 managed dispatch gate readiness result
+	 * passed validation and reported `release2_managed_dispatch_gate_ready`.
+	 * Diagnostic only; does not enable dispatch authority.
+	 */
+	release2_managed_dispatch_gate_ready: boolean;
+	release2_gate_readiness_ref?: string;
 }
 
 export interface FlowDeskDefaultManagedDispatchAuthorizationInputV1 {
@@ -654,6 +678,35 @@ export function evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
 	if (!defaultReleaseResult.ok || input.defaultReleaseEnablementRef === undefined)
 		blockedLabels.push("default_release_enablement_missing");
 
+	const release2GateReadinessRefResult = optionalOpaqueRef(
+		input.release2GateReadinessRef,
+		"release2_gate_readiness_ref",
+	);
+	errors.push(...release2GateReadinessRefResult.errors);
+	let release2GateReady = false;
+	if (input.release2GateReadinessResult !== undefined) {
+		const release2Validation =
+			validateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1(
+				input.release2GateReadinessResult,
+				production.workflow_id,
+			);
+		if (!release2Validation.ok) {
+			errors.push(...release2Validation.errors);
+			blockedLabels.push("release2_gate_evidence_invalid");
+		} else if (
+			input.release2GateReadinessResult.release2_managed_dispatch_gate_ready !==
+			true
+		) {
+			blockedLabels.push("release2_gate_not_ready");
+		} else {
+			release2GateReady = true;
+		}
+	} else if (input.release2GateReadinessRef !== undefined) {
+		blockedLabels.push("release2_gate_evidence_missing");
+	} else {
+		blockedLabels.push("release2_gate_evidence_missing");
+	}
+
 	const uniqueBlockers = unique(blockedLabels);
 	const candidate = errors.length === 0 && uniqueBlockers.length === 0;
 	const state: FlowDeskDefaultManagedDispatchPromotionStateV1 = candidate
@@ -668,6 +721,8 @@ export function evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
 			input.adapterProfileRef,
 			input.sdkClientRef,
 			input.defaultReleaseEnablementRef,
+			input.release2GateReadinessRef,
+			...(input.release2GateReadinessResult?.evidence_refs ?? []),
 		].filter((ref): ref is string => typeof ref === "string"),
 	);
 	return {
@@ -692,9 +747,14 @@ export function evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
 		safe_next_actions: candidate
 			? ["/flowdesk-status"]
 			: ["/flowdesk-doctor", "/flowdesk-status"],
+		release2_managed_dispatch_gate_ready: release2GateReady,
 		...(input.defaultReleaseEnablementRef === undefined
 			? {}
 			: { release_enablement_ref: input.defaultReleaseEnablementRef }),
+		...(input.release2GateReadinessRef === undefined ||
+		!release2GateReadinessRefResult.ok
+			? {}
+			: { release2_gate_readiness_ref: input.release2GateReadinessRef }),
 	};
 }
 
@@ -727,6 +787,8 @@ export function validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
 		"runtimeExecution",
 		"safe_next_actions",
 		"release_enablement_ref",
+		"release2_managed_dispatch_gate_ready",
+		"release2_gate_readiness_ref",
 	]);
 	for (const key of Object.keys(record))
 		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
@@ -773,6 +835,7 @@ export function validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
 		"adapter_available",
 		"sdk_client_available",
 		"default_dispatch_candidate",
+		"release2_managed_dispatch_gate_ready",
 	] as const)
 		if (typeof record[key] !== "boolean") errors.push(`${key} must be boolean`);
 	errors.push(
@@ -792,6 +855,13 @@ export function validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(
 		errors.push(
 			...validateOpaqueRef(record.release_enablement_ref, "release_enablement_ref")
 				.errors,
+		);
+	if (record.release2_gate_readiness_ref !== undefined)
+		errors.push(
+			...validateOpaqueRef(
+				record.release2_gate_readiness_ref,
+				"release2_gate_readiness_ref",
+			).errors,
 		);
 	errors.push(
 		...validateNoForbiddenRawPayloads(record, "default_managed_dispatch_promotion_readiness")

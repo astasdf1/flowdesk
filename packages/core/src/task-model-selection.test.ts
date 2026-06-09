@@ -66,3 +66,26 @@ test("task model selection represents non-dispatchable Gemini as blocked without
 	assert.equal(invalid.ok, false);
 	assert.match(invalid.errors.join("|"), /non-dispatchable Gemini/);
 });
+
+test("task model selection accepts provider prefix aliases for canonical provider families", () => {
+	const anthropic = validateFlowDeskTaskModelSelectionV1(selection({
+		provider_family: "claude",
+		provider_qualified_model_id: "anthropic/claude-haiku-4-5",
+	}));
+	assert.equal(anthropic.ok, true, anthropic.errors.join("; "));
+
+	const google = validateFlowDeskTaskModelSelectionV1(selection({
+		provider_family: "gemini",
+		provider_qualified_model_id: "google/gemini-2.5-pro",
+	}));
+	assert.equal(google.ok, true, google.errors.join("; "));
+});
+
+test("task model selection rejects non-equivalent provider family prefixes", () => {
+	const invalid = validateFlowDeskTaskModelSelectionV1(selection({
+		provider_family: "openai",
+		provider_qualified_model_id: "anthropic/claude-haiku-4-5",
+	}));
+	assert.equal(invalid.ok, false);
+	assert.match(invalid.errors.join("|"), /provider_qualified_model_id must match provider_family/);
+});

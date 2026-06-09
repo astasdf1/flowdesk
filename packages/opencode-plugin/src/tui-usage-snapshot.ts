@@ -509,6 +509,30 @@ function bucketQuotaHealth(
 	return remainingFraction - timeRemainingFraction;
 }
 
+/**
+ * Returns true when a bucket's resetTime has clearly passed (more than 60s ago). Used to disqualify
+ * an expired bucket from winning bucket selection even if a stale carry-forward leaks one into the
+ * sidebar cache. A small grace window (-60s) keeps near-edge clock skew from flapping.
+ *
+ * Note: prefer the absolute `resetTime` over the derived `secondsUntilReset`. The sidebar loader
+ * clamps `secondsUntilReset` to a non-negative integer (Math.max(0, ...)), so an already-expired
+ * bucket reports 0 there and would otherwise be classified as "still fresh" by this helper.
+ */
+function isBucketExpiredByResetTime(
+	bucket: FlowDeskTuiUsageProviderBucketV1 | undefined,
+	nowMs: number,
+): boolean {
+	if (bucket === undefined) return false;
+	if (bucket.resetTime !== undefined) {
+		const parsed = Date.parse(bucket.resetTime);
+		if (Number.isFinite(parsed)) return parsed - nowMs < -60_000;
+	}
+	if (typeof bucket.secondsUntilReset === "number" && Number.isFinite(bucket.secondsUntilReset)) {
+		return bucket.secondsUntilReset * 1000 < -60_000;
+	}
+	return false;
+}
+
 function bucketTriggersDisplayPriority(
 	bucket: FlowDeskTuiUsageProviderBucketV1 | undefined,
 	thresholdPercent: number,
@@ -523,10 +547,24 @@ function lowerBucket(
 	weekly: FlowDeskTuiUsageProviderBucketV1 | undefined,
 	nowMs: number,
 ): { bucket: FlowDeskTuiUsageProviderBucketV1 | undefined; label: string } {
+	// Bug A/C defense-in-depth: if a stale carry-forward leaks an expired bucket into the sidebar
+	// cache, drop it from selection here. The writer-side filter (Bug A) is the primary defense;
+	// this guarantees the reader never displays an obviously-expired bucket even if the cache file
+	// is stale on disk.
+	const fiveHourExpired = isBucketExpiredByResetTime(fiveHour, nowMs);
+	const weeklyExpired = isBucketExpiredByResetTime(weekly, nowMs);
+	if (fiveHourExpired && !weeklyExpired) {
+		return { bucket: weekly, label: "1w" };
+	}
+	if (weeklyExpired && !fiveHourExpired) {
+		return { bucket: fiveHour, label: "5h" };
+	}
 	const fiveHourPct = fiveHour?.remainingPercent ?? null;
 	const weeklyPct = weekly?.remainingPercent ?? null;
+	// Bug D fix: weekly priority threshold matched to 5h (20%). A low weekly bucket should preempt a
+	// healthier 5h bucket even when the 5h itself is above 20%, so users see the constraining window.
 	const fiveHourPriority = bucketTriggersDisplayPriority(fiveHour, 20);
-	const weeklyPriority = bucketTriggersDisplayPriority(weekly, 5);
+	const weeklyPriority = bucketTriggersDisplayPriority(weekly, 20);
 	if (fiveHourPriority && weeklyPriority && fiveHourPct !== null && weeklyPct !== null) {
 		return weeklyPct < fiveHourPct ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
 	}
@@ -534,6 +572,23 @@ function lowerBucket(
 	if (weeklyPriority) return { bucket: weekly, label: "1w" };
 	const fiveHourHealth = bucketQuotaHealth(fiveHour, "5h", nowMs);
 	const weeklyHealth = bucketQuotaHealth(weekly, "1w", nowMs);
+	// Bug C fix: bucketQuotaHealth returns NEGATIVE_INFINITY when a bucket is stale, expired, or its
+	// resetTime falls outside the expected window (e.g. clock skew, weekly reset slightly >7d out).
+	// The previous `weeklyHealth < fiveHourHealth` comparison treated NEGATIVE_INFINITY as "worse
+	// health" and returned the sentinel bucket — that incorrectly let an expired 5h bucket beat a
+	// healthy weekly. When only one side is the NEGATIVE_INFINITY sentinel, fall through to a plain
+	// remainingPercent comparison so the user-visible bucket is the lower-remaining one rather than
+	// the invalid/expired one.
+	const fiveHourSentinel = fiveHourHealth === Number.NEGATIVE_INFINITY;
+	const weeklySentinel = weeklyHealth === Number.NEGATIVE_INFINITY;
+	if (fiveHourSentinel !== weeklySentinel) {
+		if (fiveHourPct === null && weeklyPct === null) {
+			return fiveHourSentinel ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
+		}
+		if (fiveHourPct === null) return { bucket: weekly, label: "1w" };
+		if (weeklyPct === null) return { bucket: fiveHour, label: "5h" };
+		return weeklyPct <= fiveHourPct ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
+	}
 	if (fiveHourHealth !== undefined && weeklyHealth !== undefined && fiveHourHealth !== weeklyHealth) {
 		return weeklyHealth < fiveHourHealth ? { bucket: weekly, label: "1w" } : { bucket: fiveHour, label: "5h" };
 	}

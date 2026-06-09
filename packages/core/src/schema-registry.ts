@@ -250,6 +250,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.block_selection_criteria.v1", "block-selection-criteria", "FlowDeskBlockSelectionCriteriaV1", "later_release"),
   artifactEntry("flowdesk.model_selection_result.v1", "model-selection-result", "FlowDeskModelSelectionResultV1", "later_release"),
   artifactEntry("flowdesk.ledger_retention_policy.v1", "ledger-retention-policy", "FlowDeskLedgerRetentionPolicyV1", "later_release"),
+  artifactEntry("flowdesk.compaction_evidence.v1", "compaction-evidence", "FlowDeskCompactionEvidenceV1", "later_release"),
   artifactEntry("flowdesk.routing_influence_policy.v1", "routing-influence-policy", "FlowDeskRoutingInfluencePolicyV1", "later_release"),
   artifactEntry("flowdesk.routing_advisory_evaluation.v1", "routing-advisory-evaluation", "FlowDeskRoutingAdvisoryEvaluationV1", "later_release"),
   artifactEntry("flowdesk.ledger_compaction_snapshot.v1", "ledger-compaction-snapshot", "FlowDeskLedgerCompactionSnapshotV1", "later_release"),

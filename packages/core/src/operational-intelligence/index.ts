@@ -293,8 +293,11 @@ export {
 
 // scoring-engine (P7-S14: minimal OI scoring engine)
 export {
+	type FlowDeskScoringEngineContextV1,
 	type FlowDeskScoringEngineInputV1,
 	type FlowDeskScoringEngineResultV1,
+	type FlowDeskUsageScoreResultV1,
+	computeUsageScore,
 	scoreWorkflowProposal,
 } from "./scoring-engine.js";
 

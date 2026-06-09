@@ -2063,7 +2063,8 @@ function writeTaskResult(rootDir: string, record: FlowDeskTaskResultV1, evidence
 
 /** Helper to set up a rootDir with aborted lane lifecycle + guard sign-off + reviewer_lane_context. */
 function withTempRoot(prefix: string): string {
-	return mkdtempSync(join(tmpdir(), prefix));
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	return root;
 }
 
 /**

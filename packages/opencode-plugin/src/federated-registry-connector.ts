@@ -3,6 +3,7 @@ import {
 	createFlowDeskGitHubOAuthArchitectureV1,
 	createFlowDeskFederatedPublicationResultV1,
 	evaluateFlowDeskFederatedRegistryConnectorGateV1,
+	type FlowDeskEvidenceRefResolverV1,
 	type FlowDeskFederatedConnectorKindV1,
 	type FlowDeskFederatedConnectorCapabilityStateV1,
 	type FlowDeskFederatedPublicationResultV1,
@@ -10,9 +11,14 @@ import {
 	type FlowDeskFederatedGateEvaluationResultV1,
 	type FlowDeskGitHubDryRunPublicationResultV1,
 	type FlowDeskGitHubOAuthArchitectureResultV1,
+	validateMinimizationPolicyRef,
+	validateProductionPublishFlagRef,
+	validateSurplusUsageGateRef,
 	validateFlowDeskGitHubDryRunPublicationResultV1,
 } from "@flowdesk/core";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export type GitHubConnectorAuthSourceV1 = "env_github_token" | "env_flowdesk_oauth_token" | "none";
 
@@ -174,6 +180,11 @@ export interface PublishToGitHubInputV1 {
 	allowActualRemoteWrite: boolean;
 	/** Hypothetical later connector gate signal. Main Release 1 flow must keep this false. */
 	connectorGateSatisfied?: boolean;
+	productionPublishFlagRef?: string;
+	surplusUsageGateRef?: string;
+	minimizationPolicyRef?: string;
+	/** Evidence resolver used by tests and later gated callers; omitted refs fail closed. */
+	evidenceRefResolver?: FlowDeskEvidenceRefResolverV1;
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: GitHubPublicationFetchV1;
 	now?: () => Date;
@@ -193,6 +204,18 @@ export interface PublishToGitHubResultV1 {
 }
 
 const GITHUB_REPOSITORY_PART_RE = /^[A-Za-z0-9_.-]{1,100}$/;
+const CONTENT_MARKDOWN_FORBIDDEN_MARKER_RE = new RegExp(
+	[
+		"\\bGITHUB_TOKEN\\b",
+		"\\bFLOWDESK_[A-Z0-9_]*\\b",
+		"\\bBearer\\s+[A-Za-z0-9._~+/=-]{12,}",
+		"\\bgh[opsu]_[A-Za-z0-9_]{20,}\\b",
+		"\\bgithub_pat_[A-Za-z0-9_]{20,}\\b",
+		"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+	].join("|"),
+	"i",
+);
+const CONTENT_MARKDOWN_FORBIDDEN_MARKER_LABEL = "content-markdown-contains-forbidden-marker";
 
 function tokenFromGitHubConnectorEnv(env: NodeJS.ProcessEnv): string | undefined {
 	const githubToken = typeof env.GITHUB_TOKEN === "string" ? env.GITHUB_TOKEN.trim() : "";
@@ -213,6 +236,10 @@ function validateGitHubPublicationTargetV1(target: GitHubPublicationTargetV1): s
 		if (typeof target.title !== "string" || target.title.trim().length === 0 || target.title.length > 256) errors.push("target.title must be non-empty and <= 256 chars for github_issue");
 	}
 	return errors;
+}
+
+function contentMarkdownContainsForbiddenMarkerV1(contentMarkdown: string): boolean {
+	return CONTENT_MARKDOWN_FORBIDDEN_MARKER_RE.test(contentMarkdown);
 }
 
 function buildGitHubPublicationRequestV1(target: GitHubPublicationTargetV1, contentMarkdown: string): { url: string; body: Record<string, string> } {
@@ -255,6 +282,58 @@ function createAdvisoryPublicationResultV1(input: {
 	return { result: created.result, errors: created.errors };
 }
 
+function productionPublishBlockLabelsV1(input: PublishToGitHubInputV1): { labels: string[]; productionPublishEnabled: boolean } {
+	const labels: string[] = [];
+	let productionPublishEnabled = false;
+	if (input.productionPublishFlagRef === undefined) {
+		labels.push("production-publish-flag-missing");
+	} else {
+		try {
+			validateProductionPublishFlagRef(input.productionPublishFlagRef, input.evidenceRefResolver);
+			productionPublishEnabled = true;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "production publish flag invalid";
+			labels.push(message.includes("disabled") || message.includes("unknown") ? "productionPublish-disabled" : "productionPublish-invalid");
+		}
+	}
+
+	if (input.surplusUsageGateRef === undefined) {
+		labels.push("surplus-usage-gate-missing");
+	} else {
+		try {
+			validateSurplusUsageGateRef(input.surplusUsageGateRef, input.evidenceRefResolver);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "surplus usage gate invalid";
+			if (message.includes("stale")) labels.push("surplusUsageGate-unfresh");
+			else if (message.includes("alert level")) labels.push("surplusUsageGate-alert-level-unsafe");
+			else if (message.includes("verdict")) labels.push("surplusUsageGate-not-allow");
+			else labels.push("surplusUsageGate-invalid");
+		}
+	}
+
+	if (input.minimizationPolicyRef === undefined) {
+		labels.push("minimization-policy-missing");
+	} else {
+		try {
+			validateMinimizationPolicyRef(input.minimizationPolicyRef, input.evidenceRefResolver);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "minimization policy invalid";
+			labels.push(message.includes("k_anonymity_threshold") ? "minimizationPolicy-invalid-k-anonymity" : "minimizationPolicy-invalid");
+		}
+	}
+
+	return { labels, productionPublishEnabled };
+}
+
+export function resolveGitHubPublicationFetchImplForContextV1(input: {
+	productionPublishEnabled: boolean;
+	fetchImpl?: GitHubPublicationFetchV1;
+}): GitHubPublicationFetchV1 | undefined {
+	return input.productionPublishEnabled === true
+		? (globalThis.fetch as unknown as GitHubPublicationFetchV1 | undefined)
+		: input.fetchImpl ?? (globalThis.fetch as unknown as GitHubPublicationFetchV1 | undefined);
+}
+
 /**
  * Perform a GitHub federated-registry publication when a later connector gate is explicitly supplied.
  *
@@ -278,13 +357,42 @@ export async function publishToGitHubV1(input: PublishToGitHubInputV1): Promise<
 	if (input.dryRunResult.dry_run_state !== "dry_run_recorded") errors.push("dryRunResult must be dry_run_recorded");
 	if (typeof input.contentMarkdown !== "string" || input.contentMarkdown.trim().length === 0) errors.push("contentMarkdown must be non-empty");
 	if (input.contentMarkdown.length > 60_000) errors.push("contentMarkdown must be <= 60000 chars");
+	const contentMarkdownBlockLabels: string[] = [];
+	if (contentMarkdownContainsForbiddenMarkerV1(input.contentMarkdown)) {
+		errors.push("contentMarkdown contains a forbidden marker");
+		contentMarkdownBlockLabels.push(CONTENT_MARKDOWN_FORBIDDEN_MARKER_LABEL);
+	}
+	if (existsSync(join(process.cwd(), ".flowdesk", "locks", "compaction.lock"))) {
+		const advisory = createAdvisoryPublicationResultV1({
+			dryRunResult: input.dryRunResult,
+			ledgerIdempotencyRef: input.ledgerIdempotencyRef,
+			guardApprovalRef: input.guardApprovalRef,
+			publicationState: "blocked",
+			blockedLabels: ["compaction-lock-held"],
+			now,
+		});
+		return {
+			ok: false,
+			errors: [...errors, ...advisory.errors],
+			...(advisory.result === undefined ? {} : { publicationResult: advisory.result }),
+			remoteWrite: {
+				state: "skipped",
+				endpointKind: input.target.kind,
+				redactedReason: "compaction-lock-held",
+			},
+			authority,
+		};
+	}
 
 	const token = tokenFromGitHubConnectorEnv(input.env ?? process.env);
 	if (token === undefined) errors.push("github_token_missing");
+	const productionPublish = productionPublishBlockLabelsV1(input);
 
 	const preliminaryBlockLabels = [
 		...(input.allowActualRemoteWrite === true ? [] : ["actual-remote-write-not-enabled"]),
 		...(input.connectorGateSatisfied === true ? [] : ["connector-gate-not-satisfied"]),
+		...contentMarkdownBlockLabels,
+		...productionPublish.labels,
 		...(errors.length === 0 ? [] : ["github-publication-input-invalid"]),
 	];
 
@@ -310,7 +418,11 @@ export async function publishToGitHubV1(input: PublishToGitHubInputV1): Promise<
 		};
 	}
 
-	const fetchImpl = input.fetchImpl ?? (globalThis.fetch as unknown as GitHubPublicationFetchV1 | undefined);
+	// Phase 8c contract:
+	// - Test contexts (productionPublish absent/disabled): fetchImpl override honored (test seam)
+	// - Production contexts (productionPublish enabled): override IGNORED; globalThis.fetch forced
+	// Prevents malicious caller from injecting a fetch observer capturing Authorization header (T1.1)
+	const fetchImpl = resolveGitHubPublicationFetchImplForContextV1({ productionPublishEnabled: productionPublish.productionPublishEnabled, fetchImpl: input.fetchImpl });
 	if (fetchImpl === undefined) {
 		const advisory = createAdvisoryPublicationResultV1({
 			dryRunResult: input.dryRunResult,
@@ -347,19 +459,20 @@ export async function publishToGitHubV1(input: PublishToGitHubInputV1): Promise<
 			return { message: typeof text === "string" ? text.slice(0, 200) : "non-json github response" };
 		});
 		if (!response.ok) {
+			const blockedLabel = response.status === 403 || response.status === 429 ? "github-api-rate-limited" : "github-api-call-failed";
 			const advisory = createAdvisoryPublicationResultV1({
 				dryRunResult: input.dryRunResult,
 				ledgerIdempotencyRef: input.ledgerIdempotencyRef,
 				guardApprovalRef: input.guardApprovalRef,
 				publicationState: "blocked",
-				blockedLabels: ["github-api-call-failed"],
+				blockedLabels: [blockedLabel],
 				now,
 			});
 			return {
 				ok: false,
 				errors: [...advisory.errors, `github_api_status_${response.status}`],
 				...(advisory.result === undefined ? {} : { publicationResult: advisory.result }),
-				remoteWrite: { state: "failed", endpointKind: input.target.kind, statusCode: response.status, redactedReason: "github-api-call-failed" },
+				remoteWrite: { state: "failed", endpointKind: input.target.kind, statusCode: response.status, redactedReason: blockedLabel },
 				authority,
 			};
 		}

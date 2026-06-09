@@ -519,6 +519,11 @@ export interface FlowDeskSurplusUsageGateV1 {
 	gate_verdict: FlowDeskSurplusUsageDecisionLabelV1;
 	blocked_labels: string[];
 	reason_refs: string[];
+	compaction_control?: {
+		compactionEnabled: boolean;
+		compactionAgeThresholdDays: number;
+		lastCompactionEvidence?: string;
+	};
 	release_gate: "operational_intelligence_later_gate";
 	advisory_only: true;
 	non_authorizing: true;
@@ -557,6 +562,7 @@ export function createFlowDeskSurplusUsageGateV1(input: {
 	surplusThresholdPercent: number;
 	alertLevel: string;
 	reasonRefs: string[];
+	compactionControl?: FlowDeskSurplusUsageGateV1["compaction_control"];
 }): FlowDeskSurplusUsageGateResultV1 {
 	const errors: string[] = [];
 	errors.push(...validateOpaqueId(input.gateId, "gate_id").errors);
@@ -577,6 +583,11 @@ export function createFlowDeskSurplusUsageGateV1(input: {
 
 	if (!Array.isArray(input.reasonRefs) || input.reasonRefs.length === 0) errors.push("reason_refs must be a non-empty array");
 	else for (const [index, ref] of input.reasonRefs.entries()) errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+	if (input.compactionControl !== undefined) {
+		if (typeof input.compactionControl.compactionEnabled !== "boolean") errors.push("compaction_control.compactionEnabled must be a boolean");
+		if (!Number.isInteger(input.compactionControl.compactionAgeThresholdDays) || input.compactionControl.compactionAgeThresholdDays < 1) errors.push("compaction_control.compactionAgeThresholdDays must be a positive integer");
+		if (input.compactionControl.lastCompactionEvidence !== undefined) errors.push(...validateOpaqueRef(input.compactionControl.lastCompactionEvidence, "compaction_control.lastCompactionEvidence").errors);
+	}
 
 	if (errors.length > 0) return { ok: false, errors };
 
@@ -622,6 +633,7 @@ export function createFlowDeskSurplusUsageGateV1(input: {
 		gate_verdict: gateVerdict,
 		blocked_labels: blockedLabels,
 		reason_refs: [...input.reasonRefs],
+		...(input.compactionControl === undefined ? {} : { compaction_control: { ...input.compactionControl } }),
 		release_gate: "operational_intelligence_later_gate",
 		advisory_only: true,
 		non_authorizing: true,
@@ -660,6 +672,7 @@ const surplusUsageGateAllowedProperties = [
 	"gate_verdict",
 	"blocked_labels",
 	"reason_refs",
+	"compaction_control",
 	"release_gate",
 	"advisory_only",
 	"non_authorizing",
@@ -712,6 +725,15 @@ export function validateFlowDeskSurplusUsageGateV1(value: unknown): ValidationRe
 
 	if (!Array.isArray(record.reason_refs) || record.reason_refs.length === 0) errors.push("reason_refs must be a non-empty array");
 	else for (const [index, ref] of (record.reason_refs as unknown[]).entries()) errors.push(...validateOpaqueRef(ref, `reason_refs[${index}]`).errors);
+	if (record.compaction_control !== undefined) {
+		if (!isRecord(record.compaction_control)) errors.push("compaction_control must be an object");
+		else {
+			const control = record.compaction_control as Record<string, unknown>;
+			if (typeof control.compactionEnabled !== "boolean") errors.push("compaction_control.compactionEnabled must be a boolean");
+			if (!Number.isInteger(control.compactionAgeThresholdDays) || (control.compactionAgeThresholdDays as number) < 1) errors.push("compaction_control.compactionAgeThresholdDays must be a positive integer");
+			if (control.lastCompactionEvidence !== undefined) errors.push(...validateOpaqueRef(control.lastCompactionEvidence, "compaction_control.lastCompactionEvidence").errors);
+		}
+	}
 
 	if (!Array.isArray(record.blocked_labels)) errors.push("blocked_labels must be an array");
 	else for (const [index, lbl] of (record.blocked_labels as unknown[]).entries()) errors.push(...validateOpaqueRef(lbl, `blocked_labels[${index}]`).errors);

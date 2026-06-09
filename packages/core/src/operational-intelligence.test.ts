@@ -67,9 +67,11 @@ import {
 	validateFlowDeskOIAdvisoryEnvelopeV1,
 	type FlowDeskOIAdvisoryEnvelopeV1,
 	type FlowDeskOIAdvisoryHealthLabelV1,
+	computeUsageScore,
 	scoreWorkflowProposal,
 	type FlowDeskScoringEngineInputV1,
 	type FlowDeskScoringEngineResultV1,
+	type FlowDeskUsageSustainabilitySignalV1,
 	evaluateFlowDeskFederatedRegistryConnectorGateV1,
 	validateFlowDeskFederatedGateEvaluationResultV1,
 	type FlowDeskFederatedGateEvaluationResultV1,
@@ -3351,6 +3353,118 @@ test("scoring engine: invalid workflowId → ok:false with errors", () => {
 	assert.equal(result.score, undefined);
 	// healthLabel should still be returned (unknown on error)
 	assert.equal(result.healthLabel, "unknown");
+});
+
+test("scoring engine usage sustainability: warm-up period does not apply burn-rate penalty", () => {
+	const result = computeUsageScore({
+		reset_window_kind: "5h",
+		remaining_percent: 80,
+		elapsed_percent: 4.9,
+		uncertainty: "confident",
+	}, 5 * 60 * 60 * 1000);
+	assert.deepEqual(result, { penalty: 0, reason: "warm_up_period" });
+});
+
+test("scoring engine usage sustainability: stale signal fails closed even when burn rate is high", () => {
+	const result = computeUsageScore({
+		reset_window_kind: "daily",
+		remaining_percent: 0,
+		elapsed_percent: 50,
+		uncertainty: "stale",
+	}, 24 * 60 * 60 * 1000);
+	assert.equal(result.penalty, 0);
+	assert.equal("reason" in result ? result.reason : undefined, "stale");
+});
+
+test("scoring engine usage sustainability: unknown window kind returns safely with no penalty", () => {
+	const result = computeUsageScore({
+		reset_window_kind: "unknown",
+		remaining_percent: 10,
+		elapsed_percent: 50,
+		uncertainty: "confident",
+	}, 5 * 60 * 60 * 1000);
+	assert.equal(result.penalty, 0);
+	assert.equal("reason" in result ? result.reason : undefined, "invalid_window");
+});
+
+test("scoring engine usage sustainability: normal 1.5x burn rate over 5h window applies penalty 30", () => {
+	const result = computeUsageScore({
+		reset_window_kind: "5h",
+		remaining_percent: 70,
+		elapsed_percent: 20,
+		uncertainty: "confident",
+	}, 5 * 60 * 60 * 1000);
+	assert.equal(result.penalty, 30);
+	assert.equal("appliedBecause" in result ? result.appliedBecause : undefined, "burn_rate_1.5x_5h_window");
+});
+
+test("scoring engine usage sustainability: elapsed_percent zero is warm-up safe and avoids division by zero", () => {
+	const result = computeUsageScore({
+		reset_window_kind: "5h",
+		remaining_percent: 0,
+		elapsed_percent: 0,
+		uncertainty: "confident",
+	}, 5 * 60 * 60 * 1000);
+	assert.deepEqual(result, { penalty: 0, reason: "warm_up_period" });
+});
+
+test("scoring engine usage sustainability: exhausted bucket after warm-up clamps penalty to max 40", () => {
+	const result = computeUsageScore({
+		reset_window_kind: "daily",
+		remaining_percent: 0,
+		elapsed_percent: 5,
+		uncertainty: "confident",
+	}, 24 * 60 * 60 * 1000);
+	assert.equal(result.penalty, 40);
+	assert.equal("appliedBecause" in result ? result.appliedBecause : undefined, "burn_rate_20x_daily_window");
+});
+
+test("scoring engine usage sustainability: reset_window_kind unknown edge case remains penalty zero", () => {
+	const signal: FlowDeskUsageSustainabilitySignalV1 = {
+		reset_window_kind: "unknown",
+		remaining_percent: 0,
+		elapsed_percent: 100,
+		uncertainty: "confident",
+	};
+	const result = computeUsageScore(signal, 7 * 24 * 60 * 60 * 1000);
+	assert.equal(result.penalty, 0);
+	assert.equal("reason" in result ? result.reason : undefined, "invalid_window");
+});
+
+test("scoring engine: latency score and usage sustainability penalty are both computed and summed independently", () => {
+	const input: FlowDeskScoringEngineInputV1 = {
+		workflowId: "workflow-score-usage-1",
+		proposalId: "proposal-score-usage-1",
+		candidateRef: "candidate-score-usage-1",
+		agentRole: "implementation",
+		providerFamily: "claude",
+		usageRemainingPercent: 85,
+		alertLevel: "ok",
+		resetBucketSeconds: 600,
+		activeConurrentLanes: 1,
+		maxConcurrentLanes: 5,
+		requestedLaneCount: 2,
+		contextWindowTokens: 200000,
+	};
+	const baseline = scoreWorkflowProposal(input);
+	const withUsage = scoreWorkflowProposal(input, {
+		usageSustainabilitySignal: {
+			reset_window_kind: "5h",
+			remaining_percent: 70,
+			elapsed_percent: 20,
+			uncertainty: "confident",
+		},
+		resetWindowDurationMs: 5 * 60 * 60 * 1000,
+	});
+	assert.equal(baseline.ok, true, baseline.errors.join("; "));
+	assert.equal(withUsage.ok, true, withUsage.errors.join("; "));
+	assert.equal(baseline.audit_usage_sustainability_applied, false);
+	assert.equal(withUsage.audit_usage_sustainability_applied, true);
+	const baselineLatency = baseline.score!.score_dimensions.find(d => d.dimension === "latency");
+	const usageLatency = withUsage.score!.score_dimensions.find(d => d.dimension === "latency");
+	assert.equal(usageLatency!.score, baselineLatency!.score, "usage penalty must not mutate latency scoring");
+	assert.equal(withUsage.score!.advisory_score, baseline.score!.advisory_score - 30);
+	assert.equal(validateFlowDeskOptimizerProposalScoreV1(withUsage.score!).ok, true);
 });
 
 // ─── P8-S4: Federated registry connector gate evaluator tests ─────────────────
@@ -7249,6 +7363,44 @@ test("TC-RET-4: Ledger compaction cap keeps newest entries per signature", () =>
 	assert.equal(result.snapshot!.retained_entry_count, 4);
 	assert.equal(result.snapshot!.pruned_ttl_count, 0);
 	assert.equal(result.snapshot!.pruned_cap_count, 2);
+	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1(result.snapshot).ok, true);
+});
+
+test("TC-RET-4B: Ledger compaction preserves pending gate promotion publication results", () => {
+	const pendingTtl = {
+		...routingEntry({ signature_ref: "signature-pending-ttl", model_ref: "pub-ttl", recorded_at: "2026-05-01T00:00:00.000Z" }),
+		schema_version: "flowdesk.federated_publication_result.v1",
+		publication_state: "pending_gate_promotion",
+	} as FlowDeskRoutingAdvisoryLedgerEntryV1;
+	const pendingCap = {
+		...routingEntry({ signature_ref: "signature-pending-cap", model_ref: "pub-cap", recorded_at: "2026-06-04T00:00:00.000Z" }),
+		schema_version: "flowdesk.federated_publication_result.v1",
+		publicationState: "pending_gate_promotion",
+	} as FlowDeskRoutingAdvisoryLedgerEntryV1;
+
+	const result = compactFlowDeskAdvisoryLedgerV1({
+		entries: [
+			pendingTtl,
+			routingEntry({ signature_ref: "signature-pending-ttl", model_ref: "old-normal", recorded_at: "2026-05-01T00:00:00.000Z" }),
+			routingEntry({ signature_ref: "signature-pending-cap", model_ref: "newest-normal", recorded_at: "2026-06-06T00:00:00.000Z" }),
+			pendingCap,
+			routingEntry({ signature_ref: "signature-pending-cap", model_ref: "oldest-normal", recorded_at: "2026-06-03T00:00:00.000Z" }),
+		],
+		policy: createFlowDeskLedgerRetentionPolicyV1({ max_score_age_days: 14, max_ledger_entries_per_signature: 1 }),
+		policyRef: "policy-pending-gate-promotion",
+		compactionId: "compaction-pending-gate-1",
+		triggerReason: "manual",
+		compactedAt: "2026-06-07T00:00:00.000Z",
+	});
+
+	assert.equal(result.ok, true, result.errors.join("; "));
+	assert.deepEqual(result.retainedEntries!.map((entry) => entry.model_ref), ["pub-ttl", "newest-normal", "pub-cap"]);
+	assert.equal(result.snapshot!.original_entry_count, 5);
+	assert.equal(result.snapshot!.retained_entry_count, 3);
+	assert.equal(result.snapshot!.pruned_entry_count, 2);
+	assert.equal(result.snapshot!.pruned_ttl_count, 1);
+	assert.equal(result.snapshot!.pruned_cap_count, 1);
+	assert.equal(result.snapshot!.pending_gate_promotion_preserved_count, 2);
 	assert.equal(validateFlowDeskLedgerCompactionSnapshotV1(result.snapshot).ok, true);
 });
 

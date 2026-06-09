@@ -589,7 +589,7 @@ export interface ProviderHealthSummaryV1 {
 export interface DoctorSectionResultV1 {
   schema_version: "flowdesk.doctor_section_result.v1";
   run_id: OpaqueId;
-  section: "migration_cleanup" | "opencode_plugin_compatibility" | "provider_usage_readiness" | "policy_project_safety";
+  section: "migration_cleanup" | "opencode_plugin_compatibility" | "provider_usage_readiness" | "policy_project_safety" | "evidence_compaction" | "github_connector";
   category: DoctorFailureCategoryV1;
   summary: string;
   safe_next_actions: SafeNextAction[];

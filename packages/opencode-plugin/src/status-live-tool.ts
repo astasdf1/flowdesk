@@ -224,7 +224,6 @@ export interface FlowDeskStatusLiveLaneProgressCardV1 {
 	state?: string;
 	classification: FlowDeskLaneStallClassificationV1;
 	secondsSinceLastSignal?: number;
-	secondsUntilNextHeartbeat?: number;
 	lastSignalSource?: string;
 	agentRef?: string;
 	providerQualifiedModelId?: string;
@@ -986,42 +985,7 @@ function buildLaneProgressCards(
 		string,
 		{ observedAtMs: number; phase?: string; label?: string; observedAt?: string }
 	>();
-	const heartbeatCountdownByLane = new Map<
-		string,
-		{ observedAtMs: number; secondsUntilNextHeartbeat: number }
-	>();
-	const projectionObservedAtMs = Date.parse(projection.observedAt);
 	for (const entry of reload.entries) {
-		if (entry.evidenceClass === "lane_heartbeat") {
-			const laneId = getStringField(entry.record, "lane_id");
-			if (laneId !== undefined) {
-				const observedAt = getStringField(entry.record, "observed_at");
-				const expectedNextHeartbeatAt = getStringField(entry.record, "expected_next_heartbeat_at");
-				const observedAtMs = observedAt === undefined ? NaN : Date.parse(observedAt);
-				const expectedNextHeartbeatAtMs = expectedNextHeartbeatAt === undefined
-					? NaN
-					: Date.parse(expectedNextHeartbeatAt);
-				const countdownObservedAtMs = Number.isFinite(projectionObservedAtMs)
-					? projectionObservedAtMs
-					: observedAtMs;
-				if (
-					Number.isFinite(observedAtMs) &&
-					Number.isFinite(countdownObservedAtMs) &&
-					Number.isFinite(expectedNextHeartbeatAtMs)
-				) {
-					const delta = Math.floor((expectedNextHeartbeatAtMs - countdownObservedAtMs) / 1000);
-					const secondsUntilNextHeartbeat = Math.min(Math.max(delta, 0), 999);
-					const current = heartbeatCountdownByLane.get(laneId);
-					if (current === undefined || current.observedAtMs <= observedAtMs) {
-						heartbeatCountdownByLane.set(laneId, {
-							observedAtMs,
-							secondsUntilNextHeartbeat,
-						});
-					}
-				}
-			}
-			continue;
-		}
 		if (entry.evidenceClass === "agent_task_progress") {
 			const laneId = getStringField(entry.record, "lane_id");
 			if (laneId !== undefined) {
@@ -1155,7 +1119,6 @@ function buildLaneProgressCards(
 		const context = agentTaskContextByLane.get(entry.laneId);
 		const childSession = childSessionByLane.get(entry.laneId);
 		const progress = agentTaskProgressByLane.get(entry.laneId);
-		const heartbeatCountdown = heartbeatCountdownByLane.get(entry.laneId);
 		const taskResult = taskResultByLane.get(entry.laneId);
 		const terminalSignalMs = entry.classification === "terminal" ? (entry.lastSignalAt === undefined ? undefined : Date.parse(entry.lastSignalAt)) : undefined;
 		const visibleProgress =
@@ -1210,9 +1173,6 @@ function buildLaneProgressCards(
 			...(entry.secondsSinceLastSignal === undefined
 				? {}
 				: { secondsSinceLastSignal: entry.secondsSinceLastSignal }),
-			...(heartbeatCountdown === undefined
-				? {}
-				: { secondsUntilNextHeartbeat: heartbeatCountdown.secondsUntilNextHeartbeat }),
 			...(entry.lastSignalSource === undefined
 				? {}
 				: { lastSignalSource: entry.lastSignalSource }),

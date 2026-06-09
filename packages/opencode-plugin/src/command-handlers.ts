@@ -7,6 +7,7 @@ import type { FlowDeskFallbackRegatePlanV1,
   FlowDeskDefaultManagedDispatchPromotionReadinessV1,
   FlowDeskDoctorRequestV1,
   FlowDeskDoctorResponseV1,
+  FlowDeskCompactionHealthV1,
   FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
   FlowDeskExportDebugRequestV1,
   FlowDeskExportDebugResponseV1,
@@ -23,6 +24,7 @@ import type { FlowDeskFallbackRegatePlanV1,
   FlowDeskStatusCommandInputV1,
   FlowDeskUsageRequestV1,
   FlowDeskUsageResponseV1,
+  UsageUncertaintyFlagV1,
   ProviderFamily,
   ValidationResult
 } from "@flowdesk/core";
@@ -52,6 +54,21 @@ export interface FlowDeskCommandBackedRunHandlerContextV1 {
   fakeRuntime?: Omit<FlowDeskFakeRuntimeCommandInputV1, "commandName" | "request">;
 }
 
+export interface FlowDeskCommandBackedUsageEvidenceRowV1 {
+  provider_family?: ProviderFamily;
+  providerFamily?: ProviderFamily;
+  usage_snapshot_ref?: string;
+  usageSnapshotRef?: string;
+  provider_health_snapshot_ref?: string;
+  providerHealthSnapshotRef?: string;
+  freshness: FlowDeskUsageResponseV1["freshness"];
+  dispatchability: FlowDeskUsageResponseV1["dispatchability"];
+  uncertainty_flags?: readonly UsageUncertaintyFlagV1[];
+  uncertaintyFlags?: readonly UsageUncertaintyFlagV1[];
+  observed_at?: string;
+  observedAt?: string;
+}
+
 export interface FlowDeskCommandBackedHandlerContextV1 {
   plan?: Omit<FlowDeskPlanCommandInputV1, "request">;
   run?: FlowDeskCommandBackedRunHandlerContextV1;
@@ -62,6 +79,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     deleteAfterIso?: string;
     sourceRef?: string;
     providerHealthSnapshotRef?: string;
+    providerUsageEvidence?: readonly FlowDeskCommandBackedUsageEvidenceRowV1[];
     productionEnablement?: FlowDeskProductionEnablementEvaluationV1;
     exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
@@ -69,6 +87,17 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
     laneAbortResult?: FlowDeskLaneAbortHelperResultV1;
     sdkSessionHealth?: FlowDeskSdkSessionHealthV1;
+    compactionHealth?: FlowDeskCompactionHealthV1;
+    githubConnector?: {
+      productionPublish: "disabled" | "enabled" | "unknown";
+      lastConfiguredAt: string | null;
+      githubTokenAvailable: boolean;
+      authSource: "env_github_token" | "env_flowdesk_oauth_token" | "missing" | string;
+      freshness: {
+        surplusUsageGate: "fresh" | "stale" | "missing";
+        minimizationPolicy: "fresh" | "stale" | "missing";
+      };
+    };
     devBetaAgentTaskRun?: {
       enabled: boolean;
       registered: boolean;
@@ -158,11 +187,63 @@ function diagnosticDeleteAfter(context: FlowDeskCommandBackedHandlerContextV1): 
 
 function authRequiredProviderLabel(providerFamily: ProviderFamily): string {
   if (providerFamily === "claude") return "Claude";
+  if (providerFamily === "anthropic") return "Claude";
   if (providerFamily === "openai") return "OpenAI";
   if (providerFamily === "gemini") return "Gemini";
+  if (providerFamily === "google") return "Gemini";
+  if (providerFamily === "opencode") return "OpenCode Go";
   if (providerFamily === "opencode_go") return "OpenCode Go";
   if (providerFamily === "z_ai") return "z.ai";
   return "Provider";
+}
+
+function canonicalUsageProviderFamily(providerFamily: ProviderFamily): ProviderFamily {
+  if (providerFamily === "anthropic") return "claude";
+  if (providerFamily === "google") return "gemini";
+  if (providerFamily === "opencode") return "opencode_go";
+  return providerFamily;
+}
+
+function usageEvidenceProviderFamily(row: FlowDeskCommandBackedUsageEvidenceRowV1): ProviderFamily | undefined {
+  const providerFamily = row.provider_family ?? row.providerFamily;
+  return providerFamily === undefined ? undefined : canonicalUsageProviderFamily(providerFamily);
+}
+
+function usageEvidenceObservedAtMs(row: FlowDeskCommandBackedUsageEvidenceRowV1): number {
+  const observedAt = row.observed_at ?? row.observedAt;
+  if (observedAt === undefined) return 0;
+  const parsed = Date.parse(observedAt);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function usageEvidenceSnapshotRef(row: FlowDeskCommandBackedUsageEvidenceRowV1): string | undefined {
+  const ref = row.usage_snapshot_ref ?? row.usageSnapshotRef;
+  return typeof ref === "string" && ref.length > 0 ? ref : undefined;
+}
+
+function usageEvidenceHealthSnapshotRef(row: FlowDeskCommandBackedUsageEvidenceRowV1): string | undefined {
+  const ref = row.provider_health_snapshot_ref ?? row.providerHealthSnapshotRef;
+  return typeof ref === "string" && ref.length > 0 ? ref : undefined;
+}
+
+function usageEvidenceUncertaintyFlags(row: FlowDeskCommandBackedUsageEvidenceRowV1): UsageUncertaintyFlagV1[] {
+  return [...(row.uncertainty_flags ?? row.uncertaintyFlags ?? [])];
+}
+
+function freshestMatchingUsageEvidence(request: FlowDeskUsageRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskCommandBackedUsageEvidenceRowV1 | undefined {
+  const requestedFamily = canonicalUsageProviderFamily(request.provider_family);
+  const evidenceRows = context.diagnostic?.providerUsageEvidence ?? [];
+  return evidenceRows
+    .filter((row) => usageEvidenceSnapshotRef(row) !== undefined)
+    .filter((row) => request.provider_family === "all" || usageEvidenceProviderFamily(row) === requestedFamily)
+    .sort((left, right) => usageEvidenceObservedAtMs(right) - usageEvidenceObservedAtMs(left))[0];
+}
+
+function safeUsageResponseDispatchability(row: FlowDeskCommandBackedUsageEvidenceRowV1, uncertaintyFlags: readonly UsageUncertaintyFlagV1[]): FlowDeskUsageResponseV1["dispatchability"] {
+  const failClosedFlags: readonly UsageUncertaintyFlagV1[] = ["unknown", "stale", "refused", "shared_limit_suspected", "fallback_derived", "model_generated"];
+  if (row.freshness !== "fresh" && row.dispatchability === "dispatchable") return "non_dispatchable";
+  if (uncertaintyFlags.some((flag) => failClosedFlags.includes(flag)) && row.dispatchability !== "non_dispatchable") return "non_dispatchable";
+  return row.dispatchability;
 }
 
 function doctorSectionFor(section: DoctorSectionResultV1["section"], category: DoctorFailureCategoryV1, request: FlowDeskDoctorRequestV1, summary: string, refs: readonly string[]) {
@@ -302,6 +383,44 @@ function devBetaAgentTaskRunRefs(context: FlowDeskCommandBackedHandlerContextV1)
   ];
 }
 
+function evidenceCompactionRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const health = context.diagnostic?.compactionHealth;
+  if (health === undefined) return ["evidence_compaction_enabled=false", "evidence_compaction_last_time=null", "evidence_compaction_merkle_match=false"];
+  return [
+    `evidence_compaction_enabled=${health.compactionEnabled}`,
+    `evidence_compaction_last_time=${health.lastCompactionTime ?? "null"}`,
+    `evidence_compaction_files_removed=${health.lastCompactionResult.filesRemoved}`,
+    `evidence_compaction_archived=${health.lastCompactionResult.archived}`,
+    `evidence_compaction_errors=${health.lastCompactionResult.errors}`,
+    `evidence_compaction_merkle_match=${health.merkleRootMatch}`,
+    ...(health.lastCompactionEvidence === undefined ? [] : [`evidence_compaction_ref=${health.lastCompactionEvidence}`])
+  ];
+}
+
+function githubConnectorSection(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1 {
+  const github = context.diagnostic?.githubConnector;
+  const productionPublish = github?.productionPublish ?? "disabled";
+  const surplusFreshness = github?.freshness.surplusUsageGate ?? "missing";
+  const minimizationFreshness = github?.freshness.minimizationPolicy ?? "missing";
+  const effectivelyBlocked = productionPublish !== "enabled" || surplusFreshness !== "fresh" || minimizationFreshness !== "fresh";
+  return doctorSectionFor(
+    "github_connector",
+    effectivelyBlocked ? "degraded_mode_warning" : "informational",
+    request,
+    `GitHub Connector productionPublish=${effectivelyBlocked ? "blocked" : "enabled"}; configuredState=${productionPublish}; lastConfiguredAt=${github?.lastConfiguredAt ?? "null"}; githubTokenAvailable=${github?.githubTokenAvailable ?? false}; authSource=${github?.authSource ?? "missing"}; freshness surplusUsageGate=${surplusFreshness}, minimizationPolicy=${minimizationFreshness}.`,
+    [
+      "github_connector_doctor_ref",
+      `github_connector_productionPublish=${productionPublish}`,
+      `github_connector_lastConfiguredAt=${github?.lastConfiguredAt ?? "null"}`,
+      `github_connector_token_available=${github?.githubTokenAvailable ?? false}`,
+      `github_connector_auth_source=${github?.authSource ?? "missing"}`,
+      `github_connector_surplus_usage_gate_freshness=${surplusFreshness}`,
+      `github_connector_minimization_policy_freshness=${minimizationFreshness}`,
+      `github_connector_effectively_blocked=${effectivelyBlocked}`
+    ]
+  );
+}
+
 function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCommandBackedHandlerContextV1): DoctorSectionResultV1[] {
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
@@ -311,16 +430,20 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const fallbackRefs = fallbackRegateRefs(context);
   const sdkHealthRefs = sdkSessionHealthRefs(context);
   const agentTaskRunRefs = devBetaAgentTaskRunRefs(context);
+  const compactionRefs = evidenceCompactionRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
     doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
-    doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"])
+    doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"]),
+    doctorSectionFor("evidence_compaction", "informational", request, "Evidence Compaction reports native agent-task-progress cleanup health, archive counts, and merkle-root integrity without granting dispatch, fallback, or write authority outside the configured state root.", ["doctor-evidence-compaction-ref", ...compactionRefs]),
+    githubConnectorSection(request, context)
   ];
   if (request.check_scope === "all") return allSections;
   if (request.check_scope === "install") return allSections.filter((section) => section.section === "migration_cleanup");
   if (request.check_scope === "policy") return allSections.filter((section) => section.section === "policy_project_safety");
   if (request.check_scope === "usage" || request.check_scope === "provider_health") return allSections.filter((section) => section.section === "provider_usage_readiness");
+  if (request.check_scope === "runtime") return allSections.filter((section) => section.section === "opencode_plugin_compatibility" || section.section === "github_connector");
   return allSections.filter((section) => section.section === "opencode_plugin_compatibility");
 }
 
@@ -417,6 +540,28 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowD
 
 function evaluateUsageDiagnostic(request: FlowDeskUsageRequestV1, context: FlowDeskCommandBackedHandlerContextV1): FlowDeskUsageResponseV1 {
   const id = requestId(request);
+  const evidence = freshestMatchingUsageEvidence(request, context);
+  if (evidence !== undefined) {
+    const usageSnapshotRef = usageEvidenceSnapshotRef(evidence) ?? `usage-${id}`;
+    const providerHealthSnapshotRef = usageEvidenceHealthSnapshotRef(evidence) ?? context.diagnostic?.providerHealthSnapshotRef;
+    const uncertaintyFlags = usageEvidenceUncertaintyFlags(evidence);
+    const dispatchability = safeUsageResponseDispatchability(evidence, uncertaintyFlags);
+    const degraded = evidence.freshness !== "fresh" || dispatchability === "non_dispatchable" || uncertaintyFlags.length > 0;
+    return {
+      schema_version: "flowdesk.usage.response.v1",
+      ok: true,
+      status: degraded ? "degraded" : "diagnostic_only",
+      safe_next_actions: degraded ? ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"] : ["/flowdesk-status", "/flowdesk-export-debug"],
+      user_message: degraded
+        ? "FlowDesk found cached provider usage evidence, but it remains diagnostic-only and not sufficient by itself to approve dispatch, fallback, relaunch, or provider calls."
+        : "FlowDesk found fresh cached provider usage evidence for diagnostics only; no provider call, runtime execution, lane launch, fallback, or relaunch occurred.",
+      usage_snapshot_ref: usageSnapshotRef,
+      ...(providerHealthSnapshotRef === undefined ? {} : { provider_health_snapshot_ref: providerHealthSnapshotRef }),
+      freshness: evidence.freshness,
+      dispatchability,
+      uncertainty_flags: uncertaintyFlags
+    };
+  }
   const usageSnapshotRef = `usage-${id}`;
   const authMissingHealth = providerFamilyRequiresAuthReadinessV1(request.provider_family)
     ? createAuthMissingProviderHealthSnapshotV1({

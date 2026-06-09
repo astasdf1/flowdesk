@@ -18,6 +18,7 @@ import {
 	type FlowDeskOptimizerScoreDimensionV1,
 	createFlowDeskOptimizerProposalScoreV1,
 } from "./score-dimensions.js";
+import { type FlowDeskUsageSustainabilitySignalV1 } from "../schemas/index.js";
 
 // ─── Public input / output contracts ─────────────────────────────────────────
 
@@ -41,6 +42,23 @@ export interface FlowDeskScoringEngineResultV1 {
 	errors: string[];
 	score?: FlowDeskOptimizerProposalScoreV1;
 	healthLabel: FlowDeskOIAdvisoryHealthLabelV1;
+	audit_usage_sustainability_applied?: boolean;
+}
+
+export interface FlowDeskScoringEngineContextV1 {
+	usageSustainabilitySignal?: FlowDeskUsageSustainabilitySignalV1;
+	resetWindowDurationMs?: number;
+}
+
+export type FlowDeskUsageScoreResultV1 =
+	| { penalty: number; appliedBecause: string }
+	| { penalty: 0; reason: "signal_missing" | "stale" | "signal_uncertainty" | "invalid_window" | "warm_up_period" };
+
+const USAGE_SCORE_MAX_PENALTY = 40;
+const USAGE_SCORE_WARM_UP_ELAPSED_PERCENT = 5;
+
+function clampPercent(value: number): number {
+	return Math.min(100, Math.max(0, value));
 }
 
 // ─── Internal scoring helpers ─────────────────────────────────────────────────
@@ -128,6 +146,50 @@ function computeLatencyScore(input: FlowDeskScoringEngineInputV1): number {
 }
 
 /**
+ * Compute a bounded advisory burn-rate penalty from an independent quota signal.
+ *
+ * This function intentionally does not participate in quota governance decisions:
+ * it never blocks, never zeroes out a provider, and never grants dispatch,
+ * fallback, provider, runtime, or lane-launch authority.
+ */
+export function computeUsageScore(
+	signal: FlowDeskUsageSustainabilitySignalV1,
+	resetWindowDurationMs: number,
+): FlowDeskUsageScoreResultV1 {
+	if (!signal) return { penalty: 0, reason: "signal_missing" };
+	if (signal.reset_window_kind === "unknown") return { penalty: 0, reason: "invalid_window" };
+	if (typeof resetWindowDurationMs !== "number" || !Number.isFinite(resetWindowDurationMs) || resetWindowDurationMs <= 0) {
+		return { penalty: 0, reason: "invalid_window" };
+	}
+	if (signal.uncertainty !== "confident") {
+		return { penalty: 0, reason: signal.uncertainty === "stale" ? "stale" : "signal_uncertainty" };
+	}
+	if (typeof signal.remaining_percent !== "number" || !Number.isFinite(signal.remaining_percent)
+		|| typeof signal.elapsed_percent !== "number" || !Number.isFinite(signal.elapsed_percent)) {
+		return { penalty: 0, reason: "invalid_window" };
+	}
+
+	const elapsedPercent = clampPercent(signal.elapsed_percent);
+	if (elapsedPercent < USAGE_SCORE_WARM_UP_ELAPSED_PERCENT) {
+		return { penalty: 0, reason: "warm_up_period" };
+	}
+
+	const remainingPercent = clampPercent(signal.remaining_percent);
+	const elapsedDenominator = Math.min(100, Math.max(1, elapsedPercent));
+	const burnRate = (100 - remainingPercent) / elapsedDenominator;
+	if (!Number.isFinite(burnRate) || burnRate <= 1.0) {
+		return { penalty: 0, reason: "invalid_window" };
+	}
+
+	const penalty = Math.min(USAGE_SCORE_MAX_PENALTY, Math.floor(burnRate * 20));
+	const roundedBurnRate = Math.round(burnRate * 10) / 10;
+	return {
+		penalty,
+		appliedBecause: `burn_rate_${roundedBurnRate}x_${signal.reset_window_kind}_window`,
+	};
+}
+
+/**
  * Compute confidence score based on how many evidence inputs are available.
  * all inputs (7) → 80, partial (3-6) → 60, minimal (0-2) → 40.
  */
@@ -149,6 +211,7 @@ function computeConfidenceScore(input: FlowDeskScoringEngineInputV1): number {
  */
 export function scoreWorkflowProposal(
 	input: FlowDeskScoringEngineInputV1,
+	context: FlowDeskScoringEngineContextV1 = {},
 ): FlowDeskScoringEngineResultV1 {
 	// ── Input validation ───────────────────────────────────────────────────────
 	const errors: string[] = [];
@@ -211,6 +274,11 @@ export function scoreWorkflowProposal(
 	const costScore = computeCostScore(input);
 	const latencyScore = computeLatencyScore(input);
 	const confidenceScore = computeConfidenceScore(input);
+	const usageScore = context.usageSustainabilitySignal
+		? computeUsageScore(context.usageSustainabilitySignal, context.resetWindowDurationMs ?? 0)
+		: undefined;
+	const usagePenalty = usageScore && "appliedBecause" in usageScore ? usageScore.penalty : 0;
+	const auditUsageSustainabilityApplied = usagePenalty > 0;
 
 	// Score ID: deterministic from workflowId + proposalId + candidateRef
 	const scoreId = `score-engine-${input.workflowId}-${input.proposalId}`;
@@ -230,10 +298,12 @@ export function scoreWorkflowProposal(
 		{ dimension: "dependency_impact", score: 65, weight: 1, reason_ref: "reason-dependency-impact-placeholder" },
 	];
 
-	// Advisory score: average of all dimensions (rounded)
-	const advisoryScore = Math.round(
+	// Advisory score: average of all dimensions, minus an optional bounded usage
+	// sustainability penalty. The usage path stays separate from latency scoring.
+	const baseAdvisoryScore = Math.round(
 		dimensions.reduce((sum, d) => sum + d.score, 0) / dimensions.length,
 	);
+	const advisoryScore = Math.max(0, baseAdvisoryScore - usagePenalty);
 
 	// ── Build the FlowDeskOptimizerProposalScoreV1 ────────────────────────────
 	const score = createFlowDeskOptimizerProposalScoreV1({
@@ -263,5 +333,11 @@ export function scoreWorkflowProposal(
 		}
 	}
 
-	return { ok: true, errors: [], score, healthLabel };
+	return {
+		ok: true,
+		errors: [],
+		score,
+		healthLabel,
+		audit_usage_sustainability_applied: auditUsageSustainabilityApplied,
+	};
 }

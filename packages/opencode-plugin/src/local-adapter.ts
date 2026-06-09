@@ -35,6 +35,7 @@ import {
 	applyWriteIntentsToInMemoryState,
 	evaluateFlowDeskProductionEnablementV1,
 	invalid,
+	loadFlowDeskCompactionHealthV1,
 	loadFlowDeskDurableWorkflowState,
 	mergePolicyPacksV1,
 	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
@@ -1351,6 +1352,202 @@ function fallbackRegatePlanContext(
 	return entry?.record as FlowDeskFallbackRegatePlanV1 | undefined;
 }
 
+function lifecycleStateToLaneState(
+	state: string | undefined,
+): FlowDeskLaneRecordV1["state"] {
+	if (state === "created") return "queued";
+	if (state === "running") return "running";
+	if (state === "complete" || state === "late_output") return "completed";
+	if (state === "timeout") return "timed_out";
+	if (state === "aborted") return "cancel_observed";
+	if (state === "orphaned") return "correlation_lost";
+	if (
+		state === "incomplete" ||
+		state === "no_output" ||
+		state === "missing_verdict" ||
+		state === "tool_calls_only_no_verdict" ||
+		state === "invocation_failed"
+	)
+		return "failed";
+	return "running";
+}
+
+function lifecycleStateToFailureClass(
+	state: string | undefined,
+): FlowDeskLaneRecordV1["failure_class"] | undefined {
+	if (state === "timeout") return "timeout";
+	if (state === "orphaned") return "correlation_lost";
+	if (state === "invocation_failed") return "invocation_failed";
+	if (
+		state === "incomplete" ||
+		state === "no_output" ||
+		state === "missing_verdict" ||
+		state === "tool_calls_only_no_verdict"
+	)
+		return "incomplete_result";
+	return undefined;
+}
+
+function latestEvidenceByLane(
+	entries: Array<{ evidenceId: string; record: Record<string, unknown> }>,
+): Map<string, { evidenceId: string; record: Record<string, unknown> }> {
+	const latest = new Map<
+		string,
+		{ evidenceId: string; record: Record<string, unknown> }
+	>();
+	for (const entry of entries) {
+		const laneId =
+			typeof entry.record.lane_id === "string"
+				? entry.record.lane_id
+				: undefined;
+		if (laneId === undefined) continue;
+		const previous = latest.get(laneId);
+		const previousUpdated = Date.parse(
+			String(previous?.record.updated_at ?? previous?.record.created_at ?? ""),
+		);
+		const nextUpdated = Date.parse(
+			String(entry.record.updated_at ?? entry.record.created_at ?? ""),
+		);
+		if (
+			previous === undefined ||
+			(Number.isFinite(nextUpdated) &&
+				(!Number.isFinite(previousUpdated) || nextUpdated >= previousUpdated))
+		) {
+			latest.set(laneId, entry);
+		}
+	}
+	return latest;
+}
+
+function loadEvidenceLaneRecords(
+	state: LocalAdapterState,
+	workflowId: string,
+	parts: ReturnType<typeof nowParts>,
+): FlowDeskLaneRecordV1[] {
+	if (state.durableStateRootDir === undefined) return [];
+	const reload = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: state.durableStateRootDir,
+	});
+	if (!reload.ok) return [];
+	const contextEntries = latestEvidenceByLane(
+		reload.entries
+			.filter(
+				(entry) =>
+					entry.evidenceClass === "agent_task_context" &&
+					entry.record.workflow_id === workflowId,
+			)
+			.map((entry) => ({ evidenceId: entry.evidenceId, record: entry.record })),
+	);
+	const lifecycleEntries = latestEvidenceByLane(
+		reload.entries
+			.filter(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.record.workflow_id === workflowId,
+			)
+			.map((entry) => ({ evidenceId: entry.evidenceId, record: entry.record })),
+	);
+	const laneIds = new Set([...contextEntries.keys(), ...lifecycleEntries.keys()]);
+	const evidenceLanes: FlowDeskLaneRecordV1[] = [];
+	for (const laneId of laneIds) {
+		const context = contextEntries.get(laneId);
+		const lifecycle = lifecycleEntries.get(laneId);
+		const contextRecord = context?.record;
+		const lifecycleRecord = lifecycle?.record;
+		const createdAt =
+			(typeof contextRecord?.created_at === "string"
+				? contextRecord.created_at
+				: undefined) ??
+			(typeof lifecycleRecord?.created_at === "string"
+				? lifecycleRecord.created_at
+				: undefined) ??
+			parts.nowIso;
+		const updatedAt =
+			(typeof lifecycleRecord?.updated_at === "string"
+				? lifecycleRecord.updated_at
+				: undefined) ?? createdAt;
+		const lifecycleState =
+			typeof lifecycleRecord?.state === "string"
+				? lifecycleRecord.state
+				: undefined;
+		const refs = [
+			...(context === undefined ? [] : [context.evidenceId]),
+			...(lifecycle === undefined ? [] : [lifecycle.evidenceId]),
+		];
+		const taskRef =
+			(typeof contextRecord?.task_id === "string"
+				? contextRecord.task_id
+				: undefined) ??
+			(typeof lifecycleRecord?.background_task_ref === "string"
+				? lifecycleRecord.background_task_ref
+				: undefined) ??
+			(typeof lifecycleRecord?.message_ref === "string"
+				? lifecycleRecord.message_ref
+				: undefined) ??
+			`task-${safeToken(laneId, "evidence-lane")}`;
+		const failureClass = lifecycleStateToFailureClass(lifecycleState);
+		const lane: FlowDeskLaneRecordV1 = {
+			schema_version: "flowdesk.lane_record.v1",
+			lane_id: laneId,
+			workflow_id: workflowId,
+			...(state.workflow?.latest_plan_revision_id === undefined
+				? {}
+				: { plan_revision_id: state.workflow.latest_plan_revision_id }),
+			...(typeof lifecycleRecord?.attempt_id === "string"
+				? { attempt_id: lifecycleRecord.attempt_id }
+				: {}),
+			task_ref: taskRef,
+			lane_class: "other",
+			state: lifecycleStateToLaneState(lifecycleState),
+			created_at: createdAt,
+			...(lifecycleState === undefined || lifecycleState === "created"
+				? {}
+				: { started_at: createdAt }),
+			updated_at: updatedAt,
+			...(lifecycleState === "complete" ||
+			lifecycleState === "late_output" ||
+			lifecycleState === "timeout" ||
+			lifecycleState === "aborted" ||
+			lifecycleState === "incomplete" ||
+			lifecycleState === "no_output" ||
+			lifecycleState === "missing_verdict" ||
+			lifecycleState === "tool_calls_only_no_verdict" ||
+			lifecycleState === "invocation_failed"
+				? { completed_at: updatedAt }
+				: {}),
+			...(failureClass === undefined ? {} : { failure_class: failureClass }),
+			invocation_ref_kind:
+				typeof contextRecord?.task_id === "string"
+					? "opencode_task"
+					: typeof lifecycleRecord?.background_task_ref === "string"
+						? "background_invocation"
+						: "unknown",
+			retry_count:
+				typeof lifecycleRecord?.retry_count === "number"
+					? lifecycleRecord.retry_count
+					: 0,
+			verdict_status: "not_required",
+			safe_next_action: failureClass === undefined ? "/flowdesk-status" : "/flowdesk-retry",
+			refs,
+			event_refs: refs,
+			audit_refs: [],
+		};
+		evidenceLanes.push(lane);
+	}
+	return evidenceLanes;
+}
+
+function mergeLaneRecords(
+	base: FlowDeskLaneRecordV1[],
+	evidence: FlowDeskLaneRecordV1[],
+): FlowDeskLaneRecordV1[] {
+	const merged = new Map<string, FlowDeskLaneRecordV1>();
+	for (const lane of base) merged.set(lane.lane_id, lane);
+	for (const lane of evidence) merged.set(lane.lane_id, lane);
+	return [...merged.values()];
+}
+
 function statusContext(
 	state: LocalAdapterState,
 	request: Record<string, unknown>,
@@ -1382,6 +1579,10 @@ function statusContext(
 		(state.workflow === undefined || state.active === undefined)
 	)
 		updateWorkflowState(state, request, parts, "ready_to_run");
+	state.laneRecords = mergeLaneRecords(
+		state.laneRecords,
+		loadEvidenceLaneRecords(state, requestedWorkflowId, parts),
+	);
 	const fanoutDiagnostics = reviewerFanoutDiagnosticsContext(
 		state,
 		request,
@@ -1568,6 +1769,7 @@ function contextFor(
 			: requestedLaneId !== undefined
 				? ({ status: "blocked", reason: "durable_state_root_missing" } as const)
 				: undefined;
+	const compactionHealth = state.durableStateRootDir === undefined ? undefined : loadFlowDeskCompactionHealthV1(state.durableStateRootDir, false);
 	return {
 		diagnostic: {
 			nowIso: parts.nowIso,
@@ -1591,6 +1793,7 @@ function contextFor(
 				reason: "sdk_health_not_checked_non_dispatch_adapter",
 			},
 			laneAbortResult,
+			compactionHealth,
 		},
 	};
 }

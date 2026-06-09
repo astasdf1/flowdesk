@@ -642,7 +642,7 @@ test("completion UI cache wake-ready row falls back to parent session model snap
 			...agentTaskContext(workflowId, completedLaneId, "task-wake-model-1", "2026-06-05T00:00:00.000Z"),
 			parent_session_ref: "ses-parent-wake-model-1",
 			provider_qualified_model_id: "anthropic/claude-sonnet-4-20250514",
-			parent_session_provider_qualified_model_id: "anthropic/claude-opus-4-20250514",
+			recorded_parent_provider_qualified_model_id: "anthropic/claude-opus-4-20250514",
 		});
 		writeEvidence(rootDir, workflowId, "task_result", "task-result-wake-model-1", taskResult(workflowId, completedLaneId, "task-wake-model-1", "2026-06-05T00:02:00.000Z"));
 		writeEvidence(rootDir, workflowId, "agent_task_child_session", "child-wake-running-model-1", {

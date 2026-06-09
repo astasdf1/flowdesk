@@ -516,6 +516,105 @@ test("provider usage live preserves fresh sidebar bucket when primary row refres
 	}
 });
 
+test("provider usage live writer drops expired non-primary buckets from sidebar carry-forward", async () => {
+	// Bug A regression: writer used to carry forward every non-primary bucket from the previous
+	// sidebar without checking expires_at, so an expired (e.g. 5h) bucket could survive across
+	// refreshes for hours. With the fix, buckets whose expires_at has passed must be dropped.
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-sidebar-expiry-"));
+	try {
+		const uiDir = join(root, ".flowdesk/ui");
+		mkdirSync(uiDir, { recursive: true });
+		// Previous sidebar: primary openai row plus a non-primary openai-gpt-5h bucket that has
+		// already expired (expires_at < fixedNow which is 2026-05-24T00:00:00Z), and a non-primary
+		// openai-weekly bucket that is still in the future.
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-23T23:55:00.000Z",
+					expires_at: "2026-05-24T00:00:00.000Z",
+					providers: [
+						{
+							providerFamily: "openai",
+							connected: false,
+							dispatchability: "non_dispatchable",
+							freshness: "unknown",
+							resetBucket: "unknown",
+							resetTime: "unknown",
+							remainingPercent: null,
+							alertLevel: "unknown",
+							modelFamily: "gpt-5",
+							uncertaintyFlags: ["unknown"],
+							buckets: [
+								{
+									resetBucket: "openai-gpt-5h",
+									resetTime: "2026-05-23T20:00:00.000Z",
+									remainingPercent: 0,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+									observed_at: "2026-05-23T14:55:00.000Z",
+									expires_at: "2026-05-23T15:00:00.000Z",
+								},
+								{
+									resetBucket: "openai-weekly",
+									resetTime: "2026-05-31T10:05:59.000Z",
+									remainingPercent: 42,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+									observed_at: "2026-05-23T23:55:00.000Z",
+									expires_at: "2026-05-24T03:55:00.000Z",
+								},
+							],
+						},
+					],
+					authority: {
+						realOpenCodeDispatch: false,
+						providerCall: false,
+						runtimeExecution: false,
+						actualLaneLaunch: false,
+						fallbackAuthority: false,
+						hardCancelOrNoReplyAuthority: false,
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["openai"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistSidebarCache: true,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "openai" },
+			now: fixedNow,
+		});
+
+		const rewritten = JSON.parse(
+			readFileSync(join(uiDir, "provider-usage-sidebar.json"), "utf8"),
+		) as { providers?: Array<{ buckets?: Array<{ resetBucket?: unknown; expires_at?: unknown }> }> };
+		const buckets = rewritten.providers?.[0]?.buckets ?? [];
+		const resetBuckets = buckets.map((b) => b.resetBucket);
+		assert.ok(
+			!resetBuckets.includes("openai-gpt-5h"),
+			`expired openai-gpt-5h bucket must not be carried forward, got: ${JSON.stringify(resetBuckets)}`,
+		);
+		assert.ok(
+			resetBuckets.includes("openai-weekly"),
+			`fresh openai-weekly bucket must still be present, got: ${JSON.stringify(resetBuckets)}`,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("provider usage live ignores expired durable snapshots", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-expired-"));
 	try {

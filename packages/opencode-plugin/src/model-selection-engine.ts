@@ -6,7 +6,13 @@
  * deprioritized; exhausted providers are excluded.
  */
 
-import type { FlowDeskAgentRegistryRoleCategoryV1 } from "@flowdesk/core";
+import {
+	type FlowDeskAgentRegistryRoleCategoryV1,
+	type FlowDeskRoutingAdvisoryEvaluationV1,
+	SAME_FAMILY_MODEL_FALLBACK_CHAINS,
+	fuzzyFamilyKeywordForModelId,
+} from "@flowdesk/core";
+export { SAME_FAMILY_MODEL_FALLBACK_CHAINS, fuzzyFamilyKeywordForModelId };
 
 export type ModelTier = "heavy" | "medium" | "light";
 
@@ -45,9 +51,32 @@ export interface WorkingModelSelectionInput {
 	availabilitySource?: "local_db" | "durable_cache" | "cloud_cache" | "test_fixture";
 	/**
 	 * Tertiary tie-breaker: model performance scores from operational intelligence.
-	 * Key is providerQualifiedModelId, value is mean weighted score (0..100).
+	 * Key is providerQualifiedModelId, value is mean weighted score (typically 0..100
+	 * for caller-supplied maps, or 0..1 when derived from a routing advisory).
+	 *
+	 * Advisory-only: never changes which candidates are eligible; only resolves ties
+	 * when alertLevel and weight are already equal.
 	 */
 	oiPerformanceScores?: Map<string, number>;
+	/**
+	 * OI routing advisory evaluation produced by `evaluateOIRoutingAdvisoryV1`.
+	 *
+	 * When provided, the tie-breaker consults `model_summaries` to break ties
+	 * between candidates that are already equivalent under alertLevel and weight.
+	 * The advisory's `model_ref` is matched against either:
+	 *   1. the exact `providerQualifiedModelId`, or
+	 *   2. the `candidate-<modelId-with-/-replaced-by-->` convention used by the
+	 *      workflow-assign tool when persisting OI evidence, or
+	 *   3. any `model_ref` containing the providerQualifiedModelId as a substring
+	 *      (best-effort opaque-ref match).
+	 *
+	 * Advisory-only: never authorizes dispatch, fallback, routing, or provider/
+	 * model reselection. When both `routingAdvisory` and `oiPerformanceScores`
+	 * are provided, the routing advisory's per-model score is preferred and the
+	 * `oiPerformanceScores` map is consulted only as a final additive fallback
+	 * for models the advisory does not mention.
+	 */
+	routingAdvisory?: FlowDeskRoutingAdvisoryEvaluationV1;
 }
 
 const DEPRECATED_PROVIDER_QUALIFIED_MODEL_IDS = new Set<string>([
@@ -98,11 +127,6 @@ const OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS = new Set<string>([
 	"gemini/gemini-3.1-flash-lite",
 ]);
 
-export const SAME_FAMILY_MODEL_FALLBACK_CHAINS = {
-	claude: ["opus", "sonnet", "haiku"],
-	openai: ["normal", "mini", "fast", "spark"],
-	gemini: ["pro", "flash", "flash-lite"],
-} as const;
 
 const SAME_FAMILY_EXACT_MODEL_FALLBACK_CHAINS: Record<ModelCandidate["providerFamily"], readonly (readonly string[])[]> = {
 	claude: [
@@ -123,12 +147,22 @@ const SAME_FAMILY_EXACT_MODEL_FALLBACK_CHAINS: Record<ModelCandidate["providerFa
 	],
 };
 
+const SAME_FAMILY_MODEL_STAGE_KEYWORDS: Record<ModelCandidate["providerFamily"], readonly string[]> = {
+	claude: ["opus", "sonnet", "haiku"],
+	openai: ["normal", "mini", "fast", "spark"],
+	gemini: ["pro", "flash", "flash-lite"],
+};
+
 export function isDeprecatedProviderQualifiedModelId(modelId: string): boolean {
 	return DEPRECATED_PROVIDER_QUALIFIED_MODEL_IDS.has(modelId);
 }
 
 export function isOpenCodeSupportedProviderQualifiedModelId(modelId: string): boolean {
 	return OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS.has(modelId) && !isDeprecatedProviderQualifiedModelId(modelId);
+}
+
+export function getOpenCodeSupportedProviderQualifiedModelIds(): ReadonlySet<string> {
+	return OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS;
 }
 
 export function intersectWorkingAndOpenCodeSupportedModelIds(availableModelIds: readonly string[]): string[] {
@@ -142,6 +176,28 @@ export interface SameFamilyModelFallbackResolution {
 	attemptedProviderQualifiedModelIds: readonly string[];
 	providerFamily?: ModelCandidate["providerFamily"];
 }
+
+export interface FlowDeskSelectionPhaseModelFallbackEvidenceV1 {
+	requestedProviderQualifiedModelId: string;
+	selectedProviderQualifiedModelId?: string;
+	attemptedProviderQualifiedModelIds: readonly string[];
+	selectionPhaseOnly: true;
+	runtimeRetryAttempted: false;
+	fallbackAuthorityEnabled: false;
+}
+
+export interface FlowDeskRuntimeLaunchModelBindingV1 {
+	requestedProviderQualifiedModelId: string;
+	selectedProviderQualifiedModelId?: string;
+	effectiveProviderQualifiedModelId?: string;
+	attemptedProviderQualifiedModelIds: readonly string[];
+	providerFamily?: ModelCandidate["providerFamily"];
+	modelSelectionFallback: FlowDeskSelectionPhaseModelFallbackEvidenceV1;
+}
+
+export type FlowDeskRuntimeLaunchModelBindingResolutionV1 =
+	| ({ ok: true; selectedProviderQualifiedModelId: string; effectiveProviderQualifiedModelId: string } & FlowDeskRuntimeLaunchModelBindingV1)
+	| ({ ok: false; redactedReason: string } & FlowDeskRuntimeLaunchModelBindingV1);
 
 export function resolveSameFamilyOpenCodeSupportedModelFallback(input: {
 	providerQualifiedModelId: string;
@@ -175,6 +231,80 @@ export function resolveSameFamilyOpenCodeSupportedModelFallback(input: {
 	return { providerFamily: family, attemptedProviderQualifiedModelIds: attempted };
 }
 
+/**
+ * MANAGED DISPATCH PATH: Resolves the concrete model binding used by direct
+ * runtime lane launches. Must use durable working-model evidence.
+ *
+ * The OpenCode runtime only accepts exact supported model ids, while callers may
+ * provide same-family fuzzy ids such as `anthropic/claude-haiku-5.0`. This helper
+ * reloads the durable working-model snapshot, applies same-family selection-only
+ * fallback, and returns the requested model, selected effective model, and full
+ * attempted chain as non-authorizing advisory evidence. It never retries a
+ * runtime launch and never enables fallback/reselection authority.
+ */
+export function resolveOpenCodeRuntimeLaunchModelBindingV1(input: {
+	providerQualifiedModelId: string;
+}): FlowDeskRuntimeLaunchModelBindingResolutionV1 {
+	const requestedProviderQualifiedModelId = input.providerQualifiedModelId;
+	const fallbackEvidence = (resolution: SameFamilyModelFallbackResolution): FlowDeskSelectionPhaseModelFallbackEvidenceV1 => ({
+		requestedProviderQualifiedModelId,
+		...(resolution.selectedProviderQualifiedModelId === undefined ? {} : { selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId }),
+		attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds,
+		selectionPhaseOnly: true,
+		runtimeRetryAttempted: false,
+		fallbackAuthorityEnabled: false,
+	});
+
+	// Use OpenCode-supported models directly (no file I/O required)
+	const availableModelIds = Array.from(OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS);
+	const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: requestedProviderQualifiedModelId,
+		availableModelIds,
+	});
+	const evidence = fallbackEvidence(resolution);
+	const base = {
+		requestedProviderQualifiedModelId,
+		...(resolution.selectedProviderQualifiedModelId === undefined ? {} : { selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId, effectiveProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId }),
+		attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds,
+		...(resolution.providerFamily === undefined ? {} : { providerFamily: resolution.providerFamily }),
+		modelSelectionFallback: evidence,
+	};
+
+	if (!availableModelIds.includes(requestedProviderQualifiedModelId) && resolution.selectedProviderQualifiedModelId === undefined) {
+		return {
+			ok: false,
+			redactedReason: "Requested provider-qualified model is not supported by OpenCode; check your model ID.",
+			...base,
+		};
+	}
+
+	if (resolution.selectedProviderQualifiedModelId === undefined) {
+		return {
+			ok: false,
+			redactedReason: "No same-family OpenCode-supported fallback found for requested model.",
+			...base,
+		};
+	}
+
+	if (!isOpenCodeSupportedProviderQualifiedModelId(resolution.selectedProviderQualifiedModelId)) {
+		return {
+			ok: false,
+			redactedReason: "Model resolution did not produce an OpenCode-supported model.",
+			...base,
+		};
+	}
+
+	return {
+		ok: true,
+		requestedProviderQualifiedModelId,
+		selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId,
+		effectiveProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId,
+		attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds,
+		...(resolution.providerFamily === undefined ? {} : { providerFamily: resolution.providerFamily }),
+		modelSelectionFallback: evidence,
+	};
+}
+
 function providerFamilyForModelId(modelId: string): ModelCandidate["providerFamily"] | undefined {
 	if (modelId.startsWith("anthropic/") || modelId.startsWith("claude/")) return "claude";
 	if (modelId.startsWith("openai/")) return "openai";
@@ -186,22 +316,10 @@ function fallbackStageIndexForModelId(family: ModelCandidate["providerFamily"], 
 	const chain = SAME_FAMILY_EXACT_MODEL_FALLBACK_CHAINS[family];
 	const explicitIndex = chain.findIndex((stage) => stage.includes(modelId));
 	if (explicitIndex >= 0) return explicitIndex;
-	const normalized = modelId.toLowerCase();
-	if (family === "claude") {
-		if (normalized.includes("opus")) return 0;
-		if (normalized.includes("sonnet")) return 1;
-		if (normalized.includes("haiku")) return 2;
-	}
-	if (family === "openai") {
-		if (normalized.includes("spark")) return 3;
-		if (normalized.includes("mini")) return 1;
-		if (normalized.includes("fast")) return 2;
-		if (normalized.includes("gpt")) return 0;
-	}
-	if (family === "gemini") {
-		if (normalized.includes("flash-lite")) return 2;
-		if (normalized.includes("flash")) return 1;
-		if (normalized.includes("pro")) return 0;
+	const familyKeyword = fuzzyFamilyKeywordForModelId(family, modelId);
+	if (familyKeyword !== undefined) {
+		const fuzzyIndex = SAME_FAMILY_MODEL_STAGE_KEYWORDS[family].indexOf(familyKeyword);
+		if (fuzzyIndex >= 0) return fuzzyIndex;
 	}
 	return undefined;
 }
@@ -234,6 +352,10 @@ const MEDIUM_MODELS: ModelCandidate[] = [
 ];
 
 const LIGHT_MODELS: ModelCandidate[] = [
+	// gpt-5.4-mini-fast is the FlowDesk main coordinator model (see
+	// FLOWDESK_MAIN_COORDINATOR_MODEL in bootstrap-installer.ts). Listed first
+	// so light-role candidate pools can pick it when it is the working model.
+	{ providerQualifiedModelId: "openai/gpt-5.4-mini-fast", providerFamily: "openai", agentName: "reviewer-gpt-frontier", tier: "light" },
 	{ providerQualifiedModelId: "openai/gpt-5.5", providerFamily: "openai", agentName: "reviewer-gpt-frontier", tier: "light" },
 	{ providerQualifiedModelId: "anthropic/claude-sonnet-4-6", providerFamily: "claude", agentName: "reviewer-claude-opus", tier: "light" },
 	{ providerQualifiedModelId: "google/gemini-3.1-flash-lite", providerFamily: "gemini", usageKey: "gemini-flash-lite", agentName: "reviewer-gemini-pro", tier: "light" },
@@ -333,6 +455,9 @@ function usageNote(usage: ProviderUsageInput | undefined, nowMs = Date.now()): s
  * Select the best model for a task given current provider usage.
  * Uses weighted random selection so lower-usage providers are preferred
  * without completely blocking higher-usage ones.
+ *
+ * SELECTION PHASE ONLY: This function performs model assignment and planning.
+ * It does NOT authorize runtime dispatch.
  */
 export function selectModelForTask(
 	role: FlowDeskAgentRegistryRoleCategoryV1,
@@ -370,6 +495,16 @@ export function selectModelForTask(
 
 	if (weighted.length === 0) return undefined;
 
+	// Resolve OI tie-breaker score map once.  Combines an optional routing advisory
+	// (key-normalized so opaque candidate refs match providerQualifiedModelId) and
+	// an explicit oiPerformanceScores map.  Advisory-only: never used to filter or
+	// re-rank by anything other than equal-weight tie-breaks below.
+	const oiTieBreakerScores = resolveOITieBreakerScores(
+		weighted.map((w) => w.candidate.providerQualifiedModelId),
+		selectionContext.routingAdvisory,
+		selectionContext.oiPerformanceScores,
+	);
+
 	return weighted.sort((a, b) => {
 		const aUsage = usageByFamily.get(a.candidate.usageKey ?? a.candidate.providerFamily) ?? usageByFamily.get(a.candidate.providerFamily);
 		const bUsage = usageByFamily.get(b.candidate.usageKey ?? b.candidate.providerFamily) ?? usageByFamily.get(b.candidate.providerFamily);
@@ -378,9 +513,9 @@ export function selectModelForTask(
 		const byWeight = b.weight - a.weight;
 		if (byWeight !== 0) return byWeight;
 		// Phase 7.5: Tertiary tie-breaker – prefer models with higher OI performance scores
-		if (selectionContext.oiPerformanceScores !== undefined) {
-			const aScore = selectionContext.oiPerformanceScores.get(a.candidate.providerQualifiedModelId) ?? 0;
-			const bScore = selectionContext.oiPerformanceScores.get(b.candidate.providerQualifiedModelId) ?? 0;
+		if (oiTieBreakerScores !== undefined) {
+			const aScore = oiTieBreakerScores.get(a.candidate.providerQualifiedModelId) ?? 0;
+			const bScore = oiTieBreakerScores.get(b.candidate.providerQualifiedModelId) ?? 0;
 			const byOI = bScore - aScore;
 			if (byOI !== 0) return byOI;
 		}
@@ -394,6 +529,58 @@ export function selectModelForTask(
 
 function tierRank(tier: ModelTier): number {
 	return tier === "heavy" ? 0 : tier === "medium" ? 1 : 2;
+}
+
+/**
+ * Normalize a providerQualifiedModelId to the opaque candidate-ref form used by
+ * `workflow-assign-tool.ts` when persisting OI routing advisory evidence.
+ * Mirrors `selectedCandidateRef = candidate-${modelId.replace(/\//g, "-")}`.
+ */
+function candidateRefForModelId(providerQualifiedModelId: string): string {
+	return `candidate-${providerQualifiedModelId.replace(/\//g, "-")}`;
+}
+
+/**
+ * Build a tie-breaker score map keyed by providerQualifiedModelId from an optional
+ * routing advisory plus an optional caller-supplied oiPerformanceScores map.
+ *
+ * Resolution rules per candidate providerQualifiedModelId:
+ *   1. Prefer the routing advisory's model_summaries entry that matches by:
+ *      a. exact providerQualifiedModelId, then
+ *      b. candidate-ref form (candidate-<modelId-with-/-replaced-by-->), then
+ *      c. opaque model_ref that contains the providerQualifiedModelId substring.
+ *   2. Otherwise fall back to oiPerformanceScores.get(providerQualifiedModelId).
+ *
+ * Returns undefined when neither input is provided, so callers can short-circuit
+ * the tie-breaker comparison entirely (preserving byte-identical behavior in
+ * baselines that pass no OI inputs at all).
+ */
+function resolveOITieBreakerScores(
+	candidateModelIds: readonly string[],
+	advisory: FlowDeskRoutingAdvisoryEvaluationV1 | undefined,
+	explicitScores: Map<string, number> | undefined,
+): Map<string, number> | undefined {
+	if (advisory === undefined && explicitScores === undefined) return undefined;
+	const out = new Map<string, number>();
+	const summaries = advisory?.model_summaries ?? [];
+	for (const modelId of candidateModelIds) {
+		const candidateRef = candidateRefForModelId(modelId);
+		let resolved: number | undefined;
+		// 1a. exact providerQualifiedModelId match
+		let match = summaries.find((s) => s.model_ref === modelId);
+		// 1b. candidate-ref form match
+		if (match === undefined) match = summaries.find((s) => s.model_ref === candidateRef);
+		// 1c. best-effort opaque substring match (skip empty modelId guard)
+		if (match === undefined && modelId.length > 0) match = summaries.find((s) => s.model_ref.includes(modelId));
+		if (match !== undefined) resolved = match.weighted_score;
+		// 2. fall back to explicit scores
+		if (resolved === undefined && explicitScores !== undefined) {
+			const explicit = explicitScores.get(modelId);
+			if (explicit !== undefined) resolved = explicit;
+		}
+		if (resolved !== undefined) out.set(modelId, resolved);
+	}
+	return out;
 }
 
 /**

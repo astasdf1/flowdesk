@@ -423,7 +423,9 @@ test("TUI usage snapshot compact lines read fresh sidebar cache buckets", () => 
 test("TUI compact lines prioritize low short-window bucket over healthier long-window bucket", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-sidebar-short-priority-"));
 	try {
-		writeSidebarUsageCache(root, claudeProviderWithFiveHourAndWeeklyBuckets(19, 6));
+		// 5h is below the 20% priority threshold (19%) and weekly is above it (50%) → 5h must win
+		// even though weekly's remaining percent is the higher reading.
+		writeSidebarUsageCache(root, claudeProviderWithFiveHourAndWeeklyBuckets(19, 50));
 		const line0 = formatFlowDeskTuiUsageSnapshotCompactLines(
 			loadFlowDeskTuiUsageSnapshotViewV1({ rootDir: root, now: () => new Date("2026-05-27T01:02:00.000Z") }),
 		)[0];
@@ -562,6 +564,81 @@ test("TUI usage snapshot view fails closed when cache is unavailable", () => {
 		assert.equal(view.providers.length, 3);
 		assert.equal(view.providers.every((provider) => provider.connected === false), true);
 		assert.deepEqual(view.safeNextActions, ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI compact lines pick low weekly bucket over healthier 5h bucket (Bug D)", () => {
+	// Bug D regression: weekly priority threshold was 5% so a 7% weekly was ignored and an 85% 5h
+	// would win. With weekly threshold raised to 20% to match 5h, the constraining weekly wins.
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-bug-d-"));
+	try {
+		writeSidebarUsageCache(root, claudeProviderWithFiveHourAndWeeklyBuckets(85, 7));
+		const line0 = formatFlowDeskTuiUsageSnapshotCompactLines(
+			loadFlowDeskTuiUsageSnapshotViewV1({ rootDir: root, now: () => new Date("2026-05-27T01:02:00.000Z") }),
+		)[0];
+		assert.match(line0, /^CL Sonnet\s+7% \(1w, r /);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("TUI compact lines drop an expired 5h bucket in favor of a healthy weekly bucket (Bug C)", () => {
+	// Bug C regression: bucketQuotaHealth returned NEGATIVE_INFINITY for an expired bucket and the
+	// previous `weeklyHealth < fiveHourHealth` comparison incorrectly picked the expired (sentinel)
+	// 5h bucket because finite weekly health was not < -Infinity. With the fix, the expired bucket
+	// is excluded from selection by resetTime and the finite weekly bucket wins.
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-bug-c-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "provider-usage-sidebar.json"),
+			`${JSON.stringify(
+				{
+					schema_version: "flowdesk.provider_usage_sidebar_cache.v1",
+					observed_at: "2026-05-27T01:00:00.000Z",
+					expires_at: "2026-05-27T01:05:00.000Z",
+					providers: [
+						{
+							providerFamily: "claude",
+							connected: true,
+							dispatchability: "dispatchable",
+							freshness: "fresh",
+							remainingPercent: 70,
+							alertLevel: "ok",
+							buckets: [
+								{
+									// Expired short-window bucket: resetTime well in the past.
+									resetBucket: "claude-5h",
+									resetTime: "2026-05-26T20:00:00.000Z",
+									remainingPercent: 0,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+								{
+									resetBucket: "claude-weekly",
+									resetTime: "2026-05-30T01:00:00.000Z",
+									remainingPercent: 70,
+									freshness: "fresh",
+									dispatchability: "dispatchable",
+									connected: true,
+								},
+							],
+						},
+					],
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		const line0 = formatFlowDeskTuiUsageSnapshotCompactLines(
+			loadFlowDeskTuiUsageSnapshotViewV1({ rootDir: root, now: () => new Date("2026-05-27T01:02:00.000Z") }),
+		)[0];
+		assert.match(line0, /^CL Sonnet\s+70% \(1w, r /);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

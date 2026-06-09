@@ -457,6 +457,7 @@ function promotionReadiness(
 		actualLaneLaunch: false,
 		runtimeExecution: false,
 		safe_next_actions: ["/flowdesk-doctor", "/flowdesk-status"],
+		release2_managed_dispatch_gate_ready: false,
 		...overrides,
 	};
 }
@@ -679,6 +680,8 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
 			"opencode_plugin_compatibility",
 			"provider_usage_readiness",
 			"policy_project_safety",
+			"evidence_compaction",
+			"github_connector",
 		],
 	);
 	const compatibility = response.doctor_results.find(
@@ -948,9 +951,9 @@ test("doctor diagnostic handler scopes section checks without authorizing runtim
 	const runtimeResponse = runtime.response as FlowDeskDoctorResponseV1;
 	assert.deepEqual(
 		runtimeResponse.doctor_results.map((section) => section.section),
-		["opencode_plugin_compatibility"],
+		["opencode_plugin_compatibility", "github_connector"],
 	);
-	assert.equal(runtimeResponse.status, "diagnostic_only");
+	assert.equal(runtimeResponse.status, "degraded");
 	assertNoRuntimeAuthority(runtime);
 });
 
@@ -1020,6 +1023,55 @@ test("usage diagnostic handler reports unknown usage as non-dispatchable", () =>
 	assert.equal(response.dispatchability, "non_dispatchable");
 	assert.deepEqual(response.uncertainty_flags, ["unknown"]);
 	assert.equal(response.provider_health_snapshot_ref, "health-123");
+	assertNoRuntimeAuthority(result);
+});
+
+test("usage diagnostic handler maps freshest matching provider usage evidence", () => {
+	const result = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_usage",
+		{ ...requestFixture("flowdesk_usage"), provider_family: "openai" },
+		{
+			diagnostic: {
+				providerUsageEvidence: [
+					{
+						provider_family: "openai",
+						usage_snapshot_ref: "usage-openai-old",
+						provider_health_snapshot_ref: "health-openai-old",
+						freshness: "stale",
+						dispatchability: "non_dispatchable",
+						uncertainty_flags: ["stale"],
+						observed_at: "2026-05-17T00:00:00.000Z",
+					},
+					{
+						provider_family: "openai",
+						usage_snapshot_ref: "usage-openai-new",
+						provider_health_snapshot_ref: "health-openai-new",
+						freshness: "fresh",
+						dispatchability: "diagnostic_only",
+						uncertainty_flags: [],
+						observed_at: "2026-05-17T01:00:00.000Z",
+					},
+					{
+						provider_family: "gemini",
+						usage_snapshot_ref: "usage-gemini-newer",
+						provider_health_snapshot_ref: "health-gemini-newer",
+						freshness: "fresh",
+						dispatchability: "diagnostic_only",
+						uncertainty_flags: [],
+						observed_at: "2026-05-17T02:00:00.000Z",
+					},
+				],
+			},
+		},
+	);
+	assert.equal(result.ok, true);
+	const response = result.response as FlowDeskUsageResponseV1;
+	assert.equal(response.status, "diagnostic_only");
+	assert.equal(response.usage_snapshot_ref, "usage-openai-new");
+	assert.equal(response.provider_health_snapshot_ref, "health-openai-new");
+	assert.equal(response.freshness, "fresh");
+	assert.equal(response.dispatchability, "diagnostic_only");
+	assert.deepEqual(response.uncertainty_flags, []);
 	assertNoRuntimeAuthority(result);
 });
 

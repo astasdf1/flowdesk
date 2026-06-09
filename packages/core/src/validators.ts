@@ -129,7 +129,7 @@ function isEnumValue(value: unknown, allowed: readonly string[]): boolean {
   return typeof value === "string" && allowed.includes(value);
 }
 
-function validateTimestamp(value: unknown, label: string): ValidationResult {
+export function validateTimestamp(value: unknown, label: string): ValidationResult {
   if (typeof value !== "string" || value.length === 0) return invalid(`${label} is required`);
   return Number.isFinite(Date.parse(value)) ? valid() : invalid(`${label} must be a parseable timestamp`);
 }
@@ -496,7 +496,7 @@ function validateDoctorSectionResultLikeV1(value: unknown, label = "doctor_resul
   return combine([
     validateSchemaArtifactValue("flowdesk.doctor_section_result.v1", value),
     validateOpaqueId(value.run_id, `${label}.run_id`),
-    isEnumValue(value.section, ["migration_cleanup", "opencode_plugin_compatibility", "provider_usage_readiness", "policy_project_safety"]) ? valid() : invalid(`${label}.section is invalid`),
+    isEnumValue(value.section, ["migration_cleanup", "opencode_plugin_compatibility", "provider_usage_readiness", "policy_project_safety", "evidence_compaction", "github_connector"]) ? valid() : invalid(`${label}.section is invalid`),
     isEnumValue(value.category, DOCTOR_FAILURE_CATEGORIES) ? valid() : invalid(`${label}.category is invalid`),
     typeof value.summary === "string" && value.summary.length > 0 && value.summary.length <= 500 ? validateNoForbiddenRawPayloads(value.summary, `${label}.summary`) : invalid(`${label}.summary is invalid`),
     validateDoctorDiagnosticActions(value.safe_next_actions, `${label}.safe_next_actions`),

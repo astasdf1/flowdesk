@@ -326,7 +326,7 @@ test("sync capture timeout leaves launched child non-terminal for watchdog backf
 			taskId: "task-sync-timeout-nonterminal",
 			laneId: "lane-sync-timeout-nonterminal",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "work",
 			parentSessionId: "parent-test",
 			rootDir: root,

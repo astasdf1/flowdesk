@@ -8,7 +8,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type {
 	FlowDeskControlledConformanceDocWriteRecordV1,
 	FlowDeskControlledExternalWriteRequestV1,
@@ -67,8 +67,10 @@ import {
 	type PersistTerminalEvidenceResult,
 } from "./terminal-evidence-writer.js";
 import {
+	getOpenCodeSupportedProviderQualifiedModelIds,
 	isOpenCodeSupportedProviderQualifiedModelId,
 	resolveSameFamilyOpenCodeSupportedModelFallback,
+	intersectWorkingAndOpenCodeSupportedModelIds,
 } from "./model-selection-engine.js";
 
 export const flowdeskManagedDispatchBetaAdapterProfile =
@@ -3257,92 +3259,66 @@ function parseProviderQualifiedModelId(
 }
 
 function workingModelCacheAllowsDispatch(input: {
-	durableStateRootDir?: string;
 	providerQualifiedModelId: string;
+	rootDir: string;
 }): { ok: true; selectedProviderQualifiedModelId: string; fallbackEvidence: FlowDeskSelectionPhaseModelFallbackEvidenceV1 } | { ok: false; reason: string; fallbackEvidence?: FlowDeskSelectionPhaseModelFallbackEvidenceV1 } {
-	if (input.durableStateRootDir === undefined || input.durableStateRootDir.trim().length === 0) {
-		return {
-			ok: false,
-			reason:
-				"Working-model durable state root is required before managed dispatch.",
-		};
-	}
-
+	let workingModelIds: string[];
 	try {
-		const root = resolve(input.durableStateRootDir);
-		const snapshotPath = resolve(root, "model-availability", "working-models.json");
-		if (snapshotPath !== root && !snapshotPath.startsWith(`${root}${sep}`)) {
-			return {
-				ok: false,
-				reason:
-					"Working-model evidence path validation failed; refresh working-model evidence before managed dispatch.",
-			};
-		}
-
-		if (!existsSync(snapshotPath)) {
-			return {
-				ok: false,
-				reason:
-					"Working-model snapshot is missing; refresh working-model evidence before managed dispatch.",
-			};
-		}
-
+		const snapshotPath = join(input.rootDir, "model-availability/working-models.json");
 		const raw = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
-		const availableModelIds = Array.isArray(raw.available_model_ids)
-			? raw.available_model_ids.filter((value): value is string => typeof value === "string")
-			: [];
+		const ids = raw.available_model_ids;
+		workingModelIds = Array.isArray(ids) ? ids.filter((value): value is string => typeof value === "string" && value.includes("/")).filter((value, index, array) => array.indexOf(value) === index) : [];
+	} catch {
+		return { ok: false, reason: "working-model cache missing – run models refresh first" };
+	}
+	if (workingModelIds.length === 0) return { ok: false, reason: "working-model cache empty – run models refresh first" };
 
-		const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
-			providerQualifiedModelId: input.providerQualifiedModelId,
-			availableModelIds,
-		});
-		const fallbackEvidence: FlowDeskSelectionPhaseModelFallbackEvidenceV1 = {
-			requestedProviderQualifiedModelId: input.providerQualifiedModelId,
-			...(resolution.selectedProviderQualifiedModelId === undefined ? {} : { selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId }),
-			attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds,
-			selectionPhaseOnly: true,
-			runtimeRetryAttempted: false,
-			fallbackAuthorityEnabled: false,
-		};
+	const selectableModelIds = intersectWorkingAndOpenCodeSupportedModelIds(workingModelIds);
+	if (selectableModelIds.length === 0) {
+		return { ok: false, reason: "working-model cache has no OpenCode-supported exact models – refresh working-model evidence before assignment" };
+	}
 
-		if (!availableModelIds.includes(input.providerQualifiedModelId) && resolution.selectedProviderQualifiedModelId === undefined) {
-			return {
-				ok: false,
-				fallbackEvidence,
-				reason:
-					"Requested provider-qualified model is not present in cached working-model snapshot; refresh working-model evidence before managed dispatch.",
-			};
-		}
+	const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		availableModelIds: selectableModelIds,
+	});
+	const fallbackEvidence: FlowDeskSelectionPhaseModelFallbackEvidenceV1 = {
+		requestedProviderQualifiedModelId: input.providerQualifiedModelId,
+		...(resolution.selectedProviderQualifiedModelId === undefined ? {} : { selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId }),
+		attemptedProviderQualifiedModelIds: resolution.attemptedProviderQualifiedModelIds,
+		selectionPhaseOnly: true,
+		runtimeRetryAttempted: false,
+		fallbackAuthorityEnabled: false,
+	};
 
-		if (resolution.selectedProviderQualifiedModelId === undefined) {
-			return {
-				ok: false,
-				fallbackEvidence,
-				reason:
-					"Requested provider-qualified model is cached as available but no same-family OpenCode-supported fallback is present in working-model evidence; refresh model catalog/evidence before managed dispatch.",
-			};
-		}
-
-		if (!isOpenCodeSupportedProviderQualifiedModelId(resolution.selectedProviderQualifiedModelId)) {
-			return {
-				ok: false,
-				fallbackEvidence,
-				reason:
-					"Requested provider-qualified model resolution did not produce an OpenCode-supported model; refresh model catalog/evidence before managed dispatch.",
-			};
-		}
-
-		return { ok: true, selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId, fallbackEvidence };
-	} catch (error) {
-		const errorName = typeof (error as { name?: unknown })?.name === "string"
-			? (error as { name: string }).name
-			: "sdk_prompt_error";
+	if (!selectableModelIds.includes(input.providerQualifiedModelId) && resolution.selectedProviderQualifiedModelId === undefined) {
 		return {
 			ok: false,
+			fallbackEvidence,
 			reason:
-				"Working-model snapshot is missing or unreadable; refresh working-model evidence before managed dispatch.",
+				"Requested provider-qualified model is not supported by OpenCode; check your model ID.",
 		};
 	}
+
+	if (resolution.selectedProviderQualifiedModelId === undefined) {
+		return {
+			ok: false,
+			fallbackEvidence,
+			reason:
+				"No same-family OpenCode-supported fallback found for requested model.",
+		};
+	}
+
+	if (!isOpenCodeSupportedProviderQualifiedModelId(resolution.selectedProviderQualifiedModelId)) {
+		return {
+			ok: false,
+			fallbackEvidence,
+			reason:
+				"Model resolution did not produce an OpenCode-supported model.",
+		};
+	}
+
+	return { ok: true, selectedProviderQualifiedModelId: resolution.selectedProviderQualifiedModelId, fallbackEvidence };
 }
 
 function opencodeRuntimeProviderIDForFlowDeskProviderFamily(
@@ -3790,7 +3766,12 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			"Explicit actual runtime lane launch opt-in is required.",
 			plan,
 		);
-	const parentSessionRef = refFrom("ses", input.request.parentSessionId);
+	// Empty parentSessionId is an unattached launch; the plan carries a fixed
+	// unattached sentinel ref. Otherwise the request ref must match the plan.
+	// unattached launches will not appear in session-scoped sidebar rows and wake notifications will not be delivered to any specific session
+	const parentSessionRef = input.request.parentSessionId.length === 0
+		? "ses-unattached-parent-session"
+		: refFrom("ses", input.request.parentSessionId);
 	if (plan.parent_session_ref !== parentSessionRef)
 		return blockedRuntimeLaneLaunch(
 			"Runtime lane launch parent session does not match the launch plan binding.",
@@ -3828,20 +3809,26 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			plan,
 		);
 	let childSessionId: string | undefined;
+	// Empty parentSessionId means "unattached launch" — SDK `session.create`
+	// must receive `parentID: undefined` so the runtime creates a top-level
+	// session instead of waiting on a non-existent synthetic parent.
+	const sdkParentId = input.request.parentSessionId.length === 0
+		? undefined
+		: input.request.parentSessionId;
 	try {
 		childSessionId = sessionIdFromResponse(
 			await callSdkWithLegacyFallback(
 				create as (options: unknown) => unknown | Promise<unknown>,
 				input.client.session,
 				{
-					parentID: input.request.parentSessionId,
+					parentID: sdkParentId,
 					...(input.request.title === undefined
 						? {}
 						: { title: input.request.title.slice(0, 120) }),
 				},
 				{
 					body: {
-						parentID: input.request.parentSessionId,
+						parentID: sdkParentId,
 						...(input.request.title === undefined
 							? {}
 							: { title: input.request.title.slice(0, 120) }),
@@ -4879,9 +4866,16 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			"Injected OpenCode client is missing the requested session prompt method.",
 		);
 
+	if (!input.durableStateRootDir) {
+		return blocked(
+			input.boundaryInput,
+			guardDecision,
+			"Dispatch requires durable state root directory to validate working models.",
+		);
+	}
 	const workingModelGate = workingModelCacheAllowsDispatch({
-		durableStateRootDir: input.durableStateRootDir,
 		providerQualifiedModelId: approvedProviderQualifiedModelId,
+		rootDir: input.durableStateRootDir,
 	});
 	if (!workingModelGate.ok) {
 		return blocked(input.boundaryInput, guardDecision, workingModelGate.reason);

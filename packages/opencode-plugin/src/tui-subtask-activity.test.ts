@@ -671,3 +671,54 @@ test("TUI latest synthesis view renders cached display-only synthesis", () => {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("TUI subtask activity view filters out ses-unattached-parent-session lanes for any real session", () => {
+	// Unattached lanes (empty parentSessionId at launch time) receive the
+	// ses-unattached-parent-session sentinel. They must NOT appear in any
+	// session-scoped sidebar view since there is no origin session to match.
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-unattached-parent-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(
+			join(uiDir, "subtask-activity-sidebar.json"),
+			`${JSON.stringify({
+				schema_version: "flowdesk.subtask_activity_sidebar_cache.v1",
+				observed_at: "2026-06-09T00:00:00.000Z",
+				expires_at: "2026-06-09T00:02:00.000Z",
+				rows: [
+					{
+						workflowId: "workflow-unattached",
+						laneId: "lane-task-unattached",
+						taskId: "task-unattached",
+						parentSessionRef: "ses-unattached-parent-session",
+						state: "task_result",
+						classification: "terminal",
+						recoveryActionRefs: ["/flowdesk-status"],
+					},
+					{
+						workflowId: "workflow-real",
+						laneId: "lane-task-real",
+						taskId: "task-real",
+						parentSessionRef: "ses-ses_real123",
+						state: "task_result",
+						classification: "terminal",
+						recoveryActionRefs: ["/flowdesk-status"],
+					},
+				],
+			}, null, 2)}\n`,
+			"utf8",
+		);
+
+		// Any real session must NOT see the unattached lane
+		const view = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, currentParentSessionRef: "ses_real123", now: () => new Date("2026-06-09T00:01:00.000Z") });
+		assert.equal(view.rows.length, 1, "only real-session lane should be visible");
+		assert.equal(view.rows[0]?.laneId, "lane-task-real");
+
+		// Without session filter, both rows appear (global view)
+		const unfiltered = loadFlowDeskTuiSubtaskActivityViewV1({ rootDir: root, now: () => new Date("2026-06-09T00:01:00.000Z") });
+		assert.equal(unfiltered.rows.length, 2);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

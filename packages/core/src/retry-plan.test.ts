@@ -147,6 +147,18 @@ test("agent task context validator accepts valid records", () => {
 		validateFlowDeskAgentTaskContextV1(agentTaskContext({ prompt_text_truncated: true })).ok,
 		true,
 	);
+	assert.equal(
+		validateFlowDeskAgentTaskContextV1(agentTaskContext({ recorded_parent_provider_qualified_model_id: "anthropic/claude-opus-4-7" })).ok,
+		true,
+	);
+});
+
+test("agent task context validator rejects malformed recorded parent model", () => {
+	const malformed = validateFlowDeskAgentTaskContextV1(
+		agentTaskContext({ recorded_parent_provider_qualified_model_id: "claude-opus-4-7" }),
+	);
+	assert.equal(malformed.ok, false);
+	assert.equal(malformed.errors.some((e) => e.includes("provider/model format")), true);
 });
 
 test("agent task context validator rejects oversized prompt text and authority", () => {

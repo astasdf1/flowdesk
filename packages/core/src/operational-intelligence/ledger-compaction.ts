@@ -37,6 +37,7 @@ export interface FlowDeskLedgerCompactionSnapshotV1 {
 	pruned_entry_count: number;
 	pruned_ttl_count: number;
 	pruned_cap_count: number;
+	pending_gate_promotion_preserved_count: number;
 	byte_size_pre: number;
 	byte_size_post: number;
 	trigger_reason: FlowDeskLedgerCompactionTriggerReasonV1;
@@ -104,6 +105,7 @@ const SNAPSHOT_ALLOWED = [
 	"pruned_entry_count",
 	"pruned_ttl_count",
 	"pruned_cap_count",
+	"pending_gate_promotion_preserved_count",
 	"byte_size_pre",
 	"byte_size_post",
 	"trigger_reason",
@@ -146,6 +148,14 @@ function validateDecodedRoutingEntry(entry: unknown, label: string): string[] {
 	return errors;
 }
 
+function hasPendingGatePromotionPublicationState(entry: FlowDeskRoutingAdvisoryLedgerEntryV1): boolean {
+	if (!isRecord(entry)) return false;
+	const record = entry as Record<string, unknown>;
+	const schemaVersion = record.schema_version;
+	const publicationState = record.publication_state ?? record.publicationState;
+	return typeof schemaVersion === "string" && schemaVersion.includes("publication_result") && publicationState === "pending_gate_promotion";
+}
+
 export function compactFlowDeskAdvisoryLedgerV1(input: {
 	entries: readonly FlowDeskRoutingAdvisoryLedgerEntryV1[];
 	policy?: FlowDeskLedgerRetentionPolicyV1;
@@ -176,11 +186,18 @@ export function compactFlowDeskAdvisoryLedgerV1(input: {
 	const maxAgeMs = policy.max_score_age_days * 24 * 60 * 60 * 1000;
 	const cutoffMs = compactedAtMs - maxAgeMs;
 
+	const pendingGatePromotionPreserved = new Set<FlowDeskRoutingAdvisoryLedgerEntryV1>();
 	const ttlRetained: FlowDeskRoutingAdvisoryLedgerEntryV1[] = [];
 	let prunedTtlCount = 0;
 	for (const entry of input.entries) {
-		if (Date.parse(entry.recorded_at) < cutoffMs) prunedTtlCount += 1;
-		else ttlRetained.push(entry);
+		if (Date.parse(entry.recorded_at) < cutoffMs) {
+			if (hasPendingGatePromotionPublicationState(entry)) {
+				pendingGatePromotionPreserved.add(entry);
+				ttlRetained.push(entry);
+			} else {
+				prunedTtlCount += 1;
+			}
+		} else ttlRetained.push(entry);
 	}
 
 	const keepBySignature = new Map<string, Set<FlowDeskRoutingAdvisoryLedgerEntryV1>>();
@@ -191,11 +208,18 @@ export function compactFlowDeskAdvisoryLedgerV1(input: {
 		bySignature.set(entry.signature_ref, bucket);
 	}
 	for (const [signature, entries] of bySignature.entries()) {
-		keepBySignature.set(signature, new Set(entries
+		const capRetained = new Set(entries
 			.map((entry, originalIndex) => ({ entry, originalIndex }))
 			.sort((a, b) => Date.parse(b.entry.recorded_at) - Date.parse(a.entry.recorded_at) || a.originalIndex - b.originalIndex)
 			.slice(0, policy.max_ledger_entries_per_signature)
-			.map(({ entry }) => entry)));
+			.map(({ entry }) => entry));
+		for (const entry of entries) {
+			if (hasPendingGatePromotionPublicationState(entry) && !capRetained.has(entry)) {
+				pendingGatePromotionPreserved.add(entry);
+				capRetained.add(entry);
+			}
+		}
+		keepBySignature.set(signature, capRetained);
 	}
 
 	const retainedEntries = ttlRetained.filter((entry) => keepBySignature.get(entry.signature_ref)?.has(entry) === true);
@@ -211,6 +235,7 @@ export function compactFlowDeskAdvisoryLedgerV1(input: {
 		pruned_entry_count: prunedTtlCount + prunedCapCount,
 		pruned_ttl_count: prunedTtlCount,
 		pruned_cap_count: prunedCapCount,
+		pending_gate_promotion_preserved_count: pendingGatePromotionPreserved.size,
 		byte_size_pre: byteSize(originalJsonl),
 		byte_size_post: byteSize(retainedJsonl),
 		trigger_reason: input.triggerReason,
@@ -234,7 +259,7 @@ export function validateFlowDeskLedgerCompactionSnapshotV1(value: unknown): Vali
 	errors.push(...validateOpaqueId(record.compaction_id, "compaction_id").errors);
 	errors.push(...validateOpaqueRef(record.policy_ref, "policy_ref").errors);
 	if (record.workflow_id !== undefined) errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
-	for (const field of ["original_entry_count", "retained_entry_count", "pruned_entry_count", "pruned_ttl_count", "pruned_cap_count", "byte_size_pre", "byte_size_post"] as const) {
+	for (const field of ["original_entry_count", "retained_entry_count", "pruned_entry_count", "pruned_ttl_count", "pruned_cap_count", "pending_gate_promotion_preserved_count", "byte_size_pre", "byte_size_post"] as const) {
 		if (!Number.isInteger(record[field]) || (record[field] as number) < 0) errors.push(`${field} must be a non-negative integer`);
 	}
 	if (typeof record.original_entry_count === "number" && typeof record.retained_entry_count === "number" && typeof record.pruned_entry_count === "number" && record.original_entry_count !== record.retained_entry_count + record.pruned_entry_count) errors.push("original_entry_count must equal retained_entry_count + pruned_entry_count");

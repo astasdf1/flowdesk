@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
@@ -9,6 +10,12 @@ import {
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
 const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
+
+function wakeDiagnosticLogPath(filename: string): string {
+	return join(homedir(), ".flowdesk", filename);
+}
+
+
 
 export interface FlowDeskEventHookObservationResultV1 {
 	matched: boolean;
@@ -338,7 +345,7 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 	if (WAKE_DIAG_ENABLED) {
 		try {
 			const fs = require("node:fs") as typeof import("node:fs");
-			fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/event-hook-diag.log",
+			fs.appendFileSync(wakeDiagnosticLogPath("event-hook-diag.log"),
 				`${new Date().toISOString()} type=${type} sessionId=${sessionId} rootDir=${input.rootDir}\n`, "utf8");
 		} catch { /* best-effort */ }
 	}
@@ -347,7 +354,7 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 	if (WAKE_DIAG_ENABLED) {
 		try {
 			const fs = require("node:fs") as typeof import("node:fs");
-			fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/event-hook-diag.log",
+			fs.appendFileSync(wakeDiagnosticLogPath("event-hook-diag.log"),
 				`${new Date().toISOString()}   -> binding=${binding === undefined ? "NOT_FOUND" : binding.laneId} finalizationRelevant=${eventIsFinalizationRelevant(type, eventProgress(input.event)?.label)}\n`, "utf8");
 		} catch { /* best-effort */ }
 	}

@@ -876,11 +876,24 @@ function persistProviderUsageSidebarCache(
 			usageSnapshotRef: snap.snapshot_id,
 		}));
 		// When evidence-cache reuse path produced no additional buckets, preserve weekly etc. from previous sidebar.
+		// Bug A fix: drop buckets whose expires_at has already passed so stale buckets (e.g. an expired 5h
+		// short-window bucket) are not carried forward indefinitely across refreshes.
 		const prevBuckets = previousSidebarBucketsByFamily.get(row.providerFamily) ?? [];
 		const primaryResetBucket = row.resetBucket ?? "";
+		const nowMsForCarryForward = Date.parse(observedAt);
 		const preservedBuckets = freshAdditional.length > 0
 			? []
-			: prevBuckets.filter((b) => typeof b.resetBucket === "string" && b.resetBucket !== primaryResetBucket);
+			: prevBuckets.filter((b) => {
+				if (typeof b.resetBucket !== "string") return false;
+				if (b.resetBucket === primaryResetBucket) return false;
+				if (typeof b.expires_at === "string") {
+					const expiresMs = Date.parse(b.expires_at);
+					if (Number.isFinite(expiresMs) && Number.isFinite(nowMsForCarryForward) && expiresMs <= nowMsForCarryForward) {
+						return false;
+					}
+				}
+				return true;
+			});
 		const additionalBuckets = freshAdditional.length > 0 ? freshAdditional : preservedBuckets as typeof freshAdditional;
 		return {
 			providerFamily: row.providerFamily,

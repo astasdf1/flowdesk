@@ -801,6 +801,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		});
 		const progressByLane = latestByLane(reload.entries, "agent_task_progress");
 		const childSessionByLane = latestByLane(reload.entries, "agent_task_child_session");
+		const heartbeatByLane = latestByLane(reload.entries, "lane_heartbeat");
 		// Some lanes reach a terminal state via lane_lifecycle alone (e.g. reviewer
 		// execution bridge writes only lane_lifecycle=invocation_failed without a
 		// task_failed companion). Pick the latest terminal lifecycle per lane so the
@@ -822,13 +823,14 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const synthesisEntries = reload.entries.filter((entry) => entry.evidenceClass === "workflow_synthesis_result");
 		const latestSynthesisEntry = synthesisEntries[synthesisEntries.length - 1];
 		const synthesisAlreadyRecorded = latestSynthesisEntry !== undefined;
-		const laneIds = new Set<string>([...contextByLane.keys(), ...resultByLane.keys(), ...failedByLane.keys(), ...terminalLifecycleByLane.keys(), ...progressByLane.keys(), ...childSessionByLane.keys()]);
+		const laneIds = new Set<string>([...contextByLane.keys(), ...resultByLane.keys(), ...failedByLane.keys(), ...terminalLifecycleByLane.keys(), ...progressByLane.keys(), ...childSessionByLane.keys(), ...heartbeatByLane.keys()]);
 		const rows: UiRow[] = [...laneIds].map((laneId) => {
 			const result = resultByLane.get(laneId)?.record;
 			const failed = failedByLane.get(laneId)?.record;
 			const context = contextByLane.get(laneId)?.record;
 			const progress = progressByLane.get(laneId)?.record;
 			const childSession = childSessionByLane.get(laneId)?.record;
+			const heartbeat = heartbeatByLane.get(laneId)?.record;
 			const lifecycle = terminalLifecycleByLane.get(laneId)?.record;
 			const lifecycleState = typeof lifecycle?.state === "string" ? lifecycle.state : undefined;
 			// A lane is terminal-without-success when lifecycle reports a non-complete
@@ -843,7 +845,7 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 			// parentSessionRef and the session-scoped TUI sidebar filtered them out,
 			// so a launched subtask only became visible after it terminated. Including
 			// childSession keeps running rows correctly scoped to the current session.
-			const parentSessionRef = firstStringField("parent_session_ref", context, lifecycle, childSession);
+			const parentSessionRef = firstStringField("parent_session_ref", context, lifecycle, childSession, heartbeat);
 			const taskSummary = compactTaskSummary(getString(context ?? {}, "prompt_text"));
 			const state = result !== undefined
 				? "task_result"
@@ -975,17 +977,14 @@ export function refreshFlowDeskCompletionUiCachesV1(input: {
 		const permissionWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:awaiting_permission:${wakeReadyIso}:${awaitingPermissionRows.length}`;
 		const diagnosticWakeConsumptionKey = `${wakeParentScope}:${input.workflowId}:diagnostic_attention:${wakeReadyIso}:${toolDiagnosticRows.length}`;
 		const terminalCompletedRows = rows.filter((row) => row.classification === "terminal" && (row.state === "task_result" || row.state === "invocation_failed" || row.state === "task_failed" || row.state === "no_output"));
-		// Resolve the parent/main-session launch snapshot from evidence so wake
-		// prompts route to the parent session's model, not the delegated lane model.
-		// Priority: explicit parent wake model > parent session launch snapshot. Do
-		// NOT fall back to provider_qualified_model_id; that is the lane/task model.
-		const parentWakeModelCandidates = [...contextByLane.values()]
-			.map((entry) => getString(entry.record, "parent_wake_provider_qualified_model_id"))
-			.filter((value): value is string => typeof value === "string" && value.includes("/"));
-		const parentSessionModelCandidates = parentWakeModelCandidates.length > 0 ? [] : [...contextByLane.values()]
-			.map((entry) => getString(entry.record, "parent_session_provider_qualified_model_id"))
-			.filter((value): value is string => typeof value === "string" && value.includes("/"));
-		const parentWakeModelId = parentWakeModelCandidates[0] ?? parentSessionModelCandidates[0];
+	// Resolve the parent/main-session launch snapshot from evidence so wake
+	// prompts route to the parent session's model, not the delegated lane model.
+	// Priority: recorded parent model > legacy parent wake model. Do
+	// NOT fall back to provider_qualified_model_id; that is the lane/task model.
+	const parentWakeModelCandidates = [...contextByLane.values()]
+		.map((entry) => getString(entry.record, "recorded_parent_provider_qualified_model_id") ?? getString(entry.record, "parent_wake_provider_qualified_model_id"))
+		.filter((value): value is string => typeof value === "string" && value.includes("/"));
+	const parentWakeModelId = parentWakeModelCandidates[0];
 		const workflowWakeReadyRow: CompletionWakeReadyRow | undefined = !terminalComplete && awaitingPermissionRows.length > 0 ? {
 			workflowId: input.workflowId,
 			...(parentSessionRef === undefined ? {} : { parentSessionRef }),

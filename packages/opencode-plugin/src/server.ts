@@ -20,6 +20,7 @@ import {
 	type FlowDeskProductionApprovalSourceV1,
 	type FlowDeskRelease1MinimumPortableCommandName,
 	type FlowDeskRelease1MinimumToolName,
+	type FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1,
 	type FlowDeskGitHubDryRunPublicationResultV1,
 	type FlowDeskReviewerFanoutFromReloadedCacheEvidenceInputV1,
 	type FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
@@ -166,6 +167,10 @@ import {
 import { publishToGitHubV1, type GitHubPublicationTargetV1 } from "./federated-registry-connector.js";
 
 const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
+
+function wakeDiagnosticLogPath(filename: string): string {
+	return join(homedir(), ".flowdesk", filename);
+}
 
 export const flowdeskPreSpikeDoctorToolName =
 	"flowdesk_pre_spike_doctor" as const;
@@ -352,6 +357,19 @@ interface FlowDeskDefaultManagedDispatchAuthorizationAutoOptionsV1 {
 	sdkClientRef: string;
 	defaultReleaseEnablementRef: string;
 	allowUncertainty?: boolean;
+	/**
+	 * Optional opaque durable evidence ref for a persisted Release 2 managed
+	 * dispatch gate promotion readiness record. Used together with
+	 * `release2GateReadinessResult` so that the promotion readiness evaluator
+	 * can block the default candidate when Release 2 has not yet completed.
+	 */
+	release2GateReadinessRef?: string;
+	/**
+	 * Optional Release 2 managed dispatch gate promotion readiness result that
+	 * the promotion readiness evaluator validates before allowing the default
+	 * dispatch candidate state.
+	 */
+	release2GateReadinessResult?: FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1;
 }
 
 interface FlowDeskDerivedDefaultManagedDispatchAuthorizationInputV1 {
@@ -2510,6 +2528,44 @@ export interface FlowDeskChatMessageGuardedAutoAbortOptionsV1
 	sdkClient?: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 }
 
+/**
+ * Bug B fix: sidebar cache staleness must consider per-bucket `expires_at` not just the top-level
+ * `observed_at`. The writer always bumps the top-level timestamp during refresh, so refresh triggers
+ * that only check the top-level field never re-fetch when a child bucket (e.g. an expired 5h) has
+ * passed its expiry — the cache stays "fresh" forever and the UI continues to show a stale bucket.
+ *
+ * Returns true when either the top-level `observed_at` is older than `maxAgeMs`, or any nested
+ * `buckets[].expires_at` has already passed `nowMs`. Malformed/missing cache files are treated as
+ * stale by the caller (which catches the throw).
+ */
+export function isProviderUsageSidebarCacheStale(
+	cache: Record<string, unknown>,
+	nowMs: number,
+	maxAgeMs: number,
+): boolean {
+	if (typeof cache.observed_at === "string") {
+		const observedMs = Date.parse(cache.observed_at);
+		if (Number.isFinite(observedMs) && nowMs - observedMs > maxAgeMs) return true;
+	} else {
+		return true;
+	}
+	const providers = cache.providers;
+	if (Array.isArray(providers)) {
+		for (const provider of providers) {
+			if (!isRecord(provider)) continue;
+			const buckets = provider.buckets;
+			if (!Array.isArray(buckets)) continue;
+			for (const bucket of buckets) {
+				if (!isRecord(bucket)) continue;
+				if (typeof bucket.expires_at !== "string") continue;
+				const expiresMs = Date.parse(bucket.expires_at);
+				if (Number.isFinite(expiresMs) && expiresMs <= nowMs) return true;
+			}
+		}
+	}
+	return false;
+}
+
 export function createFlowDeskNaturalLanguageChatMessageHook(
 	now: FlowDeskLocalClockV1 = () => new Date(),
 	session = createFlowDeskLocalNonDispatchAdapterSession(now),
@@ -2539,7 +2595,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 		if (WAKE_DIAG_ENABLED) {
 			try {
 				(require("node:fs") as typeof import("node:fs")).appendFileSync(
-					"/Users/bagel_macpro_055/.flowdesk/chat-session-diag.log",
+					wakeDiagnosticLogPath("chat-session-diag.log"),
 					`${new Date().toISOString()} liveMainSessionId=${liveMainSessionId || "EMPTY"} lastRef=${lastCompletionWakeParentSessionRef ?? "NONE"}\n`,
 					"utf8",
 				);
@@ -2569,7 +2625,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			try {
 				const cachePath = join(providerUsageLiveConfig.durableStateRootDir, ".flowdesk", "ui", "provider-usage-sidebar.json");
 				const cacheContent = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
-				if (typeof cacheContent.observed_at === "string" && nowMs - Date.parse(cacheContent.observed_at) > usageAutoRefreshMaxAgeMs) isStale = true;
+				isStale = isProviderUsageSidebarCacheStale(cacheContent, nowMs, usageAutoRefreshMaxAgeMs);
 			} catch {
 				isStale = true;
 			}
@@ -3637,12 +3693,12 @@ function initializeCompletionWakeParentSessionRefFromReadyCache(rootDir: string)
 			lastCompletionWakeParentSessionRef === undefined
 		) {
 			lastCompletionWakeParentSessionRef = selectedParentSessionRef;
-			if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} SEEDED lastRef=${selectedParentSessionRef}\n`, "utf8"); } catch {} }
+			if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync(wakeDiagnosticLogPath("wake-seed-diag.log"), `${new Date().toISOString()} SEEDED lastRef=${selectedParentSessionRef}\n`, "utf8"); } catch {} }
 		} else {
-			if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} SEED_SKIPPED locked=${completionWakeParentSessionRefLockedFromChat} alreadySet=${lastCompletionWakeParentSessionRef !== undefined} selected=${selectedParentSessionRef ?? "NONE"}\n`, "utf8"); } catch {} }
+			if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync(wakeDiagnosticLogPath("wake-seed-diag.log"), `${new Date().toISOString()} SEED_SKIPPED locked=${completionWakeParentSessionRefLockedFromChat} alreadySet=${lastCompletionWakeParentSessionRef !== undefined} selected=${selectedParentSessionRef ?? "NONE"}\n`, "utf8"); } catch {} }
 		}
 	} catch(e) {
-		if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} SEED_ERROR ${String(e)}\n`, "utf8"); } catch {} }
+		if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync(wakeDiagnosticLogPath("wake-seed-diag.log"), `${new Date().toISOString()} SEED_ERROR ${String(e)}\n`, "utf8"); } catch {} }
 		// Best-effort startup cache seeding only; missing or malformed cache is safe.
 	}
 }
@@ -3698,7 +3754,7 @@ export function completionWakeMainSessionConfigFromOptions(options?: PluginOptio
 		lastCompletionWakeParentSessionRef = liveSessionId.startsWith("ses-")
 			? liveSessionId
 			: `ses-${liveSessionId}`;
-		if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-seed-diag.log", `${new Date().toISOString()} OVERWRITE_FROM_CTX liveSessionId=${liveSessionId} stack=${new Error().stack?.split("\n").slice(1,4).join("|")}\n`, "utf8"); } catch {} }
+		if (WAKE_DIAG_ENABLED) { try { (require("node:fs") as typeof import("node:fs")).appendFileSync(wakeDiagnosticLogPath("wake-seed-diag.log"), `${new Date().toISOString()} OVERWRITE_FROM_CTX liveSessionId=${liveSessionId} stack=${new Error().stack?.split("\n").slice(1,4).join("|")}\n`, "utf8"); } catch {} }
 	}
 	const parentSessionRef = lastCompletionWakeParentSessionRef ?? configuredParentSessionRef;
 	
@@ -3722,6 +3778,21 @@ function liveSessionIdFromContext(ctx: unknown): string {
 		if (trimmed.length > 0) return trimmed;
 	}
 	return "";
+}
+
+function providerQualifiedModelIdFromString(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return /^[^\s/]+\/[^\s/]+$/.test(trimmed) ? trimmed : undefined;
+}
+
+function providerQualifiedModelIdFromContextModel(value: unknown): string | undefined {
+	const stringModel = providerQualifiedModelIdFromString(value);
+	if (stringModel !== undefined) return stringModel;
+	if (!isRecord(value)) return undefined;
+	const providerId = typeof value.providerID === "string" ? value.providerID.trim() : undefined;
+	const modelId = typeof value.modelID === "string" ? value.modelID.trim() : undefined;
+	return providerId && modelId ? providerQualifiedModelIdFromString(`${providerId}/${modelId}`) : undefined;
 }
 
 function productionEnablementFromOptions(
@@ -3845,6 +3916,14 @@ function defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
 		(value.killSwitchState !== "inactive" && value.killSwitchState !== "active")
 	)
 		return undefined;
+	const release2GateReadinessRef =
+		typeof value.release2GateReadinessRef === "string" &&
+		value.release2GateReadinessRef.trim().length > 0
+			? value.release2GateReadinessRef
+			: undefined;
+	const release2GateReadinessResult = isRecord(value.release2GateReadinessResult)
+		? (value.release2GateReadinessResult as unknown as FlowDeskRelease2ManagedDispatchGatePromotionReadinessV1)
+		: undefined;
 	return {
 		enabled: true,
 		...(typeof value.authorizationId === "string" && value.authorizationId.trim().length > 0
@@ -3868,6 +3947,12 @@ function defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
 		...(typeof value.allowUncertainty === "boolean"
 			? { allowUncertainty: value.allowUncertainty }
 			: {}),
+		...(release2GateReadinessRef === undefined
+			? {}
+			: { release2GateReadinessRef }),
+		...(release2GateReadinessResult === undefined
+			? {}
+			: { release2GateReadinessResult }),
 	};
 }
 
@@ -3932,6 +4017,15 @@ function deriveDefaultManagedDispatchAuthorizationFromProductionEnablement(
 		sdkClientRef: autoOptions.sdkClientRef,
 		defaultReleaseEnablementRef: autoOptions.defaultReleaseEnablementRef,
 		allowUncertainty: autoOptions.allowUncertainty,
+		...(autoOptions.release2GateReadinessRef === undefined
+			? {}
+			: { release2GateReadinessRef: autoOptions.release2GateReadinessRef }),
+		...(autoOptions.release2GateReadinessResult === undefined
+			? {}
+			: {
+					release2GateReadinessResult:
+						autoOptions.release2GateReadinessResult,
+				}),
 	});
 	const now = input.now ?? new Date();
 	return authorizeFlowDeskDefaultManagedDispatchV1({
@@ -3949,6 +4043,128 @@ function deriveDefaultManagedDispatchAuthorizationFromProductionEnablement(
 		killSwitchState: autoOptions.killSwitchState,
 		now: now.getTime(),
 	});
+}
+
+/**
+ * Diagnostic, doctor-only counterpart of
+ * `deriveDefaultManagedDispatchAuthorizationFromProductionEnablement`. The
+ * regular function is invoked for actual run requests and requires both a
+ * concrete `workflow_id` from the request envelope and an injected managed
+ * dispatch SDK client. Doctor is invoked without either of those, so this
+ * helper performs the same production-enablement + promotion-readiness
+ * evaluation against a fixed `doctor-probe-*` workflow id, derived from the
+ * configured production enablement metadata. It NEVER opens dispatch
+ * authority: the returned authorization, if any, is purely a doctor display
+ * artifact derived from durable evidence the user already wrote under the
+ * configured `durableStateRoot`.
+ *
+ * Returns the authorization when:
+ *   - default managed dispatch metadata is configured in options, and
+ *   - a durable state root is configured, and
+ *   - `.flowdesk/sessions/<doctor-probe-workflow-id>/evidence/` already
+ *     contains the required plugin-satisfiable evidence files (pre-dispatch
+ *     audit, production approval source, dispatch idempotency snapshot), and
+ *   - the inline production enablement options (configured verification
+ *     result, sanitized auth capture result, external-auth provider policy
+ *     result, approval decision) are coherent and approval is "approve".
+ *
+ * Returns `undefined` otherwise so doctor falls back to the previous
+ * `release1_non_dispatch_command_registration_ready` profile and explicit
+ * `defaultManagedDispatchRegistrationAuthorized: false` display.
+ */
+function deriveDefaultManagedDispatchAuthorizationForDoctorV1(input: {
+	options?: PluginOptions;
+	durableStateRootDir?: string;
+	now?: Date;
+}): FlowDeskDefaultManagedDispatchAuthorizationV1 | undefined {
+	const autoOptions =
+		defaultManagedDispatchAuthorizationAutoOptionsFromProductionEnablement(
+			input.options,
+		);
+	if (autoOptions === undefined) return undefined;
+	const productionOptions = productionEnablementFromOptions(input.options);
+	if (productionOptions === undefined) return undefined;
+	if (input.durableStateRootDir === undefined) return undefined;
+	const workflowId = doctorProbeWorkflowIdFromOptions(input.options);
+	const evidenceReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: input.durableStateRootDir,
+	});
+	const productionEnablement = evaluateFlowDeskProductionEnablementV1({
+		workflowId,
+		evidenceReload,
+		preDispatchAuditRef: productionOptions.preDispatchAuditRef,
+		configuredVerificationRef: productionOptions.configuredVerificationRef,
+		configuredVerificationResult: productionOptions.configuredVerificationResult,
+		sanitizedAuthCaptureRef: productionOptions.sanitizedAuthCaptureRef,
+		sanitizedAuthCaptureResult: productionOptions.sanitizedAuthCaptureResult,
+		externalAuthPolicyRef: productionOptions.externalAuthPolicyRef,
+		providerPolicyRef: productionOptions.providerPolicyRef,
+		externalAuthProviderPolicyResult:
+			productionOptions.externalAuthProviderPolicyResult,
+		laneConformanceRefs: productionOptions.laneConformanceRefs,
+		allowIncompleteConformance: productionOptions.allowIncompleteConformance,
+		approvalDecision: productionOptions.approvalDecision,
+	});
+	if (productionEnablement.plugin_satisfiable_gate_passed !== true)
+		return undefined;
+	const readiness = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+		productionEnablement,
+		durablePrecallRef: autoOptions.durablePrecallRef,
+		// internal identifier — not user-facing
+		adapterProfileRef: autoOptions.adapterProfileRef,
+		sdkClientRef: autoOptions.sdkClientRef,
+		defaultReleaseEnablementRef: autoOptions.defaultReleaseEnablementRef,
+		allowUncertainty: autoOptions.allowUncertainty,
+		...(autoOptions.release2GateReadinessRef === undefined
+			? {}
+			: { release2GateReadinessRef: autoOptions.release2GateReadinessRef }),
+		...(autoOptions.release2GateReadinessResult === undefined
+			? {}
+			: {
+					release2GateReadinessResult:
+						autoOptions.release2GateReadinessResult,
+				}),
+	});
+	const now = input.now ?? new Date();
+	return authorizeFlowDeskDefaultManagedDispatchV1({
+		authorizationId:
+			autoOptions.authorizationId ??
+			safeToken(
+				`default-managed-dispatch-authorization-${workflowId}`,
+				"default-managed-dispatch-authorization",
+			),
+		readiness,
+		actorRef: autoOptions.actorRef,
+		profileRef: autoOptions.profileRef,
+		releaseGateRef: autoOptions.releaseGateRef,
+		rollbackRef: autoOptions.rollbackRef,
+		createdAt: autoOptions.createdAt ?? now.toISOString(),
+		expiresAt: autoOptions.expiresAt,
+		defaultEnablementRequested: autoOptions.defaultEnablementRequested,
+		killSwitchState: autoOptions.killSwitchState,
+		now: now.getTime(),
+	});
+}
+
+/**
+ * Fixed-but-overridable workflow id used by the doctor live-evaluation path so
+ * the same `.flowdesk/sessions/<id>/evidence/` location is consulted on every
+ * invocation. Users can override via
+ * `productionEnablement.defaultManagedDispatchAuthorizationMetadata.doctorProbeWorkflowId`.
+ */
+function doctorProbeWorkflowIdFromOptions(options?: PluginOptions): string {
+	const production = options?.[flowdeskProductionEnablementOption];
+	if (isRecord(production)) {
+		const meta = production.defaultManagedDispatchAuthorizationMetadata;
+		if (
+			isRecord(meta) &&
+			typeof meta.doctorProbeWorkflowId === "string" &&
+			meta.doctorProbeWorkflowId.trim().length > 0
+		)
+			return meta.doctorProbeWorkflowId;
+	}
+	return "doctor-probe-default-managed-dispatch";
 }
 
 function isDefaultManagedDispatchAuthorized(options?: PluginOptions): boolean {
@@ -4471,12 +4687,8 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				if (!workflowId || !taskDescription || !agentName || !providerQualifiedModelId)
 					return JSON.stringify({ status: "blocked", reason: "workflowId, taskDescription, agentName, and providerQualifiedModelId are required" });
 				const ctxRecord: Record<string, unknown> = isRecord(ctx) ? ctx : {};
-				const parentSessionProviderQualifiedModelId =
-					typeof ctxRecord.model === "string" && ctxRecord.model.includes("/")
-						? ctxRecord.model.trim()
-						: typeof options?.model === "string" && options.model.includes("/")
-							? options.model.trim()
-							: undefined;
+				const parentSessionProviderQualifiedModelId = providerQualifiedModelIdFromContextModel(ctxRecord.model)
+					?? providerQualifiedModelIdFromString(options?.model);
 				const requestedParentSessionId = typeof record.parentSessionId === "string"
 					? record.parentSessionId.trim()
 					: "";
@@ -6341,20 +6553,64 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						note:
 							"Explicit dev/beta agent-task lane capability is separate from the default production managed-dispatch promotion gate.",
 					},
-					productionPromotionGate:
-						defaultAuthorization === undefined
-							? "release1_non_dispatch_command_registration_ready"
-							: "default_managed_dispatch_authorized_registration_ready",
-					defaultManagedDispatchRegistrationAuthorized:
-						defaultAuthorization !== undefined,
-					...(defaultAuthorization === undefined
-						? {}
-						: {
-								defaultManagedDispatchAuthorizationRef:
-									defaultAuthorization.authorization_id,
-								defaultManagedDispatchReadinessRef:
-									defaultAuthorization.readiness_ref,
-							}),
+					...(() => {
+					// Doctor live-evaluation path: if no pre-baked authorization is
+					// present in options but production-enablement default-dispatch
+					// metadata IS configured, evaluate live against durable evidence
+					// under `.flowdesk/sessions/<doctor-probe-workflow-id>/evidence/`
+					// so doctor can report the real
+					// `defaultManagedDispatchRegistrationAuthorized` value derived
+					// from the user's evidence, not a hard-coded false. The derived
+					// authorization is diagnostic-only; it does NOT enable dispatch
+					// authority, runtime execution, provider calls, or lane launches.
+					const derivedDoctorAuthorization =
+						defaultAuthorization === undefined &&
+						derivedDefaultAuthorizationMetadataConfigured
+							? deriveDefaultManagedDispatchAuthorizationForDoctorV1({
+									options,
+									durableStateRootDir:
+										durableStateRootFromOptions(options),
+								})
+							: undefined;
+					const effectiveAuthorization =
+						defaultAuthorization ?? derivedDoctorAuthorization;
+					const doctorProbeWorkflowId =
+						derivedDefaultAuthorizationMetadataConfigured
+							? doctorProbeWorkflowIdFromOptions(options)
+							: undefined;
+					return {
+						productionPromotionGate:
+							effectiveAuthorization === undefined
+								? "release1_non_dispatch_command_registration_ready"
+								: "default_managed_dispatch_authorized_registration_ready",
+						defaultManagedDispatchRegistrationAuthorized:
+							effectiveAuthorization !== undefined,
+						derivedDefaultManagedDispatchAuthorizationMetadataConfigured:
+							derivedDefaultAuthorizationMetadataConfigured,
+						...(effectiveAuthorization === undefined
+							? {}
+							: {
+									defaultManagedDispatchAuthorizationRef:
+										effectiveAuthorization.authorization_id,
+									defaultManagedDispatchReadinessRef:
+										effectiveAuthorization.readiness_ref,
+								}),
+						...(derivedDoctorAuthorization !== undefined
+							? {
+									defaultManagedDispatchAuthorizationSource:
+										"derived_from_durable_evidence",
+								}
+							: defaultAuthorization !== undefined
+							? {
+									defaultManagedDispatchAuthorizationSource:
+										"option_pre_baked",
+								}
+							: {}),
+						...(doctorProbeWorkflowId === undefined
+							? {}
+							: { doctorProbeWorkflowId }),
+					};
+				})(),
 					productionOpenCodeRegistration: hasProductionOpenCodeRegistration(),
 					productionToolRegistration:
 						flowdeskPluginScaffold.productionToolRegistration,
@@ -6735,7 +6991,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						if (WAKE_DIAG_ENABLED) {
 							try {
 								const fs = require("node:fs") as typeof import("node:fs");
-								fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-cond-diag.log",
+								fs.appendFileSync(wakeDiagnosticLogPath("wake-cond-diag.log"),
 									`${new Date().toISOString()} finalizationRelevant config=${currentCompletionWakeMainSessionConfig !== undefined} client=${eventMonitorClient !== undefined} parentRef=${currentCompletionWakeMainSessionConfig?.parentSessionRef ?? "NONE"}\n`, "utf8");
 							} catch { /* best-effort */ }
 						}
@@ -6781,7 +7037,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			let isStale = false;
 			try {
 				const cache = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
-				if (typeof cache.observed_at === "string" && Date.now() - Date.parse(cache.observed_at) > sidebarRefreshIntervalMs) isStale = true;
+				isStale = isProviderUsageSidebarCacheStale(cache, Date.now(), sidebarRefreshIntervalMs);
 			} catch {
 				isStale = true;
 			}

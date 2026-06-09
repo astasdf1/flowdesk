@@ -1158,6 +1158,9 @@ export async function evaluateGuardedAutoRetryHookV1(input: {
 			providerQualifiedModelId: agentTaskContext.provider_qualified_model_id,
 			promptText: agentTaskContext.prompt_text,
 			parentSessionId: retryParentSessionId,
+			parentSessionProviderQualifiedModelId:
+				agentTaskContext.recorded_parent_provider_qualified_model_id ??
+				agentTaskContext.parent_wake_provider_qualified_model_id,
 			rootDir: input.rootDir,
 			client: input.client,
 			timeoutMs: timeoutMs,

@@ -99,6 +99,10 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		new Date().toISOString()
 	);
 
+	// Keep an explicit oiPerformanceScores map as a fallback in case future
+	// callers persist model_ref as the providerQualifiedModelId directly.  The
+	// canonical OI input passed to selectModelForTask is routingAdvisory below;
+	// the engine handles candidate-ref ↔ providerQualifiedModelId normalization.
 	const oiPerformanceScores = new Map<string, number>();
 	if (routingAdvisory.model_summaries) {
 		for (const summary of routingAdvisory.model_summaries) {
@@ -125,7 +129,17 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		if (!taskId) continue;
 
 		const usageMap = buildUsageMapFromProviders(rows, () => selectionNow);
-		const selected = selectModelForTask(agentRole as FlowDeskAgentRegistryRoleCategoryV1, usageMap, { availableModelIds: selectableModelIds, availabilitySource: "durable_cache", oiPerformanceScores }, () => selectionNow);
+		const selected = selectModelForTask(
+			agentRole as FlowDeskAgentRegistryRoleCategoryV1,
+			usageMap,
+			{
+				availableModelIds: selectableModelIds,
+				availabilitySource: "durable_cache",
+				oiPerformanceScores,
+				routingAdvisory,
+			},
+			() => selectionNow,
+		);
 		if (!selected) return blocked(`no available provider for task ${taskId} (role: ${agentRole})`, input.workflowId);
 
 		// ── OI Advisory annotation (AFTER selection — must not influence it) ─────

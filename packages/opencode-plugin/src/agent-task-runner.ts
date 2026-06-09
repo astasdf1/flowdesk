@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	type FlowDeskAgentTaskContextV1,
 	type FlowDeskAgentTaskProgressV1,
+	type FlowDeskTaskModelSelectionV1,
 	type FlowDeskLaneLifecycleRecordV1,
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
@@ -21,10 +22,13 @@ import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatu
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 import { createOISessionAccumulator, type FlowDeskOISessionAccumulatorV1 } from "./oi-session-accumulator.js";
+import { resolveOpenCodeRuntimeLaunchModelBindingV1 } from "./model-selection-engine.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
 const INVALID_PARENT_SESSION_REF = "ses-invalid-parent-session-binding" as const;
+/** unattached launches will not appear in session-scoped sidebar rows and wake notifications will not be delivered to any specific session */
+const UNATTACHED_PARENT_SESSION_REF = "ses-unattached-parent-session" as const;
 
 export interface FlowDeskAgentTaskFallbackBindingV1 {
 	agentRef: string;
@@ -121,6 +125,13 @@ function agentTaskLaunchPlan(input: {
 	providerQualifiedModelId: string;
 	token: string;
 }): FlowDeskRuntimeLaneLaunchPlanV1 {
+	// Empty parentSessionId is a valid unattached launch — the plan must still
+	// carry a schema-safe parent_session_ref (>=3 chars, no trailing `-`). The
+	// launcher recognizes the unattached sentinel and passes `parentID: undefined`
+	// to the SDK so the child session is created without a parent binding.
+	const parentSessionRef = input.parentSessionId.length === 0
+		? UNATTACHED_PARENT_SESSION_REF
+		: `ses-${input.parentSessionId}`;
 	return {
 		schema_version: "flowdesk.runtime_lane_launch_plan.v1",
 		ok: true,
@@ -131,7 +142,7 @@ function agentTaskLaunchPlan(input: {
 		lane_id: input.laneId,
 		state: "launch_ready",
 		blocked_labels: [],
-		parent_session_ref: `ses-${input.parentSessionId}`,
+		parent_session_ref: parentSessionRef,
 		agent_ref: input.agentRef,
 		provider_qualified_model_id: input.providerQualifiedModelId,
 		launch_reason: "agent_task",
@@ -149,10 +160,14 @@ function agentTaskLaunchPlan(input: {
 	};
 }
 
-function validateAgentTaskParentSessionId(parentSessionId: string): { ok: true; parentSessionRef: string } | { ok: false; redactedReason: string; parentSessionRef: typeof INVALID_PARENT_SESSION_REF } {
+function validateAgentTaskParentSessionId(parentSessionId: string): { ok: true; parentSessionRef: string; unattached: boolean } | { ok: false; redactedReason: string; parentSessionRef: typeof INVALID_PARENT_SESSION_REF } {
 	const value = parentSessionId.trim();
+	// An empty parentSessionId is a valid "unattached" launch. The flowdesk_task
+	// compact tool intentionally seeds parent only from unconsumed completion-wake
+	// ready-cache rows; when no usable seed exists, the lane must still launch
+	// with no parent binding (SDK `session.create` receives `parentID: undefined`).
 	if (value.length === 0)
-		return { ok: false, redactedReason: "missing_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
+		return { ok: true, parentSessionRef: UNATTACHED_PARENT_SESSION_REF, unattached: true };
 	if (value.length > 128)
 		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
 	// `ses-...` is FlowDesk's opaque session-ref wrapper, not the raw OpenCode
@@ -165,7 +180,7 @@ function validateAgentTaskParentSessionId(parentSessionId: string): { ok: true; 
 		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
 	if (!/^[A-Za-z0-9_.:-]+$/.test(value))
 		return { ok: false, redactedReason: "invalid_parent_session_binding", parentSessionRef: INVALID_PARENT_SESSION_REF };
-	return { ok: true, parentSessionRef: `ses-${value}` };
+	return { ok: true, parentSessionRef: `ses-${value}`, unattached: false };
 }
 
 /** Bounded nudge text — versioned constant, never echoes user input */
@@ -474,6 +489,12 @@ function sha256Hex(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+function normalizeProviderQualifiedModelId(value: string | undefined): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return /^[^\s/]+\/[^\s/]+$/.test(trimmed) ? trimmed : undefined;
+}
+
 function writeSessionEvidence(input: {
 	rootDir: string;
 	workflowId: string;
@@ -490,6 +511,56 @@ function writeSessionEvidence(input: {
 		return applied.ok && applied.writtenPaths.length > 0;
 	}
 	return false;
+}
+
+function writeRuntimeLaunchModelSelectionEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	taskId: string;
+	token: string;
+	providerFamily?: "claude" | "openai" | "gemini";
+	providerQualifiedModelId: string;
+	attemptedProviderQualifiedModelIds: readonly string[];
+	selectionStatus: FlowDeskTaskModelSelectionV1["selection_status"];
+	blockedLabels: string[];
+	createdAt: string;
+}): void {
+	if (input.providerFamily === undefined) return;
+	const record: FlowDeskTaskModelSelectionV1 = {
+		schema_version: "flowdesk.task_model_selection.v1",
+		workflow_id: input.workflowId,
+		task_id: input.taskId,
+		selection_id: `selection-runtime-launch-${input.token}`,
+		provider_family: input.providerFamily,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		attempted_provider_qualified_model_ids: [...input.attemptedProviderQualifiedModelIds].slice(0, 16),
+		usage_snapshot_ref: `usage-runtime-launch-${input.token}`,
+		usage_snapshot_freshness: "unknown",
+		provider_health_ref: `provider-health-runtime-launch-${input.token}`,
+		provider_health_label: "unknown",
+		exact_model_availability_ref: `working-model-runtime-launch-${input.token}`,
+		exact_model_availability_label: input.selectionStatus === "selected" ? "available" : "unknown",
+		fit_label: "runtime_launch_same_family_binding",
+		performance_label: "runtime_launch_not_ranked",
+		selection_status: input.selectionStatus,
+		blocked_labels: input.blockedLabels,
+		fallback_allowed: false,
+		reselection_allowed: false,
+		created_at: input.createdAt,
+		release_gate: "release1_planning_only",
+		dispatch_authority_enabled: false,
+		provider_call_made: false,
+		runtime_execution: false,
+		actual_lane_launch: false,
+		write_authority_enabled: false,
+		redaction_version: "v1",
+	};
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId: `model-selection-fallback-${input.taskId}-${input.token}`,
+		record: record as unknown as Record<string, unknown>,
+	});
 }
 
 function progressLabel(value: string): string {
@@ -739,27 +810,86 @@ export async function executeFlowDeskAgentTaskV1(
 		return { status: "task_failed", failureCategory: "sdk_create_failed", redactedReason, laneId: input.laneId };
 	}
 
+	// Resolve same-family fuzzy model ids before constructing the launch plan.
+	// This is selection-phase-only evidence: it may choose an OpenCode-supported
+	// exact binding from the supported models set, but it does not authorize
+	// runtime retry, provider reselection, or managed-dispatch fallback.
+	const modelBinding = resolveOpenCodeRuntimeLaunchModelBindingV1({
+		providerQualifiedModelId: input.providerQualifiedModelId,
+	});
+	writeRuntimeLaunchModelSelectionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		taskId: input.taskId,
+		token,
+		providerFamily: modelBinding.providerFamily,
+		providerQualifiedModelId: modelBinding.selectedProviderQualifiedModelId ?? input.providerQualifiedModelId,
+		attemptedProviderQualifiedModelIds: modelBinding.attemptedProviderQualifiedModelIds,
+		selectionStatus: modelBinding.ok ? "selected" : "blocked",
+		blockedLabels: modelBinding.ok ? [] : ["runtime-launch-model-binding-unavailable"],
+		createdAt: observedAt,
+	});
+	if (!modelBinding.ok) {
+		const redactedReason = modelBinding.redactedReason;
+		writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: `task-failed-${input.taskId}-${token}-model-binding`,
+			record: {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: input.workflowId,
+				lane_id: input.laneId,
+				task_id: input.taskId,
+				agent_ref: input.agentRef,
+				provider_qualified_model_id: modelBinding.selectedProviderQualifiedModelId ?? input.providerQualifiedModelId,
+				failure_category: "sdk_create_failed",
+				redacted_reason: redactedReason,
+				created_at: observedAt,
+				dispatch_authority_enabled: false,
+			} as unknown as Record<string, unknown>,
+		});
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: modelBinding.selectedProviderQualifiedModelId ?? input.providerQualifiedModelId,
+			state: "invocation_failed",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-model-binding`,
+			createdAt: observedAt,
+			updatedAt: observedAt,
+		});
+		return { status: "task_failed", failureCategory: "sdk_create_failed", redactedReason, laneId: input.laneId };
+	}
+	const effectiveProviderQualifiedModelId = modelBinding.effectiveProviderQualifiedModelId;
+
 	const launchPlan = agentTaskLaunchPlan({
 		workflowId: input.workflowId,
 		laneId: input.laneId,
 		parentSessionId: input.parentSessionId,
 		agentRef: input.agentRef,
-		providerQualifiedModelId: input.providerQualifiedModelId,
+		providerQualifiedModelId: effectiveProviderQualifiedModelId,
 		token,
 	});
 
 	const runningLifecycleEvidenceId = `lifecycle-task-running-${input.laneId}-${token}`;
 	const promptTextTruncated = input.promptText.length > AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT;
+	const recordedParentProviderQualifiedModelId = normalizeProviderQualifiedModelId(
+		input.parentSessionProviderQualifiedModelId,
+	);
 	const agentTaskContextRecord: FlowDeskAgentTaskContextV1 = {
 		schema_version: "flowdesk.agent_task_context.v1",
 		workflow_id: input.workflowId,
 		lane_id: input.laneId,
 		task_id: input.taskId,
-			agent_ref: input.agentRef,
-			provider_qualified_model_id: input.providerQualifiedModelId,
-			parent_session_ref: parentSessionRef,
-			parent_wake_provider_qualified_model_id: input.parentSessionProviderQualifiedModelId,
-			prompt_text: promptTextTruncated
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: effectiveProviderQualifiedModelId,
+		parent_session_ref: parentSessionRef,
+		recorded_parent_provider_qualified_model_id: recordedParentProviderQualifiedModelId,
+		parent_wake_provider_qualified_model_id: recordedParentProviderQualifiedModelId,
+		prompt_text: promptTextTruncated
 			? input.promptText.slice(0, AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT)
 			: input.promptText,
 		prompt_text_truncated: promptTextTruncated,
@@ -780,7 +910,7 @@ export async function executeFlowDeskAgentTaskV1(
 		laneId: input.laneId,
 		taskId: input.taskId,
 		agentRef: input.agentRef,
-		providerQualifiedModelId: input.providerQualifiedModelId,
+		providerQualifiedModelId: effectiveProviderQualifiedModelId,
 		phase: "started",
 		progressSeq: 1,
 		progressLabel: "agent task lane launch started",
@@ -822,7 +952,7 @@ export async function executeFlowDeskAgentTaskV1(
 				lane_id: input.laneId,
 				task_id: input.taskId,
 				agent_ref: input.agentRef,
-				provider_qualified_model_id: input.providerQualifiedModelId,
+				provider_qualified_model_id: effectiveProviderQualifiedModelId,
 				failure_category: "sdk_create_failed",
 				redacted_reason: "lane launch timed out: session.prompt did not respond",
 				created_at: observedAt,
@@ -836,7 +966,7 @@ export async function executeFlowDeskAgentTaskV1(
 			attemptId,
 			parentSessionRef,
 			agentRef: input.agentRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			state: "invocation_failed",
 			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-launch-timeout`,
 			createdAt: observedAt,
@@ -863,7 +993,7 @@ export async function executeFlowDeskAgentTaskV1(
 			laneId: input.laneId,
 			parentSessionRef,
 			agentRef: input.agentRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			state: "running",
 			observedAt,
 			progressSummaryLabel: `agent task lane launch failed`,
@@ -895,7 +1025,7 @@ export async function executeFlowDeskAgentTaskV1(
 			lane_id: input.laneId,
 			task_id: input.taskId,
 			agent_ref: input.agentRef,
-			provider_qualified_model_id: input.providerQualifiedModelId,
+			provider_qualified_model_id: effectiveProviderQualifiedModelId,
 			failure_category: failureCategory,
 			redacted_reason: String(redactedReason).slice(0, 500),
 			...(launchResult.redactedErrorLabel === undefined ? {} : { redacted_error_details: launchResult.redactedErrorLabel }),
@@ -916,7 +1046,7 @@ export async function executeFlowDeskAgentTaskV1(
 			parentSessionRef,
 			childSessionRef: launchResult.childSessionRef,
 			agentRef: input.agentRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			state: "invocation_failed",
 			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
 			createdAt: observedAt,
@@ -945,7 +1075,7 @@ export async function executeFlowDeskAgentTaskV1(
 		laneId: input.laneId,
 		parentSessionRef,
 		agentRef: input.agentRef,
-		providerQualifiedModelId: input.providerQualifiedModelId,
+		providerQualifiedModelId: effectiveProviderQualifiedModelId,
 		state: "running",
 		observedAt,
 		progressSummaryLabel: `agent task lane launch heartbeat`,
@@ -972,7 +1102,7 @@ export async function executeFlowDeskAgentTaskV1(
 			taskId: input.taskId,
 			childSessionId,
 			parentSessionRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			agentRef: input.agentRef,
 			nudgeCount: 0,
 			lastNudgeAt: null,
@@ -993,7 +1123,7 @@ export async function executeFlowDeskAgentTaskV1(
 			taskId: input.taskId,
 			childSessionId: resolvedChildId,
 			parentSessionRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			agentRef: input.agentRef,
 			nudgeCount: 0,
 			lastNudgeAt: null,
@@ -1008,7 +1138,7 @@ export async function executeFlowDeskAgentTaskV1(
 			laneId: input.laneId,
 			taskId: input.taskId,
 			agentRef: input.agentRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			phase: "waiting",
 			progressSeq: 2,
 			progressLabel: "agent task waiting for async child result",
@@ -1034,7 +1164,7 @@ export async function executeFlowDeskAgentTaskV1(
 		// grace so a genuinely-working slow start is not mis-read as no_response.
 		// Light models (mini/fast/spark/flash/haiku, plus gemini pro and sonnet)
 		// keep the unchanged short policy.
-		const heavyFirstToken = isFlowDeskHeavyFirstTokenModelV1(input.providerQualifiedModelId);
+		const heavyFirstToken = isFlowDeskHeavyFirstTokenModelV1(effectiveProviderQualifiedModelId);
 		resultObservation = await extractAssistantTextFromResponse(input.client, childSessionId, {
 			quietPeriodMs: input._nudgeQuietPeriodMs ?? 10_000,  // default 10s per policy
 			maxNudges: 2,
@@ -1052,7 +1182,7 @@ export async function executeFlowDeskAgentTaskV1(
 					taskId: input.taskId,
 					childSessionId,
 					parentSessionRef,
-					providerQualifiedModelId: input.providerQualifiedModelId,
+					providerQualifiedModelId: effectiveProviderQualifiedModelId,
 					agentRef: input.agentRef,
 					nudgeCount: syncNudgeCount,
 					lastNudgeAt: syncLastNudgeAt,
@@ -1070,7 +1200,7 @@ export async function executeFlowDeskAgentTaskV1(
 					laneId: input.laneId,
 					parentSessionRef,
 					agentRef: input.agentRef,
-					providerQualifiedModelId: input.providerQualifiedModelId,
+					providerQualifiedModelId: effectiveProviderQualifiedModelId,
 					state: "running",
 					observedAt: new Date().toISOString(),
 					progressSummaryLabel: `agent task waiting for response elapsed=${Math.floor(elapsedMs / 1000)}s`,
@@ -1084,7 +1214,7 @@ export async function executeFlowDeskAgentTaskV1(
 			taskId: input.taskId,
 			childSessionId,
 			parentSessionRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			agentRef: input.agentRef,
 			nudgeCount: syncNudgeCount,
 			lastNudgeAt: syncLastNudgeAt,
@@ -1104,7 +1234,7 @@ export async function executeFlowDeskAgentTaskV1(
 				laneId: input.laneId,
 				taskId: input.taskId,
 				agentRef: input.agentRef,
-				providerQualifiedModelId: input.providerQualifiedModelId,
+				providerQualifiedModelId: effectiveProviderQualifiedModelId,
 				phase: "waiting",
 				progressSeq: 3,
 				progressLabel:
@@ -1132,7 +1262,7 @@ export async function executeFlowDeskAgentTaskV1(
 			lane_id: input.laneId,
 			task_id: input.taskId,
 			agent_ref: input.agentRef,
-			provider_qualified_model_id: input.providerQualifiedModelId,
+			provider_qualified_model_id: effectiveProviderQualifiedModelId,
 			failure_category: evidenceFailureCategory,
 			redacted_reason: redactedReason,
 			created_at: observedAt,
@@ -1150,7 +1280,7 @@ export async function executeFlowDeskAgentTaskV1(
 			laneId: input.laneId,
 			taskId: input.taskId,
 			agentRef: input.agentRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			phase: "failed",
 			progressSeq: 3,
 			progressLabel: failureCategory === "no_response" ? "agent task finished without response" : "agent task output contract not satisfied",
@@ -1164,7 +1294,7 @@ export async function executeFlowDeskAgentTaskV1(
 			childSessionRef: launchResult.childSessionRef,
 			messageRef: launchResult.messageRef?.startsWith("msg-") ? launchResult.messageRef : undefined,
 			agentRef: input.agentRef,
-			providerQualifiedModelId: input.providerQualifiedModelId,
+			providerQualifiedModelId: effectiveProviderQualifiedModelId,
 			state: "no_output",
 			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}`,
 			createdAt: observedAt,
@@ -1226,7 +1356,7 @@ export async function executeFlowDeskAgentTaskV1(
 		lane_id: input.laneId,
 		task_id: input.taskId,
 		agent_ref: input.agentRef,
-		provider_qualified_model_id: input.providerQualifiedModelId,
+		provider_qualified_model_id: effectiveProviderQualifiedModelId,
 		task_prompt_sha256: promptSha256,
 		result_text: storedResultText,
 		result_text_truncated: sanitizedResult.truncated,
@@ -1267,7 +1397,7 @@ export async function executeFlowDeskAgentTaskV1(
 					lane_id: input.laneId,
 					task_id: input.taskId,
 					agent_ref: input.agentRef,
-					provider_qualified_model_id: input.providerQualifiedModelId,
+					provider_qualified_model_id: effectiveProviderQualifiedModelId,
 					failure_category: "unknown",
 					redacted_reason: redactedReason,
 					created_at: observedAt,
@@ -1280,7 +1410,7 @@ export async function executeFlowDeskAgentTaskV1(
 				laneId: input.laneId,
 				taskId: input.taskId,
 				agentRef: input.agentRef,
-				providerQualifiedModelId: input.providerQualifiedModelId,
+				providerQualifiedModelId: effectiveProviderQualifiedModelId,
 				phase: "failed",
 				progressSeq: 4,
 				progressLabel: "agent task result persistence failed",
@@ -1292,7 +1422,7 @@ export async function executeFlowDeskAgentTaskV1(
 				attemptId,
 				parentSessionRef,
 				agentRef: input.agentRef,
-				providerQualifiedModelId: input.providerQualifiedModelId,
+				providerQualifiedModelId: effectiveProviderQualifiedModelId,
 				state: "invocation_failed",
 				evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-result-write`,
 				createdAt: observedAt,
@@ -1328,7 +1458,7 @@ export async function executeFlowDeskAgentTaskV1(
 		laneId: input.laneId,
 		taskId: input.taskId,
 		agentRef: input.agentRef,
-		providerQualifiedModelId: input.providerQualifiedModelId,
+		providerQualifiedModelId: effectiveProviderQualifiedModelId,
 		phase: "finalizing",
 		progressSeq: 3,
 		progressLabel: reviewerVerdictPersisted
@@ -1344,7 +1474,7 @@ export async function executeFlowDeskAgentTaskV1(
 		childSessionRef: launchResult.childSessionRef,
 		messageRef: launchResult.messageRef?.startsWith("msg-") ? launchResult.messageRef : undefined,
 		agentRef: input.agentRef,
-		providerQualifiedModelId: input.providerQualifiedModelId,
+		providerQualifiedModelId: effectiveProviderQualifiedModelId,
 		state: reviewerVerdictPersisted ? "complete" : "incomplete",
 		verdictRef: reviewerVerdictPersisted ? observedReviewerVerdict?.verdict_id : undefined,
 		outputRef: `output-${taskResultEvidenceId}`,

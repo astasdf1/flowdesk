@@ -109,6 +109,98 @@ const HEALTH = new Set(["ok", "warning", "critical", "exhausted", "unknown"]);
 const AVAILABILITY = new Set<FlowDeskTaskModelAvailabilityLabelV1>(["available", "unavailable", "unknown", "non_dispatchable"]);
 const STATUSES = new Set<FlowDeskTaskModelSelectionStatusV1>(["selected", "blocked", "non_dispatchable"]);
 
+export const SAME_FAMILY_MODEL_FALLBACK_CHAINS = {
+	claude: ["opus", "sonnet", "haiku"],
+	openai: ["normal", "mini", "fast", "spark"],
+	gemini: ["pro", "flash", "flash-lite"],
+} as const;
+
+export function fuzzyFamilyKeywordForModelId(family: ProviderFamily, modelId: string): string | undefined {
+	const normalized = modelId.toLowerCase();
+	if (family === "claude" || family === "anthropic") {
+		if (normalized.includes("opus")) return "opus";
+		if (normalized.includes("sonnet")) return "sonnet";
+		if (normalized.includes("haiku")) return "haiku";
+	}
+	if (family === "openai") {
+		if (normalized.includes("spark")) return "spark";
+		if (normalized.includes("mini")) return "mini";
+		if (normalized.includes("fast")) return "fast";
+		if (normalized.includes("gpt")) return "normal";
+	}
+	if (family === "gemini" || family === "google") {
+		if (normalized.includes("flash-lite")) return "flash-lite";
+		if (normalized.includes("flash")) return "flash";
+		if (normalized.includes("pro")) return "pro";
+	}
+	return undefined;
+}
+
+const PROVIDER_FAMILY_PREFIX_ALIASES: Partial<Record<ProviderFamily, readonly string[]>> = {
+	claude: ["claude", "anthropic"],
+	anthropic: ["claude", "anthropic"],
+	openai: ["openai"],
+	gemini: ["gemini", "google"],
+	google: ["gemini", "google"],
+};
+
+function providerQualifiedModelIdMatchesProviderFamily(providerFamily: string, providerQualifiedModelId: string): boolean {
+	const aliases = PROVIDER_FAMILY_PREFIX_ALIASES[providerFamily as ProviderFamily] ?? [providerFamily];
+	return aliases.some((prefix) => providerQualifiedModelId.startsWith(`${prefix}/`));
+}
+
+/**
+ * Extract the model group keyword (e.g. "haiku", "sonnet", "opus", "mini",
+ * "flash", "pro") from a provider-qualified model id. Returns null when no
+ * keyword from SAME_FAMILY_MODEL_FALLBACK_CHAINS matches.
+ *
+ * Used by the task_model_selection validator to enforce that fuzzy fallback
+ * selections do not cross model groups within the same provider family
+ * (e.g. an "opus" request must not be satisfied by a "haiku" selection).
+ *
+ * Detection is case-insensitive against the full provider-qualified id.
+ * More-specific keywords (e.g. "flash-lite") are checked before broader ones
+ * (e.g. "flash") to avoid false matches. For OpenAI ids, the literal token
+ * "normal" rarely appears in the model id, so a bare `openai/gpt-*` id with
+ * no other group keyword maps to the "normal" group as a sensible default
+ * (mirroring the existing fuzzyFamilyKeywordForModelId behavior).
+ */
+function extractModelGroupKeyword(providerQualifiedModelId: string): string | null {
+	if (typeof providerQualifiedModelId !== "string" || providerQualifiedModelId.length === 0) {
+		return null;
+	}
+	const normalized = providerQualifiedModelId.toLowerCase();
+	// Order matters: longer/more-specific keywords first so e.g. "flash-lite"
+	// wins over "flash". The keyword set is the union of values in
+	// SAME_FAMILY_MODEL_FALLBACK_CHAINS (claude/openai/gemini), checked here
+	// as a flat ordered list because group membership is also disambiguated
+	// by the provider prefix in the id itself.
+	const orderedKeywords: readonly string[] = [
+		// gemini: "flash-lite" before "flash"
+		"flash-lite",
+		// claude
+		"opus",
+		"sonnet",
+		"haiku",
+		// openai
+		"spark",
+		"mini",
+		"fast",
+		// gemini
+		"flash",
+		"pro",
+	];
+	for (const keyword of orderedKeywords) {
+		if (normalized.includes(keyword)) return keyword;
+	}
+	// OpenAI fallback: a bare gpt-* id with no other group keyword belongs to
+	// the "normal" group per SAME_FAMILY_MODEL_FALLBACK_CHAINS.openai.
+	if (normalized.startsWith("openai/") && normalized.includes("gpt")) {
+		return "normal";
+	}
+	return null;
+}
+
 export function validateFlowDeskTaskModelSelectionV1(value: unknown): ValidationResult {
 	if (!isPlanningEvidenceRecord(value)) return invalid("task model selection must be an object");
 	const errors: string[] = [];
@@ -131,7 +223,35 @@ export function validateFlowDeskTaskModelSelectionV1(value: unknown): Validation
 			}
 		}
 	}
-	if (typeof value.provider_family === "string" && typeof value.provider_qualified_model_id === "string" && !value.provider_qualified_model_id.startsWith(`${value.provider_family}/`)) errors.push("provider_qualified_model_id must match provider_family");
+	if (typeof value.provider_family === "string" && typeof value.provider_qualified_model_id === "string" && !providerQualifiedModelIdMatchesProviderFamily(value.provider_family, value.provider_qualified_model_id)) errors.push("provider_qualified_model_id must match provider_family");
+	// Fuzzy fallback group guard: when fallback selection is recorded via
+	// attempted_provider_qualified_model_ids, every attempted model must share
+	// the same model group keyword (e.g. "haiku", "sonnet", "opus", "mini",
+	// "flash", "pro") as the finally selected provider_qualified_model_id.
+	// Rejecting cross-group fallback prevents an "opus" request from being
+	// silently satisfied by a "haiku" selection within the same provider
+	// family. Entries whose group keyword cannot be extracted (returns null)
+	// are rejected as ungrouped, since group equivalence cannot be proven.
+	if (
+		typeof value.provider_qualified_model_id === "string" &&
+		Array.isArray(value.attempted_provider_qualified_model_ids) &&
+		value.attempted_provider_qualified_model_ids.length > 0
+	) {
+		const selectedGroup = extractModelGroupKeyword(value.provider_qualified_model_id);
+		if (selectedGroup === null) {
+			errors.push("provider_qualified_model_id has no recognizable model group keyword for fuzzy fallback comparison");
+		} else {
+			for (const [index, attemptedId] of value.attempted_provider_qualified_model_ids.entries()) {
+				if (typeof attemptedId !== "string") continue; // already reported above
+				const attemptedGroup = extractModelGroupKeyword(attemptedId);
+				if (attemptedGroup === null) {
+					errors.push(`attempted_provider_qualified_model_ids[${index}] has no recognizable model group keyword`);
+				} else if (attemptedGroup !== selectedGroup) {
+					errors.push(`attempted_provider_qualified_model_ids[${index}] model group "${attemptedGroup}" does not match selected model group "${selectedGroup}"`);
+				}
+			}
+		}
+	}
 	errors.push(...validatePlanningOpaqueRef(value.usage_snapshot_ref, "usage_snapshot_ref").errors);
 	if (!FRESHNESS.has(value.usage_snapshot_freshness as FlowDeskTaskModelFreshnessV1)) errors.push("usage_snapshot_freshness is invalid");
 	errors.push(...validatePlanningOpaqueRef(value.provider_health_ref, "provider_health_ref").errors);

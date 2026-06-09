@@ -218,13 +218,24 @@ function approvedProductionEnablement() {
   });
 }
 
+function release2GateReadyResult() {
+  return evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: approvedProductionEnablement(),
+    phase6AClosureEvidence: phase6AClosure(),
+    expectedPhase6AClosureRef: "phase6a-closure-1",
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+}
+
 function candidatePromotionReadiness() {
   return evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
     productionEnablement: approvedProductionEnablement(),
     durablePrecallRef: "durable-precall-1",
     adapterProfileRef: "adapter-profile-1",
     sdkClientRef: "sdk-client-1",
-    defaultReleaseEnablementRef: "default-release-enable-1"
+    defaultReleaseEnablementRef: "default-release-enable-1",
+    release2GateReadinessRef: "release2-gate-readiness-1",
+    release2GateReadinessResult: release2GateReadyResult()
   });
 }
 
@@ -538,6 +549,8 @@ test("default managed dispatch promotion readiness remains diagnostic and non-au
   assert.ok(blocked.blocked_labels.includes("adapter_unavailable"));
   assert.ok(blocked.blocked_labels.includes("sdk_client_unavailable"));
   assert.ok(blocked.blocked_labels.includes("default_release_enablement_missing"));
+  assert.ok(blocked.blocked_labels.includes("release2_gate_evidence_missing"));
+  assert.equal(blocked.release2_managed_dispatch_gate_ready, false);
   assert.equal(blocked.dispatch_authority_enabled, false);
   assert.equal(blocked.providerCall, false);
   assert.equal(blocked.actualLaneLaunch, false);
@@ -548,15 +561,131 @@ test("default managed dispatch promotion readiness remains diagnostic and non-au
     durablePrecallRef: "durable-precall-1",
     adapterProfileRef: "adapter-profile-1",
     sdkClientRef: "sdk-client-1",
-    defaultReleaseEnablementRef: "default-release-enable-1"
+    defaultReleaseEnablementRef: "default-release-enable-1",
+    release2GateReadinessRef: "release2-gate-readiness-1",
+    release2GateReadinessResult: release2GateReadyResult()
   });
   assert.equal(candidate.state, "default_candidate");
   assert.equal(candidate.default_dispatch_candidate, true);
   assert.deepEqual(candidate.blocked_labels, []);
+  assert.equal(candidate.release2_managed_dispatch_gate_ready, true);
+  assert.equal(candidate.release2_gate_readiness_ref, "release2-gate-readiness-1");
   assert.equal(candidate.dispatch_authority_enabled, false, "candidate readiness is still not dispatch authority");
   assert.equal(candidate.release_enablement_ref, "default-release-enable-1");
   const validation = validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(candidate, workflowId);
   assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("default managed dispatch promotion readiness blocks when Release 2 gate evidence is missing", () => {
+  const production = approvedProductionEnablement();
+  const noEvidence = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1"
+  });
+  assert.equal(noEvidence.default_dispatch_candidate, false);
+  assert.equal(noEvidence.state, "configured");
+  assert.ok(noEvidence.blocked_labels.includes("release2_gate_evidence_missing"));
+  assert.equal(noEvidence.release2_managed_dispatch_gate_ready, false);
+  assert.equal(noEvidence.dispatch_authority_enabled, false);
+
+  // Ref supplied without a corresponding result must also block.
+  const refOnly = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1",
+    release2GateReadinessRef: "release2-gate-readiness-1"
+  });
+  assert.equal(refOnly.default_dispatch_candidate, false);
+  assert.ok(refOnly.blocked_labels.includes("release2_gate_evidence_missing"));
+  assert.equal(refOnly.release2_gate_readiness_ref, "release2-gate-readiness-1");
+});
+
+test("default managed dispatch promotion readiness blocks when Release 2 gate is not yet ready", () => {
+  const production = approvedProductionEnablement();
+  // Build a Release 2 result that is blocked (stale Phase 6A closure) so
+  // release2_managed_dispatch_gate_ready === false.
+  const release2Blocked = evaluateFlowDeskRelease2ManagedDispatchGatePromotionReadinessV1({
+    productionEnablement: production,
+    phase6AClosureEvidence: phase6AClosure({ expires_at: "2026-06-06T00:30:00.000Z" }),
+    expectedPhase6AClosureRef: "phase6a-closure-1",
+    now: Date.parse("2026-06-06T01:00:00.000Z")
+  });
+  assert.equal(release2Blocked.release2_managed_dispatch_gate_ready, false);
+
+  const result = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1",
+    release2GateReadinessRef: "release2-gate-readiness-1",
+    release2GateReadinessResult: release2Blocked
+  });
+  assert.equal(result.default_dispatch_candidate, false);
+  assert.equal(result.state, "configured");
+  assert.ok(result.blocked_labels.includes("release2_gate_not_ready"));
+  assert.equal(
+    result.blocked_labels.includes("release2_gate_evidence_missing"),
+    false,
+    "evidence is present even if the gate is not yet ready"
+  );
+  assert.equal(result.release2_managed_dispatch_gate_ready, false);
+});
+
+test("default managed dispatch promotion readiness becomes default_candidate only when Release 2 gate is ready", () => {
+  const production = approvedProductionEnablement();
+  const release2Ready = release2GateReadyResult();
+  assert.equal(release2Ready.release2_managed_dispatch_gate_ready, true);
+  const result = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1",
+    release2GateReadinessRef: "release2-gate-readiness-1",
+    release2GateReadinessResult: release2Ready
+  });
+  assert.equal(result.default_dispatch_candidate, true);
+  assert.equal(result.state, "default_candidate");
+  assert.deepEqual(result.blocked_labels, []);
+  assert.equal(result.release2_managed_dispatch_gate_ready, true);
+  assert.equal(result.release2_gate_readiness_ref, "release2-gate-readiness-1");
+  // Diagnostic only — still no dispatch authority.
+  assert.equal(result.dispatch_authority_enabled, false);
+  assert.equal(result.providerCall, false);
+  assert.equal(result.actualLaneLaunch, false);
+  assert.equal(result.runtimeExecution, false);
+  const validation = validateFlowDeskDefaultManagedDispatchPromotionReadinessV1(result, workflowId);
+  assert.equal(validation.ok, true, validation.errors.join("; "));
+});
+
+test("default managed dispatch promotion readiness blocks when Release 2 gate evidence fails schema validation", () => {
+  const production = approvedProductionEnablement();
+  const ready = release2GateReadyResult();
+  // Forge a structurally invalid Release 2 result by smuggling dispatch
+  // authority. The promotion readiness evaluator must reject it.
+  const forged = {
+    ...ready,
+    dispatch_authority_enabled: true
+  } as unknown as ReturnType<typeof release2GateReadyResult>;
+  const result = evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1({
+    productionEnablement: production,
+    durablePrecallRef: "durable-precall-1",
+    adapterProfileRef: "adapter-profile-1",
+    sdkClientRef: "sdk-client-1",
+    defaultReleaseEnablementRef: "default-release-enable-1",
+    release2GateReadinessRef: "release2-gate-readiness-1",
+    release2GateReadinessResult: forged
+  });
+  assert.equal(result.default_dispatch_candidate, false);
+  assert.ok(result.blocked_labels.includes("release2_gate_evidence_invalid"));
+  assert.equal(result.release2_managed_dispatch_gate_ready, false);
+  assert.equal(result.ok, false, "structural validation errors must surface in ok=false");
 });
 
 test("default managed dispatch promotion readiness rejects forged authority fields", () => {

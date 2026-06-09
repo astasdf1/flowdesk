@@ -67,6 +67,22 @@ export interface FlowDeskRelease1BootstrapTypedConfirmationInputV1 {
   typedPhrase: string;
 }
 
+/**
+ * Provider-qualified model id used for the FlowDesk main coordinator agent
+ * (flowdesk-main) and for the wake prompt fallback model.
+ *
+ * Keep this in sync with:
+ *   - the `model:` frontmatter line in `flowDeskMainAgentMarkdown()`
+ *   - the `completionWakeMainSession.providerQualifiedModelId` default
+ *     written by `flowDeskPluginDefaultOptions()`
+ *   - `completionWakeMainSessionConfigFromOptions()` in `server.ts`, which
+ *     prefers `options.model` then this default
+ *
+ * Changing this value requires updating bootstrap tests that assert the
+ * coordinator markdown contents and the plugin options block.
+ */
+const FLOWDESK_MAIN_COORDINATOR_MODEL = "openai/gpt-5.4-mini-fast";
+
 const disabledBootstrapInstallAuthority = {
   productionRegistrationEligible: false,
   commandAliasEligible: false,
@@ -772,9 +788,6 @@ interface FlowDeskMainAgentMaterializationRollbackState {
 	configPath: string;
 	configExisted: boolean;
 	previousConfigText?: string;
-	tuiConfigPath: string;
-	tuiConfigExisted: boolean;
-	previousTuiConfigText?: string;
 }
 
 interface FlowDeskMainAgentMaterializationResult extends ValidationResult {
@@ -789,7 +802,7 @@ function flowDeskMainAgentMarkdown(): string {
 	return `---
 description: Primary FlowDesk coordinator. Plans workflows, splits work into small FlowDesk-owned lanes, and summarizes durable results.
 mode: primary
-model: openai/gpt-5.4-mini-fast
+model: ${FLOWDESK_MAIN_COORDINATOR_MODEL}
 permission:
   read: allow
   glob: allow
@@ -972,7 +985,7 @@ function flowDeskTuiConfig(profileRootDir: string, durableStateRootDir: string):
 	return {
 		plugin: [
 			[
-				resolve(profileRootDir, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js"),
+				pathToFileURL(resolve(profileRootDir, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js")).href,
 				{
 					durableStateRootDir: resolve(durableStateRootDir),
 					usageWorkflowId: "workflow-global-provider-usage",
@@ -1066,7 +1079,10 @@ function flowDeskPluginDefaultOptions(durableStateRootDir: string): Record<strin
 		laneHeartbeatWriter: { enabled: true, defaultExpectedIntervalMs: 120000 },
 		controlledWriteApply: { enabled: true, devBetaControlledWriteApply: true },
 		chatMessageStallAlert: { enabled: true, includeProgressCards: true, maxProgressCards: 4 },
-		completionWakeMainSession: { enabled: true },
+		completionWakeMainSession: {
+			enabled: true,
+			providerQualifiedModelId: FLOWDESK_MAIN_COORDINATOR_MODEL,
+		},
 	};
 }
 
@@ -1090,6 +1106,11 @@ function isFlowDeskPluginEntry(value: unknown): value is [string, unknown?] {
 	return /(?:^|[/\\])@flowdesk[/\\]opencode-plugin[/\\]dist[/\\]server\.js$/.test(value[0]) || value[0].endsWith("@flowdesk/opencode-plugin/dist/server.js");
 }
 
+function isFlowDeskTuiPluginEntry(value: unknown): value is [string, unknown?] {
+	if (!Array.isArray(value) || typeof value[0] !== "string") return false;
+	return /(?:^|[/\\])@flowdesk[/\\]opencode-plugin[/\\]dist[/\\]tui\.js$/.test(value[0]) || value[0].endsWith("@flowdesk/opencode-plugin/dist/tui.js");
+}
+
 function ensureFlowDeskPluginConfig(config: Record<string, unknown>, profileRootDir: string, durableStateRootDir: string): void {
 	const pluginEntries = Array.isArray(config.plugin) ? config.plugin : [];
 	const defaults = flowDeskPluginDefaultOptions(durableStateRootDir);
@@ -1098,10 +1119,20 @@ function ensureFlowDeskPluginConfig(config: Record<string, unknown>, profileRoot
 		const options = isPlainRecord(existingEntry[1]) ? existingEntry[1] : {};
 		existingEntry[1] = options;
 		fillMissingFlowDeskPluginOptions(options, defaults);
-		config.plugin = pluginEntries;
-		return;
+	} else {
+		pluginEntries.push([flowDeskPluginServerFileUrl(profileRootDir), defaults]);
 	}
-	pluginEntries.push([flowDeskPluginServerFileUrl(profileRootDir), defaults]);
+
+	const tuiDefaults = flowDeskTuiConfig(profileRootDir, durableStateRootDir).plugin;
+	const tuiDefaultEntry = Array.isArray(tuiDefaults) ? tuiDefaults.find(isFlowDeskTuiPluginEntry) : undefined;
+	const existingTuiEntry = pluginEntries.find(isFlowDeskTuiPluginEntry);
+	if (existingTuiEntry !== undefined && tuiDefaultEntry !== undefined) {
+		const options = isPlainRecord(existingTuiEntry[1]) ? existingTuiEntry[1] : {};
+		existingTuiEntry[1] = options;
+		if (isPlainRecord(tuiDefaultEntry[1])) fillMissingFlowDeskPluginOptions(options, tuiDefaultEntry[1]);
+	} else if (tuiDefaultEntry !== undefined) {
+		pluginEntries.push(tuiDefaultEntry);
+	}
 	config.plugin = pluginEntries;
 }
 
@@ -1115,8 +1146,7 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 	const agentTemplates = flowDeskAgentProfileTemplates();
 	const agentPaths = agentTemplates.map((template) => ({ ...template, path: resolve(root, template.ref) }));
 	const configPath = resolve(root, "opencode.json");
-	const tuiConfigPath = resolve(root, "tui.json");
-	if (agentPaths.some((entry) => !entry.path.startsWith(rootPrefix)) || !configPath.startsWith(rootPrefix) || !tuiConfigPath.startsWith(rootPrefix)) {
+	if (agentPaths.some((entry) => !entry.path.startsWith(rootPrefix)) || !configPath.startsWith(rootPrefix)) {
 		return { ...invalid("FlowDesk main agent paths escape profile root"), agentProfileFilesWritten: 0, profileConfigUpdated: false };
 	}
 
@@ -1128,8 +1158,6 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 		if (!previousAgent.ok) return { ...previousAgent, agentProfileFilesWritten: 0, profileConfigUpdated: false };
 		previousAgents.push({ ref: entry.ref, path: entry.path, existed: previousAgent.exists, previousText: previousAgent.text });
 	}
-	const previousTuiConfig = readOptionalText(tuiConfigPath);
-	if (!previousTuiConfig.ok) return { ...previousTuiConfig, agentProfileFilesWritten: 0, profileConfigUpdated: false };
 
 	let config: Record<string, unknown>;
 	if (previousConfig.exists && previousConfig.text !== undefined) {
@@ -1152,7 +1180,6 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 		mkdirSync(resolve(root, "agent"), { recursive: true });
 		for (const entry of agentPaths) writeFileSync(entry.path, entry.markdown, "utf8");
 		writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-		writeFileSync(tuiConfigPath, `${JSON.stringify(flowDeskTuiConfig(root, durableStateRootDir), null, 2)}\n`, "utf8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "unknown error";
 		return { ...invalid(`FlowDesk main agent profile write failed: ${message}`), agentProfileFilesWritten: 0, profileConfigUpdated: false };
@@ -1161,7 +1188,7 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 	return {
 		...valid(),
 		profileRootDir: root,
-		writtenProfileRefs: [...agentTemplates.map((template) => template.ref), "opencode.json", "tui.json"],
+		writtenProfileRefs: [...agentTemplates.map((template) => template.ref), "opencode.json"],
 		agentProfileFilesWritten: agentTemplates.length,
 		profileConfigUpdated: true,
 		rollbackState: {
@@ -1169,9 +1196,6 @@ function materializeFlowDeskMainAgentProfileWithTui(profileRootDir: string, dura
 			configPath,
 			configExisted: previousConfig.exists,
 			previousConfigText: previousConfig.text,
-			tuiConfigPath,
-			tuiConfigExisted: previousTuiConfig.exists,
-			previousTuiConfigText: previousTuiConfig.text,
 		}
 	};
 }
@@ -1187,9 +1211,6 @@ function rollbackFlowDeskMainAgentProfile(state: FlowDeskMainAgentMaterializatio
 	if (state.configExisted && state.previousConfigText !== undefined) writeFileSync(state.configPath, state.previousConfigText, "utf8");
 	else rmSync(state.configPath, { force: true });
 	rolledBack.push("opencode.json");
-	if (state.tuiConfigExisted && state.previousTuiConfigText !== undefined) writeFileSync(state.tuiConfigPath, state.previousTuiConfigText, "utf8");
-	else rmSync(state.tuiConfigPath, { force: true });
-	rolledBack.push("tui.json");
 	return rolledBack;
 }
 

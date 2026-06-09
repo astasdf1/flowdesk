@@ -9,6 +9,12 @@ import {
 	type WorkingModelSelectionInput,
 } from "./model-selection-engine.js";
 import { buildOIAssignmentAdvisoryV1 } from "./oi-assignment-advisor.js";
+import {
+	evaluateOIRoutingAdvisoryV1,
+	createFlowDeskLedgerRetentionPolicyV1,
+	createFlowDeskRoutingInfluencePolicyV1,
+	type FlowDeskRoutingAdvisoryLedgerEntryV1,
+} from "@flowdesk/core";
 
 function usage(family: ProviderUsageInput["providerFamily"], pct: number | null, alert: ProviderUsageInput["alertLevel"] = "ok"): ProviderUsageInput {
 	return { providerFamily: family, remainingPercent: pct, alertLevel: alert, freshness: "fresh", resetBucket: `${family}-weekly`, resetTime: "2026-06-06T00:00:00.000Z" };
@@ -33,6 +39,35 @@ test("same-family fallback resolves the first supported downgrade model", () => 
 		"google/gemini-3.1-pro-preview",
 	]);
 	assert.ok(resolution.attemptedProviderQualifiedModelIds.includes("google/gemini-3-flash-preview"));
+});
+
+test("same-family fallback fuzzy matches version-mismatched model family keywords", () => {
+	const claude = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: "anthropic/claude-haiku-5.0",
+		availableModelIds: ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"],
+	});
+	assert.equal(claude.selectedProviderQualifiedModelId, "anthropic/claude-haiku-4-5");
+	assert.deepEqual(claude.attemptedProviderQualifiedModelIds.slice(0, 2), [
+		"anthropic/claude-haiku-5.0",
+		"anthropic/claude-haiku-4-5",
+	]);
+
+	const openai = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: "openai/gpt-5.6-mini",
+		availableModelIds: ["openai/gpt-5.4-mini", "openai/gpt-5.5-fast"],
+	});
+	assert.equal(openai.selectedProviderQualifiedModelId, "openai/gpt-5.4-mini");
+	assert.deepEqual(openai.attemptedProviderQualifiedModelIds.slice(0, 2), [
+		"openai/gpt-5.6-mini",
+		"openai/gpt-5.4-mini",
+	]);
+
+	const gemini = resolveSameFamilyOpenCodeSupportedModelFallback({
+		providerQualifiedModelId: "google/gemini-2.0-pro",
+		availableModelIds: ["google/gemini-2.5-pro", "google/gemini-2.5-flash"],
+	});
+	assert.equal(gemini.selectedProviderQualifiedModelId, "google/gemini-2.5-pro");
+	assert.ok(gemini.attemptedProviderQualifiedModelIds.includes("google/gemini-2.5-pro"));
 });
 
 test("same-family fallback fails closed when no supported family member is available", () => {
@@ -415,5 +450,202 @@ test("model selection result is byte-identical regardless of OI advisory presenc
 		afterDisabledOIResult.candidate.providerQualifiedModelId,
 		baselineResult.candidate.providerQualifiedModelId,
 		"selection must be byte-identical when OI is disabled",
+	);
+});
+
+// gpt-5.4-mini-fast is the FlowDesk main coordinator model
+// (FLOWDESK_MAIN_COORDINATOR_MODEL in bootstrap-installer.ts). It must be
+// (a) recognized as an OpenCode-supported model id and
+// (b) selectable for light-tier roles when it is the only working light model.
+test("model selection recognizes openai/gpt-5.4-mini-fast as a supported light model", () => {
+	const usageMap = buildUsageMapFromProviders([
+		row("openai", 80),
+		row("claude", 0, "exhausted"),
+		row("gemini", 0, "exhausted"),
+	]);
+	const available: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		// Constrain working models so the light-tier candidate pool only has
+		// gpt-5.4-mini-fast — other LIGHT_MODELS entries are unavailable here.
+		availableModelIds: ["openai/gpt-5.4-mini-fast"],
+	};
+	// `git` is a pure-light role whose candidate pool is LIGHT_MODELS only.
+	const result = selectModelForTask("git", usageMap, available, now);
+	assert.ok(result, "should return a selection");
+	assert.equal(result.candidate.providerQualifiedModelId, "openai/gpt-5.4-mini-fast");
+	assert.equal(result.candidate.tier, "light");
+	assert.equal(result.candidate.providerFamily, "openai");
+});
+
+// ─── routingAdvisory tie-breaker tests (P7-S15 bug fix) ───────────────────────
+// The OI routing advisory is computed by evaluateOIRoutingAdvisoryV1 and should
+// be wired through selectModelForTask as a tertiary tie-breaker (after alertLevel
+// and weight).  The advisory's `model_ref` is an opaque ref that may either equal
+// the providerQualifiedModelId directly or follow the candidate-ref convention
+// used by workflow-assign-tool (`candidate-<modelId-with-/-replaced-by-->`).
+
+function routingLedgerEntry(overrides: Partial<FlowDeskRoutingAdvisoryLedgerEntryV1>): FlowDeskRoutingAdvisoryLedgerEntryV1 {
+	return {
+		signature_ref: "signature-default",
+		model_ref: "candidate-anthropic-claude-opus-4-7",
+		weighted_score: 0.5,
+		recorded_at: "2026-05-30T00:00:00.000Z",
+		...overrides,
+	};
+}
+
+test("routingAdvisory tie-breaker prefers higher-scoring model when alertLevel and weight tie (candidate-ref form)", () => {
+	const usageMap = new Map([
+		["openai", usage("openai", 80, "ok")],
+		["claude", usage("claude", 80, "ok")],
+	]);
+	// Build a routing advisory whose model_refs use the candidate-ref form
+	// emitted by workflow-assign-tool.ts.
+	const ledger: FlowDeskRoutingAdvisoryLedgerEntryV1[] = [
+		routingLedgerEntry({ model_ref: "candidate-anthropic-claude-opus-4-7", weighted_score: 0.9 }),
+		routingLedgerEntry({ model_ref: "candidate-openai-gpt-5.5", weighted_score: 0.2 }),
+	];
+	const advisory = evaluateOIRoutingAdvisoryV1(
+		ledger,
+		"signature-default",
+		createFlowDeskLedgerRetentionPolicyV1(),
+		createFlowDeskRoutingInfluencePolicyV1({ enabled: true, min_sample_threshold: 1 }),
+		"2026-05-31T00:00:00.000Z",
+	);
+	const ctx: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["openai/gpt-5.5", "anthropic/claude-opus-4-7"],
+		routingAdvisory: advisory,
+	};
+	// security role: candidates [anthropic/claude-opus-4-7, openai/gpt-5.5]
+	// alertLevel and weight tie → advisory tie-break should pick claude (0.9 > 0.2)
+	const result = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(result);
+	assert.equal(
+		result.candidate.providerQualifiedModelId,
+		"anthropic/claude-opus-4-7",
+		"higher routing advisory score (candidate-ref form) should win tie-break",
+	);
+});
+
+test("routingAdvisory tie-breaker matches exact providerQualifiedModelId model_ref", () => {
+	const usageMap = new Map([
+		["openai", usage("openai", 80, "ok")],
+		["claude", usage("claude", 80, "ok")],
+	]);
+	// model_ref equals the providerQualifiedModelId directly (no candidate- prefix).
+	const ledger: FlowDeskRoutingAdvisoryLedgerEntryV1[] = [
+		routingLedgerEntry({ model_ref: "anthropic/claude-opus-4-7", weighted_score: 0.1 }),
+		routingLedgerEntry({ model_ref: "openai/gpt-5.5", weighted_score: 0.95 }),
+	];
+	const advisory = evaluateOIRoutingAdvisoryV1(
+		ledger,
+		"signature-default",
+		createFlowDeskLedgerRetentionPolicyV1(),
+		createFlowDeskRoutingInfluencePolicyV1({ enabled: true, min_sample_threshold: 1 }),
+		"2026-05-31T00:00:00.000Z",
+	);
+	const ctx: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["openai/gpt-5.5", "anthropic/claude-opus-4-7"],
+		routingAdvisory: advisory,
+	};
+	const result = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(result);
+	assert.equal(
+		result.candidate.providerQualifiedModelId,
+		"openai/gpt-5.5",
+		"exact providerQualifiedModelId model_ref should be matched by tie-break",
+	);
+});
+
+test("routingAdvisory does not change selection when alertLevel differs", () => {
+	// claude is ok, openai is critical → alertLevel must win regardless of OI score.
+	const usageMap = new Map([
+		["claude", usage("claude", 80, "ok")],
+		["openai", usage("openai", 5, "critical")],
+	]);
+	const ledger: FlowDeskRoutingAdvisoryLedgerEntryV1[] = [
+		routingLedgerEntry({ model_ref: "candidate-anthropic-claude-opus-4-7", weighted_score: 0.0 }),
+		routingLedgerEntry({ model_ref: "candidate-openai-gpt-5.5", weighted_score: 1.0 }),
+	];
+	const advisory = evaluateOIRoutingAdvisoryV1(
+		ledger,
+		"signature-default",
+		createFlowDeskLedgerRetentionPolicyV1(),
+		createFlowDeskRoutingInfluencePolicyV1({ enabled: true, min_sample_threshold: 1 }),
+		"2026-05-31T00:00:00.000Z",
+	);
+	const ctx: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["openai/gpt-5.5", "anthropic/claude-opus-4-7"],
+		routingAdvisory: advisory,
+	};
+	const result = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(result);
+	assert.equal(
+		result.candidate.providerQualifiedModelId,
+		"anthropic/claude-opus-4-7",
+		"alertLevel must dominate over OI advisory score",
+	);
+});
+
+test("empty routingAdvisory model_summaries does not crash and falls back to catalog order", () => {
+	const usageMap = new Map([
+		["openai", usage("openai", 80, "ok")],
+		["claude", usage("claude", 80, "ok")],
+	]);
+	// Ledger has no matching signature → model_summaries will be empty.
+	const advisory = evaluateOIRoutingAdvisoryV1(
+		[],
+		"signature-no-data",
+		createFlowDeskLedgerRetentionPolicyV1(),
+		createFlowDeskRoutingInfluencePolicyV1({ enabled: true, min_sample_threshold: 1 }),
+		"2026-05-31T00:00:00.000Z",
+	);
+	assert.equal(advisory.model_summaries.length, 0);
+	const ctx: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["openai/gpt-5.5", "anthropic/claude-opus-4-7"],
+		routingAdvisory: advisory,
+	};
+	// security role catalog preference puts anthropic first.
+	const result = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(result);
+	assert.equal(result.candidate.providerQualifiedModelId, "anthropic/claude-opus-4-7");
+});
+
+test("routingAdvisory and oiPerformanceScores fuse: advisory wins where present, explicit map fills gaps", () => {
+	const usageMap = new Map([
+		["openai", usage("openai", 80, "ok")],
+		["claude", usage("claude", 80, "ok")],
+	]);
+	// Advisory only mentions claude with a low score.
+	const ledger: FlowDeskRoutingAdvisoryLedgerEntryV1[] = [
+		routingLedgerEntry({ model_ref: "candidate-anthropic-claude-opus-4-7", weighted_score: 0.1 }),
+	];
+	const advisory = evaluateOIRoutingAdvisoryV1(
+		ledger,
+		"signature-default",
+		createFlowDeskLedgerRetentionPolicyV1(),
+		createFlowDeskRoutingInfluencePolicyV1({ enabled: true, min_sample_threshold: 1 }),
+		"2026-05-31T00:00:00.000Z",
+	);
+	// Explicit map says openai is very good (0.9).
+	const ctx: WorkingModelSelectionInput = {
+		availabilitySource: "test_fixture",
+		availableModelIds: ["openai/gpt-5.5", "anthropic/claude-opus-4-7"],
+		routingAdvisory: advisory,
+		oiPerformanceScores: new Map([
+			["openai/gpt-5.5", 0.9],
+			// claude not in this map – advisory's 0.1 applies
+		]),
+	};
+	const result = selectModelForTask("security", usageMap, ctx, now);
+	assert.ok(result);
+	assert.equal(
+		result.candidate.providerQualifiedModelId,
+		"openai/gpt-5.5",
+		"explicit map score (0.9) should beat advisory score (0.1) for the un-mentioned model",
 	);
 });

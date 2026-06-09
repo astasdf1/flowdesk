@@ -6757,70 +6757,99 @@ test("local adapter can opt into durable .flowdesk state materialization", () =>
 	}
 });
 
-test("local adapter loads project config and policy packs from disk for non-dispatch runs", () => {
-	const root = mkdtempSync(join(tmpdir(), "flowdesk-policy-load-"));
+test("local adapter status includes lanes discovered from evidence records", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-local-status-evidence-"));
 	try {
-		mkdirSync(join(root, ".flowdesk", "policy-packs"), { recursive: true });
-		writeFileSync(
-			join(root, ".flowdesk", "config.json"),
-			`${JSON.stringify(
-				release1ProjectConfig({
-					config_id: "config-disk",
-					config_hash: "config-hash-disk",
-					project_root_ref: "project-root-disk",
-					policy_pack_refs: ["policy-source-disk"],
-					policy_pack_hashes: ["policy-hash-disk"],
-					audit_refs: ["audit-disk"],
-				}),
-				null,
-				2,
-			)}\n`,
-			"utf8",
-		);
-		writeFileSync(
-			join(root, ".flowdesk", "policy-packs", "policy.json"),
-			`${JSON.stringify(
-				release1PolicyPack({
-					policy_pack_id: "policy-disk",
-					policy_pack_hash: "policy-hash-disk",
-					source_ref: "policy-source-disk",
-				}),
-				null,
-				2,
-			)}\n`,
-			"utf8",
-		);
+		const workflowId = "workflow-status-evidence-lanes";
+		const createdAt = "2026-05-17T00:00:00.000Z";
+		const agentTaskContext = {
+			schema_version: "flowdesk.agent_task_context.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-status-evidence-task",
+			task_id: "task-status-evidence-task",
+			agent_ref: "agent-general-status-evidence",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			parent_session_ref: "ses-status-evidence-parent",
+			prompt_text: "Summarize evidence lane status.",
+			prompt_text_truncated: false,
+			prompt_text_sha256: "promptsha256statusevidence",
+			redaction_version: "redaction-v1",
+			created_at: createdAt,
+			dispatch_authority_enabled: false as const,
+		};
+		const laneLifecycle = {
+			schema_version: "flowdesk.lane_lifecycle_record.v1",
+			lane_id: "lane-status-evidence-task",
+			workflow_id: workflowId,
+			attempt_id: "attempt-status-evidence-task",
+			parent_session_ref: "ses-status-evidence-parent",
+			background_task_ref: "bg-status-evidence-task",
+			agent_ref: "agent-general-status-evidence",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			state: "running" as const,
+			timeout_ms: 60_000,
+			orphan_max_age_ms: 600_000,
+			retry_count: 0,
+			created_at: createdAt,
+			updated_at: createdAt,
+			dispatch_authority_enabled: false as const,
+			providerCall: false as const,
+			actualLaneLaunch: false as const,
+			runtimeExecution: false as const,
+		};
+		const contextIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-context-status-evidence",
+			record: agentTaskContext,
+		});
+		assert.equal(contextIntent.ok, true, contextIntent.errors.join("; "));
+		const lifecycleIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "lane-lifecycle-status-evidence",
+			record: laneLifecycle,
+		});
+		assert.equal(lifecycleIntent.ok, true, lifecycleIntent.errors.join("; "));
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, [
+			contextIntent.writeIntent as never,
+			lifecycleIntent.writeIntent as never,
+		]);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
 
 		const session = createFlowDeskLocalNonDispatchAdapterSession(
-			new Date("2026-05-17T00:00:00.000Z"),
+			new Date(createdAt),
 			undefined,
-			{
-				projectConfig: {
-					enabled: true,
-					rootDir: root,
-					policyPackPaths: [".flowdesk/policy-packs/policy.json"],
-				},
-			},
+			{ durableStateRootDir: root },
 		);
-		const run = session.evaluate("flowdesk_run", {
-			schema_version: "flowdesk.run.request.v1",
-			request_id: "request-disk-policy-run",
-			input_mode: "test_fixture",
-			workflow_id: "workflow-disk-policy",
-			session_ref: "session-disk-policy",
-			run_mode: "fake-runtime",
-			plan_revision_id: "plan-disk-policy",
-			step_id: "step-disk-policy",
+		const status = session.evaluate("flowdesk_status", {
+			schema_version: "flowdesk.status.request.v1",
+			request_id: "request-status-evidence-lanes",
+			input_mode: "chat_routed",
+			workflow_id: workflowId,
+			session_ref: "session-status-evidence-lanes",
+			redacted_intake_ref: "intake-status-evidence-lanes",
+			detail_level: "summary",
 		});
-		assert.equal(run.ok, true, run.errors.join("; "));
-		assert.equal(run.handler.ok, true, run.handler.errors.join("; "));
-		assert.equal(run.providerCall, false);
-		assert.equal(run.actualLaneLaunch, false);
-		assert.equal(run.runtimeExecution, false);
+		assert.equal(status.handler.ok, true, status.handler.errors.join("; "));
+		const response = status.handler.response as
+			| { lane_summaries?: Array<Record<string, unknown>> }
+			| undefined;
+		assert.ok(response?.lane_summaries);
+		assert.equal(response.lane_summaries.length, 1);
+		assert.equal(
+			response.lane_summaries[0]?.lane_id,
+			"lane-status-evidence-task",
+		);
+		assert.equal(response.lane_summaries[0]?.state, "running");
+		assert.equal(response.lane_summaries[0]?.task_ref, "task-status-evidence-task");
+		assert.equal(status.localState.laneRecords, 1);
+		assert.equal(status.providerCall, false);
+		assert.equal(status.actualLaneLaunch, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+
 
 test("local adapter fails closed for missing or unsafe policy pack disk config", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-policy-blocked-"));
@@ -11612,7 +11641,7 @@ test("flowdesk_agent_task_run records parent session model from ctx.model in age
 						developerModeAcknowledged: true,
 						allowProviderCall: true,
 					},
-					{ sessionID: "current-session-1", model: "anthropic/claude-opus-4-7" } as never,
+					{ sessionID: "current-session-1", model: { providerID: "anthropic", modelID: "claude-opus-4-7" } } as never,
 				),
 			),
 		) as Record<string, unknown>;
@@ -11626,6 +11655,7 @@ test("flowdesk_agent_task_run records parent session model from ctx.model in age
 			evidence.entries.some(
 				(entry) =>
 					entry.evidenceClass === "agent_task_context" &&
+					entry.record.recorded_parent_provider_qualified_model_id === "anthropic/claude-opus-4-7" &&
 					entry.record.parent_wake_provider_qualified_model_id === "anthropic/claude-opus-4-7",
 			),
 		);
@@ -11690,6 +11720,7 @@ test("flowdesk_agent_task_run records parent session model from options.model in
 			evidence.entries.some(
 				(entry) =>
 					entry.evidenceClass === "agent_task_context" &&
+					entry.record.recorded_parent_provider_qualified_model_id === "anthropic/claude-sonnet-3-5" &&
 					entry.record.parent_wake_provider_qualified_model_id === "anthropic/claude-sonnet-3-5",
 			),
 		);
@@ -12120,4 +12151,1148 @@ test("completionWakeMainSessionConfigFromOptions falls back to the wake-specific
 	const result = completionWakeMainSessionConfigFromOptions(options);
 	assert.ok(result);
 	assert.equal(result.providerQualifiedModelId, "anthropic/claude-sonnet-4-6");
+});
+
+test("pre-spike doctor live-evaluates default-managed-dispatch promotion readiness when metadata is configured (Slice 3-C)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-doctor-live-promo-"));
+	const probeWorkflowId = "doctor-probe-default-managed-dispatch";
+	try {
+		// 1) Provision the three required precall evidence classes for the
+		//    doctor-probe workflow id. The doctor live path reloads them via
+		//    reloadFlowDeskSessionEvidenceV1 and the production-enablement
+		//    evaluator uses them to satisfy REQUIRED_PRECALL_EVIDENCE_CLASSES.
+		const records: Array<{
+			evidenceId: string;
+			record: Record<string, unknown>;
+		}> = [
+			{
+				evidenceId: "precall-doctor-probe-v1",
+				record: {
+					schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+					workflow_id: probeWorkflowId,
+					pre_dispatch_audit_ref: "precall-doctor-probe-v1",
+					observed_at: "2026-06-09T00:00:00.000Z",
+					attempt_id: "attempt-doctor-probe-test-v1",
+					// approval_ref omitted so it does not need to match the
+					// approvalDecision.approval_id (those are two independent
+					// concepts in production-enablement evaluation).
+					dispatch_authority_enabled: false,
+					providerCall: false,
+					actualLaneLaunch: false,
+					runtimeExecution: false,
+				},
+			},
+			{
+				evidenceId: "provider-health-doctor-probe-v1",
+				record: {
+					schema_version: "flowdesk.provider_health_snapshot.v1",
+					snapshot_id: "provider-health-doctor-probe-v1",
+					provider_family: "anthropic",
+					observed_at: "2026-06-09T00:00:00.000Z",
+					freshness: "fresh",
+					freshness_ttl: 86400,
+					source_surface: "doctor_probe",
+					availability_state: "healthy",
+					failure_class: "none",
+					dispatchability: "dispatchable",
+					source_ref: "source-doctor-probe-health-v1",
+					safe_remediation:
+						"Provider health is fresh and dispatchable; no remediation required.",
+				},
+			},
+			{
+				evidenceId: "approval-source-doctor-probe-v1",
+				record: {
+					schema_version: "flowdesk.production_approval_source.v1",
+					approval_id: "approval-source-doctor-probe-v1",
+					workflow_id: probeWorkflowId,
+					attempt_id: "attempt-doctor-probe-test-v1",
+					action_type: "managed_dispatch_beta",
+					issuer_boundary: "external_user_confirmation",
+					approval_method: "typed_phrase",
+					actor_ref: "actor-doctor-probe-test-v1",
+					profile_ref: "profile-doctor-probe-test-v1",
+					provider_qualified_model_id: "anthropic/claude-opus-4-7",
+					provider_binding_hash: "sha256-doctor-probe-test-binding-v1",
+					evidence_bundle_hash: "sha256-doctor-probe-test-bundle-v1",
+					guard_decision_ref: "guard-doctor-probe-test-v1",
+					issuance_audit_ref: "issuance-doctor-probe-test-v1",
+					nonce_ref: "nonce-doctor-probe-test-v1",
+					issued_at: "2026-06-09T00:00:00.000Z",
+					expires_at: "2026-12-31T00:00:00.000Z",
+					revoked: false,
+					consume_strategy: "atomic_compare_and_swap_required",
+					dispatch_authority_enabled: false,
+				},
+			},
+			{
+				evidenceId: "dispatch-idempotency-doctor-probe-v1",
+				record: {
+					schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+					workflow_id: probeWorkflowId,
+					snapshot_ref: "dispatch-idempotency-doctor-probe-v1",
+					observed_at: "2026-06-09T00:00:00.000Z",
+					entries: [],
+					dispatch_authority_enabled: false,
+					realOpenCodeDispatch: false,
+					actualLaneLaunch: false,
+					providerCall: false,
+					runtimeExecution: false,
+				},
+			},
+		];
+		const intents = records.map(({ evidenceId, record }) => {
+			const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+				workflowId: probeWorkflowId,
+				evidenceId,
+				record,
+			});
+			assert.equal(prepared.ok, true, prepared.errors.join("; "));
+			assert.ok(prepared.writeIntent);
+			return prepared.writeIntent;
+		});
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, intents);
+		assert.equal(applied.ok, true, applied.errors.join("; "));
+
+		// 2) Doctor handler — with full inline production-enablement options +
+		//    default-managed-dispatch metadata pointing at the same probe
+		//    workflow id. Doctor must now evaluate live and report
+		//    defaultManagedDispatchRegistrationAuthorized=true.
+		const productionEnablementOption = {
+			enabled: true,
+			preDispatchAuditRef: "precall-doctor-probe-v1",
+			configuredVerificationRef: "verification-doctor-probe-v1",
+			configuredVerificationResult: {
+				schema_version: "flowdesk.configured_verification_result.v1",
+				verification_ref: "verification-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				result: "passed",
+				produced_at: "2026-06-09T00:00:00.000Z",
+				source_ref: "source-doctor-probe-verification-v1",
+				check_labels: ["managed_dispatch_beta_verification"],
+				evidence_refs: ["evidence-doctor-probe-verification-v1"],
+				raw_output_redacted: true,
+				provider_call_made: false,
+				runtime_execution_made: false,
+				actual_lane_launch_made: false,
+				dispatch_authority_enabled: false,
+				safe_next_actions: ["/flowdesk-status"],
+			},
+			sanitizedAuthCaptureRef: "sanitized-auth-capture-doctor-probe-v1",
+			sanitizedAuthCaptureResult: {
+				schema_version: "flowdesk.sanitized_auth_capture_result.v1",
+				sanitized_auth_capture_ref: "sanitized-auth-capture-doctor-probe-v1",
+				durable_capture_ref: "durable-capture-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				provider_family: "anthropic",
+				provider_qualified_model_id: "anthropic/claude-opus-4-7",
+				auth_profile_ref: "auth-profile-doctor-probe-v1",
+				auth_evidence_ref: "auth-evidence-doctor-probe-v1",
+				credential_scope_ref: "credential-scope-doctor-probe-v1",
+				account_boundary_ref: "account-boundary-doctor-probe-v1",
+				sanitizer_ref: "sanitizer-doctor-probe-v1",
+				source_ref: "source-doctor-probe-sanitized-v1",
+				result: "passed",
+				captured_at: "2026-06-09T00:00:00.000Z",
+				metadata_labels: ["doctor_probe_sanitized_auth_capture"],
+				evidence_refs: ["evidence-doctor-probe-sanitized-v1"],
+				raw_auth_object_persisted: false,
+				raw_plugin_object_persisted: false,
+				token_material_persisted: false,
+				provider_call_made: false,
+				runtime_execution_made: false,
+				actual_lane_launch_made: false,
+				dispatch_authority_enabled: false,
+				safe_next_actions: ["/flowdesk-status"],
+			},
+			externalAuthPolicyRef: "external-auth-policy-doctor-probe-v1",
+			providerPolicyRef: "provider-policy-doctor-probe-v1",
+			externalAuthProviderPolicyResult: {
+				schema_version: "flowdesk.external_auth_provider_policy_result.v1",
+				external_auth_policy_ref: "external-auth-policy-doctor-probe-v1",
+				provider_policy_ref: "provider-policy-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				provider_family: "anthropic",
+				provider_qualified_model_id: "anthropic/claude-opus-4-7",
+				auth_profile_ref: "auth-profile-doctor-probe-v1",
+				auth_evidence_ref: "auth-evidence-doctor-probe-v1",
+				credential_scope_ref: "credential-scope-doctor-probe-v1",
+				account_boundary_ref: "account-boundary-doctor-probe-v1",
+				sanitizer_ref: "sanitizer-doctor-probe-v1",
+				source_ref: "source-doctor-probe-policy-v1",
+				result: "passed",
+				sanitized_at: "2026-06-09T00:00:00.000Z",
+				metadata_labels: ["doctor_probe_provider_policy"],
+				evidence_refs: ["evidence-doctor-probe-policy-v1"],
+				raw_auth_object_persisted: false,
+				token_material_persisted: false,
+				provider_call_made: false,
+				runtime_execution_made: false,
+				actual_lane_launch_made: false,
+				dispatch_authority_enabled: false,
+				safe_next_actions: ["/flowdesk-status"],
+			},
+			allowIncompleteConformance: true,
+			approvalDecision: {
+				schema_version: "flowdesk.production_approval_decision.v1",
+				approval_id: "approval-decision-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				decision: "approve",
+				created_at: "2026-06-09T00:00:00.000Z",
+				required_evidence_refs: [
+					"precall-doctor-probe-v1",
+					"verification-doctor-probe-v1",
+					"sanitized-auth-capture-doctor-probe-v1",
+					"external-auth-policy-doctor-probe-v1",
+					"provider-policy-doctor-probe-v1",
+				],
+				missing_evidence_labels: [],
+				uncertainty_labels: [],
+				safe_next_actions: ["/flowdesk-status"],
+				dispatch_authority_enabled: false,
+			},
+			defaultManagedDispatchAuthorizationMetadata: {
+				enabled: true,
+				defaultEnablementRequested: true,
+				killSwitchState: "inactive",
+				expiresAt: "2026-12-31T00:00:00.000Z",
+				actorRef: "actor-doctor-probe-test-v1",
+				profileRef: "profile-doctor-probe-test-v1",
+				releaseGateRef: "release-gate-doctor-probe-test-v1",
+				rollbackRef: "rollback-doctor-probe-test-v1",
+				adapterProfileRef: "adapter-profile-doctor-probe-test-v1",
+				sdkClientRef: "sdk-client-doctor-probe-test-v1",
+				durablePrecallRef: "precall-doctor-probe-v1",
+				defaultReleaseEnablementRef:
+					"release-enablement-doctor-probe-test-v1",
+				allowUncertainty: true,
+				doctorProbeWorkflowId: probeWorkflowId,
+				release2GateReadinessRef:
+					"release2-gate-readiness-doctor-probe-test-v1",
+				release2GateReadinessResult: {
+					schema_version:
+						"flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1",
+					workflow_id: probeWorkflowId,
+					ok: true,
+					errors: [],
+					state: "eligible",
+					blocked_labels: [],
+					evidence_refs: [
+						"precall-doctor-probe-v1",
+						"approval-decision-doctor-probe-v1",
+					],
+					production_enablement_state: "dispatch_capable",
+					managed_dispatch_ready: true,
+					phase6a_closed: true,
+					scoped_explicit_approval_present: true,
+					fresh_evidence_present: true,
+					release2_managed_dispatch_gate_ready: true,
+					dispatch_authority_enabled: false,
+					fallback_authority_enabled: false,
+					hard_chat_authority_enabled: false,
+					external_write_authority_enabled: false,
+					providerCall: false,
+					actualLaneLaunch: false,
+					runtimeExecution: false,
+					safe_next_actions: ["/flowdesk-status"],
+					phase6a_closure_ref: "phase6a-closure-doctor-probe-test-v1",
+				},
+			},
+		};
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: false,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskProductionEnablementOption]: productionEnablementOption,
+			},
+		)) as ChatMessageHooks;
+		const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(doctor);
+		const result = JSON.parse(
+			toolOutput(await doctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(
+			result.derivedDefaultManagedDispatchAuthorizationMetadataConfigured,
+			true,
+			"metadata must be detected as configured",
+		);
+		assert.equal(
+			result.defaultManagedDispatchRegistrationAuthorized,
+			true,
+			"doctor must surface live-derived authorization when evidence is present",
+		);
+		assert.equal(
+			result.productionPromotionGate,
+			"default_managed_dispatch_authorized_registration_ready",
+		);
+		assert.equal(
+			result.defaultManagedDispatchAuthorizationSource,
+			"derived_from_durable_evidence",
+		);
+		assert.equal(result.doctorProbeWorkflowId, probeWorkflowId);
+		assert.equal(typeof result.defaultManagedDispatchAuthorizationRef, "string");
+		assert.equal(typeof result.defaultManagedDispatchReadinessRef, "string");
+		// Doctor must NOT claim runtime/dispatch authority even when derived.
+		assert.equal(result.providerCall, false);
+		assert.equal(result.runtimeExecution, false);
+		assert.equal(result.actualLaneLaunch, false);
+		assert.equal(result.fallbackAuthority, false);
+		assert.equal(result.hardCancelOrNoReplyAuthority, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("pre-spike doctor still reports registration unauthorized when metadata is configured but durable evidence is missing", async () => {
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-doctor-live-promo-missing-"),
+	);
+	const probeWorkflowId = "doctor-probe-default-managed-dispatch";
+	try {
+		const productionEnablementOption = {
+			enabled: true,
+			// All inline options present, but NO durable evidence files written
+			// under root/.flowdesk/sessions/<probeWorkflowId>/... so the
+			// production-enablement evaluator will fail on the required
+			// precall evidence classes (pre_dispatch_audit, production_approval_source,
+			// dispatch_idempotency) and live-derived authorization must be undefined.
+			preDispatchAuditRef: "precall-doctor-probe-v1",
+			configuredVerificationRef: "verification-doctor-probe-v1",
+			configuredVerificationResult: {
+				schema_version: "flowdesk.configured_verification_result.v1",
+				verification_ref: "verification-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				result: "passed",
+				produced_at: "2026-06-09T00:00:00.000Z",
+				source_ref: "source-doctor-probe-verification-v1",
+				check_labels: ["managed_dispatch_beta_verification"],
+				evidence_refs: ["evidence-doctor-probe-verification-v1"],
+				raw_output_redacted: true,
+				provider_call_made: false,
+				runtime_execution_made: false,
+				actual_lane_launch_made: false,
+				dispatch_authority_enabled: false,
+				safe_next_actions: ["/flowdesk-status"],
+			},
+			sanitizedAuthCaptureRef: "sanitized-auth-capture-doctor-probe-v1",
+			sanitizedAuthCaptureResult: {
+				schema_version: "flowdesk.sanitized_auth_capture_result.v1",
+				sanitized_auth_capture_ref: "sanitized-auth-capture-doctor-probe-v1",
+				durable_capture_ref: "durable-capture-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				provider_family: "anthropic",
+				provider_qualified_model_id: "anthropic/claude-opus-4-7",
+				auth_profile_ref: "auth-profile-doctor-probe-v1",
+				auth_evidence_ref: "auth-evidence-doctor-probe-v1",
+				credential_scope_ref: "credential-scope-doctor-probe-v1",
+				account_boundary_ref: "account-boundary-doctor-probe-v1",
+				sanitizer_ref: "sanitizer-doctor-probe-v1",
+				source_ref: "source-doctor-probe-sanitized-v1",
+				result: "passed",
+				captured_at: "2026-06-09T00:00:00.000Z",
+				metadata_labels: ["doctor_probe_sanitized_auth_capture"],
+				evidence_refs: ["evidence-doctor-probe-sanitized-v1"],
+				raw_auth_object_persisted: false,
+				raw_plugin_object_persisted: false,
+				token_material_persisted: false,
+				provider_call_made: false,
+				runtime_execution_made: false,
+				actual_lane_launch_made: false,
+				dispatch_authority_enabled: false,
+				safe_next_actions: ["/flowdesk-status"],
+			},
+			externalAuthPolicyRef: "external-auth-policy-doctor-probe-v1",
+			providerPolicyRef: "provider-policy-doctor-probe-v1",
+			externalAuthProviderPolicyResult: {
+				schema_version: "flowdesk.external_auth_provider_policy_result.v1",
+				external_auth_policy_ref: "external-auth-policy-doctor-probe-v1",
+				provider_policy_ref: "provider-policy-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				provider_family: "anthropic",
+				provider_qualified_model_id: "anthropic/claude-opus-4-7",
+				auth_profile_ref: "auth-profile-doctor-probe-v1",
+				auth_evidence_ref: "auth-evidence-doctor-probe-v1",
+				credential_scope_ref: "credential-scope-doctor-probe-v1",
+				account_boundary_ref: "account-boundary-doctor-probe-v1",
+				sanitizer_ref: "sanitizer-doctor-probe-v1",
+				source_ref: "source-doctor-probe-policy-v1",
+				result: "passed",
+				sanitized_at: "2026-06-09T00:00:00.000Z",
+				metadata_labels: ["doctor_probe_provider_policy"],
+				evidence_refs: ["evidence-doctor-probe-policy-v1"],
+				raw_auth_object_persisted: false,
+				token_material_persisted: false,
+				provider_call_made: false,
+				runtime_execution_made: false,
+				actual_lane_launch_made: false,
+				dispatch_authority_enabled: false,
+				safe_next_actions: ["/flowdesk-status"],
+			},
+			allowIncompleteConformance: true,
+			approvalDecision: {
+				schema_version: "flowdesk.production_approval_decision.v1",
+				approval_id: "approval-decision-doctor-probe-v1",
+				workflow_id: probeWorkflowId,
+				decision: "approve",
+				created_at: "2026-06-09T00:00:00.000Z",
+				required_evidence_refs: [],
+				missing_evidence_labels: [],
+				uncertainty_labels: [],
+				safe_next_actions: ["/flowdesk-status"],
+				dispatch_authority_enabled: false,
+			},
+			defaultManagedDispatchAuthorizationMetadata: {
+				enabled: true,
+				defaultEnablementRequested: true,
+				killSwitchState: "inactive",
+				expiresAt: "2026-12-31T00:00:00.000Z",
+				actorRef: "actor-doctor-probe-test-v1",
+				profileRef: "profile-doctor-probe-test-v1",
+				releaseGateRef: "release-gate-doctor-probe-test-v1",
+				rollbackRef: "rollback-doctor-probe-test-v1",
+				adapterProfileRef: "adapter-profile-doctor-probe-test-v1",
+				sdkClientRef: "sdk-client-doctor-probe-test-v1",
+				durablePrecallRef: "precall-doctor-probe-v1",
+				defaultReleaseEnablementRef:
+					"release-enablement-doctor-probe-test-v1",
+				allowUncertainty: true,
+				doctorProbeWorkflowId: probeWorkflowId,
+			},
+		};
+
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: false,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskProductionEnablementOption]: productionEnablementOption,
+			},
+		)) as ChatMessageHooks;
+		const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(doctor);
+		const result = JSON.parse(
+			toolOutput(await doctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		// Metadata is detected, but the live evaluation cannot pass because
+		// REQUIRED_PRECALL_EVIDENCE_CLASSES are missing from disk.
+		assert.equal(
+			result.derivedDefaultManagedDispatchAuthorizationMetadataConfigured,
+			true,
+		);
+		assert.equal(
+			result.defaultManagedDispatchRegistrationAuthorized,
+			false,
+			"doctor must NOT authorize when durable precall evidence is missing",
+		);
+		assert.equal(
+			result.productionPromotionGate,
+			"release1_non_dispatch_command_registration_ready",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// =========================================================================
+// Slice 4 — Managed Dispatch 통합 검증 (end-to-end integration tests)
+// =========================================================================
+//
+// These tests prove that the full Slice 1 → Slice 2 → Slice 3-C chain
+// connects all the way through to an actual managed-dispatch adapter call
+// when the workspace config matches the shape currently committed to
+// opencode.json. They are pure-unit integration tests (no real OpenCode
+// runtime, no real provider call, no real lane launch): the SDK client is
+// faked through input.client, and durable evidence files are written under
+// a temporary durableStateRoot. Authority invariants (providerCall,
+// runtimeExecution, actualLaneLaunch, fallbackAuthority,
+// hardCancelOrNoReplyAuthority) remain false at the plugin boundary except
+// for the adapter result fields that are part of the dispatch lane itself.
+
+function slice4ProductionEnablementOption(probeWorkflowId: string): Record<string, unknown> {
+	// Mirrors the productionEnablement block in /Users/.../flowdesk/opencode.json
+	// committed by Slice 2/3-C with one substitution: probeWorkflowId is the
+	// caller-provided workflow id so each test can scope its own durable
+	// evidence directory under .flowdesk/sessions/<probeWorkflowId>/evidence/.
+	return {
+		enabled: true,
+		preDispatchAuditRef: "precall-managed-dispatch-beta-v1",
+		configuredVerificationRef: "verification-managed-dispatch-beta-v1",
+		configuredVerificationResult: {
+			schema_version: "flowdesk.configured_verification_result.v1",
+			verification_ref: "verification-managed-dispatch-beta-v1",
+			workflow_id: probeWorkflowId,
+			result: "passed",
+			produced_at: "2026-06-09T00:00:00.000Z",
+			source_ref: "source-managed-dispatch-beta-verification-v1",
+			check_labels: ["managed_dispatch_beta_verification"],
+			evidence_refs: ["evidence-managed-dispatch-beta-verification-v1"],
+			raw_output_redacted: true,
+			provider_call_made: false,
+			runtime_execution_made: false,
+			actual_lane_launch_made: false,
+			dispatch_authority_enabled: false,
+			safe_next_actions: ["/flowdesk-status"],
+		},
+		sanitizedAuthCaptureRef: "sanitized-auth-capture-managed-dispatch-beta-v1",
+		sanitizedAuthCaptureResult: {
+			schema_version: "flowdesk.sanitized_auth_capture_result.v1",
+			sanitized_auth_capture_ref: "sanitized-auth-capture-managed-dispatch-beta-v1",
+			durable_capture_ref: "durable-capture-managed-dispatch-beta-v1",
+			workflow_id: probeWorkflowId,
+			provider_family: "anthropic",
+			provider_qualified_model_id: "anthropic/claude-opus-4-7",
+			auth_profile_ref: "auth-profile-managed-dispatch-beta-v1",
+			auth_evidence_ref: "auth-evidence-managed-dispatch-beta-v1",
+			credential_scope_ref: "credential-scope-managed-dispatch-beta-v1",
+			account_boundary_ref: "account-boundary-managed-dispatch-beta-v1",
+			sanitizer_ref: "sanitizer-managed-dispatch-beta-v1",
+			source_ref: "source-managed-dispatch-beta-sanitized-v1",
+			result: "passed",
+			captured_at: "2026-06-09T00:00:00.000Z",
+			metadata_labels: ["managed_dispatch_beta_sanitized_auth_capture"],
+			evidence_refs: ["evidence-managed-dispatch-beta-sanitized-v1"],
+			raw_auth_object_persisted: false,
+			raw_plugin_object_persisted: false,
+			token_material_persisted: false,
+			provider_call_made: false,
+			runtime_execution_made: false,
+			actual_lane_launch_made: false,
+			dispatch_authority_enabled: false,
+			safe_next_actions: ["/flowdesk-status"],
+		},
+		externalAuthPolicyRef: "external-auth-policy-managed-dispatch-beta-v1",
+		providerPolicyRef: "provider-policy-managed-dispatch-beta-v1",
+		externalAuthProviderPolicyResult: {
+			schema_version: "flowdesk.external_auth_provider_policy_result.v1",
+			external_auth_policy_ref: "external-auth-policy-managed-dispatch-beta-v1",
+			provider_policy_ref: "provider-policy-managed-dispatch-beta-v1",
+			workflow_id: probeWorkflowId,
+			provider_family: "anthropic",
+			provider_qualified_model_id: "anthropic/claude-opus-4-7",
+			auth_profile_ref: "auth-profile-managed-dispatch-beta-v1",
+			auth_evidence_ref: "auth-evidence-managed-dispatch-beta-v1",
+			credential_scope_ref: "credential-scope-managed-dispatch-beta-v1",
+			account_boundary_ref: "account-boundary-managed-dispatch-beta-v1",
+			sanitizer_ref: "sanitizer-managed-dispatch-beta-v1",
+			source_ref: "source-managed-dispatch-beta-policy-v1",
+			result: "passed",
+			sanitized_at: "2026-06-09T00:00:00.000Z",
+			metadata_labels: ["managed_dispatch_beta_provider_policy"],
+			evidence_refs: ["evidence-managed-dispatch-beta-policy-v1"],
+			raw_auth_object_persisted: false,
+			token_material_persisted: false,
+			provider_call_made: false,
+			runtime_execution_made: false,
+			actual_lane_launch_made: false,
+			dispatch_authority_enabled: false,
+			safe_next_actions: ["/flowdesk-status"],
+		},
+		allowIncompleteConformance: true,
+		approvalDecision: {
+			schema_version: "flowdesk.production_approval_decision.v1",
+			approval_id: "approval-decision-managed-dispatch-beta-v1",
+			workflow_id: probeWorkflowId,
+			decision: "approve",
+			created_at: "2026-06-09T00:00:00.000Z",
+			required_evidence_refs: [
+				"precall-managed-dispatch-beta-v1",
+				"verification-managed-dispatch-beta-v1",
+				"sanitized-auth-capture-managed-dispatch-beta-v1",
+				"external-auth-policy-managed-dispatch-beta-v1",
+				"provider-policy-managed-dispatch-beta-v1",
+			],
+			missing_evidence_labels: [],
+			uncertainty_labels: [],
+			safe_next_actions: ["/flowdesk-status"],
+			dispatch_authority_enabled: false,
+		},
+		defaultManagedDispatchAuthorizationMetadata: {
+			enabled: true,
+			defaultEnablementRequested: true,
+			killSwitchState: "inactive",
+			expiresAt: "2026-12-31T00:00:00.000Z",
+			actorRef: "actor-flowdesk-managed-dispatch-beta",
+			profileRef: "managed_dispatch_beta_real_opencode_dispatch_adapter",
+			releaseGateRef: "release-gate-release2-managed-dispatch",
+			rollbackRef: "rollback-managed-dispatch-beta-v1",
+			adapterProfileRef: "managed_dispatch_beta_real_opencode_dispatch_adapter",
+			sdkClientRef: "sdk-client-opencode-injected",
+			durablePrecallRef: "precall-managed-dispatch-beta-v1",
+			defaultReleaseEnablementRef: "release-enablement-managed-dispatch-beta-v1",
+			allowUncertainty: true,
+			doctorProbeWorkflowId: probeWorkflowId,
+			release2GateReadinessRef: "release2-gate-readiness-managed-dispatch-beta-v1",
+			release2GateReadinessResult: {
+				schema_version: "flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1",
+				workflow_id: probeWorkflowId,
+				ok: true,
+				errors: [],
+				state: "eligible",
+				blocked_labels: [],
+				evidence_refs: [
+					"precall-managed-dispatch-beta-v1",
+					"approval-decision-managed-dispatch-beta-v1",
+					"phase6a-closure-managed-dispatch-beta-v1",
+				],
+				production_enablement_state: "dispatch_capable",
+				managed_dispatch_ready: true,
+				phase6a_closed: true,
+				scoped_explicit_approval_present: true,
+				fresh_evidence_present: true,
+				release2_managed_dispatch_gate_ready: true,
+				dispatch_authority_enabled: false,
+				fallback_authority_enabled: false,
+				hard_chat_authority_enabled: false,
+				external_write_authority_enabled: false,
+				providerCall: false,
+				actualLaneLaunch: false,
+				runtimeExecution: false,
+				safe_next_actions: ["/flowdesk-status"],
+				phase6a_closure_ref: "phase6a-closure-managed-dispatch-beta-v1",
+			},
+		},
+	};
+}
+
+function slice4WriteDurableEvidence(root: string, workflowId: string): void {
+	// Required plugin-satisfiable evidence classes for production-enablement +
+	// adapter pre-call gate: pre_dispatch_audit, production_approval_source,
+	// dispatch_idempotency_snapshot. The adapter also needs the consumed-
+	// approval shape (action_type=managed_dispatch_beta, attempt_id matches
+	// manifest) and a fresh idempotency_snapshot for reservation diff.
+	//
+	// The working-model gate (restored in SLICE 3) requires a durable
+	// model-availability/working-models.json snapshot. Write it here so the
+	// end-to-end test can reach dispatch_accepted.
+	const modelAvailabilityDir = join(root, "model-availability");
+	mkdirSync(modelAvailabilityDir, { recursive: true });
+	writeFileSync(
+		join(modelAvailabilityDir, "working-models.json"),
+		JSON.stringify({ available_model_ids: ["claude/sonnet-4"] }, null, 2),
+		"utf8",
+	);
+	const records: Array<{ evidenceId: string; record: Record<string, unknown> }> = [
+		{
+			evidenceId: "working-model-cache-slice4-v1",
+			record: exactModelAvailabilityCacheRecord({
+				cache_id: "cache-slice4-v1",
+				entries: [
+					{
+						entry_id: "entry-claude-sonnet-4",
+						provider_family: "claude",
+						provider_identity_ref: "provider-claude-slice4-v1",
+						provider_qualified_model_id: "claude/sonnet-4",
+						model_family: "sonnet-4",
+						registered: true,
+						available: true,
+						highest_tier_eligible: true,
+						availability_ref: "availability-slice4-v1",
+					},
+				],
+			}),
+		},
+		{
+			evidenceId: "precall-managed-dispatch-beta-v1",
+			record: {
+				schema_version: "flowdesk.pre_dispatch_audit_record.v1",
+				workflow_id: workflowId,
+				pre_dispatch_audit_ref: "precall-managed-dispatch-beta-v1",
+				observed_at: "2026-06-09T00:00:00.000Z",
+				attempt_id: "attempt-slice4-managed-dispatch-v1",
+				dispatch_authority_enabled: false,
+				providerCall: false,
+				actualLaneLaunch: false,
+				runtimeExecution: false,
+			},
+		},
+		{
+			evidenceId: "provider-health-slice4-v1",
+			record: {
+				schema_version: "flowdesk.provider_health_snapshot.v1",
+				snapshot_id: "provider-health-slice4-v1",
+				provider_family: "anthropic",
+				observed_at: "2026-06-09T00:00:00.000Z",
+				freshness: "fresh",
+				freshness_ttl: 86400,
+				source_surface: "doctor_probe",
+				availability_state: "healthy",
+				failure_class: "none",
+				dispatchability: "dispatchable",
+				source_ref: "source-slice4-health-v1",
+				safe_remediation: "Provider health is fresh and dispatchable; no remediation required.",
+			},
+		},
+		{
+			evidenceId: "approval-source-slice4-v1",
+			record: consumeFlowDeskProductionApprovalSourceV1({
+				approval: {
+					schema_version: "flowdesk.production_approval_source.v1",
+					approval_id: "approval-source-slice4-v1",
+					workflow_id: workflowId,
+					attempt_id: "attempt-slice4-managed-dispatch-v1",
+					action_type: "managed_dispatch_beta",
+					issuer_boundary: "external_user_confirmation",
+					approval_method: "typed_phrase",
+					actor_ref: "actor-slice4-test-v1",
+					profile_ref: "profile-slice4-test-v1",
+					provider_qualified_model_id: "claude/sonnet-4",
+					provider_binding_hash: "hash-slice4-binding-v1",
+					evidence_bundle_hash: "hash-slice4-bundle-v1",
+					guard_decision_ref: "guard-slice4-v1",
+					issuance_audit_ref: "issuance-slice4-v1",
+					nonce_ref: "nonce-slice4-v1",
+					issued_at: "2026-06-09T00:00:00.000Z",
+					expires_at: "2026-12-31T00:00:00.000Z",
+					revoked: false,
+					consume_strategy: "atomic_compare_and_swap_required",
+					dispatch_authority_enabled: false,
+				},
+				workflowId,
+				attemptId: "attempt-slice4-managed-dispatch-v1",
+				actionType: "managed_dispatch_beta",
+				actorRef: "actor-slice4-test-v1",
+				profileRef: "profile-slice4-test-v1",
+				providerQualifiedModelId: "claude/sonnet-4",
+				providerBindingHash: "hash-slice4-binding-v1",
+				evidenceBundleHash: "hash-slice4-bundle-v1",
+				guardDecisionRef: "guard-slice4-v1",
+				consumptionAuditRef: "audit-consumption-slice4-v1",
+				consumedAt: "2026-06-09T00:00:05.000Z",
+			}).consumed_approval as unknown as Record<string, unknown>,
+		},
+		{
+			evidenceId: "dispatch-idempotency-slice4-v1",
+			record: {
+				schema_version: "flowdesk.dispatch_idempotency_snapshot.v1",
+				workflow_id: workflowId,
+				snapshot_ref: "dispatch-idempotency-slice4-v1",
+				observed_at: "2026-06-09T00:00:00.000Z",
+				entries: [],
+				dispatch_authority_enabled: false,
+				realOpenCodeDispatch: false,
+				actualLaneLaunch: false,
+				providerCall: false,
+				runtimeExecution: false,
+			},
+		},
+	];
+	const intents = records.map(({ evidenceId, record }) => {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId,
+			record,
+		});
+		assert.equal(prepared.ok, true, prepared.errors.join("; "));
+		assert.ok(prepared.writeIntent);
+		return prepared.writeIntent;
+	});
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(root, intents);
+	assert.equal(applied.ok, true, applied.errors.join("; "));
+}
+
+function slice4FakeSdkClient() {
+	const promptCalls: unknown[] = [];
+	const promptAsyncCalls: unknown[] = [];
+	const client = {
+		session: {
+			prompt(options: unknown) {
+				promptCalls.push(options);
+				return Promise.resolve({ info: { id: "message-slice4-v1" }, parts: [] });
+			},
+			promptAsync(options: unknown) {
+				promptAsyncCalls.push(options);
+				return Promise.resolve(undefined);
+			},
+		},
+	};
+	return { client, promptCalls, promptAsyncCalls };
+}
+
+function slice4BoundaryInput(workflowId: string): Record<string, unknown> {
+	const observedAt = "2026-06-09T00:00:00.000Z";
+	const expiresAt = "2026-12-31T00:00:00.000Z";
+	return {
+		configHash: "config-hash-slice4-v1",
+		policyPackHashes: ["policy-hash-slice4-v1"],
+		workflowId,
+		stepId: "step-slice4-v1",
+		attemptId: "attempt-slice4-managed-dispatch-v1",
+		betaPolicy: {
+			release_mode: "managed_dispatch_beta",
+			policy_mode: "managed_dispatch_beta",
+			config_hash: "config-hash-slice4-v1",
+			policy_pack_hashes: ["policy-hash-slice4-v1"],
+			fallback_reselection_mode: "disabled",
+			hard_chat_authority: "disabled",
+			require_quarantine_on_ambiguity: true,
+			audit_ref: "precall-managed-dispatch-beta-v1",
+		},
+		guardApproval: {
+			schema_version: "flowdesk.guard_approved_dispatch.v1",
+			guard_decision_id: "guard-slice4-v1",
+			workflow_id: workflowId,
+			step_id: "step-slice4-v1",
+			attempt_id: "attempt-slice4-managed-dispatch-v1",
+			provider_family: "claude",
+			provider_qualified_model_id: "claude/sonnet-4",
+			usage_snapshot_ref: "usage-slice4-v1",
+			provider_health_snapshot_ref: "health-slice4-v1",
+			runtime_capability_ref: "runtime-slice4-v1",
+			pre_dispatch_audit_ref: "precall-managed-dispatch-beta-v1",
+			expires_at: expiresAt,
+		},
+		bindingEvidence: {
+			schema_version: "flowdesk.managed_dispatch_beta.binding_evidence.v1",
+			binding_ref: "binding-slice4-v1",
+			workflow_id: workflowId,
+			step_id: "step-slice4-v1",
+			attempt_id: "attempt-slice4-managed-dispatch-v1",
+			provider_family: "claude",
+			provider_qualified_model_id: "claude/sonnet-4",
+			source: "guard_approved_dispatch",
+			trusted: true,
+			created_at: observedAt,
+			expires_at: expiresAt,
+		},
+		usageSnapshot: {
+			schema_version: "flowdesk.usage_snapshot.v1",
+			snapshot_id: "usage-slice4-v1",
+			provider_family: "claude",
+			model_family: "sonnet-4",
+			freshness: "fresh",
+			freshness_ttl: 5,
+			reset_time: "2026-06-09T01:00:00.000Z",
+			reset_bucket: "provider-window-slice4-v1",
+			dispatchability: "dispatchable",
+			uncertainty_flags: [],
+			source_ref: "usage-source-slice4-v1",
+		},
+		usageAuthorityEvidence: {
+			schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+			authority_ref: "usage-authority-slice4-v1",
+			usage_snapshot_ref: "usage-slice4-v1",
+			provider_family: "claude",
+			provider_qualified_model_id: "claude/sonnet-4",
+			model_family: "sonnet-4",
+			source_kind: "openusage",
+			source_version_ref: "openusage-version-slice4-v1",
+			auth_profile_ref: "auth-profile-slice4-v1",
+			auth_evidence_ref: "auth-evidence-slice4-v1",
+			credential_scope_ref: "principal-scope-slice4-v1",
+			account_boundary_ref: "account-boundary-slice4-v1",
+			quota_evidence_ref: "quota-evidence-slice4-v1",
+			usage_acquired: true,
+			reset_time: "2026-06-09T01:00:00.000Z",
+			reset_bucket: "provider-window-slice4-v1",
+			source_ref: "usage-source-slice4-v1",
+			conformance_ref: "usage-conformance-slice4-v1",
+			redacted_evidence_refs: ["usage-evidence-slice4-v1"],
+			trusted: true,
+			observed_at: observedAt,
+			expires_at: expiresAt,
+		},
+		expectedAuthProfileRef: "auth-profile-slice4-v1",
+		expectedCredentialScopeRef: "principal-scope-slice4-v1",
+		expectedAccountBoundaryRef: "account-boundary-slice4-v1",
+		providerHealthSnapshot: {
+			schema_version: "flowdesk.provider_health_snapshot.v1",
+			snapshot_id: "health-slice4-v1",
+			provider_family: "claude",
+			model_family: "sonnet-4",
+			observed_at: observedAt,
+			freshness: "fresh",
+			freshness_ttl: 10,
+			source_surface: "provider_smoke_test",
+			availability_state: "healthy",
+			failure_class: "none",
+			telemetry_ref: "telemetry-slice4-v1",
+			dispatchability: "dispatchable",
+			source_ref: "health-source-slice4-v1",
+			safe_remediation: "No action needed.",
+		},
+		runtimeEchoEvidence: {
+			schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1",
+			runtime_echo_ref: "runtime-echo-slice4-v1",
+			workflow_id: workflowId,
+			step_id: "step-slice4-v1",
+			attempt_id: "attempt-slice4-managed-dispatch-v1",
+			provider_family: "claude",
+			provider_qualified_model_id: "claude/sonnet-4",
+			runtime_capability_ref: "runtime-slice4-v1",
+			conformance_ref: "conformance-slice4-v1",
+			runtime_echo_mode: "trusted",
+			trusted: true,
+			observed_at: observedAt,
+			expires_at: expiresAt,
+		},
+		conformanceRuntimeMetadata: {
+			schema_version: "flowdesk.conformance_runtime_metadata.v1",
+			opencode_version: "1.14.40",
+			checked_at: observedAt,
+			plugin_package: "@flowdesk/opencode-plugin",
+			plugin_version_or_commit: "plugin-commit-slice4-v1",
+			chat_intake_mode: "blocking",
+			command_alias_mode: "portable_only",
+			dispatch_mode: "real-opencode-dispatch",
+			runtime_echo_mode: "trusted",
+			event_telemetry_mode: "sufficient",
+			provider_health_mode: "dispatch_gate_ready",
+			fallback_reselection_mode: "disabled",
+			diagnostics_surface_mode: "doctor_usage_status_debug",
+			lane_observability_mode: "openable_refs",
+			hook_harness_mode: "enforce",
+			tui_mode: "unsupported",
+			mode_fields: ["PluginInput.client", "session.safe_metadata"],
+			evidence_refs: ["conformance-evidence-slice4-v1"],
+			disabled_modes: ["managed_fallback", "hard_chat_blocking"],
+		},
+		telemetryCorrelation: {
+			schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
+			telemetry_ref: "telemetry-slice4-v1",
+			workflow_id: workflowId,
+			step_id: "step-slice4-v1",
+			attempt_id: "attempt-slice4-managed-dispatch-v1",
+			event_telemetry_mode: "sufficient",
+			correlation_count: 2,
+			ambiguous: false,
+			source_refs: ["telemetry-source-slice4-v1"],
+		},
+		preDispatchAuditRef: "precall-managed-dispatch-beta-v1",
+		configuredVerificationRef: "verification-managed-dispatch-beta-v1",
+		fallbackOrReselectionAllowed: false,
+		hardChatAuthorityAllowed: false,
+		ambiguityQuarantined: true,
+		now: Date.parse(observedAt),
+	};
+}
+
+function slice4DispatchRequest(): Record<string, unknown> {
+	return {
+		sessionId: "session-slice4-v1",
+		agent: "build",
+		provider_qualified_model_id: "claude/sonnet-4",
+		promptText: "Implement the approved bounded FlowDesk step (slice4 integration).",
+		directory: "/tmp/flowdesk-slice4",
+	};
+}
+
+function slice4DispatchManifest(workflowId: string): Record<string, unknown> {
+	return {
+		schema_version: "flowdesk.dispatch_attempt_manifest.v1",
+		workflow_id: workflowId,
+		attempt_id: "attempt-slice4-managed-dispatch-v1",
+		state: "approval_consumed",
+		actor_ref: "actor-slice4-test-v1",
+		profile_ref: "profile-slice4-test-v1",
+		provider_qualified_model_id: "claude/sonnet-4",
+		provider_binding_hash: "hash-slice4-binding-v1",
+		evidence_bundle_hash: "hash-slice4-bundle-v1",
+		evidence_refs: ["usage-authority-slice4-v1", "runtime-echo-slice4-v1", "telemetry-slice4-v1"],
+		approval_ref: "approval-source-slice4-v1",
+		consumed_approval_ref: "approval-source-slice4-v1",
+		guard_decision_ref: "guard-slice4-v1",
+		pre_dispatch_audit_ref: "precall-managed-dispatch-beta-v1",
+		pre_dispatch_audit_committed: true,
+		idempotency_key: "idempotency-slice4-v1",
+		created_at: "2026-06-09T00:00:00.000Z",
+		updated_at: "2026-06-09T00:00:05.000Z",
+		dispatch_authority_enabled: false,
+		realOpenCodeDispatch: false,
+		actualLaneLaunch: false,
+		providerCall: false,
+		runtimeExecution: false,
+	};
+}
+
+test("Slice 4 — flowdesk_run managed-dispatch with opencode.json-shaped productionEnablement reaches dispatch_accepted end-to-end", async () => {
+	// This test exercises Slice 1 (Release 2 readiness wired into default
+	// promotion path) + Slice 2 (productionEnablement option injection) +
+	// Slice 3-C (live derivation from durable evidence) + the actual
+	// managed-dispatch adapter call, by configuring the server plugin with
+	// exactly the shape committed to opencode.json and then invoking the
+	// flowdesk_run tool with run_mode="managed-dispatch".
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-slice4-managed-dispatch-"));
+	const workflowId = "workflow-slice4-managed-dispatch-v1";
+	try {
+		// 1. Provision required plugin-satisfiable evidence under the run
+		//    workflow_id from boundaryInput and reloads evidence from that
+		//    path.
+		slice4WriteDurableEvidence(root, workflowId);
+
+
+
+		// 2. Configure the server with the opencode.json-shaped
+		//    productionEnablement option + matching durable state root +
+		//    inject a fake SDK client through input.client. Local-non-
+		//    dispatch adapter must be enabled because flowdesk_run lives
+		//    in that registry.
+		const { client, promptAsyncCalls, promptCalls } = slice4FakeSdkClient();
+		const productionEnablement = slice4ProductionEnablementOption(workflowId);
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			{ client } as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskProductionEnablementOption]: productionEnablement,
+			},
+		)) as ChatMessageHooks;
+
+		// 3. Sanity-check Slice 3-C (doctor) still surfaces authorization
+		//    with the same productionEnablement under the run-workflow id
+		//    set as doctorProbeWorkflowId. This proves the option payload
+		//    is recognized by the doctor live-evaluation path before we
+		//    exercise the run path.
+		const doctor = hooks.tool?.[flowdeskPreSpikeDoctorToolName];
+		assert.ok(doctor, "flowdesk_pre_spike_doctor tool must register");
+		const doctorResult = JSON.parse(
+			toolOutput(await doctor.execute({}, undefined as never)),
+		) as Record<string, unknown>;
+		assert.equal(
+			doctorResult.derivedDefaultManagedDispatchAuthorizationMetadataConfigured,
+			true,
+			"Slice 2 metadata must be detected as configured",
+		);
+		assert.equal(
+			doctorResult.defaultManagedDispatchRegistrationAuthorized,
+			true,
+			"Slice 3-C live derivation must authorize against the seeded durable evidence",
+		);
+		assert.equal(
+			doctorResult.productionPromotionGate,
+			"default_managed_dispatch_authorized_registration_ready",
+		);
+		assert.equal(
+			doctorResult.defaultManagedDispatchAuthorizationSource,
+			"derived_from_durable_evidence",
+		);
+
+		// 4. Execute the flowdesk_run tool with run_mode="managed-dispatch"
+		//    and the full managed-dispatch envelope. This drives
+		//    evaluateFlowDeskManagedDispatchRunRoute → run-route derives
+		//    its own authorization from the same option payload + run-
+		//    request workflow id → calls dispatchManagedDispatchBetaPromptV1.
+		const runTool = hooks.tool?.flowdesk_run;
+		assert.ok(runTool, "flowdesk_run tool must be registered when local-non-dispatch adapter is enabled");
+		const runRequest = {
+			schema_version: "flowdesk.run.request.v1" as const,
+			request_id: "request-slice4-managed-dispatch-v1",
+			input_mode: "alias_command" as const,
+			workflow_id: workflowId,
+			run_mode: "managed-dispatch" as const,
+			plan_revision_id: "plan-revision-slice4-v1",
+			managed_dispatch_boundary_input: slice4BoundaryInput(workflowId),
+			managed_dispatch_request: slice4DispatchRequest(),
+			managed_dispatch_manifest: slice4DispatchManifest(workflowId),
+		};
+		const runOutput = JSON.parse(
+			toolOutput(await runTool.execute(runRequest, undefined as never)),
+		) as Record<string, unknown>;
+
+		// 5. Verify dispatch_accepted (the default request shape uses
+		//    promptAsync) and authority invariants.
+		assert.equal(
+			runOutput.runRouteProfile,
+			"flowdesk_run_default_managed_dispatch_route",
+			"run-mode must be routed through the default managed-dispatch derivation path",
+		);
+		assert.equal(
+			typeof runOutput.defaultManagedDispatchAuthorizationRef,
+			"string",
+			"run-route must surface a derived authorization ref",
+		);
+		assert.equal(
+			typeof runOutput.defaultManagedDispatchReadinessRef,
+			"string",
+			"run-route must surface the readiness ref bound to the derived authorization",
+		);
+		assert.equal(
+			runOutput.status,
+			"dispatch_accepted",
+			"adapter must reach dispatch_accepted with promptAsync default dispatch method; got: " +
+				JSON.stringify({ status: runOutput.status, redactedBlockReason: runOutput.redactedBlockReason }),
+		);
+		assert.equal(runOutput.dispatchAttempted, true, "dispatch must be attempted once");
+		assert.equal(
+			promptAsyncCalls.length,
+			1,
+			"the injected SDK client must have been called exactly once via promptAsync",
+		);
+		assert.equal(
+			promptCalls.length,
+			0,
+			"prompt (non-async) must not be called for the default dispatch shape",
+		);
+
+		// 6. Authority invariants surfaced at the adapter result. The
+		//    boundary value `realOpenCodeDispatch` is the adapter's own
+		//    record that a real injected SDK call happened, not a plugin-
+		//    wide dispatch authority gate.
+		const authority = runOutput.authority as Record<string, unknown> | undefined;
+		assert.ok(authority, "adapter result must surface an authority block");
+		assert.equal(authority.realOpenCodeDispatch, true, "real SDK client was invoked");
+		assert.equal(authority.providerCall, true, "the SDK call is itself a provider call");
+		assert.equal(
+			authority.actualLaneLaunch,
+			false,
+			"managed-dispatch promptAsync is not a lane launch",
+		);
+		assert.equal(authority.fallbackAuthority, false);
+		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(authority.toolAuthority, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Slice 4 — flowdesk_run managed-dispatch blocks before dispatch when SDK client is not injected (negative routing check)", async () => {
+	// Verifies that the run-route still safely fails closed before adapter
+	// execution when the productionEnablement chain is configured but no
+	// injected SDK client is available. This is the same shape as the
+	// happy path test above, except input.client is undefined.
+	const root = mkdtempSync(
+		join(tmpdir(), "flowdesk-slice4-managed-dispatch-no-client-"),
+	);
+	const workflowId = "workflow-slice4-managed-dispatch-no-client-v1";
+	try {
+		slice4WriteDurableEvidence(root, workflowId);
+		const productionEnablement = slice4ProductionEnablementOption(workflowId);
+		// No `client` on input — the run-route must still validate the
+		// authorization derivation but block before calling the adapter.
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			undefined as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskProductionEnablementOption]: productionEnablement,
+			},
+		)) as ChatMessageHooks;
+		const runTool = hooks.tool?.flowdesk_run;
+		assert.ok(runTool);
+		const runRequest = {
+			schema_version: "flowdesk.run.request.v1" as const,
+			request_id: "request-slice4-managed-dispatch-no-client-v1",
+			input_mode: "alias_command" as const,
+			workflow_id: workflowId,
+			run_mode: "managed-dispatch" as const,
+			plan_revision_id: "plan-revision-slice4-no-client-v1",
+			managed_dispatch_boundary_input: slice4BoundaryInput(workflowId),
+			managed_dispatch_request: slice4DispatchRequest(),
+			managed_dispatch_manifest: slice4DispatchManifest(workflowId),
+		};
+		const runOutput = JSON.parse(
+			toolOutput(await runTool.execute(runRequest, undefined as never)),
+		) as Record<string, unknown>;
+		// Must fail closed without dispatch attempt.
+		assert.equal(runOutput.status, "blocked_before_dispatch");
+		assert.equal(runOutput.dispatchAttempted, false);
+		assert.equal(typeof runOutput.redactedBlockReason, "string");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

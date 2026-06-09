@@ -46,6 +46,9 @@ export interface FlowDeskAgentTaskContextV1 {
 	agent_ref: string;
 	provider_qualified_model_id: string;
 	parent_session_ref: string;
+	/** Model of parent/main session at task launch time, used by wake consumer to match model. */
+	recorded_parent_provider_qualified_model_id?: string;
+	/** @deprecated Use recorded_parent_provider_qualified_model_id. */
 	parent_wake_provider_qualified_model_id?: string;
 	prompt_text: string;
 	prompt_text_truncated: boolean;
@@ -129,6 +132,15 @@ function nonEmptyString(value: unknown, label: string): ValidationResult {
 	return typeof value === "string" && value.trim().length > 0
 		? valid()
 		: invalid(`${label} must be a non-empty string`);
+}
+
+function optionalProviderQualifiedModelId(value: unknown, label: string): ValidationResult {
+	if (value === undefined) return valid();
+	if (typeof value !== "string") return invalid(`${label} must be a provider-qualified model id string`);
+	const trimmed = value.trim();
+	if (trimmed.length === 0 || trimmed.length > 128) return invalid(`${label} must be a bounded provider-qualified model id string`);
+	if (!/^[^\s/]+\/[^\s/]+$/.test(trimmed)) return invalid(`${label} must use provider/model format`);
+	return valid();
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +234,7 @@ export function validateFlowDeskAgentTaskContextV1(value: unknown): ValidationRe
 		"agent_ref",
 		"provider_qualified_model_id",
 		"parent_session_ref",
+		"recorded_parent_provider_qualified_model_id",
 		"parent_wake_provider_qualified_model_id",
 		"prompt_text",
 		"prompt_text_truncated",
@@ -238,9 +251,8 @@ export function validateFlowDeskAgentTaskContextV1(value: unknown): ValidationRe
 	errors.push(...nonEmptyString(record.agent_ref, "agent_ref").errors);
 	errors.push(...nonEmptyString(record.provider_qualified_model_id, "provider_qualified_model_id").errors);
 	errors.push(...nonEmptyString(record.parent_session_ref, "parent_session_ref").errors);
-	if (record.parent_wake_provider_qualified_model_id !== undefined) {
-		errors.push(...nonEmptyString(record.parent_wake_provider_qualified_model_id, "parent_wake_provider_qualified_model_id").errors);
-	}
+	errors.push(...optionalProviderQualifiedModelId(record.recorded_parent_provider_qualified_model_id, "recorded_parent_provider_qualified_model_id").errors);
+	errors.push(...optionalProviderQualifiedModelId(record.parent_wake_provider_qualified_model_id, "parent_wake_provider_qualified_model_id").errors);
 	if (typeof record.prompt_text !== "string")
 		errors.push("prompt_text must be a string");
 	else if (record.prompt_text.length > 32_768)

@@ -26,10 +26,11 @@ import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-disp
 
 function makeSuccessClient(overrides: {
 	messages?: (o: unknown) => Promise<unknown>;
+	create?: (o: unknown) => Promise<unknown>;
 } = {}): FlowDeskManagedDispatchBetaOpenCodeClientV1 {
 	return {
 		session: {
-			create: async () => ({ id: "ses-oi-test-child-01" }),
+			create: overrides.create ?? (async () => ({ id: "ses-oi-test-child-01" })),
 			promptAsync: async () => ({}),
 			messages: overrides.messages ?? (async () => [
 				{
@@ -45,6 +46,82 @@ function makeSuccessClient(overrides: {
 	} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
 }
 
+test("runtime task model-selection evidence persists for fuzzy Anthropic alias selection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-task-model-selection-anthropic-"));
+	try {
+		const client = makeSuccessClient();
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-task-model-selection-1",
+			taskId: "task-model-selection-1",
+			laneId: "lane-model-selection-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "anthropic/claude-haiku-5.0",
+			promptText: "produce result for task model selection test",
+			parentSessionId: "parent-model-selection-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			oiEnabled: false,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed", `expected task_completed, got ${result.status}`);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			rootDir: root,
+			workflowId: "workflow-task-model-selection-1",
+		});
+		assert.ok(reloaded.ok, reloaded.blocked.map((entry) => entry.reason).join("; "));
+		const selectionEntry = reloaded.entries.find((entry) => entry.evidenceClass === "task_model_selection");
+		assert.ok(selectionEntry, "task_model_selection evidence should be reloadable");
+		const record = selectionEntry.record as Record<string, unknown>;
+		assert.equal(record.provider_family, "claude");
+		assert.equal(record.provider_qualified_model_id, "anthropic/claude-haiku-4-5");
+		assert.equal(record.selection_status, "selected");
+		assert.deepEqual(record.attempted_provider_qualified_model_ids, [
+			"anthropic/claude-haiku-5.0",
+			"anthropic/claude-haiku-4-5",
+		]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("runtime model binding still fails closed before SDK session creation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-task-model-selection-fail-closed-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-should-not-be-created" };
+			},
+		});
+
+		const unsupportedModel = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-task-model-selection-unsupported",
+			taskId: "task-model-selection-unsupported",
+			laneId: "lane-model-selection-unsupported",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/fake-unsupported-model-xyz",
+			promptText: "should not launch unsupported model",
+			parentSessionId: "parent-model-selection-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+		});
+		assert.equal(unsupportedModel.status, "task_failed");
+		if (unsupportedModel.status !== "task_failed") return;
+		assert.match(unsupportedModel.redactedReason, /not supported|unsupported|no same-family OpenCode-supported fallback/i);
+		assert.equal(createCalls, 0, "SDK session.create must not be called for failed model binding");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 // ─── Test 1: OI session summary is written after task completes ───────────────
 
 test("OI session summary evidence is written after task_completed", async () => {
@@ -57,7 +134,7 @@ test("OI session summary evidence is written after task_completed", async () => 
 			taskId: "task-oi-summary-1",
 			laneId: "lane-oi-summary-1",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "produce result for OI test",
 			parentSessionId: "parent-oi-test",
 			rootDir: root,
@@ -117,7 +194,7 @@ test("OI summary write failure does not propagate: task_completed still returned
 			taskId: "task-oi-failsafe-1",
 			laneId: "lane-oi-failsafe-1",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "produce result for OI failsafe test",
 			parentSessionId: "parent-oi-failsafe",
 			rootDir: root,
@@ -159,7 +236,7 @@ test("OI summary with oiEnabled=false has advisory_health_label disabled_by_conf
 			taskId: "task-oi-disabled-1",
 			laneId: "lane-oi-disabled-1",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "produce result for OI disabled test",
 			parentSessionId: "parent-oi-disabled",
 			rootDir: root,
@@ -208,7 +285,7 @@ test("parentSessionProviderQualifiedModelId is recorded in agent_task_context", 
 			taskId: "task-parent-model-1",
 			laneId: "lane-parent-model-1",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "test parent model recording",
 			parentSessionId: "parent-oi-test",
 			parentSessionProviderQualifiedModelId: parentModel,
@@ -233,6 +310,7 @@ test("parentSessionProviderQualifiedModelId is recorded in agent_task_context", 
 		assert.ok(contextEntries.length >= 1);
 
 		const contextRecord = contextEntries[0]!.record as Record<string, unknown>;
+		assert.equal(contextRecord.recorded_parent_provider_qualified_model_id, parentModel);
 		assert.equal(contextRecord.parent_wake_provider_qualified_model_id, parentModel);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -316,7 +394,7 @@ test("loadRecentOISessionSummariesV1 returns summaries sorted newest-first", asy
 			taskId: "task-oi-reader-first",
 			laneId: "lane-oi-reader-first",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "first task",
 			parentSessionId: "parent-oi-reader",
 			rootDir: root,
@@ -336,7 +414,7 @@ test("loadRecentOISessionSummariesV1 returns summaries sorted newest-first", asy
 			taskId: "task-oi-reader-second",
 			laneId: "lane-oi-reader-second",
 			agentRef: "agent-test",
-			providerQualifiedModelId: "openai/gpt-5.5-mini",
+			providerQualifiedModelId: "openai/gpt-5.5",
 			promptText: "second task",
 			parentSessionId: "parent-oi-reader",
 			rootDir: root,

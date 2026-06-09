@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 type CompletionKind = "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
@@ -41,10 +42,11 @@ interface WakeRow {
 }
 
 interface PromptClient {
-	session?: {
+		session?: {
 		prompt?(options: unknown): unknown;
 		promptAsync?(options: unknown): unknown;
 		status?(...args: unknown[]): unknown;
+		messages?(options: unknown): unknown;
 	};
 }
 
@@ -55,6 +57,10 @@ const LOCK_STALE_TTL_MS = 60_000;
 const WAKE_ROW_MAX_AGE_MS = 300_000;
 const DEFAULT_PROVIDER_QUALIFIED_MODEL_ID = "openai/gpt-5.5";
 const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
+
+function wakeDiagnosticLogPath(filename: string): string {
+	return join(homedir(), ".flowdesk", filename);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -129,9 +135,85 @@ function parseModelParts(providerQualifiedModelId: string | undefined): { provid
 	return { providerID, modelID };
 }
 
-function modelParts(providerQualifiedModelId: string | undefined): { providerID: string; modelID: string } {
-	return parseModelParts(providerQualifiedModelId) ?? parseModelParts(DEFAULT_PROVIDER_QUALIFIED_MODEL_ID)!;
+function providerQualifiedModelIdFromModelRecord(value: unknown): string | undefined {
+	if (!isRecord(value)) return undefined;
+	const providerID = stringField(value, "providerID");
+	const modelID = stringField(value, "modelID");
+	return providerID !== undefined && modelID !== undefined ? `${providerID}/${modelID}` : undefined;
 }
+
+/**
+ * Probe the live OpenCode session for the most recent message's model binding.
+ * Returns a `provider/model` string or `undefined` when no usable live model is
+ * available. Failures are intentionally silent so callers can fall back to the
+ * recorded row model and then configured model without log spam.
+ */
+async function probeLiveSessionModelFromMessages(
+	client: PromptClient | undefined,
+	sessionId: string,
+): Promise<string | undefined> {
+	if (client?.session?.messages === undefined) return undefined;
+	try {
+		const response = await client.session.messages.call(client.session, { path: { id: sessionId } });
+		const messageList = Array.isArray(response)
+			? response
+			: isRecord(response) && Array.isArray(response.data)
+				? response.data
+				: [];
+
+		for (let i = messageList.length - 1; i >= 0; i -= 1) {
+			const message = messageList[i];
+			if (!isRecord(message)) continue;
+
+			const info = message.info;
+			if (isRecord(info)) {
+				const nestedInfoModel = providerQualifiedModelIdFromModelRecord(info.model);
+				if (nestedInfoModel !== undefined) return nestedInfoModel;
+
+				const flatInfoModel = providerQualifiedModelIdFromModelRecord(info);
+				if (flatInfoModel !== undefined) return flatInfoModel;
+			}
+
+			const directMessageModel = providerQualifiedModelIdFromModelRecord(message.model);
+			if (directMessageModel !== undefined) return directMessageModel;
+		}
+	} catch {
+		// Read-only probe failed (session gone, permission denied, SDK shape drift, etc.).
+	}
+	return undefined;
+}
+
+/**
+ * Resolve the provider/model parts to attach to the wake prompt body.
+ *
+ * Precedence (highest first):
+ *   1. Live `session.messages()` model probe — the current session binding.
+ *   2. `parentWakeProviderQualifiedModelId` from the wake row — the parent
+ *      session's model snapshot recorded by agent-task-runner at task launch.
+ *   3. `configProviderQualifiedModelId` — the configured fallback resolved
+ *      from `plugin.options.model` or the `completionWakeMainSession`
+ *      sub-option.
+ *   4. Unspecified — all candidates were missing or unparseable. In that
+ *      case no `model` field is attached to the prompt body and OpenCode
+ *      uses its own routing default (`DEFAULT_PROVIDER_QUALIFIED_MODEL_ID`
+ *      remains the documented baseline for tests).
+ *
+ * Returns `undefined` when no candidate parses; callers omit the
+ * `model` body field in that case.
+ */
+function resolveWakeModelParts(input: {
+	sessionProviderQualifiedModelId?: string;
+	parentWakeProviderQualifiedModelId?: string;
+	configProviderQualifiedModelId?: string;
+}): { providerID: string; modelID: string } | undefined {
+	return parseModelParts(input.sessionProviderQualifiedModelId)
+		?? parseModelParts(input.parentWakeProviderQualifiedModelId)
+		?? parseModelParts(input.configProviderQualifiedModelId);
+}
+
+// Re-export DEFAULT for diagnostic/documentation purposes; the default is
+// NOT silently injected into the prompt body — see resolveWakeModelParts.
+void DEFAULT_PROVIDER_QUALIFIED_MODEL_ID;
 
 function statusIndicatesActive(value: unknown): boolean {
 	if (typeof value === "string") return /^(active|busy|running|working|retry|retrying)$/i.test(value.trim());
@@ -181,7 +263,7 @@ function logDispatchDiagnostic(input: { callShape: "primary_path" | "fallback_fl
 	try {
 		const fs = require("node:fs") as typeof import("node:fs");
 		const line = `${new Date().toISOString()} ${input.callShape} ${input.outcome} ${JSON.stringify(input.value)?.slice(0, 800)}\n`;
-		fs.appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-dispatch-diag.log", line, "utf8");
+		fs.appendFileSync(wakeDiagnosticLogPath("wake-dispatch-diag.log"), line, "utf8");
 	} catch { /* best-effort */ }
 }
 
@@ -283,7 +365,6 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 	if (input.client?.session === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "opencode_sdk_client_unavailable" };
 	const dispatch = input.client.session.promptAsync ?? input.client.session.prompt;
 	if (dispatch === undefined) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "session_prompt_unavailable" };
-	const configModel = parseModelParts(input.config.providerQualifiedModelId);
 	const uiDir = join(input.config.rootDir, ".flowdesk", "ui");
 	const readyPath = join(uiDir, "completion-wake-ready.json");
 	if (!existsSync(readyPath)) return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_ready_cache_missing" };
@@ -305,7 +386,7 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		const consumedAt = typeof (row as unknown as Record<string, unknown>).consumedAt === "string" ? Date.parse(String((row as unknown as Record<string, unknown>).consumedAt)) : 0;
 		return Number.isFinite(consumedAt) && nowMs - consumedAt < WAKE_COOLDOWN_MS;
 	});
-	const diag = (msg: string) => { if (!WAKE_DIAG_ENABLED) return; try { (require("node:fs") as typeof import("node:fs")).appendFileSync("/Users/bagel_macpro_055/.flowdesk/wake-step-diag.log", `${new Date().toISOString()} ${msg}\n`, "utf8"); } catch {} };
+	const diag = (msg: string) => { if (!WAKE_DIAG_ENABLED) return; try { (require("node:fs") as typeof import("node:fs")).appendFileSync(wakeDiagnosticLogPath("wake-step-diag.log"), `${new Date().toISOString()} ${msg}\n`, "utf8"); } catch {} };
 	if (recentlyConsumed) { diag("SKIP cooldown_active"); return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_cooldown_active" }; }
 	// Strict cap: dispatch at most 1 wake prompt per consume cycle to prevent
 	// context flooding when many workflows complete in a burst. The remaining
@@ -324,7 +405,6 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		})
 		.sort((left, right) => Date.parse(right.readyAt) - Date.parse(left.readyAt))
 		.slice(0, 1);
-	diag(`allRows=${allRows.length} eligibleRows=${rows.length} configParentRef=${input.config.parentSessionRef ?? "NONE"}`);
 	if (rows.length === 0) { diag("SKIP no_unconsumed_parent_scoped_rows"); return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" }; }
 	diag(`PROCEED to dispatch with ${rows.length} row(s)`);
 	const observedAt = now.toISOString();
@@ -347,8 +427,15 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		// regardless of active state — OpenCode owns the prompt queue, and the global
 		// 10s cooldown + 1-prompt-per-cycle cap + consumptionKey dedupe already
 		// prevent flooding/duplicates. The active-session gate is removed entirely.
-		const rowModel = row.parentWakeProviderQualifiedModelId !== undefined ? parseModelParts(row.parentWakeProviderQualifiedModelId) : undefined;
-		const effectiveModel = rowModel ?? configModel;
+		// Wake model precedence: live session.messages() model > parent-recorded row
+		// model > config model > none. When none are set/parseable, omit the model
+		// body field so OpenCode picks its own default; see resolveWakeModelParts().
+		const sessionModel = await probeLiveSessionModelFromMessages(input.client, sessionId);
+		const effectiveModel = resolveWakeModelParts({
+			sessionProviderQualifiedModelId: sessionModel,
+			parentWakeProviderQualifiedModelId: row.parentWakeProviderQualifiedModelId,
+			configProviderQualifiedModelId: input.config.providerQualifiedModelId,
+		});
 		const succeeded = await dispatchParentWakePrompt({
 			dispatch,
 			session: input.client.session,
@@ -387,6 +474,8 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		}
 	}
 	return { status: "main_session_wake_completed", wakeAttempted: rows.length, wakeSucceeded, retryScheduled };
+	} catch {
+		return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "wake_cache_parse_error" };
 	} finally {
 		rmSync(lockDir, { recursive: true, force: true });
 	}

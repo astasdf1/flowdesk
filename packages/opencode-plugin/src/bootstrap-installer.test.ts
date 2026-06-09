@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES } from "@flowdesk/core";
 import { flowDeskBootstrapProfileRootRef, installFlowDeskRelease1Bootstrap } from "./index.js";
@@ -125,6 +126,19 @@ function findFlowDeskPluginEntry(config: Record<string, unknown>): [string, Reco
 		return Array.isArray(candidate) && typeof candidate[0] === "string" && candidate[0].includes("@flowdesk/opencode-plugin/dist/server.js");
 	});
 	if (entry === undefined) assert.fail("FlowDesk plugin entry missing");
+	assert.equal(typeof entry[1], "object");
+	assert.notEqual(entry[1], null);
+	assert.equal(Array.isArray(entry[1]), false);
+	return entry;
+}
+
+function findFlowDeskTuiPluginEntry(config: Record<string, unknown>): [string, Record<string, unknown>] {
+	const plugins = config.plugin as unknown[];
+	assert.equal(Array.isArray(plugins), true);
+	const entry = plugins.find((candidate): candidate is [string, Record<string, unknown>] => {
+		return Array.isArray(candidate) && typeof candidate[0] === "string" && candidate[0].includes("@flowdesk/opencode-plugin/dist/tui.js");
+	});
+	if (entry === undefined) assert.fail("FlowDesk TUI plugin entry missing");
 	assert.equal(typeof entry[1], "object");
 	assert.notEqual(entry[1], null);
 	assert.equal(Array.isArray(entry[1]), false);
@@ -362,6 +376,9 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		const opencodeConfig = JSON.parse(readFileSync(join(profileRoot, "opencode.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.$schema, "https://opencode.ai/config.json");
+		const opencodePlugins = opencodeConfig.plugin as unknown[];
+		assert.equal(Array.isArray(opencodePlugins), true);
+		assert.equal(opencodePlugins.length, 2);
 		const flowdeskPlugin = findFlowDeskPluginEntry(opencodeConfig);
 		assert.equal(flowdeskPlugin[0], `file://${join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "server.js")}`);
 		assert.equal(flowdeskPlugin[1].durableStateRoot, durableRoot);
@@ -441,17 +458,15 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.deepEqual(flowdeskPlugin[1].laneHeartbeatWriter, { enabled: true, defaultExpectedIntervalMs: 120000 });
 		assert.deepEqual(flowdeskPlugin[1].controlledWriteApply, { enabled: true, devBetaControlledWriteApply: true });
 		assert.deepEqual(flowdeskPlugin[1].chatMessageStallAlert, { enabled: true, includeProgressCards: true, maxProgressCards: 4 });
-		assert.deepEqual(flowdeskPlugin[1].completionWakeMainSession, { enabled: true });
+		assert.deepEqual(flowdeskPlugin[1].completionWakeMainSession, { enabled: true, providerQualifiedModelId: "openai/gpt-5.4-mini-fast" });
 		assert.equal("homeDir" in flowdeskPlugin[1], false);
 		assert.equal("workspaceRoot" in flowdeskPlugin[1], false);
 		assert.equal("geminiProjectId" in flowdeskPlugin[1], false);
-		const tuiConfig = JSON.parse(readFileSync(join(profileRoot, "tui.json"), "utf8")) as Record<string, unknown>;
-		const tuiPlugins = tuiConfig.plugin as unknown[];
-		assert.equal(Array.isArray(tuiPlugins), true);
-		const flowdeskTuiPlugin = tuiPlugins[0] as [string, Record<string, unknown>];
-		assert.equal(flowdeskTuiPlugin[0], join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js"));
+		const flowdeskTuiPlugin = findFlowDeskTuiPluginEntry(opencodeConfig);
+		assert.equal(flowdeskTuiPlugin[0], pathToFileURL(join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js")).href);
 		assert.equal(flowdeskTuiPlugin[1].durableStateRootDir, durableRoot);
 		assert.equal(flowdeskTuiPlugin[1].usageWorkflowId, "workflow-global-provider-usage");
+		assert.equal(existsSync(join(profileRoot, "tui.json")), false);
 
 		const bootstrapDir = join(durableRoot, ".flowdesk/bootstrap/install-plan-profile-release1");
     assert.deepEqual(readdirSync(bootstrapDir).sort(), ["bootstrap-report", "bootstrap-install-plan", "command-generation-summary", "doctor-handoff"].sort());
@@ -518,7 +533,7 @@ test("Release 1 bootstrap installer preserves existing plugin entries and fills 
 		assert.equal(opencodeConfig.default_agent, "flowdesk-main");
 		assert.equal(opencodeConfig.someExistingSetting, "preserved");
 		const plugins = opencodeConfig.plugin as unknown[];
-		assert.equal(plugins.length, 2);
+		assert.equal(plugins.length, 3);
 		assert.deepEqual(plugins[0], nonFlowDeskPlugin);
 
 		const flowdeskPlugin = plugins[1] as [string, Record<string, unknown>];
@@ -597,6 +612,11 @@ test("Release 1 bootstrap installer preserves existing plugin entries and fills 
 		assert.deepEqual(flowdeskPlugin[1].runtimeReviewerExecution, { enabled: true });
 		assert.deepEqual(flowdeskPlugin[1].workflowDispatch, { enabled: true, devBetaActualLaneLaunch: true });
 		assert.deepEqual(flowdeskPlugin[1].controlledWriteApply, { enabled: true, devBetaControlledWriteApply: true });
+
+		const flowdeskTuiPlugin = findFlowDeskTuiPluginEntry(opencodeConfig);
+		assert.equal(flowdeskTuiPlugin[0], pathToFileURL(join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "tui.js")).href);
+		assert.equal(flowdeskTuiPlugin[1].durableStateRootDir, durableRoot);
+		assert.equal(flowdeskTuiPlugin[1].usageWorkflowId, "workflow-global-provider-usage");
 	} finally {
 		rmSync(profileRoot, { recursive: true, force: true });
 		rmSync(durableRoot, { recursive: true, force: true });
@@ -765,7 +785,7 @@ test("Release 1 bootstrap installer rolls back command files when durable artifa
 		assert.equal(result.profileConfigUpdated, false);
 		assert.equal(result.bootstrapArtifactsWritten, 0);
 		assert.equal(result.rollbackCommandRefs?.length, 9);
-		assert.deepEqual(result.rollbackProfileRefs?.sort(), [...installedAgentProfiles.map((profile) => `agent/${profile}.md`), "opencode.json", "tui.json"].sort());
+		assert.deepEqual(result.rollbackProfileRefs?.sort(), [...installedAgentProfiles.map((profile) => `agent/${profile}.md`), "opencode.json"].sort());
 		for (const commandName of FLOWDESK_RELEASE_1_MINIMUM_PORTABLE_COMMAND_NAMES) {
 			assert.equal(existsSync(join(profileRoot, "commands", `${commandName.slice(1)}.md`)), false, commandName);
 		}
