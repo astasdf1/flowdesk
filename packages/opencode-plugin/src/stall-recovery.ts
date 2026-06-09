@@ -1627,6 +1627,7 @@ export function flowDeskProgressIsMeaningfulActivityV1(phase: string, progressLa
 	// Ambient session-status / diff churn is not, by itself, model progress.
 	if (label.includes("session busy") || label.includes("session.diff") || label.includes("session.updated")) return false;
 	if (label.includes("waiting for async child result")) return false;
+	if (label.includes("session retry event observed")) return false;
 	// Everything else at waiting/started/retrying with a real event label counts.
 	return true;
 }
