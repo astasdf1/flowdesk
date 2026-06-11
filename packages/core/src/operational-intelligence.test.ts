@@ -8804,3 +8804,190 @@ test("R3-S5 executeMultiModelFanoutTestV1: TC4 failed — fewer than 2 score (in
 	assert.equal(tooFewResult.execution_status, "failed", "must fail with fewer than 2 models");
 	assert.equal(tooFewResult.reservation_consumed, false);
 });
+
+// --- P7-S03 회귀 테스트: scoring dimension with blockScoring ---
+
+// Helper: build a valid FlowDeskTaskBlockScoringV1 using the factory
+function makeBlockScoring(opts: {
+	scope: number;
+	complexity: number;
+	coupling: number;
+	novelty: number;
+	authority_sensitivity: number;
+	category: FlowDeskTaskBlockCategoryV1;
+}): FlowDeskTaskBlockScoringV1 {
+	const r = createFlowDeskTaskBlockScoringV1({
+		blockId: "block-s03-test",
+		blockLabel: "S03 test block",
+		scoredAt: "2026-06-11T00:00:00.000Z",
+		scope: opts.scope,
+		category: opts.category,
+		complexity: opts.complexity,
+		coupling: opts.coupling,
+		authoritySensitivity: opts.authority_sensitivity,
+		novelty: opts.novelty,
+		readinessCheckPassed: true,
+	});
+	if (!r.ok || !r.scoring) throw new Error(`createFlowDeskTaskBlockScoringV1 failed: ${r.errors.join("; ")}`);
+	return r.scoring;
+}
+
+test("scoreWorkflowProposal: blockScoring absent uses placeholder values", () => {
+	// blockScoring 없으면 기존 placeholder reason_ref 가 반영됨
+	const result = scoreWorkflowProposal({
+		workflowId: "workflow-s03-no-bs",
+		proposalId: "proposal-s03-no-bs",
+		candidateRef: "candidate-s03-no-bs",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const goalFitDim = result.score!.score_dimensions.find(d => d.dimension === "goal_fit");
+	assert.ok(goalFitDim !== undefined, "goal_fit dimension must exist");
+	assert.ok(
+		goalFitDim!.reason_ref.includes("no-block-scoring") || typeof goalFitDim!.score === "number",
+		`expected placeholder reason_ref or numeric score, got reason_ref=${goalFitDim!.reason_ref}`,
+	);
+});
+
+test("scoreWorkflowProposal: blockScoring scope=5 yields high goal_fit", () => {
+	const bs = makeBlockScoring({ scope: 5, complexity: 3, coupling: 2, novelty: 1, authority_sensitivity: 1, category: "implementation" });
+	const result = scoreWorkflowProposal({
+		workflowId: "workflow-s03-scope5",
+		proposalId: "proposal-s03-scope5",
+		candidateRef: "candidate-s03-scope5",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+		blockScoring: bs,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const goalFitDim = result.score!.score_dimensions.find(d => d.dimension === "goal_fit");
+	assert.ok(goalFitDim !== undefined, "goal_fit dimension must exist");
+	assert.ok(goalFitDim!.score >= 90, `expected >=90, got ${goalFitDim!.score}`);
+});
+
+test("scoreWorkflowProposal: blockScoring scope=1 yields lower goal_fit than scope=5", () => {
+	const bs5 = makeBlockScoring({ scope: 5, complexity: 3, coupling: 2, novelty: 1, authority_sensitivity: 1, category: "implementation" });
+	const bs1 = makeBlockScoring({ scope: 1, complexity: 3, coupling: 2, novelty: 1, authority_sensitivity: 1, category: "implementation" });
+	const commonInput = {
+		workflowId: "workflow-s03-scope-cmp",
+		proposalId: "proposal-s03-scope-cmp",
+		candidateRef: "candidate-s03-scope-cmp",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok" as const,
+	};
+	const r5 = scoreWorkflowProposal({ ...commonInput, blockScoring: bs5 });
+	const r1 = scoreWorkflowProposal({ ...commonInput, blockScoring: bs1 });
+	assert.equal(r5.ok, true, r5.errors.join("; "));
+	assert.equal(r1.ok, true, r1.errors.join("; "));
+	const goalFit5 = r5.score!.score_dimensions.find(d => d.dimension === "goal_fit")!.score;
+	const goalFit1 = r1.score!.score_dimensions.find(d => d.dimension === "goal_fit")!.score;
+	assert.ok(goalFit5 > goalFit1, `scope=5 goal_fit(${goalFit5}) should > scope=1 goal_fit(${goalFit1})`);
+});
+
+test("scoreWorkflowProposal: taxonomy_fit varies by category", () => {
+	const bsSchema = makeBlockScoring({ scope: 5, complexity: 3, coupling: 2, novelty: 1, authority_sensitivity: 1, category: "schema_only" });
+	const bsDesign = makeBlockScoring({ scope: 5, complexity: 3, coupling: 2, novelty: 1, authority_sensitivity: 1, category: "design" });
+	const commonInput = {
+		workflowId: "workflow-s03-taxfit",
+		proposalId: "proposal-s03-taxfit",
+		candidateRef: "candidate-s03-taxfit",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok" as const,
+	};
+	const rSchema = scoreWorkflowProposal({ ...commonInput, blockScoring: bsSchema });
+	const rDesign = scoreWorkflowProposal({ ...commonInput, blockScoring: bsDesign });
+	assert.equal(rSchema.ok, true, rSchema.errors.join("; "));
+	assert.equal(rDesign.ok, true, rDesign.errors.join("; "));
+	const taxSchema = rSchema.score!.score_dimensions.find(d => d.dimension === "taxonomy_fit")!.score;
+	const taxDesign = rDesign.score!.score_dimensions.find(d => d.dimension === "taxonomy_fit")!.score;
+	assert.ok(taxSchema > taxDesign, `schema_only taxonomy_fit(${taxSchema}) should > design taxonomy_fit(${taxDesign})`);
+});
+
+test("scoreWorkflowProposal: variantId=simple has simplicity_fit >= detail_fit", () => {
+	const bs = makeBlockScoring({ scope: 5, complexity: 5, coupling: 3, novelty: 2, authority_sensitivity: 2, category: "implementation" });
+	const result = scoreWorkflowProposal({
+		workflowId: "workflow-s03-simple",
+		proposalId: "proposal-s03-simple",
+		candidateRef: "candidate-s03-simple",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+		variantId: "simple",
+		blockScoring: bs,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const simplicityFit = result.score!.score_dimensions.find(d => d.dimension === "simplicity_fit")!.score;
+	const detailFit = result.score!.score_dimensions.find(d => d.dimension === "detail_fit")!.score;
+	assert.ok(simplicityFit >= detailFit, `simple: simplicity_fit(${simplicityFit}) should >= detail_fit(${detailFit})`);
+});
+
+test("scoreWorkflowProposal: variantId=high_assurance has detail_fit >= simplicity_fit", () => {
+	const bs = makeBlockScoring({ scope: 5, complexity: 5, coupling: 3, novelty: 2, authority_sensitivity: 2, category: "implementation" });
+	const result = scoreWorkflowProposal({
+		workflowId: "workflow-s03-ha",
+		proposalId: "proposal-s03-ha",
+		candidateRef: "candidate-s03-ha",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+		variantId: "high_assurance",
+		blockScoring: bs,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	const detailFit = result.score!.score_dimensions.find(d => d.dimension === "detail_fit")!.score;
+	const simplicityFit = result.score!.score_dimensions.find(d => d.dimension === "simplicity_fit")!.score;
+	assert.ok(detailFit >= simplicityFit, `high_assurance: detail_fit(${detailFit}) should >= simplicity_fit(${simplicityFit})`);
+});
+
+test("scoreWorkflowProposal: all dimension scores in 0..100 range", () => {
+	const bs = makeBlockScoring({ scope: 10, complexity: 10, coupling: 10, novelty: 10, authority_sensitivity: 10, category: "design" });
+	const result = scoreWorkflowProposal({
+		workflowId: "workflow-s03-range",
+		proposalId: "proposal-s03-range",
+		candidateRef: "candidate-s03-range",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok",
+		blockScoring: bs,
+	});
+	assert.equal(result.ok, true, result.errors.join("; "));
+	for (const dim of result.score!.score_dimensions) {
+		assert.ok(
+			dim.score >= 0 && dim.score <= 100,
+			`dimension ${dim.dimension}: score ${dim.score} out of range [0,100]`,
+		);
+	}
+});
+
+test("scoreWorkflowProposal: proposalSetContext.distinctProviderFamilyCount=3 boosts model_diversity", () => {
+	const bs = makeBlockScoring({ scope: 5, complexity: 3, coupling: 2, novelty: 1, authority_sensitivity: 1, category: "implementation" });
+	const commonInput = {
+		workflowId: "workflow-s03-diversity",
+		proposalId: "proposal-s03-diversity",
+		candidateRef: "candidate-s03-diversity",
+		providerFamily: "claude",
+		agentRole: "implementation",
+		usageRemainingPercent: 80,
+		alertLevel: "ok" as const,
+		blockScoring: bs,
+	};
+	const r1 = scoreWorkflowProposal({ ...commonInput, proposalSetContext: { distinctProviderFamilyCount: 1 } });
+	const r3 = scoreWorkflowProposal({ ...commonInput, proposalSetContext: { distinctProviderFamilyCount: 3 } });
+	assert.equal(r1.ok, true, r1.errors.join("; "));
+	assert.equal(r3.ok, true, r3.errors.join("; "));
+	const div1 = r1.score!.score_dimensions.find(d => d.dimension === "model_diversity")!.score;
+	const div3 = r3.score!.score_dimensions.find(d => d.dimension === "model_diversity")!.score;
+	assert.ok(div3 >= div1, `distinctProviderFamilyCount=3 model_diversity(${div3}) should >= 1-family(${div1})`);
+});

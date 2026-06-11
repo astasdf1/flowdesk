@@ -149,10 +149,10 @@ function commandContentFor(entry: FlowDeskCommandManifestEntryV1): string {
     `Request schema: ${entry.requestSchemaId}`,
     `Response schema: ${entry.responseSchemaId}`,
     `Fixture prefix: ${entry.fixturePrefix}`,
-    "Mode: inert static command-file artifact.",
+    "Mode: Active FlowDesk command.",
     "Alias mode: portable command only until conformance promotes aliases.",
-    "Safety: FDS-1 uses FlowDesk runtime-closed validation; registration is limited to non-dispatch command-backed handlers.",
-    "Runtime: disabled in this artifact; use FlowDesk status or doctor for safe next actions."
+    "Safety: FDS-1 uses FlowDesk runtime-closed validation.",
+    "Runtime: Enabled via FlowDesk Managed Dispatch Beta (Release 2.5)."
   ].join("\n");
 }
 

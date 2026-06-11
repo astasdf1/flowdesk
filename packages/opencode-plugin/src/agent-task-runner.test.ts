@@ -7,6 +7,8 @@
  * 3. OI summary with oiEnabled=false has advisory_health_label "disabled_by_config" and all counts 0.
  * 4. createOISessionAccumulator() increment / toSummary round-trip.
  * 5. loadRecentOISessionSummariesV1 returns summaries sorted newest-first.
+ * 6. process_notes output_kind: task_result evidence NEVER has usable_for_synthesis=true or
+ *    safe_for_auto_synthesis=true (enforcement invariant tests).
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -14,13 +16,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, buildFlowDeskCaptureSafetyMetadataV1 } from "./agent-task-runner.js";
 import {
 	createOISessionAccumulator,
 	loadRecentOISessionSummariesV1,
 } from "./oi-session-accumulator.js";
 import { reloadFlowDeskSessionEvidenceV1 } from "@flowdesk/core";
 import type { FlowDeskManagedDispatchBetaOpenCodeClientV1 } from "./managed-dispatch-adapter.js";
+import { observeFlowDeskAgentTaskOutputV1 } from "./agent-task-output.js";
 
 // ─── Shared client factory ────────────────────────────────────────────────────
 
@@ -459,6 +462,143 @@ test("loadRecentOISessionSummariesV1 returns empty array for unknown workflowId"
 			workflowId: "workflow-does-not-exist",
 		});
 		assert.deepEqual(summaries, [], "no summaries should be returned for unknown workflow");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// ─── Enforcement invariant: process_notes can never be synthesis-safe ─────────
+
+test("buildFlowDeskCaptureSafetyMetadataV1: process_notes always produces safe_for_auto_synthesis=false", () => {
+	// Even with all other conditions maximally permissive (terminal marker, final completion,
+	// final body observed), process_notes MUST produce safe_for_auto_synthesis=false.
+	const result = buildFlowDeskCaptureSafetyMetadataV1({
+		text: "I need to think through this step carefully before answering.",
+		completionStatus: "final",
+		outputKind: "process_notes",
+		finalizationReason: "terminal_marker",
+		finalBodyObserved: true,
+		terminalMarkerObserved: true,
+	});
+	assert.equal(result.safe_for_auto_synthesis, false,
+		"process_notes must never be safe_for_auto_synthesis=true");
+	assert.equal(result.requires_coordinator_review, true,
+		"process_notes must always require_coordinator_review=true");
+	assert.equal(result.display_as_uncertain_result, true,
+		"process_notes must always be display_as_uncertain_result=true");
+});
+
+test("buildFlowDeskCaptureSafetyMetadataV1: tool_trace_only always produces safe_for_auto_synthesis=false", () => {
+	const result = buildFlowDeskCaptureSafetyMetadataV1({
+		text: "Called tool: search(query='foo')",
+		completionStatus: "final",
+		outputKind: "tool_trace_only",
+		finalizationReason: "terminal_marker",
+		finalBodyObserved: true,
+		terminalMarkerObserved: true,
+	});
+	assert.equal(result.safe_for_auto_synthesis, false,
+		"tool_trace_only must never be safe_for_auto_synthesis=true");
+});
+
+test("buildFlowDeskCaptureSafetyMetadataV1: final_answer with terminal marker is safe_for_auto_synthesis=true", () => {
+	// Control: confirm that the guard does NOT block legitimate final answers.
+	const result = buildFlowDeskCaptureSafetyMetadataV1({
+		text: '{"verdict": "pass", "summary": "looks good"}',
+		completionStatus: "final",
+		outputKind: "final_answer",
+		finalizationReason: "terminal_marker",
+		finalBodyObserved: true,
+		terminalMarkerObserved: true,
+	});
+	assert.equal(result.safe_for_auto_synthesis, true,
+		"final_answer with all signals met should be safe_for_auto_synthesis=true");
+});
+
+test("observeFlowDeskAgentTaskOutputV1: process-note text yields usableForSynthesis=false", () => {
+	// A response whose assistant text looks like process notes must never be
+	// marked usableForSynthesis by the capture layer.
+	const response = [
+		{
+			role: "assistant",
+			parts: [
+				{ type: "text", text: "I need to investigate the issue before providing an answer." },
+				{ type: "step-finish", reason: "stop" },
+			],
+		},
+	];
+	const obs = observeFlowDeskAgentTaskOutputV1(response);
+	assert.equal(obs.outputKind, "process_notes",
+		"text with 'I need to' should classify as process_notes");
+	assert.equal(obs.usableForSynthesis, false,
+		"process_notes output must have usableForSynthesis=false");
+});
+
+test("executeFlowDeskAgentTaskV1: process-note response persists usable_for_synthesis=false and safe_for_auto_synthesis=false in task_result evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-process-notes-invariant-"));
+	try {
+		// Mock client whose messages() returns a process-note response with all
+		// terminal signals set — the most adversarial case for the invariant.
+		const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
+			session: {
+				create: async () => ({ id: "ses-pn-test-child-01" }),
+				promptAsync: async () => ({}),
+				messages: async () => [
+					{
+						role: "assistant",
+						parts: [
+							{ type: "text", text: "I need to analyze this carefully and let me think step by step." },
+							{ type: "step-finish", reason: "stop" },
+						],
+					},
+				],
+				abort: async () => {},
+			},
+		} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-pn-invariant-1",
+			taskId: "task-pn-invariant-1",
+			laneId: "lane-pn-invariant-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "anthropic/claude-haiku-4-5",
+			promptText: "Analyze this carefully",
+			parentSessionId: "parent-pn-invariant-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			oiEnabled: false,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed",
+			`expected task_completed, got: ${result.status}`);
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			rootDir: root,
+			workflowId: "workflow-pn-invariant-1",
+		});
+		assert.ok(reloaded.ok, "evidence reload should succeed");
+
+		const taskResultEntry = reloaded.entries.find(
+			(e) => e.evidenceClass === "task_result",
+		);
+		assert.ok(taskResultEntry !== undefined, "task_result evidence should be present");
+
+		const rec = taskResultEntry.record as Record<string, unknown>;
+		assert.equal(rec.output_kind, "process_notes",
+			"output_kind should be process_notes for this response");
+		assert.equal(rec.usable_for_synthesis, false,
+			"usable_for_synthesis MUST be false for process_notes output");
+		assert.equal(rec.safe_for_auto_synthesis, false,
+			"safe_for_auto_synthesis MUST be false for process_notes output");
+		// Verify the text is still preserved (display safety)
+		assert.ok(
+			typeof rec.result_text === "string" && (rec.result_text as string).length > 0,
+			"result_text should still be preserved for display",
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

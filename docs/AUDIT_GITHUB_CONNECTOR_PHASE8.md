@@ -473,3 +473,212 @@ Authority assertions for this audit: `advisory_only: true`,
 `approval_authority_enabled: false`, `remote_write_authority_enabled:
 false`, `write_authority_enabled: false`, `hard_chat_authority_enabled:
 false`. This document is gate input for PR review, not approval.
+
+---
+
+## Phase 8 완성 시 추가 구현 항목 (model-availability DB 원격 갱신)
+
+> 등록일: 2026-06-10. Phase 8 완성 시점에 함께 구현.
+
+### 개요
+
+`packages/opencode-plugin/data/model-availability.db`는 현재 빌드 시점 스냅샷을
+번들로 포함한다. Phase 8의 GitHub connector(`publishToGitHubV1` / `fetchImpl`)가
+완성되면, 같은 경로로 **`model-availability.db`를 GitHub 릴리즈 에셋 또는 raw
+content API에서 내려받아 durable state root에 갱신**하는 흐름을 추가한다.
+
+### 설계 스케치
+
+환경마다 구독 상황이 달라 probe 가능한 모델이 다르므로, GitHub 업로드/다운로드는
+**merge 방식**으로 동작해야 한다. 이번 실행에서 실제로 probe된 모델만 업데이트하고,
+probe하지 못한 모델(다른 환경의 구독 모델)은 기존 DB 값을 보존한다.
+
+```
+[업로드 흐름 - models:refresh 후]
+  export-model-availability-db.mjs (merge 모드)
+    ├── GitHub에서 최신 model-availability.db 다운로드 (base)
+    ├── base DB에 이번 probe 결과(results[])만 UPSERT
+    │     - probe됨 → available/unavailable 덮어씀 (last_probed_at 갱신)
+    │     - probe 안 됨(skipped/unsubscribed) → 기존 row 그대로 유지
+    └── 결과 DB를 GitHub release asset으로 업로드 (--publish 플래그)
+
+[다운로드 흐름 - fetchModelAvailabilityDbFromGitHubV1]
+  GitHub release asset
+    ├── GET .../model-availability.db → ArrayBuffer
+    ├── sha256 체크섬 검증 (릴리즈 메타와 비교)
+    ├── DatabaseSync로 열어 snapshot.observed_at 확인
+    │     (현재 번들보다 오래된 경우 거부 — 다운그레이드 방지)
+    └── tmpfile → rename 원자적 교체
+          → <durableStateRootDir>/model-availability/model-availability.db
+```
+
+**merge 키 컬럼: `last_probed_at`**
+- probe 실행 시 `snapshot.observed_at` 값으로 기록
+- 값이 NULL이거나 현재 실행 타임스탬프와 다르면 → 이번 실행에서 probe 안 된 행 (보존 대상)
+
+### 구현 파일 위치
+
+| 파일 | 변경 내용 |
+|---|---|
+| `packages/opencode-plugin/src/federated-registry-connector.ts` | `fetchModelAvailabilityDbFromGitHubV1()` 함수 추가 (fetchImpl 주입, productionFetch 게이트 동일 패턴) |
+| `packages/opencode-plugin/src/server.ts` | `flowdesk_model_availability_refresh` 툴 또는 `flowdesk-doctor` 내 갱신 훅으로 노출 |
+| `scripts/export-model-availability-db.mjs` | `--publish` 플래그 시 GitHub release에 `.db` 업로드 (Phase 8c `productionPublish` 게이트 적용) |
+
+### 보안 고려사항 (Phase 8 위협모델과 동일 경계 적용)
+
+- `fetchImpl`은 테스트 컨텍스트 전용; 프로덕션은 `globalThis.fetch`만 사용 (T1.1 동일)
+- 다운로드한 바이너리는 `FORBIDDEN_RAW_PAYLOAD_MARKERS` 포함 여부 검사 불가(바이너리)이므로
+  **체크섬 검증 필수** — 릴리즈 메타의 sha256과 불일치 시 즉시 폐기
+- `observed_at` 비교로 다운그레이드 방지 (현재 번들보다 오래된 스냅샷 거부)
+- 갱신 결과는 `exact_model_availability_cache_provider_acquisition_result` 증거 클래스에
+  준하는 durable evidence로 기록 (`model_availability_db_refresh` 신규 evidenceClass 추가 검토)
+- `allowActualRemoteRead` 게이트 플래그 필요 (쓰기와 대칭)
+
+---
+
+## Phase 8 완성 시 추가 구현 항목 (provider-catalog.json GitHub 동기화)
+
+> 등록일: 2026-06-10. Phase 8 완성 시점에 함께 구현. model-availability DB 갱신과 병행.
+
+### 배경
+
+현재 `model-selection-engine.ts`의 세 상수와 `managed-dispatch-adapter.ts`의 switch문이
+지원 provider를 코드에 하드코딩하고 있다. OpenCode Zen, GitHub Copilot, OpenRouter,
+Kimi, GLM, Alibaba 등 새 구독 방식의 모델이 추가될 때마다 코드 수정 + 배포가 필요하다.
+
+`provider-catalog.json`을 GitHub에서 동기화 받는 방식으로 코드 변경 없이 새 provider를
+추가할 수 있도록 한다.
+
+### 역할 분리
+
+| 파일 | 역할 |
+|---|---|
+| `model-availability.db` | **환경별 probe 결과** — 이 환경에서 실제로 동작한 모델 목록 |
+| `provider-catalog.json` | **provider 정의** — 어떤 family/모델이 존재하고 어떤 tier/fallback chain인지 |
+
+두 파일의 교집합이 최종 선택 후보가 된다.
+
+### provider-catalog.json 스키마
+
+```json
+{
+  "schema_version": "flowdesk.provider_catalog.v1",
+  "updated_at": "2026-06-10T00:00:00Z",
+  "families": [
+    {
+      "family": "claude",
+      "opencode_provider_id": "anthropic",
+      "prefixes": ["anthropic/", "claude/"],
+      "stage_keywords": ["opus", "sonnet", "haiku"],
+      "fallback_chains": [
+        ["anthropic/claude-opus-4-7", "claude/claude-opus-4-7", "..."],
+        ["anthropic/claude-sonnet-4-6", "..."],
+        ["anthropic/claude-haiku-4-5", "..."]
+      ],
+      "deprecated_model_ids": [],
+      "agent_name": "reviewer-claude-opus"
+    },
+    {
+      "family": "openai",
+      "opencode_provider_id": "openai",
+      "prefixes": ["openai/"],
+      "stage_keywords": ["normal", "mini", "fast", "spark"],
+      "fallback_chains": [["openai/gpt-5.5", "openai/gpt-5.4", "..."]],
+      "deprecated_model_ids": [],
+      "agent_name": "reviewer-gpt-frontier"
+    },
+    {
+      "family": "gemini",
+      "opencode_provider_id": "google",
+      "prefixes": ["google/", "gemini/"],
+      "stage_keywords": ["pro", "flash", "flash-lite"],
+      "fallback_chains": [["google/gemini-3.1-pro-preview", "..."]],
+      "deprecated_model_ids": ["google/gemini-3.1-flash-lite-preview"],
+      "agent_name": "reviewer-gemini-pro"
+    }
+    // 새 provider 추가 예시:
+    // { "family": "copilot", "opencode_provider_id": "copilot", "prefixes": ["copilot/"], ... }
+  ],
+  "tiers": {
+    "heavy":  [{ "model_id": "anthropic/claude-opus-4-7", "family": "claude" }, "..."],
+    "medium": ["..."],
+    "light":  ["..."]
+  },
+  "roles": {
+    "security":       { "tier": "heavy",  "families": ["claude", "openai"] },
+    "architecture":   { "tier": "heavy",  "families": ["openai", "claude"] },
+    "implementation": { "tier": "medium", "families": ["openai", "claude", "gemini"] },
+    "verification":   { "tier": "medium", "families": ["openai", "claude", "gemini"] },
+    "exploration":    { "tier": "light",  "families": ["openai", "claude", "gemini"] },
+    "documentation":  { "tier": "light",  "families": ["openai", "claude", "gemini"] },
+    "git":            { "tier": "light",  "families": ["openai"] }
+  }
+}
+```
+
+### 동기화 흐름
+
+```
+GitHub release asset (provider-catalog.json)
+  └── fetchProviderCatalogFromGitHubV1()   ← model-availability.db와 동일 패턴
+        ├── sha256 체크섬 검증
+        ├── schema_version 확인
+        ├── updated_at 비교 (다운그레이드 방지)
+        └── packages/opencode-plugin/data/provider-catalog.json 원자적 교체
+              + <durableStateRootDir>/provider-catalog.json 복사
+```
+
+### model-selection-engine.ts 변경 방침
+
+모듈 초기화 시 1회 동기 로드 후 메모리 캐시. 번들 fallback(`data/provider-catalog.json`)
+반드시 존재하므로 파일 없음으로 인한 crash 없음. 갱신 후 반영은 서버 재시작으로 처리.
+
+```
+현재 하드코딩                        →  catalog 로드 후 채움
+─────────────────────────────────────────────────────────────
+OPENCODE_SUPPORTED_PROVIDER_         catalog.families[].fallback_chains (flatten)
+  QUALIFIED_MODEL_IDS                + catalog.families[].deprecated_model_ids
+
+SAME_FAMILY_EXACT_MODEL_             catalog.families[].fallback_chains
+  FALLBACK_CHAINS
+
+SAME_FAMILY_MODEL_STAGE_KEYWORDS     catalog.families[].stage_keywords
+
+HEAVY/MEDIUM/LIGHT_MODELS            catalog.tiers{}
+
+ROLE_TIER_MAP                        catalog.roles{}
+
+providerFamilyForModelId()           catalog.families[].prefixes[] 순차 매칭
+
+opencodeRuntimeProviderIDFor         catalog.families[].opencode_provider_id
+  FlowDeskProviderFamily()
+```
+
+### 연동 시 반드시 함께 변경해야 하는 지점 (필수 동기화 목록)
+
+새 provider를 catalog에 추가할 때 아래 4개가 빠지면 동작하지 않거나 런타임 오류 발생.
+
+| # | 파일/위치 | 내용 | 누락 시 증상 |
+|---|---|---|---|
+| 1 | `managed-dispatch-adapter.ts` `opencodeRuntimeProviderIDForFlowDeskProviderFamily()` | catalog의 `opencode_provider_id`로 교체 | 새 provider dispatch 전부 차단 (default: undefined) |
+| 2 | `agent-task-runner.ts:817` `resolveOpenCodeRuntimeLaunchModelBindingV1()` 호출부 | `rootDir` 인수 추가 | catalog 로드 불가 → 런타임 바인딩 실패 |
+| 3 | `.opencode/agent/<family>-*.md` | 새 provider용 에이전트 프로파일 파일 | agent not found 런타임 오류 |
+| 4 | `packages/opencode-plugin/data/provider-catalog.json` | 번들 fallback catalog | 서버 시작 시 crash |
+
+### 후순위 (기능 저하 수준, 즉시 차단 아님)
+
+| 파일 | 내용 | 영향 |
+|---|---|---|
+| `tui-usage-snapshot.ts` | `FlowDeskTuiProviderFamilyV1`, `providerFamilies`, `compactProviderLabels` 별도 하드코딩 | 새 provider가 TUI sidebar에 미표시 — 기존 3개 provider는 정상 |
+| `provider-usage-collector.ts` | `CollectorProviderFamily` union | 새 provider usage 수집 안 됨 — selection 자체는 동작 |
+| `release1-contracts.ts` | `PROVIDER_FAMILIES` union | 타입만, runtime 무관 |
+
+### 보안 고려사항
+
+- catalog는 JSON 텍스트이므로 `FORBIDDEN_RAW_PAYLOAD_MARKERS` 검사 적용 가능
+- `families[].opencode_provider_id`는 OpenCode runtime에 직접 전달되므로
+  허용 값 whitelist 검증 필수 (`anthropic`, `openai`, `google`, `opencode` 등 고정 enum)
+- `families[].agent_name`은 `.opencode/agent/` 파일명으로 사용되므로
+  경로 traversal 방지 필수 (`^[a-z][a-z0-9-]*$` 패턴 검증)
+- `fallback_chains`의 model_id는 `provider/model` 형식 강제 검증
+- `updated_at` 비교로 다운그레이드 방지 (model-availability.db와 동일 패턴)

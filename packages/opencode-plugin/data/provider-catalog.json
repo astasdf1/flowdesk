@@ -1,0 +1,124 @@
+{
+  "schema_version": "flowdesk.provider_catalog.v1",
+  "updated_at": "2026-06-10T00:00:00Z",
+  "families": [
+    {
+      "family": "claude",
+      "opencode_provider_id": "anthropic",
+      "prefixes": ["anthropic/", "claude/"],
+      "stage_keywords": ["opus", "sonnet", "haiku"],
+      "fallback_chains": [
+        ["anthropic/claude-opus-4-7", "claude/claude-opus-4-7", "anthropic/claude-opus-4-5", "claude/claude-opus-4-5", "anthropic/claude-opus-4-1", "claude/claude-opus-4-1", "anthropic/claude-opus-4-0", "claude/claude-opus-4-0"],
+        ["anthropic/claude-sonnet-4-6", "claude/claude-sonnet-4-6", "anthropic/claude-sonnet-4-5", "claude/claude-sonnet-4-5", "anthropic/claude-sonnet-4-0", "claude/claude-sonnet-4-0", "claude/sonnet-4"],
+        ["anthropic/claude-haiku-4-5", "claude/claude-haiku-4-5"]
+      ],
+      "deprecated_model_ids": [],
+      "agent_name": "reviewer-claude-opus"
+    },
+    {
+      "family": "openai",
+      "opencode_provider_id": "openai",
+      "prefixes": ["openai/"],
+      "stage_keywords": ["normal", "mini", "fast", "spark"],
+      "fallback_chains": [
+        ["openai/gpt-5.5", "openai/gpt-5.4", "openai/gpt-5.3-codex", "openai/gpt-5.2"],
+        ["openai/gpt-5.4-mini"],
+        ["openai/gpt-5.5-fast", "openai/gpt-5.4-fast", "openai/gpt-5.4-mini-fast"],
+        ["openai/gpt-5.3-codex-spark"]
+      ],
+      "deprecated_model_ids": [],
+      "agent_name": "reviewer-gpt-frontier"
+    },
+    {
+      "family": "gemini",
+      "opencode_provider_id": "google",
+      "prefixes": ["google/", "gemini/"],
+      "stage_keywords": ["pro", "flash", "flash-lite"],
+      "fallback_chains": [
+        ["google/gemini-3.1-pro-preview", "gemini/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "gemini/gemini-3-pro-preview", "google/gemini-2.5-pro", "gemini/gemini-2.5-pro"],
+        ["google/gemini-3-flash-preview", "gemini/gemini-3-flash-preview", "google/gemini-2.5-flash", "gemini/gemini-2.5-flash"],
+        ["google/gemini-3.1-flash-lite", "gemini/gemini-3.1-flash-lite", "google/gemini-2.5-flash-lite", "gemini/gemini-2.5-flash-lite"]
+      ],
+      "deprecated_model_ids": [
+        "google/gemini-3.1-flash-lite-preview",
+        "gemini/gemini-3.1-flash-lite-preview"
+      ],
+      "agent_name": "reviewer-gemini-pro"
+    }
+  ],
+  "supported_model_ids": [
+    "anthropic/claude-opus-4-7",
+    "claude/claude-opus-4-7",
+    "anthropic/claude-opus-4-5",
+    "claude/claude-opus-4-5",
+    "anthropic/claude-opus-4-1",
+    "claude/claude-opus-4-1",
+    "anthropic/claude-opus-4-0",
+    "claude/claude-opus-4-0",
+    "anthropic/claude-sonnet-4-6",
+    "claude/claude-sonnet-4-6",
+    "anthropic/claude-sonnet-4-5",
+    "claude/claude-sonnet-4-5",
+    "anthropic/claude-sonnet-4-0",
+    "claude/claude-sonnet-4-0",
+    "anthropic/claude-haiku-4-5",
+    "claude/claude-haiku-4-5",
+    "claude/sonnet-4",
+    "openai/gpt-5.5",
+    "openai/gpt-5.5-fast",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-fast",
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.4-mini-fast",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.3-codex-spark",
+    "openai/gpt-5.2",
+    "google/gemini-2.5-flash",
+    "gemini/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
+    "gemini/gemini-2.5-flash-lite",
+    "google/gemini-2.5-pro",
+    "gemini/gemini-2.5-pro",
+    "google/gemini-3-flash-preview",
+    "gemini/gemini-3-flash-preview",
+    "google/gemini-3-pro-preview",
+    "gemini/gemini-3-pro-preview",
+    "google/gemini-3.1-pro-preview",
+    "gemini/gemini-3.1-pro-preview",
+    "google/gemini-3.1-flash-lite",
+    "gemini/gemini-3.1-flash-lite"
+  ],
+  "tiers": {
+    "heavy": [
+      { "providerQualifiedModelId": "anthropic/claude-opus-4-7", "providerFamily": "claude", "agentName": "reviewer-claude-opus" },
+      { "providerQualifiedModelId": "openai/gpt-5.5", "providerFamily": "openai", "agentName": "reviewer-gpt-frontier" }
+    ],
+    "medium": [
+      { "providerQualifiedModelId": "openai/gpt-5.5", "providerFamily": "openai", "agentName": "reviewer-gpt-frontier" },
+      { "providerQualifiedModelId": "anthropic/claude-sonnet-4-6", "providerFamily": "claude", "agentName": "reviewer-claude-opus" },
+      { "providerQualifiedModelId": "google/gemini-3.1-pro-preview", "providerFamily": "gemini", "usageKey": "gemini-pro", "agentName": "reviewer-gemini-pro" },
+      { "providerQualifiedModelId": "google/gemini-3-pro-preview", "providerFamily": "gemini", "usageKey": "gemini-pro", "agentName": "reviewer-gemini-pro" },
+      { "providerQualifiedModelId": "google/gemini-2.5-pro", "providerFamily": "gemini", "usageKey": "gemini-pro", "agentName": "reviewer-gemini-pro" },
+      { "providerQualifiedModelId": "google/gemini-3.1-flash-lite", "providerFamily": "gemini", "usageKey": "gemini-flash-lite", "agentName": "reviewer-gemini-pro" }
+    ],
+    "light": [
+      { "providerQualifiedModelId": "openai/gpt-5.4-mini-fast", "providerFamily": "openai", "agentName": "reviewer-gpt-frontier" },
+      { "providerQualifiedModelId": "openai/gpt-5.5", "providerFamily": "openai", "agentName": "reviewer-gpt-frontier" },
+      { "providerQualifiedModelId": "anthropic/claude-sonnet-4-6", "providerFamily": "claude", "agentName": "reviewer-claude-opus" },
+      { "providerQualifiedModelId": "google/gemini-3.1-flash-lite", "providerFamily": "gemini", "usageKey": "gemini-flash-lite", "agentName": "reviewer-gemini-pro" }
+    ]
+  },
+  "roles": {
+    "security":       { "tier": "heavy",  "candidates_from_tiers": ["heavy"] },
+    "architecture":   { "tier": "heavy",  "candidates_from_tiers": ["heavy_reversed"] },
+    "review":         { "tier": "heavy",  "candidates_from_tiers": ["heavy", "medium"] },
+    "decision":       { "tier": "medium", "candidates_from_tiers": ["medium", "heavy"] },
+    "implementation": { "tier": "medium", "candidates_from_tiers": ["medium"] },
+    "verification":   { "tier": "medium", "candidates_from_tiers": ["medium"] },
+    "performance":    { "tier": "medium", "candidates_from_tiers": ["medium"] },
+    "migration":      { "tier": "medium", "candidates_from_tiers": ["medium", "heavy"] },
+    "exploration":    { "tier": "light",  "candidates_from_tiers": ["light", "medium"] },
+    "documentation":  { "tier": "light",  "candidates_from_tiers": ["light", "medium"] },
+    "git":            { "tier": "light",  "candidates_from_tiers": ["light"] }
+  }
+}

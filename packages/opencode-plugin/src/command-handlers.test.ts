@@ -1133,3 +1133,365 @@ test("export-debug diagnostic handler returns redacted section summaries only", 
 	assert.equal(JSON.stringify(response).includes("provider_payload"), false);
 	assertNoRuntimeAuthority(result);
 });
+
+// Phase 8d — GitHub Connector doctor surface tests
+
+test("test_doctor_reports_production_publish_flag_state", () => {
+	// Enabled state: productionPublish=enabled, gates fresh
+	const enabledResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "enabled",
+					lastConfiguredAt: "2026-06-01T00:00:00.000Z",
+					githubTokenAvailable: true,
+					authSource: "env_github_token",
+					freshness: {
+						surplusUsageGate: "fresh",
+						minimizationPolicy: "fresh",
+					},
+				},
+			},
+		},
+	);
+	assert.equal(enabledResult.ok, true);
+	const enabledResponse = enabledResult.response as FlowDeskDoctorResponseV1;
+	const enabledSection = enabledResponse.doctor_results.find(
+		(section) => section.section === "github_connector",
+	);
+	assert.ok(enabledSection, "github_connector section must be present");
+	assert.equal(enabledSection.category, "informational");
+	assert.ok(
+		enabledSection.refs.includes("github_connector_productionPublish=enabled"),
+		"must report productionPublish=enabled",
+	);
+	assert.ok(
+		enabledSection.refs.includes("github_connector_effectively_blocked=false"),
+		"must report effectively_blocked=false when enabled and gates are fresh",
+	);
+	assertNoRuntimeAuthority(enabledResult);
+
+	// Disabled state: productionPublish=disabled
+	const disabledResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "disabled",
+					lastConfiguredAt: null,
+					githubTokenAvailable: false,
+					authSource: "missing",
+					freshness: {
+						surplusUsageGate: "missing",
+						minimizationPolicy: "missing",
+					},
+				},
+			},
+		},
+	);
+	const disabledResponse = disabledResult.response as FlowDeskDoctorResponseV1;
+	const disabledSection = disabledResponse.doctor_results.find(
+		(section) => section.section === "github_connector",
+	);
+	assert.ok(disabledSection);
+	assert.equal(disabledSection.category, "degraded_mode_warning");
+	assert.ok(
+		disabledSection.refs.includes("github_connector_productionPublish=disabled"),
+	);
+	assert.ok(
+		disabledSection.refs.includes("github_connector_effectively_blocked=true"),
+	);
+	assertNoRuntimeAuthority(disabledResult);
+
+	// Unknown state: productionPublish=unknown
+	const unknownResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "unknown",
+					lastConfiguredAt: null,
+					githubTokenAvailable: false,
+					authSource: "missing",
+					freshness: {
+						surplusUsageGate: "stale",
+						minimizationPolicy: "stale",
+					},
+				},
+			},
+		},
+	);
+	const unknownResponse = unknownResult.response as FlowDeskDoctorResponseV1;
+	const unknownSection = unknownResponse.doctor_results.find(
+		(section) => section.section === "github_connector",
+	);
+	assert.ok(unknownSection);
+	assert.equal(unknownSection.category, "degraded_mode_warning");
+	assert.ok(
+		unknownSection.refs.includes("github_connector_productionPublish=unknown"),
+	);
+	assertNoRuntimeAuthority(unknownResult);
+});
+
+test("test_doctor_reports_github_token_available_redacted", () => {
+	// Token available — only boolean availability reported, no raw token
+	const withTokenResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "enabled",
+					lastConfiguredAt: "2026-06-01T00:00:00.000Z",
+					githubTokenAvailable: true,
+					authSource: "env_github_token",
+					freshness: {
+						surplusUsageGate: "fresh",
+						minimizationPolicy: "fresh",
+					},
+				},
+			},
+		},
+	);
+	assert.equal(withTokenResult.ok, true);
+	const response = withTokenResult.response as FlowDeskDoctorResponseV1;
+	const section = response.doctor_results.find(
+		(s) => s.section === "github_connector",
+	);
+	assert.ok(section);
+	// boolean availability must be surfaced as ref label
+	assert.ok(
+		section.refs.includes("github_connector_token_available=true"),
+		"must report token_available=true",
+	);
+	assert.ok(
+		section.refs.includes("github_connector_auth_source=env_github_token"),
+		"must report auth_source label (not raw token)",
+	);
+	// raw token must never appear in the entire JSON response
+	const responseJson = JSON.stringify(response);
+	assert.equal(
+		responseJson.includes("GITHUB_TOKEN"),
+		false,
+		"raw GITHUB_TOKEN string must not appear in doctor response",
+	);
+	assert.equal(
+		responseJson.includes("ghp_"),
+		false,
+		"raw GitHub PAT format must not appear in doctor response",
+	);
+	assertNoRuntimeAuthority(withTokenResult);
+
+	// Token absent — availability false, authSource=missing
+	const noTokenResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "disabled",
+					lastConfiguredAt: null,
+					githubTokenAvailable: false,
+					authSource: "missing",
+					freshness: {
+						surplusUsageGate: "missing",
+						minimizationPolicy: "missing",
+					},
+				},
+			},
+		},
+	);
+	const noTokenResponse = noTokenResult.response as FlowDeskDoctorResponseV1;
+	const noTokenSection = noTokenResponse.doctor_results.find(
+		(s) => s.section === "github_connector",
+	);
+	assert.ok(noTokenSection);
+	assert.ok(noTokenSection.refs.includes("github_connector_token_available=false"));
+	assert.ok(noTokenSection.refs.includes("github_connector_auth_source=missing"));
+	assertNoRuntimeAuthority(noTokenResult);
+});
+
+test("test_doctor_reports_compaction_evidence_summary", () => {
+	const result = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				compactionHealth: {
+					compactionEnabled: true,
+					lastCompactionTime: "2026-06-01T00:00:00.000Z",
+					lastCompactionResult: { filesRemoved: 3, archived: 1, errors: 0 },
+					merkleRootMatch: true,
+					lastCompactionEvidence: "compaction-evidence-ref-123",
+				},
+			},
+		},
+	);
+	assert.equal(result.ok, true);
+	const response = result.response as FlowDeskDoctorResponseV1;
+	const compactionSection = response.doctor_results.find(
+		(section) => section.section === "evidence_compaction",
+	);
+	assert.ok(compactionSection, "evidence_compaction section must be present");
+	assert.ok(
+		compactionSection.refs.includes("evidence_compaction_enabled=true"),
+		"must report compaction_enabled=true",
+	);
+	assert.ok(
+		compactionSection.refs.includes(
+			"evidence_compaction_last_time=2026-06-01T00:00:00.000Z",
+		),
+		"must report last compaction time",
+	);
+	assert.ok(
+		compactionSection.refs.includes("evidence_compaction_files_removed=3"),
+		"must report files_removed count",
+	);
+	assert.ok(
+		compactionSection.refs.includes("evidence_compaction_archived=1"),
+		"must report archived count",
+	);
+	assert.ok(
+		compactionSection.refs.includes("evidence_compaction_errors=0"),
+		"must report error count",
+	);
+	assert.ok(
+		compactionSection.refs.includes("evidence_compaction_merkle_match=true"),
+		"must report merkle_match",
+	);
+	assert.ok(
+		compactionSection.refs.includes(
+			"evidence_compaction_ref=compaction-evidence-ref-123",
+		),
+		"must report the compaction evidence ref",
+	);
+	assertNoRuntimeAuthority(result);
+});
+
+test("test_doctor_reports_gate_freshness_stale_surface_safe_next_actions", () => {
+	// Stale surplus usage gate: effectively blocked, safe_next_actions must be surfaced
+	const staleGateResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "enabled",
+					lastConfiguredAt: "2026-05-01T00:00:00.000Z",
+					githubTokenAvailable: true,
+					authSource: "env_github_token",
+					freshness: {
+						surplusUsageGate: "stale",
+						minimizationPolicy: "fresh",
+					},
+				},
+			},
+		},
+	);
+	assert.equal(staleGateResult.ok, true);
+	const staleResponse = staleGateResult.response as FlowDeskDoctorResponseV1;
+	const staleSection = staleResponse.doctor_results.find(
+		(section) => section.section === "github_connector",
+	);
+	assert.ok(staleSection);
+	assert.equal(staleSection.category, "degraded_mode_warning");
+	assert.ok(
+		staleSection.refs.includes(
+			"github_connector_surplus_usage_gate_freshness=stale",
+		),
+		"must report surplus usage gate freshness as stale",
+	);
+	assert.ok(
+		staleSection.refs.includes("github_connector_effectively_blocked=true"),
+		"must report effectively_blocked=true when surplus usage gate is stale",
+	);
+	// degraded_mode_warning category produces non-empty safe_next_actions
+	assert.ok(
+		staleSection.safe_next_actions.length > 0,
+		"must surface safe_next_actions when gate is stale",
+	);
+	assertNoRuntimeAuthority(staleGateResult);
+
+	// Stale minimization policy gate
+	const stalePolicyResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "enabled",
+					lastConfiguredAt: "2026-05-01T00:00:00.000Z",
+					githubTokenAvailable: true,
+					authSource: "env_github_token",
+					freshness: {
+						surplusUsageGate: "fresh",
+						minimizationPolicy: "stale",
+					},
+				},
+			},
+		},
+	);
+	const stalePolicyResponse = stalePolicyResult.response as FlowDeskDoctorResponseV1;
+	const stalePolicySection = stalePolicyResponse.doctor_results.find(
+		(section) => section.section === "github_connector",
+	);
+	assert.ok(stalePolicySection);
+	assert.equal(stalePolicySection.category, "degraded_mode_warning");
+	assert.ok(
+		stalePolicySection.refs.includes(
+			"github_connector_minimization_policy_freshness=stale",
+		),
+		"must report minimization policy freshness as stale",
+	);
+	assert.ok(
+		stalePolicySection.refs.includes("github_connector_effectively_blocked=true"),
+	);
+	assert.ok(stalePolicySection.safe_next_actions.length > 0);
+	assertNoRuntimeAuthority(stalePolicyResult);
+
+	// Both gates fresh + productionPublish=enabled: effectively_blocked=false, safe_next_actions empty
+	const freshResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				githubConnector: {
+					productionPublish: "enabled",
+					lastConfiguredAt: "2026-06-01T00:00:00.000Z",
+					githubTokenAvailable: true,
+					authSource: "env_github_token",
+					freshness: {
+						surplusUsageGate: "fresh",
+						minimizationPolicy: "fresh",
+					},
+				},
+			},
+		},
+	);
+	const freshResponse = freshResult.response as FlowDeskDoctorResponseV1;
+	const freshSection = freshResponse.doctor_results.find(
+		(section) => section.section === "github_connector",
+	);
+	assert.ok(freshSection);
+	assert.equal(freshSection.category, "informational");
+	assert.ok(
+		freshSection.refs.includes("github_connector_effectively_blocked=false"),
+	);
+	// informational category always surfaces at least /flowdesk-status; it must NOT
+	// surface the gate-remediation actions (/flowdesk-usage, /flowdesk-doctor etc.)
+	// that only appear when the section is effectively blocked.
+	assert.ok(
+		freshSection.safe_next_actions.length > 0,
+		"informational section must still have baseline safe_next_actions",
+	);
+	assert.equal(
+		freshSection.safe_next_actions.includes("/flowdesk-usage"),
+		false,
+		"informational section must not surface /flowdesk-usage remediation",
+	);
+	assertNoRuntimeAuthority(freshResult);
+});

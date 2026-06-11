@@ -659,6 +659,7 @@ function flowDeskBashPermissionLines(agentName: string, indent = "  "): string {
 		`${indent}  "cut *": allow`,
 		`${indent}  "tr *": allow`,
 		`${indent}  "jq *": allow`,
+		`${indent}  "unzip *": allow`,
 		`${indent}  "python3 -c *": allow`,
 		`${indent}  "node -e *": allow`,
 		`${indent}  "basename *": allow`,
@@ -852,6 +853,12 @@ nudgeQuietPeriodMs: 10000
 If \`flowdesk_task\` is unavailable or lacks a required field, stop and report the blocker instead of silently falling back to long-form or untracked delegation. The quarantined reviewer fan-out helper remains off-limits until explicitly revalidated by the user; use explicit \`flowdesk_task\` reviewer lanes instead.
 
 If FlowDesk-owned lanes are unsafe or blocked, stop and report the blocker, or do only a bounded direct main-session action with normal tools. Do not bypass FlowDesk monitoring with untracked subagents.
+
+## Interface-first rule for cross-cutting features
+
+Before implementation, any feature crossing FlowDesk subsystems must first run a dedicated architecture/design lane to define contracts, evidence records, authority boundaries, module boundaries, integration points, and acceptance criteria. Triggers include authority/gates, durable evidence schemas, provider/model selection, OI/GitHub data flows, status/doctor/debug surfaces, runtime/watchdog/session control, chat/message hooks/TUI behavior, or docs/conformance requirements.
+
+After that design artifact exists, split implementation into focused FlowDesk-owned lanes, each owning one bounded subsystem or contract slice. Preserve the mandatory dispatch boundary: use \`flowdesk_task\` for the design lane and implementation lanes; do not bypass with raw \`task\`, ad-hoc subagents, or inline broad implementation.
 
 ## Release 2 managed dispatch gate semantics
 

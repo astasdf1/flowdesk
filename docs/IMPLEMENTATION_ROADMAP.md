@@ -53,7 +53,7 @@ Included:
 Excluded:
 
 1. Real OpenCode runtime dispatch.
-2. Hard `noReply`/`cancel`/`stop` authority.
+2. Main-chat cancellation or SDK-scoped noReply control.
 3. Automatic provider/model fallback or reselection.
 4. Evaluation-based ranking or workflow optimization as approval. Release 1 may scaffold taxonomy, proposal, provider health, fallback decision, score, and event schemas only.
 5. Patent, legal, or medical-device specialist workflows.
@@ -75,9 +75,11 @@ Release 2.5 is a planned gate for internal OpenCode subtask/lane orchestration a
 
 Release 2.5 must support fan-out to every registered highest-tier available reviewer/model lane for high-risk or critical review when all gates pass. The active FlowDesk registry and Policy Pack decide the highest-tier set; Claude Opus, GPT frontier, and Gemini Pro are abstract family labels only and may seed discovery, but they are never valid lane bindings by themselves. Reviewer lane bindings must use exact currently available provider-qualified model ids from a redacted model-availability cache. That cache is refreshed at most once per local day for the same active profile, registry, Policy Pack, OpenCode version, and account/auth boundary, and is refreshed early only when any of those inputs change. Missing unregistered providers do not block review by themselves. If only one highest-tier model is registered and available, FlowDesk still runs multi-perspective review by assigning multiple reviewer agents or perspective bindings to that same concrete model. These lanes extend the canonical `reviewer` profile rather than replacing it. They return typed critical review outputs only, and they cannot approve dispatch, replace Guard, replace verification, or self-approve.
 
-### Release 3: Operational Intelligence
+### Release 3: Operational Intelligence (COMPLETE)
 
-Release 3 adds advisory evaluation, workflow proposal optimization, multi-model proposal fan-out behind surplus usage gates, dedicated top-tier multi-perspective review lane use where Release 2.5 gates pass, GitHub-backed score ledger support, richer operational recovery, FlowDesk-owned todo continuation supervision where the managed-chat/recovery gates prove safe continuation, and source-grounded reference-pack workflows without weakening Guard or turning specialist output into professional signoff.
+Release 3 added advisory evaluation, workflow proposal optimization, multi-model proposal fan-out behind surplus usage gates, dedicated top-tier multi-perspective review lane use where Release 2.5 gates pass, GitHub-backed score ledger support, richer operational recovery, FlowDesk-owned todo continuation supervision, and source-grounded reference-pack workflows.
+Verified: score-ledger compatibility, 86/86 score-ledger tests, 1380/1380 full npm tests. No new authority added; advisory-only semantics maintained.
+
 
 ### Release 4: Opt-In Federated Intelligence
 
@@ -334,6 +336,9 @@ Exit criteria:
 6. Plugin/SDK compatibility evidence proves that registered highest-tier unavailable bindings are excluded or blocked with explicit inventory evidence, same-model multi-agent review preserves perspective separation, and fan-out never silently shrinks because of budget, quota, timeout, retry, or concurrency pressure.
 
 ## Phase 7: Operational Intelligence
+
+> **Status (2026-06-11): COMPLETE** — All 20 tasks and 12 exit criteria verified.
+> 1375/1375 tests pass. See `docs/PROGRESS_SNAPSHOT.md` for details.
 
 Goal: add advisory learning, workflow optimization, score storage, and source-grounded specialist workflows without weakening Guard.
 

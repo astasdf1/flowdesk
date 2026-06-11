@@ -662,3 +662,80 @@ test("provider usage live ignores expired durable snapshots", async () => {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("provider usage live surfaces additional weekly bucket and reflects exhausted state in recommendation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-provider-usage-weekly-"));
+	try {
+		const prepared1 = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-provider-usage-live",
+			evidenceId: "provider-usage-snapshot-openai-20260524T000000000Z",
+			record: {
+				schema_version: "flowdesk.usage_snapshot.v1",
+				snapshot_id: "usage-live-openai-20260524T000000000Z",
+				provider_family: "openai",
+				model_family: "gpt-5.5",
+				freshness: "fresh",
+				freshness_ttl: 5,
+				reset_time: "2026-05-24T05:00:00.000Z",
+				reset_bucket: "openai-gpt-5h",
+				remaining_percent: 50,
+				dispatchability: "dispatchable",
+				uncertainty_flags: [],
+				source_ref: "usage-live-source-openai-20260524T000000000Z",
+			},
+		});
+		assert.equal(prepared1.ok, true);
+		assert.ok(prepared1.writeIntent);
+
+		const prepared2 = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: "workflow-provider-usage-live",
+			evidenceId: "provider-usage-snapshot-openai-20260524T000000000Z-openai-weekly",
+			record: {
+				schema_version: "flowdesk.usage_snapshot.v1",
+				snapshot_id: "usage-live-openai-20260524T000000000Z-openai-weekly",
+				provider_family: "openai",
+				model_family: "gpt-5.5",
+				freshness: "fresh",
+				freshness_ttl: 5,
+				reset_time: "2026-05-31T00:00:00.000Z",
+				reset_bucket: "openai-weekly",
+				remaining_percent: 0,
+				dispatchability: "dispatchable",
+				uncertainty_flags: [],
+				source_ref: "usage-live-source-openai-20260524T000000000Z",
+			},
+		});
+		assert.equal(prepared2.ok, true);
+		assert.ok(prepared2.writeIntent);
+
+		assert.equal(
+			applyFlowDeskSessionEvidenceWriteIntentsV1(root, [prepared1.writeIntent, prepared2.writeIntent]).ok,
+			true,
+		);
+
+		const result = await executeFlowDeskProviderUsageLiveV1({
+			config: {
+				providers: ["openai"],
+				homeDir: "/tmp/flowdesk-no-such-dir-for-tests",
+				durableStateRootDir: root,
+				persistWorkflowId: "workflow-provider-usage-live",
+			},
+			request: { providerFamily: "openai" },
+			now: fixedNow,
+		});
+
+		assert.equal(result.status, "provider_usage_live_collected");
+		assert.equal(result.worstAlertLevel, "exhausted");
+		assert.match(
+			result.overallRecommendation,
+			/provider quota exhausted on openai bucket openai-weekly/i,
+		);
+		const row = result.providers[0];
+		assert.ok(row?.buckets);
+		assert.equal(row?.buckets?.length, 2);
+		assert.equal(row?.alertLevel, "exhausted");
+		assert.equal(row?.remainingPercent, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

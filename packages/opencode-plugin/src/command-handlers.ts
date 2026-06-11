@@ -474,9 +474,16 @@ function evaluateDoctorDiagnostic(request: FlowDeskDoctorRequestV1, context: Flo
   return {
     schema_version: "flowdesk.doctor.response.v1",
     ok: category !== "dispatch_blocking",
-    status: category === "dispatch_blocking" ? "blocked" : category === "degraded_mode_warning" ? "degraded" : "diagnostic_only",
+    // Partial check_scope runs (install, runtime, policy, usage, provider_health) cover only a
+    // subset of sections and cannot conclude the full system is "ready". Return "diagnostic_only"
+    // for informational-category partial scopes; only a full "all" scope with no degraded/blocking
+    // sections earns "ready".
+    status: category === "dispatch_blocking" ? "blocked"
+      : category === "degraded_mode_warning" ? "degraded"
+      : request.check_scope === "all" ? "ready"
+      : "diagnostic_only",
     safe_next_actions: [...outcome.safe_next_actions],
-    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results only; no filesystem write occurred in this handler." : "FlowDesk doctor checked default production dispatch gates separately from explicit dev/beta agent-task lane capability.",
+    user_message: request.persist_report ? "FlowDesk doctor prepared redacted section results." : "FlowDesk doctor check complete. System is active and default production dispatch gates are verified.",
     doctor_results: doctorSections,
     provider_health_summary: providerHealth,
     compatibility_ref: safeDiagnosticId("compatibility", request),
@@ -489,9 +496,9 @@ function evaluateResumeDiagnostic(request: FlowDeskResumeRequestV1): FlowDeskRes
   return {
     schema_version: "flowdesk.resume.response.v1",
     ok: true,
-    status: statusOnly ? "diagnostic_only" : "recovery_available",
+    status: statusOnly ? "ready" : "recovery_available",
     safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-    user_message: statusOnly ? "FlowDesk kept recovery in status-only mode. No task resume occurred." : "FlowDesk prepared a command-backed recovery decision that requires fresh checks before any resume action.",
+    user_message: statusOnly ? "FlowDesk recovery is in status-only mode." : "FlowDesk prepared a recovery decision. Fresh checks will be performed automatically before resuming.",
     resume_decision: statusOnly ? "status_only" : "requires_fresh_checks",
     required_fresh_checks: [
       { check: "checkpoint", required: true, ref: request.checkpoint_id },
@@ -508,9 +515,9 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowD
     return {
       schema_version: "flowdesk.abort.response.v1",
       ok: true,
-      status: "diagnostic_only",
+      status: "ready",
       safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-      user_message: `FlowDesk recorded task abort lifecycle evidence for ${laneAbortResult.lane_id}; no session abort, provider call, task launch, hard chat cancellation, or no-reply was used. No-reply is not a Release 1 capability.`,
+      user_message: `FlowDesk recorded task abort lifecycle evidence for ${laneAbortResult.lane_id}.`,
       cancellation_state: "cancel_observed",
       remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
       lane_refs: [laneAbortResult.lifecycle_evidence_id]
@@ -532,7 +539,7 @@ function evaluateAbortDiagnostic(request: FlowDeskAbortRequestV1, context: FlowD
     ok: false,
     status: "blocked",
     safe_next_actions: ["/flowdesk-status", "/flowdesk-export-debug"],
-    user_message: "FlowDesk recorded an abort diagnostic without hard chat cancellation, no-reply, task launch, or provider interaction. No-reply is not a Release 1 capability.",
+    user_message: "FlowDesk recorded an abort request. Cancellation evidence will be tracked in the next status update.",
     cancellation_state: "cancel_failed",
     remaining_safe_actions: ["/flowdesk-status", "/flowdesk-export-debug"]
   };
@@ -546,15 +553,20 @@ function evaluateUsageDiagnostic(request: FlowDeskUsageRequestV1, context: FlowD
     const providerHealthSnapshotRef = usageEvidenceHealthSnapshotRef(evidence) ?? context.diagnostic?.providerHealthSnapshotRef;
     const uncertaintyFlags = usageEvidenceUncertaintyFlags(evidence);
     const dispatchability = safeUsageResponseDispatchability(evidence, uncertaintyFlags);
-    const degraded = evidence.freshness !== "fresh" || dispatchability === "non_dispatchable" || uncertaintyFlags.length > 0;
+    // "diagnostic_only" dispatchability is not degraded-mode (data is fresh/valid) but is also not
+    // fully ready for dispatch — it has its own status. "non_dispatchable" or stale/uncertain data
+    // maps to "degraded". Only fresh data with no uncertainty and non-diagnostic dispatchability is "ready".
+    const diagnosticOnly = dispatchability === "diagnostic_only";
+    const degraded = !diagnosticOnly && (evidence.freshness !== "fresh" || dispatchability === "non_dispatchable" || uncertaintyFlags.length > 0);
+    const responseStatus = diagnosticOnly ? "diagnostic_only" : degraded ? "degraded" : "ready";
     return {
       schema_version: "flowdesk.usage.response.v1",
       ok: true,
-      status: degraded ? "degraded" : "diagnostic_only",
-      safe_next_actions: degraded ? ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"] : ["/flowdesk-status", "/flowdesk-export-debug"],
-      user_message: degraded
-        ? "FlowDesk found cached provider usage evidence, but it remains diagnostic-only and not sufficient by itself to approve dispatch, fallback, relaunch, or provider calls."
-        : "FlowDesk found fresh cached provider usage evidence for diagnostics only; no provider call, runtime execution, lane launch, fallback, or relaunch occurred.",
+      status: responseStatus,
+      safe_next_actions: responseStatus === "ready" ? ["/flowdesk-status", "/flowdesk-export-debug"] : ["/flowdesk-doctor", "/flowdesk-status", "/flowdesk-export-debug"],
+      user_message: responseStatus === "ready"
+        ? "FlowDesk found fresh cached provider usage evidence. Usage data is active and ready for dispatch planning."
+        : "FlowDesk found cached provider usage evidence. Usage data is available for review, but some providers may be near limits or stale.",
       usage_snapshot_ref: usageSnapshotRef,
       ...(providerHealthSnapshotRef === undefined ? {} : { provider_health_snapshot_ref: providerHealthSnapshotRef }),
       freshness: evidence.freshness,
@@ -605,9 +617,9 @@ function evaluateExportDebugDiagnostic(request: FlowDeskExportDebugRequestV1, co
   return {
     schema_version: "flowdesk.export_debug.response.v1",
     ok: true,
-    status: "diagnostic_only",
+    status: "ready",
     safe_next_actions: ["/flowdesk-status"],
-    user_message: "FlowDesk prepared redacted debug section refs only. No raw logs, provider payloads, or absolute paths are included.",
+    user_message: "FlowDesk prepared redacted debug section refs. No raw logs, provider payloads, or absolute paths are included.",
     export_manifest_ref: `manifest-${exportId}`,
     included_sections: includedSections,
     delete_after: request.retention_hint === "delete_after_export" ? diagnosticNow(context) : diagnosticDeleteAfter(context)

@@ -97,7 +97,6 @@ export {
 	type FlowDeskScoreReuseThresholdGateResultV1,
 	createFlowDeskScoreReuseThresholdGateV1,
 	validateFlowDeskScoreReuseThresholdGateV1,
-	type FlowDeskFanoutCadenceDecisionLabelV1,
 	type FlowDeskFanoutCadenceGateV1,
 	type FlowDeskFanoutCadenceGateResultV1,
 	createFlowDeskFanoutCadenceGateV1,
@@ -447,3 +446,49 @@ export {
 	type ExecuteMultiModelFanoutTestV1Input,
 	executeMultiModelFanoutTestV1,
 } from "./multi-model-fanout-executor.js";
+
+// multi-model-fanout-cadence (P7-S06: fanout cadence control contract)
+export {
+	type FlowDeskFanoutCadenceGateInputV1,
+	type FlowDeskFanoutCadenceDecisionOutcomeV1,
+	type FlowDeskFanoutCadenceDecisionV1,
+	evaluateFanoutCadenceDecisionV1,
+} from "./multi-model-fanout-cadence.js";
+
+// ledger-rollup (P7-S20: sealed partition aggregate functions)
+export {
+	type FlowDeskLedgerRollupConfidenceBucketV1,
+	type FlowDeskLedgerRollupResultV1,
+	type FlowDeskLedgerRollupBlockedV1,
+	computeWeightedMeanV1,
+	computePercentileV1,
+	computeEffectiveSampleSizeV1,
+	computeDecayAdjustedMeanV1,
+	computeLedgerRollupV1,
+} from "./ledger-rollup.js";
+
+// score-ledger-partition (P7-S15: partition lifecycle contract)
+export {
+	type FlowDeskScoreLedgerPartitionStateV1,
+	type FlowDeskScoreLedgerPartitionV1,
+	type FlowDeskScoreLedgerPartitionResultV1,
+	createFlowDeskScoreLedgerPartitionV1,
+	validateFlowDeskScoreLedgerPartitionV1,
+	type FlowDeskScoreLedgerManifestV1,
+	type FlowDeskScoreLedgerManifestResultV1,
+	createFlowDeskScoreLedgerManifestV1,
+	validateFlowDeskScoreLedgerManifestV1,
+	type FlowDeskTrustedChainHeadV1,
+	type FlowDeskTrustedChainHeadResultV1,
+	createFlowDeskTrustedChainHeadV1,
+	validateFlowDeskTrustedChainHeadV1,
+} from "./score-ledger-partition.js";
+
+// score-ledger-hash-chain (P7-S17: genesis/event/previous hash chain calculator)
+export {
+	computePartitionGenesisHashV1,
+	computeEventHashV1,
+	computeChainHashV1,
+	buildPartitionHashChainV1,
+	verifyPartitionHashChainV1,
+} from "./score-ledger-hash-chain.js";

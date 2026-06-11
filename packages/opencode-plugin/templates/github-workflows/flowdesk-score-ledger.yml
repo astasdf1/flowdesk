@@ -1,0 +1,154 @@
+# FlowDesk Score Ledger Publish Workflow
+#
+# Purpose: Publishes a sealed or immutable FlowDesk score ledger partition to
+# a configured GitHub publication target (issue comment or PR comment).
+#
+# Security notes:
+#   - persist-credentials: false — prevents the Actions token from being
+#     stored on disk after checkout; reduces the blast-radius of a subsequent
+#     compromised step that reads $GITHUB_WORKSPACE.
+#   - npm ci --ignore-scripts — prevents arbitrary lifecycle scripts
+#     (postinstall, prepare, etc.) from executing during dependency
+#     installation, which could be a supply-chain vector.
+#   - Least-privilege permissions block — only the permissions actually
+#     needed are granted. No broad `write: all` or `admin` permissions.
+#   - GITHUB_TOKEN vs PAT — this workflow intentionally uses the built-in
+#     GITHUB_TOKEN (scoped to the triggering repository and run) rather than
+#     a Personal Access Token. A PAT would widen the blast-radius to all
+#     repositories and actions authorized by the account. If cross-repo
+#     publication is required, use a dedicated machine-account PAT stored as
+#     a repository secret, never a developer PAT.
+#   - workflow_dispatch only — there is no push/PR trigger to prevent
+#     accidental publication on every commit; all publishes are explicit.
+
+name: FlowDesk Score Ledger Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      partition_id:
+        description: 'Score ledger partition ID to publish (must be sealed or immutable)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run only (no actual publish)'
+        required: false
+        default: 'true'
+        type: boolean
+
+# Least-privilege: grant only what is needed for score ledger comments.
+# - contents: read — required by actions/checkout.
+# - issues: write — required when publication target is github_issue.
+# - pull-requests: write — required when publication target is github_pr_comment.
+# No other permissions are granted; all others default to none.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  publish-score-ledger:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # persist-credentials: false prevents the GITHUB_TOKEN from being
+          # written to the Git credential store after checkout, reducing the
+          # window during which a compromised subsequent step could extract it.
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # --ignore-scripts: prevents arbitrary postinstall/prepare scripts
+        # from running, which defends against supply-chain attacks in
+        # transitive dependencies.
+        run: npm ci --ignore-scripts
+
+      - name: Validate partition state
+        # This step verifies the partition is sealed or immutable before any
+        # publication attempt. Partitions in 'raw' state must not be published
+        # because they may still be receiving appends and their hash chain is
+        # not finalised.
+        #
+        # The validation is performed by checkAndAdvancePartitionStateV1 which
+        # reads the partition manifest, applies lifecycle transition rules, and
+        # returns the current (potentially advanced) state.
+        run: |
+          node -e "
+            const { checkAndAdvancePartitionStateV1 } = require('./packages/opencode-plugin/dist/score-ledger-partition-lifecycle.js');
+            const result = checkAndAdvancePartitionStateV1({
+              rootDir: process.env.FLOWDESK_STATE_ROOT || '.flowdesk',
+              partitionId: '${{ inputs.partition_id }}'
+            });
+            if (result.newState !== 'sealed' && result.newState !== 'immutable') {
+              console.error('Partition must be sealed or immutable, got:', result.newState);
+              console.error('Reason:', result.reason);
+              process.exit(1);
+            }
+            console.log('Partition state valid:', result.newState);
+            if (result.transitioned) {
+              console.log('State was advanced from', result.previousState, '->', result.newState);
+            }
+          "
+        env:
+          FLOWDESK_STATE_ROOT: ${{ vars.FLOWDESK_STATE_ROOT || '.flowdesk' }}
+
+      - name: Publish score ledger partition (dry run skipped)
+        # This step is skipped when dry_run is true (the default).
+        # When dry_run is false, it calls the publication script.
+        #
+        # GITHUB_TOKEN is injected only here (not globally), minimising the
+        # number of steps that can read it.
+        #
+        # Advisory note: the publication implementation is a placeholder.
+        # When publishScoreLedgerPartitionToGitHubV1 is implemented in a
+        # future release, replace the console.log lines below with:
+        #
+        #   const { publishScoreLedgerPartitionToGitHubV1 } = require(
+        #     './packages/opencode-plugin/dist/score-ledger-github-publisher.js'
+        #   );
+        #   const result = await publishScoreLedgerPartitionToGitHubV1({ ... });
+        #   if (result.status !== 'published') { process.exit(1); }
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FLOWDESK_STATE_ROOT: ${{ vars.FLOWDESK_STATE_ROOT || '.flowdesk' }}
+        run: |
+          node -e "
+            // Publication script placeholder.
+            // Real implementation calls publishScoreLedgerPartitionToGitHubV1.
+            console.log('Score ledger publication: NOT YET IMPLEMENTED');
+            console.log('Partition ID: ${{ inputs.partition_id }}');
+            console.log('State root:', process.env.FLOWDESK_STATE_ROOT);
+            // Exit 0 is intentional for the placeholder; a real implementation
+            // must exit non-zero on any blocked or failed status.
+          "
+
+      - name: Log dry-run notice
+        # This step fires only when dry_run is true (the default).
+        if: ${{ inputs.dry_run != false }}
+        run: |
+          echo "Dry run mode: partition validation completed, no publication performed."
+          echo "Set dry_run=false to publish."
+
+      - name: Upload artifacts
+        # Uploads the score-ledger directory so auditors can inspect partition
+        # state after a run without needing repository access.
+        # retention-days: 30 balances auditability against storage cost.
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: score-ledger-publish-result
+          path: ${{ vars.FLOWDESK_STATE_ROOT || '.flowdesk' }}/oi/score-ledger/
+          retention-days: 30
+          # if-no-files-found: warn keeps the step green even when the
+          # score-ledger directory does not exist yet (e.g. fresh checkout
+          # without durable state).
+          if-no-files-found: warn

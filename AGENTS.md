@@ -76,6 +76,7 @@ Use background docs only for historical context, research rationale, or migratio
 10. Debug and audit outputs must be redacted-first.
 11. Heavy workflow authoring belongs in bounded FlowDesk-owned lanes where conformance and release gates permit. In Release 1, lane records and summaries may be fake-runtime, degraded, or command-backed when actual lane launch is not proven safe. Main-agent output should be limited to routing, compact summaries, Guard handoff, and safe next actions.
 12. Chat/message mutation is steering only unless conformance proves blocking intake. Do not claim that FlowDesk fully handled, suppressed, or replaced the normal assistant turn through prompt mutation alone.
+13. Interface-first for cross-cutting features: before implementation, changes spanning authority/gates, durable evidence schemas, provider/model selection, OI/GitHub data flows, status/doctor/debug, runtime/watchdog/session control, chat/message hooks/TUI, or docs/conformance require a design/interface artifact that defines contracts, evidence, authority boundaries, module boundaries, integration points, and acceptance criteria; implementation must then be split into focused lanes.
 
 ## Before Changing Code
 

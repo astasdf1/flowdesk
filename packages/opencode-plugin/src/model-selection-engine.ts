@@ -6,6 +6,9 @@
  * deprioritized; exhausted providers are excluded.
  */
 
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type FlowDeskAgentRegistryRoleCategoryV1,
 	type FlowDeskRoutingAdvisoryEvaluationV1,
@@ -13,6 +16,264 @@ import {
 	fuzzyFamilyKeywordForModelId,
 } from "@flowdesk/core";
 export { SAME_FAMILY_MODEL_FALLBACK_CHAINS, fuzzyFamilyKeywordForModelId };
+
+// ---------------------------------------------------------------------------
+// Provider catalog types and loader (Phase 8f)
+// ---------------------------------------------------------------------------
+
+export interface ProviderCatalogFamilyEntryV1 {
+	family: string;
+	opencode_provider_id: string;
+	prefixes: readonly string[];
+	stage_keywords: readonly string[];
+	fallback_chains: readonly (readonly string[])[];
+	deprecated_model_ids: readonly string[];
+	agent_name: string;
+}
+
+export interface ProviderCatalogTierModelEntryV1 {
+	providerQualifiedModelId: string;
+	providerFamily: string;
+	agentName: string;
+	usageKey?: string;
+}
+
+export interface ProviderCatalogRoleEntryV1 {
+	tier: string;
+	candidates_from_tiers: readonly string[];
+}
+
+export interface ProviderCatalogV1 {
+	schema_version: "flowdesk.provider_catalog.v1";
+	updated_at: string;
+	families: readonly ProviderCatalogFamilyEntryV1[];
+	supported_model_ids: readonly string[];
+	tiers: {
+		heavy: readonly ProviderCatalogTierModelEntryV1[];
+		medium: readonly ProviderCatalogTierModelEntryV1[];
+		light: readonly ProviderCatalogTierModelEntryV1[];
+	};
+	roles: Record<string, ProviderCatalogRoleEntryV1>;
+}
+
+/**
+ * Whitelist of allowed OpenCode runtime provider IDs.
+ * Security: prevents arbitrary provider injection through catalog files.
+ */
+const ALLOWED_OPENCODE_PROVIDER_IDS = new Set<string>(["anthropic", "openai", "google", "opencode"]);
+
+/**
+ * Pattern for valid agent names.
+ * Security: prevents path traversal through agent name injection.
+ */
+const AGENT_NAME_RE = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Pattern for valid provider-qualified model IDs.
+ * Security: enforces provider/model format, prevents injection.
+ */
+const PROVIDER_QUALIFIED_MODEL_ID_RE = /^[a-z][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * Validate a ProviderCatalogV1 record for security and structural integrity.
+ * Returns an array of error messages; empty means valid.
+ */
+export function validateProviderCatalogV1(catalog: unknown): string[] {
+	const errors: string[] = [];
+	if (typeof catalog !== "object" || catalog === null || Array.isArray(catalog)) {
+		return ["catalog must be a non-null object"];
+	}
+	const c = catalog as Record<string, unknown>;
+	if (c["schema_version"] !== "flowdesk.provider_catalog.v1") {
+		errors.push(`schema_version must be 'flowdesk.provider_catalog.v1', got: ${String(c["schema_version"])}`);
+	}
+	if (typeof c["updated_at"] !== "string" || !Number.isFinite(Date.parse(c["updated_at"]))) {
+		errors.push("updated_at must be a valid ISO timestamp string");
+	}
+
+	// Validate families array
+	if (!Array.isArray(c["families"])) {
+		errors.push("families must be an array");
+	} else {
+		for (const [index, family] of (c["families"] as unknown[]).entries()) {
+			const f = family as Record<string, unknown>;
+			if (typeof f["family"] !== "string" || f["family"].trim().length === 0) {
+				errors.push(`families[${index}].family must be a non-empty string`);
+			}
+			if (typeof f["opencode_provider_id"] !== "string" || !ALLOWED_OPENCODE_PROVIDER_IDS.has(f["opencode_provider_id"])) {
+				errors.push(`families[${index}].opencode_provider_id must be one of: ${[...ALLOWED_OPENCODE_PROVIDER_IDS].join(", ")}`);
+			}
+			if (!Array.isArray(f["prefixes"])) {
+				errors.push(`families[${index}].prefixes must be an array`);
+			}
+			if (!Array.isArray(f["stage_keywords"])) {
+				errors.push(`families[${index}].stage_keywords must be an array`);
+			}
+			if (!Array.isArray(f["fallback_chains"])) {
+				errors.push(`families[${index}].fallback_chains must be an array`);
+			} else {
+				for (const [chainIndex, chain] of (f["fallback_chains"] as unknown[]).entries()) {
+					if (!Array.isArray(chain)) {
+						errors.push(`families[${index}].fallback_chains[${chainIndex}] must be an array`);
+					} else {
+						for (const [modelIndex, modelId] of (chain as unknown[]).entries()) {
+							if (typeof modelId !== "string" || !PROVIDER_QUALIFIED_MODEL_ID_RE.test(modelId)) {
+								errors.push(`families[${index}].fallback_chains[${chainIndex}][${modelIndex}] must be in 'provider/model' format`);
+							}
+						}
+					}
+				}
+			}
+			if (!Array.isArray(f["deprecated_model_ids"])) {
+				errors.push(`families[${index}].deprecated_model_ids must be an array`);
+			}
+			if (typeof f["agent_name"] !== "string" || !AGENT_NAME_RE.test(f["agent_name"])) {
+				errors.push(`families[${index}].agent_name must match /^[a-z][a-z0-9-]*$/`);
+			}
+		}
+	}
+
+	// Validate supported_model_ids
+	if (!Array.isArray(c["supported_model_ids"])) {
+		errors.push("supported_model_ids must be an array");
+	} else {
+		for (const [index, modelId] of (c["supported_model_ids"] as unknown[]).entries()) {
+			if (typeof modelId !== "string" || !PROVIDER_QUALIFIED_MODEL_ID_RE.test(modelId)) {
+				errors.push(`supported_model_ids[${index}] must be in 'provider/model' format`);
+			}
+		}
+	}
+
+	// Validate tiers
+	if (typeof c["tiers"] !== "object" || c["tiers"] === null) {
+		errors.push("tiers must be an object");
+	} else {
+		const tiers = c["tiers"] as Record<string, unknown>;
+		for (const tierName of ["heavy", "medium", "light"] as const) {
+			if (!Array.isArray(tiers[tierName])) {
+				errors.push(`tiers.${tierName} must be an array`);
+			} else {
+				for (const [index, entry] of (tiers[tierName] as unknown[]).entries()) {
+					const e = entry as Record<string, unknown>;
+					if (typeof e["providerQualifiedModelId"] !== "string" || !PROVIDER_QUALIFIED_MODEL_ID_RE.test(e["providerQualifiedModelId"])) {
+						errors.push(`tiers.${tierName}[${index}].providerQualifiedModelId must be in 'provider/model' format`);
+					}
+					if (typeof e["agentName"] !== "string" || !AGENT_NAME_RE.test(e["agentName"])) {
+						errors.push(`tiers.${tierName}[${index}].agentName must match /^[a-z][a-z0-9-]*$/`);
+					}
+				}
+			}
+		}
+	}
+
+	// Validate roles
+	if (typeof c["roles"] !== "object" || c["roles"] === null) {
+		errors.push("roles must be an object");
+	}
+
+	return errors;
+}
+
+/**
+ * Downgrade prevention: parse updated_at as a timestamp.
+ * Returns 0 if unparseable so that the comparison is safe.
+ */
+function catalogUpdatedAtMs(catalog: ProviderCatalogV1): number {
+	const parsed = Date.parse(catalog.updated_at);
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+let _loadedCatalog: ProviderCatalogV1 | undefined;
+
+/**
+ * Load the ProviderCatalogV1 from disk.
+ *
+ * Resolution order:
+ *   1. If rootDir is provided, try <rootDir>/provider-catalog.json
+ *   2. Bundle fallback: packages/opencode-plugin/data/provider-catalog.json
+ *
+ * Security validations are applied before the catalog is accepted.
+ * Downgrade prevention: if the new catalog's updated_at is older than the
+ * already-loaded catalog, the new one is rejected and the current one returned.
+ *
+ * Throws only on bundle fallback failure (prevents silent misconfiguration).
+ */
+export function loadProviderCatalog(rootDir?: string): ProviderCatalogV1 {
+	const bundlePath = join(
+		typeof __dirname === "undefined"
+			? fileURLToPath(new URL("..", import.meta.url))
+			: resolve(__dirname, ".."),
+		"data",
+		"provider-catalog.json",
+	);
+
+	function tryLoadFromPath(filePath: string): ProviderCatalogV1 | undefined {
+		let raw: string;
+		try {
+			raw = readFileSync(filePath, "utf8");
+		} catch {
+			return undefined;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return undefined;
+		}
+		const errors = validateProviderCatalogV1(parsed);
+		if (errors.length > 0) return undefined;
+		return parsed as ProviderCatalogV1;
+	}
+
+	let candidate: ProviderCatalogV1 | undefined;
+
+	// 1. Try custom rootDir path
+	if (typeof rootDir === "string" && rootDir.trim().length > 0) {
+		candidate = tryLoadFromPath(join(rootDir, "provider-catalog.json"));
+	}
+
+	// 2. Bundle fallback
+	if (candidate === undefined) {
+		const bundleResult = tryLoadFromPath(bundlePath);
+		if (bundleResult === undefined) {
+			throw new Error("FlowDesk: provider-catalog.json bundle is missing or invalid. Reinstall the plugin.");
+		}
+		candidate = bundleResult;
+	}
+
+	// Downgrade prevention: reject if the candidate is older than the already-loaded catalog
+	if (_loadedCatalog !== undefined && catalogUpdatedAtMs(candidate) < catalogUpdatedAtMs(_loadedCatalog)) {
+		return _loadedCatalog;
+	}
+
+	_loadedCatalog = candidate;
+	return candidate;
+}
+
+/**
+ * Get the opencode runtime provider ID for a given FlowDesk provider family.
+ * Reads from the loaded provider catalog (catalog-based replacement for the
+ * hardcoded switch statement in managed-dispatch-adapter.ts).
+ *
+ * Supports additional legacy prefix aliases beyond the primary family name.
+ */
+export function opencodeProviderIdFromCatalog(
+	providerFamily: string,
+	catalog?: ProviderCatalogV1,
+): string | undefined {
+	const c = catalog ?? _loadedCatalog ?? loadProviderCatalog();
+	// Check all families for a matching prefix or exact family name
+	for (const entry of c.families) {
+		if (entry.family === providerFamily) return entry.opencode_provider_id;
+		for (const prefix of entry.prefixes) {
+			const normalized = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+			if (normalized === providerFamily) return entry.opencode_provider_id;
+		}
+	}
+	// Handle legacy aliases for opencode runtime
+	if (providerFamily === "opencode" || providerFamily === "opencode_go") return "opencode";
+	return undefined;
+}
 
 export type ModelTier = "heavy" | "medium" | "light";
 

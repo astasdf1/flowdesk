@@ -377,6 +377,7 @@ export function loadFlowDeskTuiUsageSnapshotViewV1(input: {
 	rootDir?: string;
 	workflowId?: string;
 	now?: () => Date;
+	sidebarCacheOnly?: boolean;
 } = {}): FlowDeskTuiUsageSnapshotViewV1 {
 	const observedAt = (input.now ? input.now() : new Date()).toISOString();
 	const nowMs = Date.parse(observedAt);
@@ -392,9 +393,20 @@ export function loadFlowDeskTuiUsageSnapshotViewV1(input: {
 			providers: sidebarCache.rows,
 			...(sidebarCache.stale ? { redactedReason: "provider usage sidebar cache is stale" } : {}),
 			safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
-		};
-	}
-	const evidenceDir = join(
+			};
+		}
+		if (input.sidebarCacheOnly === true) {
+			return {
+				status: "missing",
+				observedAt,
+				rootDir,
+				workflowId,
+				providers: providerFamilies.map((family) => rowFromRecord(family, undefined, nowMs)),
+				redactedReason: "provider usage sidebar cache is unavailable; skipped evidence fallback in chat hook",
+				safeNextActions: ["/flowdesk-usage", "/flowdesk-status", "/flowdesk-doctor"],
+			};
+		}
+		const evidenceDir = join(
 		rootDir,
 		".flowdesk",
 		"sessions",

@@ -10,6 +10,21 @@ import {
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
 const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
+const CHILD_SESSION_BINDING_TTL_MS = 24 * 60 * 60 * 1000;
+const CHILD_SESSION_BINDING_MISS_TTL_MS = 1_000;
+
+const OBSERVED_EVENT_TYPES = new Set([
+	"permission.asked",
+	"permission.updated",
+	"permission.replied",
+	"session.error",
+	"session.idle",
+	"session.status",
+	"message.part.updated",
+	"message.updated",
+	"session.updated",
+	"session.diff",
+]);
 
 function wakeDiagnosticLogPath(filename: string): string {
 	return join(homedir(), ".flowdesk", filename);
@@ -66,7 +81,7 @@ function eventIsPermissionAttentionRelevant(type: string | undefined, phase: Flo
 	return type === "permission.asked" && phase === "awaiting_permission";
 }
 
-interface ChildSessionBinding {
+export interface ChildSessionBinding {
 	workflowId: string;
 	laneId: string;
 	taskId: string;
@@ -74,6 +89,63 @@ interface ChildSessionBinding {
 	parentSessionRef: string;
 	agentRef: string;
 	providerQualifiedModelId: string;
+}
+
+interface ChildSessionBindingIndexEntry {
+	binding: ChildSessionBinding;
+	expiresAtMs: number;
+}
+
+const childSessionBindingIndex = new Map<string, ChildSessionBindingIndexEntry>();
+const childSessionBindingMissIndex = new Map<string, number>();
+const childSessionBindingScanInflight = new Map<string, Promise<ChildSessionBinding[]>>();
+
+function childSessionBindingIndexKey(rootDir: string, childSessionId: string): string {
+	return `${rootDir}\u0000${childSessionId}`;
+}
+
+function observedEventTypeNeedsBindingLookup(type: string | undefined): boolean {
+	return type !== undefined && OBSERVED_EVENT_TYPES.has(type);
+}
+
+function getIndexedChildSessionBinding(rootDir: string, childSessionId: string, nowMs = Date.now()): ChildSessionBinding | undefined {
+	const key = childSessionBindingIndexKey(rootDir, childSessionId);
+	const entry = childSessionBindingIndex.get(key);
+	if (entry === undefined) return undefined;
+	if (entry.expiresAtMs <= nowMs) {
+		childSessionBindingIndex.delete(key);
+		return undefined;
+	}
+	// Sliding TTL keeps active long-running/late-event lanes fast without deleting terminal bindings eagerly.
+	entry.expiresAtMs = nowMs + CHILD_SESSION_BINDING_TTL_MS;
+	return entry.binding;
+}
+
+function setIndexedChildSessionBinding(rootDir: string, binding: ChildSessionBinding, nowMs = Date.now()): void {
+	const key = childSessionBindingIndexKey(rootDir, binding.childSessionId);
+	childSessionBindingIndex.set(key, { binding, expiresAtMs: nowMs + CHILD_SESSION_BINDING_TTL_MS });
+	childSessionBindingMissIndex.delete(key);
+}
+
+function childSessionBindingMissFresh(rootDir: string, childSessionId: string, nowMs = Date.now()): boolean {
+	const key = childSessionBindingIndexKey(rootDir, childSessionId);
+	const expiresAtMs = childSessionBindingMissIndex.get(key);
+	if (expiresAtMs === undefined) return false;
+	if (expiresAtMs <= nowMs) {
+		childSessionBindingMissIndex.delete(key);
+		return false;
+	}
+	return true;
+}
+
+function setChildSessionBindingMiss(rootDir: string, childSessionId: string, nowMs = Date.now()): void {
+	childSessionBindingMissIndex.set(childSessionBindingIndexKey(rootDir, childSessionId), nowMs + CHILD_SESSION_BINDING_MISS_TTL_MS);
+}
+
+export function resetFlowDeskEventHookBindingIndexForTests(): void {
+	childSessionBindingIndex.clear();
+	childSessionBindingMissIndex.clear();
+	childSessionBindingScanInflight.clear();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,26 +240,64 @@ function readJson(path: string): Record<string, unknown> | undefined {
 	}
 }
 
-function findChildSessionBinding(rootDir: string, childSessionId: string): ChildSessionBinding | undefined {
+function scanChildSessionBindings(rootDir: string): ChildSessionBinding[] {
+	const bindings: ChildSessionBinding[] = [];
 	const sessionsDir = join(rootDir, ".flowdesk", "sessions");
-	if (!existsSync(sessionsDir)) return undefined;
+	if (!existsSync(sessionsDir)) return bindings;
 	for (const workflowId of readdirSync(sessionsDir)) {
 		const evidenceDir = join(sessionsDir, workflowId, "evidence", "agent-task-child-session");
 		if (!existsSync(evidenceDir)) continue;
 		for (const file of readdirSync(evidenceDir)) {
 			if (!file.endsWith(".json")) continue;
 			const record = readJson(join(evidenceDir, file));
-			if (record?.child_session_id !== childSessionId) continue;
+			if (record === undefined) continue;
+			const childSessionId = safeString(record?.child_session_id);
 			const laneId = safeString(record.lane_id);
 			const taskId = safeString(record.task_id);
 			const agentRef = safeString(record.agent_ref);
 			const providerQualifiedModelId = safeString(record.provider_qualified_model_id);
 			const parentSessionRef = safeString(record.parent_session_ref);
-			if (laneId === undefined || taskId === undefined || agentRef === undefined || providerQualifiedModelId === undefined || parentSessionRef === undefined) continue;
-			return { workflowId, laneId, taskId, childSessionId, parentSessionRef, agentRef, providerQualifiedModelId };
+			if (childSessionId === undefined || laneId === undefined || taskId === undefined || agentRef === undefined || providerQualifiedModelId === undefined || parentSessionRef === undefined) continue;
+			bindings.push({ workflowId, laneId, taskId, childSessionId, parentSessionRef, agentRef, providerQualifiedModelId });
 		}
 	}
-	return undefined;
+	return bindings;
+}
+
+function refreshChildSessionBindingIndexFromFilesystem(rootDir: string): ChildSessionBinding[] {
+	const bindings = scanChildSessionBindings(rootDir);
+	const nowMs = Date.now();
+	for (const binding of bindings) {
+		setIndexedChildSessionBinding(rootDir, binding, nowMs);
+	}
+	return bindings;
+}
+
+async function findChildSessionBinding(rootDir: string, childSessionId: string): Promise<ChildSessionBinding | undefined> {
+	const indexed = getIndexedChildSessionBinding(rootDir, childSessionId);
+	if (indexed !== undefined) return indexed;
+	if (childSessionBindingMissFresh(rootDir, childSessionId)) return undefined;
+	let inflight = childSessionBindingScanInflight.get(rootDir);
+	if (inflight === undefined) {
+		inflight = Promise.resolve().then(() => refreshChildSessionBindingIndexFromFilesystem(rootDir));
+		childSessionBindingScanInflight.set(rootDir, inflight);
+		void inflight.then(
+			() => childSessionBindingScanInflight.delete(rootDir),
+			() => childSessionBindingScanInflight.delete(rootDir),
+		);
+	}
+	await inflight;
+	const binding = getIndexedChildSessionBinding(rootDir, childSessionId);
+	if (binding === undefined) setChildSessionBindingMiss(rootDir, childSessionId);
+	return binding;
+}
+
+export function primeFlowDeskEventHookBindingIndexForTests(rootDir: string, binding: ChildSessionBinding): void {
+	setIndexedChildSessionBinding(rootDir, binding);
+}
+
+export function findIndexedFlowDeskEventHookBindingForTests(rootDir: string, childSessionId: string): ChildSessionBinding | undefined {
+	return getIndexedChildSessionBinding(rootDir, childSessionId);
 }
 
 function writeEvidence(rootDir: string, workflowId: string, evidenceId: string, record: Record<string, unknown>): boolean {
@@ -349,17 +459,18 @@ export async function observeFlowDeskOpenCodeEventV1(input: {
 				`${new Date().toISOString()} type=${type} sessionId=${sessionId} rootDir=${input.rootDir}\n`, "utf8");
 		} catch { /* best-effort */ }
 	}
-	if (type === undefined || sessionId === undefined) return { matched: false, eventType: type, sessionId, evidenceWritten: 0 };
-	const binding = findChildSessionBinding(input.rootDir, sessionId);
+	if (!observedEventTypeNeedsBindingLookup(type)) return { matched: false, eventType: type, sessionId, evidenceWritten: 0 };
+	if (sessionId === undefined) return { matched: false, eventType: type, sessionId, evidenceWritten: 0 };
+	const binding = await findChildSessionBinding(input.rootDir, sessionId);
+	const progress = binding === undefined ? undefined : eventProgress(input.event);
 	if (WAKE_DIAG_ENABLED) {
 		try {
 			const fs = require("node:fs") as typeof import("node:fs");
 			fs.appendFileSync(wakeDiagnosticLogPath("event-hook-diag.log"),
-				`${new Date().toISOString()}   -> binding=${binding === undefined ? "NOT_FOUND" : binding.laneId} finalizationRelevant=${eventIsFinalizationRelevant(type, eventProgress(input.event)?.label)}\n`, "utf8");
+				`${new Date().toISOString()}   -> binding=${binding === undefined ? "NOT_FOUND" : binding.laneId} finalizationRelevant=${eventIsFinalizationRelevant(type, progress?.label)}\n`, "utf8");
 		} catch { /* best-effort */ }
 	}
 	if (binding === undefined) return { matched: false, eventType: type, sessionId, evidenceWritten: 0 };
-	const progress = eventProgress(input.event);
 	const progressWritten = progress === undefined ? false : writeProgress(input.rootDir, binding, input.event, progress.phase, progress.label);
 	const terminalWritten = type === "session.error" ? writeSessionErrorTerminal(input.rootDir, binding, input.event) : 0;
 	const permissionAttentionRelevant = eventIsPermissionAttentionRelevant(type, progress?.phase);

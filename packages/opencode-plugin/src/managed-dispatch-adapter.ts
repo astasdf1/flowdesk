@@ -9,6 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
+import { openReadonlyDb } from "./shared/sqlite-adapter.js";
 import type {
 	FlowDeskControlledConformanceDocWriteRecordV1,
 	FlowDeskControlledExternalWriteRequestV1,
@@ -71,6 +72,7 @@ import {
 	isOpenCodeSupportedProviderQualifiedModelId,
 	resolveSameFamilyOpenCodeSupportedModelFallback,
 	intersectWorkingAndOpenCodeSupportedModelIds,
+	opencodeProviderIdFromCatalog,
 } from "./model-selection-engine.js";
 
 export const flowdeskManagedDispatchBetaAdapterProfile =
@@ -3258,24 +3260,44 @@ function parseProviderQualifiedModelId(
 	return { providerID, modelID };
 }
 
+function loadAvailableModelIdsFromDb(rootDir: string): Array<{ model_id: string; status: string; available: number }> {
+	// Prefer the durable state root DB; fall back to the package-bundled DB.
+	const durableDbPath = join(rootDir, "model-availability/model-availability.db");
+	const bundledDbPath = new URL("../../data/model-availability.db", import.meta.url);
+	const dbPath = existsSync(durableDbPath) ? durableDbPath : bundledDbPath.pathname;
+	const db = openReadonlyDb(dbPath);
+	try {
+		const rows = db.prepare<{ model_id: string; status: string; available: number }>(
+			"SELECT model_id, status, available FROM models ORDER BY model_id"
+		).all();
+		return rows;
+	} finally {
+		db.close();
+	}
+}
+
 function workingModelCacheAllowsDispatch(input: {
 	providerQualifiedModelId: string;
 	rootDir: string;
 }): { ok: true; selectedProviderQualifiedModelId: string; fallbackEvidence: FlowDeskSelectionPhaseModelFallbackEvidenceV1 } | { ok: false; reason: string; fallbackEvidence?: FlowDeskSelectionPhaseModelFallbackEvidenceV1 } {
-	let workingModelIds: string[];
+	let dbRows: Array<{ model_id: string; status: string; available: number }>;
 	try {
-		const snapshotPath = join(input.rootDir, "model-availability/working-models.json");
-		const raw = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
-		const ids = raw.available_model_ids;
-		workingModelIds = Array.isArray(ids) ? ids.filter((value): value is string => typeof value === "string" && value.includes("/")).filter((value, index, array) => array.indexOf(value) === index) : [];
+		dbRows = loadAvailableModelIdsFromDb(input.rootDir);
 	} catch {
-		return { ok: false, reason: "working-model cache missing – run models refresh first" };
+		return { ok: false, reason: "model availability db missing – run npm run models:refresh first" };
 	}
-	if (workingModelIds.length === 0) return { ok: false, reason: "working-model cache empty – run models refresh first" };
 
-	const selectableModelIds = intersectWorkingAndOpenCodeSupportedModelIds(workingModelIds);
+	const targetModel = dbRows.find(r => r.model_id === input.providerQualifiedModelId);
+	if (!targetModel || ["exhausted", "critical", "stale", "unknown"].includes(targetModel.status)) {
+		return { ok: false, reason: "blocked_by_missing_model_availability_evidence" };
+	}
+
+	const availableModelIds = dbRows.filter(r => r.available === 1).map(r => r.model_id);
+	if (availableModelIds.length === 0) return { ok: false, reason: "model availability db empty – run npm run models:refresh first" };
+
+	const selectableModelIds = intersectWorkingAndOpenCodeSupportedModelIds(availableModelIds);
 	if (selectableModelIds.length === 0) {
-		return { ok: false, reason: "working-model cache has no OpenCode-supported exact models – refresh working-model evidence before assignment" };
+		return { ok: false, reason: "model availability db has no OpenCode-supported models – run npm run models:refresh first" };
 	}
 
 	const resolution = resolveSameFamilyOpenCodeSupportedModelFallback({
@@ -3324,21 +3346,7 @@ function workingModelCacheAllowsDispatch(input: {
 function opencodeRuntimeProviderIDForFlowDeskProviderFamily(
 	providerFamily: string,
 ): string | undefined {
-	switch (providerFamily) {
-		case "claude":
-		case "anthropic":
-			return "anthropic";
-		case "gemini":
-		case "google":
-			return "google";
-		case "openai":
-			return "openai";
-		case "opencode":
-		case "opencode_go":
-			return "opencode";
-		default:
-			return undefined;
-	}
+	return opencodeProviderIdFromCatalog(providerFamily);
 }
 
 function opencodeRuntimeModelForFlowDeskModel(model: {
@@ -4114,6 +4122,7 @@ export interface FlowDeskManagedDispatchLaneFinalizeResultV1 {
 		| "lane_finalized"
 		| "lane_no_output"
 		| "lane_already_terminal"
+		| "terminal_linkage_failed"
 		| "blocked_before_finalize";
 	workflowId: string;
 	laneId: string;
@@ -4121,6 +4130,8 @@ export interface FlowDeskManagedDispatchLaneFinalizeResultV1 {
 	terminalLifecycleEvidenceId?: string;
 	terminalEvidenceId?: string;
 	terminalEvidenceConflict?: boolean;
+	/** True only when the post-completion reload confirmed terminal state and a task_result or task_failed record. */
+	terminalLinkageVerified?: boolean;
 	finalizationReason?: string;
 	completionStatus?: "final" | "partial";
 	looksLikeRefusalOrError?: boolean;
@@ -4374,6 +4385,50 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 			return blocked("terminal lane_lifecycle evidence write failed");
 		if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "incomplete"))
 			return blocked("terminal lane_lifecycle evidence reload verification failed");
+
+		// Slice 2: Hardened finalizer reload verification (fail-closed lifecycle linkage).
+		// After all individual writes succeed, perform one authoritative reload that confirms
+		// both a terminal task_result (or task_failed) AND a terminal lane_lifecycle record
+		// exist together for this lane. If either is missing or stale, the finalizer must
+		// fail closed with terminal_linkage_failed rather than returning a generic success.
+		const linkageReload = reloadFlowDeskSessionEvidenceV1({
+			workflowId: input.workflowId,
+			rootDir: input.rootDir,
+		});
+		const hasTerminalTaskRecord =
+			linkageReload.ok &&
+			linkageReload.blocked.length === 0 &&
+			linkageReload.entries.some(
+				(entry) =>
+					(entry.evidenceClass === "task_result" || entry.evidenceClass === "task_failed") &&
+					(entry.record as Record<string, unknown>).lane_id === input.laneId,
+			);
+		const hasTerminalLifecycleRecord =
+			linkageReload.ok &&
+			linkageReload.blocked.length === 0 &&
+			linkageReload.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.evidenceId === terminalLifecycleEvidenceId &&
+					(entry.record as Record<string, unknown>).lane_id === input.laneId,
+			);
+		if (!hasTerminalTaskRecord || !hasTerminalLifecycleRecord) {
+			return {
+				adapterProfile: "managed_dispatch_lane_finalize_observer",
+				status: "terminal_linkage_failed",
+				workflowId: input.workflowId,
+				laneId: input.laneId,
+				taskResultEvidenceId,
+				terminalLifecycleEvidenceId,
+				terminalLinkageVerified: false,
+				redactedBlockReason: [
+					!hasTerminalTaskRecord ? "terminal task_result record missing or stale after reload" : undefined,
+					!hasTerminalLifecycleRecord ? "terminal lane_lifecycle record missing or stale after reload" : undefined,
+				].filter((r): r is string => r !== undefined).join("; "),
+				authority: baseAuthority,
+			};
+		}
+
 		return {
 			adapterProfile: "managed_dispatch_lane_finalize_observer",
 			status: "lane_finalized",
@@ -4381,6 +4436,7 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 			laneId: input.laneId,
 			taskResultEvidenceId,
 			terminalLifecycleEvidenceId,
+			terminalLinkageVerified: true,
 			...(terminalEvidence === undefined ? {} : {
 				terminalEvidenceId: terminalEvidence.evidenceId,
 				terminalEvidenceConflict: terminalEvidence.conflict ?? false,
@@ -4409,12 +4465,44 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 		return blocked("terminal no_output lane_lifecycle evidence write failed");
 	if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "no_output"))
 		return blocked("terminal no_output lane_lifecycle evidence reload verification failed");
+
+	// Slice 2: Hardened finalizer reload verification for the no-output path.
+	// For no_output lanes we only require the terminal lifecycle record to be
+	// reloadable; a task_result is not expected (there was no output to record).
+	// However if the lifecycle reload itself is blocked or stale, fail closed.
+	const noOutputLinkageReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId: input.workflowId,
+		rootDir: input.rootDir,
+	});
+	const hasNoOutputLifecycleRecord =
+		noOutputLinkageReload.ok &&
+		noOutputLinkageReload.blocked.length === 0 &&
+		noOutputLinkageReload.entries.some(
+			(entry) =>
+				entry.evidenceClass === "lane_lifecycle" &&
+				entry.evidenceId === terminalLifecycleEvidenceId &&
+				(entry.record as Record<string, unknown>).lane_id === input.laneId,
+		);
+	if (!hasNoOutputLifecycleRecord) {
+		return {
+			adapterProfile: "managed_dispatch_lane_finalize_observer",
+			status: "terminal_linkage_failed",
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			terminalLifecycleEvidenceId,
+			terminalLinkageVerified: false,
+			redactedBlockReason: "terminal lane_lifecycle record missing or stale after no_output reload",
+			authority: baseAuthority,
+		};
+	}
+
 	return {
 		adapterProfile: "managed_dispatch_lane_finalize_observer",
 		status: "lane_no_output",
 		workflowId: input.workflowId,
 		laneId: input.laneId,
 		terminalLifecycleEvidenceId,
+		terminalLinkageVerified: true,
 		...(terminalEvidence === undefined ? {} : {
 			terminalEvidenceId: terminalEvidence.evidenceId,
 			terminalEvidenceConflict: terminalEvidence.conflict ?? false,

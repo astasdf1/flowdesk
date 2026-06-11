@@ -54,6 +54,15 @@ export type FlowDeskProviderUsageLiveAlertLevelV1 =
 	| "stale"
 	| "unknown";
 
+export const alertSeverityRank: Record<FlowDeskProviderUsageLiveAlertLevelV1, number> = {
+	ok: 0,
+	stale: 1,
+	unknown: 2,
+	warning: 3,
+	critical: 4,
+	exhausted: 5,
+};
+
 export interface FlowDeskProviderUsageLiveProviderRowV1 {
 	providerFamily: FlowDeskProviderUsageLiveProviderFamilyV1;
 	ok: boolean;
@@ -64,6 +73,12 @@ export interface FlowDeskProviderUsageLiveProviderRowV1 {
 	remainingPercent: number | null;
 	alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
 	recommendation: string;
+	buckets?: readonly {
+		resetBucket: string;
+		resetTime?: string;
+		remainingPercent: number | null;
+		alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	}[];
 	uncertaintyFlags: readonly string[];
 	modelFamily?: string;
 	redactedReason?: string;
@@ -235,59 +250,80 @@ function classifyAlert(
 				"Provider usage collector did not return data; refresh provider auth and retry before heavy work.",
 		};
 	}
+
+	const snapshots = [result.usageSnapshot, ...(result.additionalSnapshots ?? [])];
+	let worstAlertLevel: FlowDeskProviderUsageLiveAlertLevelV1 = "ok";
+	let worstRemaining: number | null = null;
+	let worstRecommendation = "";
+	let hasSetInitial = false;
+
 	if (!result.ok) {
-		const remaining = result.bucketSnapshot?.remainingPercent ?? remainingPercentFromSnapshot(result.usageSnapshot);
-		if (remaining !== null && result.usageSnapshot.freshness === "fresh") {
-			return {
-				remainingPercent: remaining,
-				alertLevel: remaining <= 0 ? "exhausted" : remaining <= 10 ? "critical" : remaining <= 30 ? "warning" : "ok",
-				recommendation: remaining <= 0
-					? `${family} bucket ${result.usageSnapshot.reset_bucket} is exhausted; wait for reset at ${result.usageSnapshot.reset_time} or use a non-exhausted model bucket.`
-					: `${family} bucket ${result.usageSnapshot.reset_bucket} has ${remaining.toFixed(1)}% remaining, but dispatch authority was not acquired; use diagnostic display only.`,
-			};
+		for (const snap of snapshots) {
+			const remaining = remainingPercentFromSnapshot(snap);
+			let alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+			let recommendation: string;
+
+			if (remaining !== null && snap.freshness === "fresh") {
+				alertLevel = remaining <= 0 ? "exhausted" : remaining <= 10 ? "critical" : remaining <= 30 ? "warning" : "ok";
+				recommendation = remaining <= 0
+					? `${family} bucket ${snap.reset_bucket} is exhausted; wait for reset at ${snap.reset_time} or use a non-exhausted model bucket.`
+					: `${family} bucket ${snap.reset_bucket} has ${remaining.toFixed(1)}% remaining, but dispatch authority was not acquired; use diagnostic display only.`;
+			} else {
+				alertLevel = snap.freshness === "stale" ? "stale" : "unknown";
+				recommendation = result.redacted_reason ?? "Provider usage is currently unavailable; refresh auth or pick another provider.";
+			}
+
+			if (!hasSetInitial || alertSeverityRank[alertLevel] > alertSeverityRank[worstAlertLevel]) {
+				worstAlertLevel = alertLevel;
+				worstRecommendation = recommendation;
+				worstRemaining = remaining;
+				hasSetInitial = true;
+			}
 		}
 		return {
-			remainingPercent: null,
-			alertLevel: result.usageSnapshot.freshness === "stale" ? "stale" : "unknown",
-			recommendation:
-				result.redacted_reason ??
-				"Provider usage is currently unavailable; refresh auth or pick another provider.",
+			remainingPercent: worstRemaining,
+			alertLevel: worstAlertLevel,
+			recommendation: worstRecommendation,
 		};
 	}
-	const remaining = result.bucketSnapshot?.remainingPercent ?? null;
-	if (remaining === null) {
-		return {
-			remainingPercent: null,
-			alertLevel: "unknown",
-			recommendation:
-				"Provider usage returned without a remaining percentage; treat as unknown and proceed with caution.",
-		};
+
+	for (const snap of snapshots) {
+		const remaining = snap === result.usageSnapshot && result.bucketSnapshot?.remainingPercent !== undefined
+			? result.bucketSnapshot.remainingPercent
+			: remainingPercentFromSnapshot(snap);
+
+		let alertLevel: FlowDeskProviderUsageLiveAlertLevelV1 = "ok";
+		let recommendation = "";
+
+		if (remaining === null) {
+			alertLevel = "unknown";
+			recommendation = "Provider usage returned without a remaining percentage; treat as unknown and proceed with caution.";
+		} else if (remaining <= 0) {
+			alertLevel = "exhausted";
+			recommendation = `${family} bucket ${snap.reset_bucket} is exhausted; wait for reset at ${snap.reset_time} or switch providers.`;
+		} else if (remaining <= 10) {
+			alertLevel = "critical";
+			recommendation = `${family} bucket ${snap.reset_bucket} is critically low (~${remaining.toFixed(1)}%). Avoid starting large work until reset at ${snap.reset_time}, or switch to another provider for big tasks.`;
+		} else if (remaining <= 30) {
+			alertLevel = "warning";
+			recommendation = `${family} bucket ${snap.reset_bucket} is around ${remaining.toFixed(1)}%; keep heavier tasks short or stage them around the reset at ${snap.reset_time}.`;
+		} else {
+			alertLevel = "ok";
+			recommendation = `${family} bucket ${snap.reset_bucket} has ${remaining.toFixed(1)}% remaining until reset at ${snap.reset_time}; safe to proceed with regular tasks.`;
+		}
+
+		if (!hasSetInitial || alertSeverityRank[alertLevel] > alertSeverityRank[worstAlertLevel]) {
+			worstAlertLevel = alertLevel;
+			worstRecommendation = recommendation;
+			worstRemaining = remaining;
+			hasSetInitial = true;
+		}
 	}
-	if (remaining <= 0) {
-		return {
-			remainingPercent: remaining,
-			alertLevel: "exhausted",
-			recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} is exhausted; wait for reset at ${result.usageSnapshot.reset_time} or switch providers.`,
-		};
-	}
-	if (remaining <= 10) {
-		return {
-			remainingPercent: remaining,
-			alertLevel: "critical",
-			recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} is critically low (~${remaining.toFixed(1)}%). Avoid starting large work until reset at ${result.usageSnapshot.reset_time}, or switch to another provider for big tasks.`,
-		};
-	}
-	if (remaining <= 30) {
-		return {
-			remainingPercent: remaining,
-			alertLevel: "warning",
-			recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} is around ${remaining.toFixed(1)}%; keep heavier tasks short or stage them around the reset at ${result.usageSnapshot.reset_time}.`,
-		};
-	}
+
 	return {
-		remainingPercent: remaining,
-		alertLevel: "ok",
-		recommendation: `${family} bucket ${result.usageSnapshot.reset_bucket} has ${remaining.toFixed(1)}% remaining until reset at ${result.usageSnapshot.reset_time}; safe to proceed with regular tasks.`,
+		remainingPercent: worstRemaining,
+		alertLevel: worstAlertLevel,
+		recommendation: worstRecommendation,
 	};
 }
 
@@ -296,6 +332,12 @@ function rowFromCollectorResult(
 	result: FlowDeskProviderUsageCollectorResultV1 | undefined,
 ): FlowDeskProviderUsageLiveProviderRowV1 {
 	const alert = classifyAlert(family, result);
+	const snapshots = result === undefined ? [] : [result.usageSnapshot, ...(result.additionalSnapshots ?? [])];
+	const anyExhausted = snapshots.some(s => {
+		const rem = remainingPercentFromSnapshot(s);
+		return rem !== null && rem <= 0;
+	});
+
 	if (result === undefined) {
 		return {
 			providerFamily: family,
@@ -309,10 +351,55 @@ function rowFromCollectorResult(
 			usageAuthorityAcquired: false,
 		};
 	}
+
+	const buckets: {
+		resetBucket: string;
+		resetTime?: string;
+		remainingPercent: number | null;
+		alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	}[] = [];
+
+	const primaryRemaining = result.bucketSnapshot?.remainingPercent ?? remainingPercentFromSnapshot(result.usageSnapshot);
+	let primaryAlertLevel: FlowDeskProviderUsageLiveAlertLevelV1 = "unknown";
+	if (!result.ok) {
+		primaryAlertLevel = primaryRemaining !== null && result.usageSnapshot.freshness === "fresh"
+			? (primaryRemaining <= 0 ? "exhausted" : primaryRemaining <= 10 ? "critical" : primaryRemaining <= 30 ? "warning" : "ok")
+			: (result.usageSnapshot.freshness === "stale" ? "stale" : "unknown");
+	} else {
+		primaryAlertLevel = primaryRemaining === null ? "unknown" : primaryRemaining <= 0 ? "exhausted" : primaryRemaining <= 10 ? "critical" : primaryRemaining <= 30 ? "warning" : "ok";
+	}
+
+	buckets.push({
+		resetBucket: result.usageSnapshot.reset_bucket,
+		resetTime: result.usageSnapshot.reset_time,
+		remainingPercent: primaryRemaining,
+		alertLevel: primaryAlertLevel,
+	});
+
+	if (result.additionalSnapshots) {
+		for (const snap of result.additionalSnapshots) {
+			const rem = remainingPercentFromSnapshot(snap);
+			let addAlertLevel: FlowDeskProviderUsageLiveAlertLevelV1 = "unknown";
+			if (!result.ok) {
+				addAlertLevel = rem !== null && snap.freshness === "fresh"
+					? (rem <= 0 ? "exhausted" : rem <= 10 ? "critical" : rem <= 30 ? "warning" : "ok")
+					: (snap.freshness === "stale" ? "stale" : "unknown");
+			} else {
+				addAlertLevel = rem === null ? "unknown" : rem <= 0 ? "exhausted" : rem <= 10 ? "critical" : rem <= 30 ? "warning" : "ok";
+			}
+			buckets.push({
+				resetBucket: snap.reset_bucket,
+				resetTime: snap.reset_time,
+				remainingPercent: rem,
+				alertLevel: addAlertLevel,
+			});
+		}
+	}
+
 	return {
 		providerFamily: family,
-		ok: result.ok,
-		dispatchability: result.usageSnapshot.dispatchability,
+		ok: result.ok && !anyExhausted,
+		dispatchability: anyExhausted ? "non_dispatchable" : result.usageSnapshot.dispatchability,
 		freshness: result.usageSnapshot.freshness,
 		resetBucket: result.usageSnapshot.reset_bucket,
 		resetTime: result.usageSnapshot.reset_time,
@@ -334,15 +421,55 @@ function rowFromCollectorResult(
 		},
 		usageAuthorityAcquired:
 			result.usageAuthorityEvidence?.usage_acquired === true,
+		buckets,
 	};
 }
 
 function rowFromUsageSnapshot(
 	family: FlowDeskProviderUsageLiveProviderFamilyV1,
 	snapshot: FlowDeskUsageSnapshotV1,
+	additionalSnapshots?: readonly FlowDeskUsageSnapshotV1[],
 ): FlowDeskProviderUsageLiveProviderRowV1 {
-	const remainingPercent = remainingPercentFromSnapshot(snapshot);
-	const alert = classifyUsageSnapshot(family, snapshot, remainingPercent);
+	const primaryRemainingPercent = remainingPercentFromSnapshot(snapshot);
+	const primaryAlert = classifyUsageSnapshot(family, snapshot, primaryRemainingPercent);
+
+	const buckets: {
+		resetBucket: string;
+		resetTime?: string;
+		remainingPercent: number | null;
+		alertLevel: FlowDeskProviderUsageLiveAlertLevelV1;
+	}[] = [
+		{
+			resetBucket: snapshot.reset_bucket,
+			resetTime: snapshot.reset_time,
+			remainingPercent: primaryRemainingPercent,
+			alertLevel: primaryAlert.alertLevel,
+		},
+	];
+
+	let worstRemaining = primaryRemainingPercent;
+	let worstAlertLevel = primaryAlert.alertLevel;
+	let worstRecommendation = primaryAlert.recommendation;
+
+	if (additionalSnapshots && additionalSnapshots.length > 0) {
+		for (const snap of additionalSnapshots) {
+			const rem = remainingPercentFromSnapshot(snap);
+			const a = classifyUsageSnapshot(family, snap, rem);
+			buckets.push({
+				resetBucket: snap.reset_bucket,
+				resetTime: snap.reset_time,
+				remainingPercent: rem,
+				alertLevel: a.alertLevel,
+			});
+
+			if (alertSeverityRank[a.alertLevel] > alertSeverityRank[worstAlertLevel]) {
+				worstAlertLevel = a.alertLevel;
+				worstRecommendation = a.recommendation;
+				worstRemaining = rem;
+			}
+		}
+	}
+
 	return {
 		providerFamily: family,
 		ok: snapshot.dispatchability === "dispatchable" && snapshot.freshness === "fresh",
@@ -350,9 +477,9 @@ function rowFromUsageSnapshot(
 		freshness: snapshot.freshness,
 		resetBucket: snapshot.reset_bucket,
 		resetTime: snapshot.reset_time,
-		remainingPercent,
-		alertLevel: alert.alertLevel,
-		recommendation: `${alert.recommendation} Reused a fresh durable usage snapshot to avoid another provider usage call.`,
+		remainingPercent: worstRemaining,
+		alertLevel: worstAlertLevel,
+		recommendation: `${worstRecommendation} Reused a fresh durable usage snapshot to avoid another provider usage call.`,
 		uncertaintyFlags: [...snapshot.uncertainty_flags],
 		modelFamily: snapshot.model_family,
 		usageSnapshotRef: snapshot.snapshot_id,
@@ -372,6 +499,7 @@ function rowFromUsageSnapshot(
 			sourceSurface: "usage_collector",
 		},
 		usageAuthorityAcquired: true,
+		buckets,
 	};
 }
 
@@ -505,7 +633,13 @@ export async function executeFlowDeskProviderUsageLiveV1(input: {
 
 	const providerRows = families.map((family) => {
 		const cached = cachedByFamily.get(family);
-		if (cached !== undefined) return rowFromUsageSnapshot(family, cached.snapshot);
+		if (cached !== undefined) {
+			return rowFromUsageSnapshot(
+				family,
+				cached.snapshot,
+				additionalSnapshotsByFamilyFromCache.get(family),
+			);
+		}
 		const collected = collectorResults.find((result) => result.family === family);
 		return rowFromCollectorResult(family, collected?.result);
 	});
@@ -1038,7 +1172,10 @@ function latestFreshUsageSnapshotEntry(
 			const ttlMinutes = typeof item.entry.record.freshness_ttl === "number" ? item.entry.record.freshness_ttl : 0;
 			return new Date(observedAt).getTime() - item.observedAtMs <= ttlMinutes * 60_000;
 		})
-		.sort((a, b) => b.observedAtMs - a.observedAtMs);
+		.sort((a, b) => {
+			if (b.observedAtMs !== a.observedAtMs) return b.observedAtMs - a.observedAtMs;
+			return a.entry.evidenceId.length - b.entry.evidenceId.length;
+		});
 	return candidates[0]?.entry;
 }
 
@@ -1073,7 +1210,7 @@ function snapshotObservedAtMs(
 }
 
 function timestampFromUsageSnapshotId(value: string): number | undefined {
-	const match = /(\d{8}T\d{9}Z)$/.exec(value);
+	const match = /(\d{8}T\d{9}Z)/.exec(value);
 	if (match === null) return undefined;
 	const stamp = match[1];
 	const iso = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}.${stamp.slice(15, 18)}Z`;
@@ -1230,15 +1367,6 @@ function sanitizePersistWorkflowId(value: string | undefined): string {
 	return "workflow-provider-usage-live";
 }
 
-const alertSeverityRank: Record<FlowDeskProviderUsageLiveAlertLevelV1, number> = {
-	ok: 0,
-	stale: 1,
-	unknown: 2,
-	warning: 3,
-	critical: 4,
-	exhausted: 5,
-};
-
 function computeWorstAlertLevel(
 	providers: readonly FlowDeskProviderUsageLiveProviderRowV1[],
 ): FlowDeskProviderUsageLiveAlertLevelV1 {
@@ -1258,17 +1386,29 @@ function composeOverallRecommendation(
 		return "No provider rows were returned; nothing to recommend.";
 	if (worst === "ok")
 		return "All collected providers are dispatchable with healthy headroom; safe to proceed with regular tasks.";
-	const families = providers
-		.filter((row) => row.alertLevel === worst)
-		.map((row) => row.providerFamily)
-		.join(", ");
+
+	const culprits: string[] = [];
+	for (const row of providers) {
+		if (row.alertLevel === worst) {
+			const worstBuckets = row.buckets?.filter((b) => b.alertLevel === worst);
+			if (worstBuckets && worstBuckets.length > 0) {
+				for (const b of worstBuckets) {
+					culprits.push(`${row.providerFamily} bucket ${b.resetBucket}`);
+				}
+			} else {
+				culprits.push(row.providerFamily);
+			}
+		}
+	}
+	const culpritStr = [...new Set(culprits)].join(", ");
+
 	if (worst === "exhausted")
-		return `Critical: provider quota exhausted on ${families}. Wait for reset or switch providers before heavy work.`;
+		return `Critical: provider quota exhausted on ${culpritStr}. Wait for reset or switch providers before heavy work.`;
 	if (worst === "critical")
-		return `Critical low quota on ${families}; avoid starting large multi-step work until reset, or switch providers.`;
+		return `Critical low quota on ${culpritStr}; avoid starting large multi-step work until reset, or switch providers.`;
 	if (worst === "warning")
-		return `Quota tight on ${families}; keep heavier tasks short or stage them around the reset window.`;
+		return `Quota tight on ${culpritStr}; keep heavier tasks short or stage them around the reset window.`;
 	if (worst === "stale")
-		return `Provider usage data is stale on ${families}; refresh provider auth and retry before relying on these numbers.`;
-	return `Provider usage data is unknown on ${families}; refresh auth and retry, or pick a different provider.`;
+		return `Provider usage data is stale on ${culpritStr}; refresh provider auth and retry before relying on these numbers.`;
+	return `Provider usage data is unknown on ${culpritStr}; refresh auth and retry, or pick a different provider.`;
 }

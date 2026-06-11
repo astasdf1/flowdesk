@@ -240,6 +240,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.federated_discovery_query_plan.v1", "federated-discovery-query-plan", "FlowDeskFederatedDiscoveryQueryPlanV1", "later_release"),
   artifactEntry("flowdesk.federated_publication_result.v1", "federated-publication-result", "FlowDeskFederatedPublicationResultV1", "later_release"),
   artifactEntry("flowdesk.federated_revocation_request.v1", "federated-revocation-request", "FlowDeskFederatedRevocationRequestV1", "later_release"),
+  artifactEntry("flowdesk.github_connector_production_publish_flag.v1", "github-connector-production-publish-flag", "FlowDeskGitHubConnectorProductionPublishFlagV1", "later_release"),
   artifactEntry("flowdesk.surplus_usage_gate.v1", "surplus-usage-gate", "FlowDeskSurplusUsageGateV1", "later_release"),
   artifactEntry("flowdesk.r3_admission_decision.v1", "r3-admission-decision", "FlowDeskR3AdmissionDecisionV1", "later_release"),
   artifactEntry("flowdesk.r3_fanout_reservation.v1", "r3-fanout-reservation", "FlowDeskR3FanoutReservationV1", "later_release"),

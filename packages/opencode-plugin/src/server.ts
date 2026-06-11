@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
@@ -35,6 +35,8 @@ import {
 	planFlowDeskReviewerFanoutFromReloadedCacheEvidenceV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
+	resolveUsageAwareProviderQualifiedModelId,
+	type UsageAwareModelResolverResultV1,
 	type SafeNextAction,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
 	validateConformanceRuntimeMetadataV1,
@@ -168,9 +170,157 @@ import {
 	hasPassingFds1SchemaConversionSpike,
 	runFlowDeskPreSpikePluginToolStub,
 } from "./tool-stubs.js";
-import { publishToGitHubV1, type GitHubPublicationTargetV1 } from "./federated-registry-connector.js";
+import { publishToGitHubV1, type GitHubPublicationTargetV1, fetchModelAvailabilityDbFromGitHubV1, type FetchModelAvailabilityDbInputV1 } from "./federated-registry-connector.js";
+import { openReadonlyDb } from "./shared/sqlite-adapter.js";
+// TODO(Phase 8e): expose flowdesk_model_availability_refresh as a first-class MCP tool once
+// the controlled-write gate for the durable DB path is promoted. For now the function
+// fetchModelAvailabilityDbFromGitHubV1 is exported from federated-registry-connector and can
+// be wired into the flowdesk-doctor hook or a dedicated tool registration block here.
+// See docs/PHASE8_COMPLETION_PLAN.md and docs/AUDIT_GITHUB_CONNECTOR_PHASE8.md for context.
+import { intersectWorkingAndOpenCodeSupportedModelIds } from "./model-selection-engine.js";
+import { createFlowDeskOIOptInTools } from "./oi-mcp-tools.js";
 
 const WAKE_DIAG_ENABLED = process.env.FLOWDESK_WAKE_DIAG === "1" || process.env.FLOWDESK_WAKE_DIAG === "true";
+
+/**
+ * Load cached provider usage snapshots from the durable sidebar cache.
+ *
+ * Reads `<rootDir>/.flowdesk/ui/provider-usage-sidebar.json` (written by
+ * the provider-usage-live tool / `flowdesk_quota`) and normalizes it into
+ * the shape consumed by `resolveUsageAwareProviderQualifiedModelId`.
+ *
+ * Fail-open: on any error, returns an empty array. The resolver treats an
+ * empty snapshot set as "no evidence of unhealth" and passes through the
+ * requested model id unchanged.
+ */
+function loadCachedUsageSnapshots(rootDir: string): Array<{
+	providerFamily: string;
+	alertLevel: "ok" | "warning" | "critical" | "exhausted" | "stale" | "unknown";
+	remainingPercent: number;
+	dispatchability: "dispatchable" | "non_dispatchable";
+}> {
+	try {
+		const cachePath = join(rootDir, ".flowdesk", "ui", "provider-usage-sidebar.json");
+		if (!existsSync(cachePath)) return [];
+		const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as unknown;
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			Array.isArray(parsed)
+		)
+			return [];
+		const cache = parsed as Record<string, unknown>;
+		if (cache.schema_version !== "flowdesk.provider_usage_sidebar_cache.v1")
+			return [];
+		if (!Array.isArray(cache.providers)) return [];
+		const out: Array<{
+			providerFamily: string;
+			alertLevel: "ok" | "warning" | "critical" | "exhausted" | "stale" | "unknown";
+			remainingPercent: number;
+			dispatchability: "dispatchable" | "non_dispatchable";
+		}> = [];
+		for (const row of cache.providers) {
+			if (typeof row !== "object" || row === null || Array.isArray(row))
+				continue;
+			const r = row as Record<string, unknown>;
+			const providerFamily =
+				typeof r.providerFamily === "string" ? r.providerFamily : "";
+			if (providerFamily.length === 0) continue;
+			const alertLevel =
+				r.alertLevel === "ok" ||
+				r.alertLevel === "warning" ||
+				r.alertLevel === "critical" ||
+				r.alertLevel === "exhausted" ||
+				r.alertLevel === "stale" ||
+				r.alertLevel === "unknown"
+					? r.alertLevel
+					: "unknown";
+			const remainingPercent =
+				typeof r.remainingPercent === "number" &&
+				Number.isFinite(r.remainingPercent)
+					? r.remainingPercent
+					: 0;
+			// Conservatively coerce "diagnostic_only" → "non_dispatchable" so
+			// the resolver treats it as needing override.
+			const dispatchability =
+				r.dispatchability === "dispatchable" ? "dispatchable" : "non_dispatchable";
+			out.push({ providerFamily, alertLevel, remainingPercent, dispatchability });
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Load OpenCode-supported model ids from the model-availability sqlite DB.
+ *
+ * Mirrors `loadAvailableModelIdsFromDb` in `workflow-assign-tool.ts`: prefers
+ * the durable state root DB and falls back to the package-bundled DB. After
+ * loading, filters down to the intersection with the OpenCode-supported set.
+ *
+ * Fail-open: on any error, returns an empty array. The resolver treats an
+ * empty availability set as "no candidates" and falls back to the originally
+ * requested model id.
+ */
+function loadCachedAvailableModelIds(rootDir: string): string[] {
+	try {
+		const durableDbPath = join(rootDir, "model-availability", "model-availability.db");
+		const bundledDbPath = new URL(
+			"../../data/model-availability.db",
+			import.meta.url,
+		).pathname;
+		const dbPath = existsSync(durableDbPath) ? durableDbPath : bundledDbPath;
+		const db = openReadonlyDb(dbPath);
+		let rows: Array<{ model_id: string }>;
+		try {
+			rows = db
+				.prepare<{ model_id: string }>(
+					"SELECT model_id FROM models WHERE available = 1 ORDER BY model_id",
+				)
+				.all();
+		} finally {
+			db.close();
+		}
+		const ids = rows.map((r) => r.model_id);
+		return intersectWorkingAndOpenCodeSupportedModelIds(ids);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Apply usage-aware model resolution to a requested provider-qualified
+ * model id. Loads cached usage snapshots and available model ids from the
+ * durable state root and asks the pure resolver for a recommendation.
+ *
+ * This is a selection-phase pre-launch preferred-model substitution utility
+ * only. It never carries dispatch authority, fallback authority, write
+ * authority, Guard approval, or managed fallback/reselection authority.
+ * Failing-open: when the durable root is missing or any I/O fails, the
+ * resolver returns the requested model id unchanged.
+ */
+function resolveUsageAwareModelForServer(
+	rootDir: string | undefined,
+	requestedModelId: string,
+): UsageAwareModelResolverResultV1 {
+	if (typeof rootDir !== "string" || rootDir.trim().length === 0) {
+		return {
+			resolvedModelId: requestedModelId,
+			overrideApplied: false,
+			originalModelId: requestedModelId,
+			providerBindingChangedBeforeLaunch: false,
+			preLaunchModelSubstitution: false,
+			modelSubstitutionKind: "none",
+		};
+	}
+	return resolveUsageAwareProviderQualifiedModelId({
+		requestedModelId,
+		usageSnapshots: loadCachedUsageSnapshots(rootDir),
+		availableModelIds: loadCachedAvailableModelIds(rootDir),
+		allowCrossFamily: true,
+	});
+}
 
 function wakeDiagnosticLogPath(filename: string): string {
 	return join(homedir(), ".flowdesk", filename);
@@ -268,6 +418,11 @@ export const flowdeskOperationalIntelligenceOption =
 	"operationalIntelligence" as const;
 export const flowdeskFederatedRegistryPublishToolName =
 	"flowdesk_federated_registry_publish" as const;
+export const flowdeskOIScorePreviewToolName = "flowdesk_oi_score_preview" as const;
+export const flowdeskOIThresholdGateToolName = "flowdesk_oi_threshold_gate" as const;
+export const flowdeskOILedgerListToolName = "flowdesk_oi_ledger_list" as const;
+export const flowdeskOILedgerCompactToolName = "flowdesk_oi_ledger_compact" as const;
+export const flowdeskOISessionSummaryToolName = "flowdesk_oi_session_summary" as const;
 
 interface FlowDeskExactModelProviderAcquisitionCacheMaterializationOptionsV1 {
 	enabled: true;
@@ -1057,7 +1212,7 @@ export function createFlowDeskTaskAbortTool(
 ): FlowDeskOpenCodeTool {
 	return tool({
 		description:
-			"Abort a stalled or stuck FlowDesk agent task. Looks up the lane automatically from workflowId + taskId, calls OpenCode SDK session.abort, and writes task_failed + terminal lifecycle evidence. Use when a lane is stalled, taking too long, or needs to be cancelled.",
+			"Dev/beta SDK-scoped abort for a stalled FlowDesk agent task. Looks up workflowId + taskId, routes through the typed session abort adapter, calls OpenCode SDK session.abort when available, and writes task_failed + terminal lifecycle evidence. This is separate from diagnostic /flowdesk-abort.",
 		args: {
 			workflowId: tool.schema.string().describe("FlowDesk workflow ID containing the task (e.g. workflow-xxx)."),
 			taskId: tool.schema.string().describe("FlowDesk task ID to abort (e.g. task-xxx)."),
@@ -1135,7 +1290,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					flowdeskPlanShortToolName,
 					tool({
 						description:
-							"Create a compact FlowDesk plan record. Planning-only: no provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or noReply authority.",
+							"Create a compact FlowDesk plan record. Planning-only: no provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or SDK-scoped noReply control.",
 						args: {
 							goalSummary: tool.schema
 								.string()
@@ -1200,7 +1355,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					flowdeskRunShortToolName,
 					tool({
 						description:
-							"Run a compact FlowDesk command-backed run alias. Requires explicit runMode and planRevisionId; no provider call, lane launch, fallback, write, hard-chat, or noReply authority.",
+							"Run a compact FlowDesk command-backed run alias. Requires explicit runMode and planRevisionId; no provider call, lane launch, fallback, write, hard-chat, or SDK-scoped noReply control.",
 						args: {
 							runMode: tool.schema
 								.enum(["guarded-dry-run", "fake-runtime", "managed-dispatch"])
@@ -1276,7 +1431,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					flowdeskDebugToolName,
 					tool({
 						description:
-							"Export a redacted FlowDesk debug bundle. Diagnostics only; no provider, dispatch, runtime/lane, fallback, write/apply, hard-chat, or noReply authority.",
+							"Export a redacted FlowDesk debug bundle. Diagnostics only; no provider, dispatch, runtime/lane, fallback, write/apply, hard-chat, or SDK-scoped noReply control.",
 						args: {
 							includeSections: tool.schema
 								.array(tool.schema.string())
@@ -1333,7 +1488,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					flowdeskResumeStatusToolName,
 					tool({
 						description:
-							"Preview FlowDesk resume checkpoint status. Diagnostics only; no provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or noReply authority.",
+							"Preview FlowDesk resume checkpoint status. Diagnostics only; no provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or SDK-scoped noReply control.",
 						args: {
 							checkpointId: tool.schema
 								.string()
@@ -1371,7 +1526,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					flowdeskRetryDiagToolName,
 					tool({
 						description:
-							"Plan a bounded FlowDesk retry diagnostic. No provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or noReply authority.",
+							"Plan a bounded FlowDesk retry diagnostic. No provider, dispatch, runtime/lane, write/apply, fallback, hard-chat, or SDK-scoped noReply control.",
 						args: {
 							attemptId: tool.schema
 								.string()
@@ -1438,7 +1593,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 					flowdeskAbortCmdToolName,
 					tool({
 						description:
-							"Request a FlowDesk command-backed abort diagnostic/control action. No provider, dispatch, runtime/lane launch, write/apply, fallback, hard-chat, or noReply authority.",
+							"Request a FlowDesk command-backed abort diagnostic/control action. No provider, dispatch, runtime/lane launch, write/apply, fallback, hard-chat, or SDK-scoped noReply control.",
 						args: {
 							workflowId: tool.schema
 								.string()
@@ -1502,7 +1657,7 @@ export function createFlowDeskLocalNonDispatchAdapterTools(
 				flowdeskCheckToolName,
 				tool({
 					description:
-						"Run FlowDesk doctor diagnostics with compact defaults; command-backed only, no provider call, dispatch, task launch, fallback, write/apply, hard-chat, or noReply authority.",
+						"Run FlowDesk doctor diagnostics with compact defaults; command-backed only, no provider call, dispatch, task launch, fallback, write/apply, hard-chat, or SDK-scoped noReply control.",
 					args: {
 						checkScope: tool.schema
 							.enum([
@@ -2615,7 +2770,64 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 	const recentSuggestionCards = new Map<string, number>();
 	const recentStallAlerts = new Map<string, number>();
 	const usageAutoRefreshMaxAgeMs = 3 * 60_000;
+	const stallAlertCacheMaxAgeMs = 30_000;
 	let lastUsageRefreshAttemptAtMs = 0;
+	let usageRefreshInFlight = false;
+	let cachedStallResult: StallAlertResult | undefined;
+	let cachedStallResultAtMs = 0;
+	let stallRefreshInFlight = false;
+	const refreshUsageSidebarCacheIfStale = (nowMs: number): void => {
+		if (!providerUsageLiveConfig?.durableStateRootDir) return;
+		if (nowMs - lastUsageRefreshAttemptAtMs <= 30_000) return;
+		lastUsageRefreshAttemptAtMs = nowMs;
+		let isStale = false;
+		try {
+			const cachePath = join(providerUsageLiveConfig.durableStateRootDir, ".flowdesk", "ui", "provider-usage-sidebar.json");
+			const cacheContent = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+			isStale = isProviderUsageSidebarCacheStale(cacheContent, nowMs, usageAutoRefreshMaxAgeMs);
+		} catch {
+			isStale = true;
+		}
+		if (!isStale || usageRefreshInFlight) return;
+		usageRefreshInFlight = true;
+		void executeFlowDeskProviderUsageLiveV1({
+			config: { ...providerUsageLiveConfig, persistSidebarCache: true },
+			request: { providerFamily: "all" },
+		}).catch(() => undefined).finally(() => {
+			usageRefreshInFlight = false;
+		});
+	};
+	const collectStallAlertResultCached = async (
+		currentSessionRef: string,
+		nowMs: number,
+	): Promise<StallAlertResult> => {
+		if (stallAlert === undefined) return { status: "none" } as const;
+		const currentCachedStallResult = cachedStallResult;
+		if (
+			currentCachedStallResult !== undefined &&
+			nowMs - cachedStallResultAtMs <= stallAlertCacheMaxAgeMs
+		) return currentCachedStallResult;
+		if (stallRefreshInFlight) return cachedStallResult ?? ({ status: "none" } as const);
+		stallRefreshInFlight = true;
+		const refresh = collectStallAlertResult(stallAlert, now, { currentSessionRef })
+			.then((result) => {
+				cachedStallResult = result;
+				cachedStallResultAtMs = clockMs(now);
+				return result;
+			})
+			.catch(() => {
+				cachedStallResult = { status: "error" } as const;
+				cachedStallResultAtMs = clockMs(now);
+				return cachedStallResult;
+			})
+			.finally(() => {
+				stallRefreshInFlight = false;
+			});
+		// Preserve first-alert behavior for empty caches, but debounce all later full reloads.
+		if (cachedStallResult === undefined) return refresh;
+		void refresh;
+		return cachedStallResult ?? ({ status: "none" } as const);
+	};
 	return async function message(
 		input: unknown,
 		output: FlowDeskChatMessageOutput,
@@ -2657,22 +2869,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			chatIntakeGate.effectiveMode,
 		);
 		const nowMs = clockMs(now);
-		if (providerUsageLiveConfig?.durableStateRootDir && nowMs - lastUsageRefreshAttemptAtMs > 30_000) {
-			lastUsageRefreshAttemptAtMs = nowMs;
-			let isStale = false;
-			try {
-				const cachePath = join(providerUsageLiveConfig.durableStateRootDir, ".flowdesk", "ui", "provider-usage-sidebar.json");
-				const cacheContent = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
-				isStale = isProviderUsageSidebarCacheStale(cacheContent, nowMs, usageAutoRefreshMaxAgeMs);
-			} catch {
-				isStale = true;
-			}
-			if (isStale) {
-				try {
-					await executeFlowDeskProviderUsageLiveV1({ config: { ...providerUsageLiveConfig, persistSidebarCache: true }, request: { providerFamily: "all" } });
-				} catch {}
-			}
-		}
+		refreshUsageSidebarCacheIfStale(nowMs);
 		const usageTextToAppend =
 			providerUsageLiveConfig?.durableStateRootDir &&
 			providerUsageLiveConfig.appendToChat === true
@@ -2681,6 +2878,7 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 							rootDir: providerUsageLiveConfig.durableStateRootDir,
 							workflowId: providerUsageLiveConfig.persistWorkflowId,
 							now: () => (typeof now === "function" ? now() : now),
+							sidebarCacheOnly: true,
 						}),
 					)
 				: undefined;
@@ -2723,11 +2921,10 @@ export function createFlowDeskNaturalLanguageChatMessageHook(
 			)
 				recentStallAlerts.delete(key);
 		}
-		const stallResult = stallAlert
-			? await collectStallAlertResult(stallAlert, now, {
-					currentSessionRef: partSessionID || request.session_ref,
-				})
-			: { status: "none" } as const;
+		const stallResult = await collectStallAlertResultCached(
+			partSessionID || request.session_ref || safeToken(undefined, "chat-session"),
+			nowMs,
+		);
 
 		let stallTextToAppend: string | undefined = undefined;
 		let stallDedupKey: string | undefined = undefined;
@@ -4745,12 +4942,16 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					: input.defaultAsyncMode;
 				const taskId = `task-${Date.now().toString(36)}`;
 				const laneId = `lane-task-${Date.now().toString(36)}`;
+				// Selection-phase pre-launch preferred-model substitution
+				// (no dispatch/fallback/Guard authority; not managed fallback/reselection).
+				const resolved = resolveUsageAwareModelForServer(rootDir, providerQualifiedModelId);
+				const effectiveModelId = resolved.resolvedModelId;
 				const result = await executeFlowDeskAgentTaskV1({
 					workflowId,
 					taskId,
 					laneId,
 					agentRef: `agent-${agentName}`,
-					providerQualifiedModelId,
+					providerQualifiedModelId: effectiveModelId,
 					promptText: taskDescription,
 					parentSessionId,
 					parentSessionProviderQualifiedModelId,
@@ -4758,6 +4959,13 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					client,
 					asyncMode,
 					_nudgeQuietPeriodMs: nudgeQuietPeriodMs,
+					...(resolved.overrideApplied && resolved.overrideReason ? {
+						usageAwareOverride: {
+							originalModelId: providerQualifiedModelId,
+							overrideReason: resolved.overrideReason,
+							allowCrossFamily: true,
+						},
+					} : {}),
 				});
 				const failureCategory = result.status === "task_failed" ? result.failureCategory : undefined;
 				const redactedReason = result.status === "task_failed" ? result.redactedReason : undefined;
@@ -4768,7 +4976,14 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					status: result.status,
 					taskPreview: promptPreview(taskDescription),
 					agentName,
-					providerQualifiedModelId,
+					providerQualifiedModelId: effectiveModelId,
+					requestedModel: providerQualifiedModelId,
+					effectiveModel: effectiveModelId,
+					modelOverrideApplied: resolved.overrideApplied,
+					providerBindingChangedBeforeLaunch: resolved.providerBindingChangedBeforeLaunch,
+					preLaunchModelSubstitution: resolved.preLaunchModelSubstitution,
+					modelSubstitutionKind: resolved.modelSubstitutionKind,
+					...(resolved.overrideReason === undefined ? {} : { modelOverrideReason: resolved.overrideReason }),
 					...(result.status === "task_launched" ? { childSessionId: result.childSessionId, asyncMode: true, safeNextActions: ["/flowdesk-status"] } : {}),
 					resultText: result.status === "task_completed" ? result.resultText.slice(0, 4_096) : undefined,
 					resultTruncated: result.status === "task_completed" && result.resultText.length > 4_096,
@@ -4780,7 +4995,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 						laneId,
 						taskId,
 						agentName,
-						providerQualifiedModelId,
+						providerQualifiedModelId: effectiveModelId,
 						promptText: taskDescription,
 						...(result.status === "task_completed" ? { resultText: result.resultText } : {}),
 						...(result.status === "task_launched" ? { asyncMode: true } : {}),
@@ -4804,7 +5019,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 		}),
 		[flowdeskTaskToolName]: createAgentTaskTool({
 			description:
-				"Compact dev/beta agent task launcher. Requires explicit developerModeAcknowledged and allowProviderCall; defaults parentSessionId='', nudgeQuietPeriodMs=10000, asyncMode=true.",
+				"Compact dev/beta agent task launcher. Requires explicit developerModeAcknowledged and allowProviderCall; defaults parentSessionId='', nudgeQuietPeriodMs=10000, asyncMode=true. The providerQualifiedModelId is treated as a preferred pre-launch model: if that provider's quota is exhausted/critical/stale/non_dispatchable, the server substitutes the best available alternative before lane launch (allowCrossFamily=true). This is pre-launch preferred-model substitution, not managed fallback/reselection and not fallback authority. The response includes requestedModel, effectiveModel, modelOverrideApplied, modelOverrideReason, providerBindingChangedBeforeLaunch, preLaunchModelSubstitution, and modelSubstitutionKind so callers can observe any substitution.",
 			defaultAsyncMode: true,
 			defaultNudgeQuietPeriodMs: 10_000,
 			compactArgs: true,
@@ -5172,7 +5387,7 @@ export function createFlowDeskQuickFallbackRunOptInTools(
 		}),
 		[flowdeskRebindToolName]: tool({
 			description:
-				"Plan a provider rebind regate using the quick fallback helper. Planning-only: no provider switch, dispatch, runtime, lane launch, write/apply, hard-cancel, or noReply authority.",
+				"Plan a provider rebind regate using the quick fallback helper. Planning-only: no provider switch, dispatch, runtime, lane launch, write/apply, hard-cancel, or SDK-scoped noReply control.",
 			args: {
 				fromProvider: tool.schema
 					.string()
@@ -5331,7 +5546,11 @@ function createFlowDeskOrchestrateOptInTools(
 				if (!goalSummary.trim()) return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "goalSummary is required", safeNextActions: ["/flowdesk-doctor"] });
 				const parentSessionId = typeof input.parentSessionId === "string" ? input.parentSessionId : "";
 				if (!parentSessionId.trim()) return JSON.stringify({ status: "blocked_before_orchestration", summaryForUser: "parentSessionId is required", safeNextActions: ["/flowdesk-doctor"] });
-				const providerQualifiedModelId = typeof input.providerQualifiedModelId === "string" ? input.providerQualifiedModelId : "openai/gpt-5.5";
+				const requestedModelId = typeof input.providerQualifiedModelId === "string" ? input.providerQualifiedModelId : "openai/gpt-5.5";
+				// Selection-phase pre-launch preferred-model substitution
+				// (no dispatch/fallback/Guard authority; not managed fallback/reselection).
+				const resolved = resolveUsageAwareModelForServer(config.rootDir, requestedModelId);
+				const providerQualifiedModelId = resolved.resolvedModelId;
 				const agentName = typeof input.agentName === "string" ? input.agentName : "reviewer-gpt-frontier";
 				const workflowId = typeof input.workflowId === "string" ? input.workflowId : undefined;
 				const result = await executeFlowDeskWorkflowOrchestratorV1({
@@ -5343,7 +5562,17 @@ function createFlowDeskOrchestrateOptInTools(
 					providerQualifiedModelId,
 					agentName,
 				});
-				return JSON.stringify(result);
+				const resultRecord = isRecord(result) ? result : {};
+				return JSON.stringify({
+					...resultRecord,
+					requestedModel: requestedModelId,
+					effectiveModel: providerQualifiedModelId,
+					modelOverrideApplied: resolved.overrideApplied,
+					providerBindingChangedBeforeLaunch: resolved.providerBindingChangedBeforeLaunch,
+					preLaunchModelSubstitution: resolved.preLaunchModelSubstitution,
+					modelSubstitutionKind: resolved.modelSubstitutionKind,
+					...(resolved.overrideReason === undefined ? {} : { modelOverrideReason: resolved.overrideReason }),
+				});
 			},
 		}),
 	};
@@ -5457,6 +5686,19 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 				? record.parentSessionId
 				: defaults?.parentSessionId,
 		);
+		// Selection-phase pre-launch preferred-model substitution on
+		// task.providerQualifiedModelId (no dispatch/fallback/Guard authority;
+		// not managed fallback/reselection).
+		const requestedTaskModelId =
+			task !== undefined && typeof task.providerQualifiedModelId === "string"
+				? task.providerQualifiedModelId
+				: undefined;
+		const resolved =
+			requestedTaskModelId === undefined
+				? undefined
+				: resolveUsageAwareModelForServer(config.rootDir, requestedTaskModelId);
+		const effectiveTaskModelId =
+			resolved === undefined ? requestedTaskModelId : resolved.resolvedModelId;
 		const request: FlowDeskAutoContinueExecutionToolRequestV1 = {
 			...(typeof record.workflowId === "string" ? { workflowId: record.workflowId } : {}),
 			...(parentSessionId === undefined ? {} : { parentSessionId }),
@@ -5465,7 +5707,7 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 					...(typeof task.taskId === "string" ? { taskId: task.taskId } : {}),
 					...(typeof task.promptText === "string" ? { promptText: task.promptText } : {}),
 					...(typeof task.agentName === "string" ? { agentName: task.agentName } : {}),
-					...(typeof task.providerQualifiedModelId === "string" ? { providerQualifiedModelId: task.providerQualifiedModelId } : {}),
+					...(effectiveTaskModelId === undefined ? {} : { providerQualifiedModelId: effectiveTaskModelId }),
 					...(typeof task.outputContractRef === "string" ? { outputContractRef: task.outputContractRef } : {}),
 				},
 			}),
@@ -5474,8 +5716,30 @@ export function createFlowDeskAutoContinueExecutionOptInTools(
 			...(record.allowActualLaneLaunch === true ? { allowActualLaneLaunch: true } : {}),
 			...(record.allowAutoContinueExecution === true ? { allowAutoContinueExecution: true } : {}),
 		};
-		const result = await executeFlowDeskAutoContinueExecutionToolV1({ config, request, rawInput: input });
-		return JSON.stringify(result);
+		// Rewrite rawInput so downstream forbidden-authority checks see the
+		// resolved id rather than the original.
+		const rewrittenRawInput =
+			resolved === undefined || task === undefined
+				? input
+				: { ...record, task: { ...task, providerQualifiedModelId: resolved.resolvedModelId } };
+		const result = await executeFlowDeskAutoContinueExecutionToolV1({ config, request, rawInput: rewrittenRawInput });
+		const resultRecord = isRecord(result) ? result : {};
+		return JSON.stringify({
+			...resultRecord,
+			...(resolved === undefined
+				? {}
+				: {
+						requestedModel: requestedTaskModelId,
+						effectiveModel: resolved.resolvedModelId,
+						modelOverrideApplied: resolved.overrideApplied,
+						providerBindingChangedBeforeLaunch: resolved.providerBindingChangedBeforeLaunch,
+						preLaunchModelSubstitution: resolved.preLaunchModelSubstitution,
+						modelSubstitutionKind: resolved.modelSubstitutionKind,
+						...(resolved.overrideReason === undefined
+							? {}
+							: { modelOverrideReason: resolved.overrideReason }),
+					}),
+		});
 	};
 	return {
 		[flowdeskAutoContinueExecutionToolName]: tool({
@@ -5563,14 +5827,50 @@ export function createFlowDeskWorkflowDispatchOptInTools(
 				const parentSessionId = parentSessionIdWithCompletionWakeFallback(
 					typeof record.parentSessionId === "string" ? record.parentSessionId : undefined,
 				);
-				const rawInput = parentSessionId === undefined
-					? input
-					: { ...record, parentSessionId };
+				// Selection-phase pre-launch preferred-model substitution on
+				// task.providerQualifiedModelId (no dispatch/fallback/Guard authority;
+				// not managed fallback/reselection).
+				const taskRecord = isRecord(record.task) ? record.task : undefined;
+				const requestedTaskModelId =
+					taskRecord && typeof taskRecord.providerQualifiedModelId === "string"
+						? taskRecord.providerQualifiedModelId
+						: undefined;
+				const resolved =
+					requestedTaskModelId === undefined
+						? undefined
+						: resolveUsageAwareModelForServer(config.rootDir, requestedTaskModelId);
+				const rewrittenTask =
+					taskRecord !== undefined && resolved !== undefined
+						? { ...taskRecord, providerQualifiedModelId: resolved.resolvedModelId }
+						: taskRecord;
+				const merged: Record<string, unknown> = { ...record };
+				if (parentSessionId !== undefined) merged.parentSessionId = parentSessionId;
+				if (rewrittenTask !== undefined) merged.task = rewrittenTask;
+				const rawInput =
+					parentSessionId === undefined && rewrittenTask === taskRecord
+						? input
+						: merged;
 				const result = await executeFlowDeskWorkflowDispatchToolV1({
 					config,
 					rawInput,
 				});
-				return JSON.stringify(result);
+				const resultRecord = isRecord(result) ? result : {};
+				return JSON.stringify({
+					...resultRecord,
+					...(resolved === undefined
+						? {}
+						: {
+								requestedModel: requestedTaskModelId,
+								effectiveModel: resolved.resolvedModelId,
+								modelOverrideApplied: resolved.overrideApplied,
+								providerBindingChangedBeforeLaunch: resolved.providerBindingChangedBeforeLaunch,
+								preLaunchModelSubstitution: resolved.preLaunchModelSubstitution,
+								modelSubstitutionKind: resolved.modelSubstitutionKind,
+								...(resolved.overrideReason === undefined
+									? {}
+									: { modelOverrideReason: resolved.overrideReason }),
+							}),
+				});
 			},
 		}),
 	};
@@ -5617,7 +5917,7 @@ export function createFlowDeskControlledWriteApplyOptInTools(
 		}),
 		[flowdeskWriteToolName]: tool({
 			description:
-				"Compact dev/beta controlled workspace file replacement. Requires explicit write consent fields; preserves path/hash checks. No dispatch, provider, runtime, lane, fallback, hard-chat, or noReply authority.",
+				"Compact dev/beta controlled workspace file replacement. Requires explicit write consent fields; preserves path/hash checks. No dispatch, provider, runtime, lane, fallback, hard-chat, or SDK-scoped noReply control.",
 			args: {
 				workflowId: tool.schema.string().describe("Stable FlowDesk workflow id for durable ledger evidence."),
 				targetFilePath: tool.schema.string().describe("Workspace-relative target file path only. Absolute paths and traversal are rejected."),
@@ -5696,7 +5996,7 @@ export function createFlowDeskLaneHeartbeatWriterOptInTools(
 		}),
 		[flowdeskBeatToolName]: tool({
 			description:
-				"Record a diagnostic FlowDesk lane heartbeat as durable evidence. Does not grant dispatch, provider, runtime, lane-launch, fallback, write, hard-cancel, or noReply authority.",
+				"Record a diagnostic FlowDesk lane heartbeat as durable evidence. Does not grant dispatch, provider, runtime, lane-launch, fallback, write, hard-cancel, or SDK-scoped noReply control.",
 			args,
 			async execute(input) {
 				return executeFlowDeskLaneHeartbeatWriterToolV1(config, input);
@@ -6055,7 +6355,7 @@ export function createFlowDeskStatusLiveOptInTools(
 		}),
 		[flowdeskResultToolName]: tool({
 			description:
-				"Return full durable task_result text for one workflow task. Read-only evidence viewer; no provider, dispatch, runtime, lane, write, fallback, hard-chat, or noReply authority.",
+				"Return full durable task_result text for one workflow task. Read-only evidence viewer; no provider, dispatch, runtime, lane, write, fallback, hard-chat, or SDK-scoped noReply control.",
 			args: {
 				workflowId: tool.schema
 					.string()
@@ -6848,6 +7148,13 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const orchestrateConfig = orchestrateToolConfigFromOptions(input, options);
 	if (orchestrateConfig !== undefined)
 		Object.assign(tools, createFlowDeskOrchestrateOptInTools(orchestrateConfig));
+	// P7-S10 OI MCP Tools
+	const oiToolsConfig = operationalIntelligenceConfigFromOptions(options);
+	if (oiToolsConfig.exposeMcpTools) {
+		const oiRootDir = durableStateRootFromOptions(options);
+		if (oiRootDir !== undefined)
+			Object.assign(tools, createFlowDeskOIOptInTools({ rootDir: oiRootDir, oiConfig: oiToolsConfig }));
+	}
 	const uiProbeEnabled = isFlowDeskUiProbeEnabled(options);
 	const uiProbeEventObservations: FlowDeskUiProbeEventObservationV1[] = [];
 	if (uiProbeEnabled) Object.assign(tools, createFlowDeskUiProbeTools(uiProbeEventObservations));
@@ -6860,6 +7167,26 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	const completionWakeMainSessionConfigFor = (ctx?: unknown) =>
 		completionWakeMainSessionConfigFromOptions(options, ctx);
 	completionWakeMainSessionConfigFor(input);
+	const consumeCompletionWakeForMainSessionBestEffort = async (ctx?: unknown): Promise<void> => {
+		const currentCompletionWakeMainSessionConfig = completionWakeMainSessionConfigFor(ctx);
+		if (WAKE_DIAG_ENABLED) {
+			try {
+				const fs = require("node:fs") as typeof import("node:fs");
+				fs.appendFileSync(wakeDiagnosticLogPath("wake-cond-diag.log"),
+					`${new Date().toISOString()} finalizationRelevant config=${currentCompletionWakeMainSessionConfig !== undefined} client=${eventMonitorClient !== undefined} parentRef=${currentCompletionWakeMainSessionConfig?.parentSessionRef ?? "NONE"}\n`, "utf8");
+			} catch { /* best-effort */ }
+		}
+		if (currentCompletionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
+			try {
+				await consumeFlowDeskCompletionWakeForMainSessionV1({
+					config: currentCompletionWakeMainSessionConfig,
+					client: eventMonitorClient,
+				});
+			} catch {
+				// best-effort; advisory wake must not crash the plugin
+			}
+		}
+	};
 	const chatStallAlertRaw = (options as Record<string, unknown> | undefined)?.[flowdeskChatMessageStallAlertOption];
 	const guardedAutoAbortForWatchdog = isRecord(chatStallAlertRaw) && isRecord(chatStallAlertRaw.guardedAutoAbort)
 		? (() => {
@@ -6889,19 +7216,21 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		const capturedRootDir = durableStateRoot;
 		const capturedConfig = guardedAutoAbortForWatchdog;
 
-		const runWatchdogCycle = () => {
+		const runWatchdogCycle = (consumeCompletionWakeAfterCapture = false) => {
 			runFlowDeskWatchdogCycleV1({
 				config: capturedConfig,
 				rootDir: capturedRootDir,
 				client: capturedClient,
 				parentSessionId: capturedParentSessionId,
 				now: new Date(),
+			}).then(async () => {
+				if (consumeCompletionWakeAfterCapture) await consumeCompletionWakeForMainSessionBestEffort(input);
 			}).catch(() => {
 				// errors are swallowed — watchdog must not crash the plugin
 			});
-			// Wake prompt injection is NOT triggered from the watchdog interval.
-			// It must only fire from the 4 event-driven routes: session.idle (done),
-			// session.error (failed), tool error (timeout), permission.asked (permission).
+			// Wake prompt injection is NOT triggered from the watchdog interval. Event-driven
+			// pokes opt into post-capture wake consumption after the watchdog has had a
+			// chance to persist task_result/task_failed rows and refresh wake-ready caches.
 		};
 
 		const watchdogInterval = setInterval(runWatchdogCycle, watchdogConfig.intervalMs ?? 30_000);
@@ -6916,7 +7245,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			if (pokeTimer !== undefined) return;
 			pokeTimer = setTimeout(() => {
 				pokeTimer = undefined;
-				runWatchdogCycle();
+				runWatchdogCycle(true);
 			}, pokeDebounceMs);
 			pokeTimer.unref?.();
 		};
@@ -6940,6 +7269,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 						parentSessionId: psi,
 						now: new Date(),
 					});
+					await consumeCompletionWakeForMainSessionBestEffort(input);
 					return JSON.stringify({
 						cycleAt: result.cycleAt,
 						guardValid: result.guardValid,
@@ -6969,6 +7299,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					parentSessionId: psi,
 					now: new Date(),
 				});
+				await consumeCompletionWakeForMainSessionBestEffort(input);
 				return JSON.stringify({
 					cycleAt: result.cycleAt,
 					guardValid: result.guardValid,
@@ -7023,6 +7354,13 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 										abortThresholdMs: 10 * 60_000,
 										absoluteLaneAgeMs: 60 * 60_000,
 									});
+									if (
+										monResult.lanesCompleted > 0 ||
+										monResult.lanesAborted > 0 ||
+										observed.eventType === "session.error"
+									) {
+										await consumeCompletionWakeForMainSessionBestEffort(input);
+									}
 									if (monResult.lanesAwaitingCapture > 0 && retriesLeft > 0) {
 										const retryTimer = setTimeout(
 											() => runMonitorWithBodyCaptureRetry(retriesLeft - 1),
@@ -7035,29 +7373,6 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 								}
 							};
 							await runMonitorWithBodyCaptureRetry(3);
-						}
-						// CRITICAL FIX: The wake consumer MUST run on every finalization-relevant
-						// event, regardless of whether the watchdog was poked or a direct monitor
-						// pass ran. Previously this was trapped inside the `else if` branch, so when
-						// the watchdog was enabled (pokeWatchdogCycle defined), the wake prompt was
-						// NEVER dispatched. Moving it here ensures the notification fires in both modes.
-						const currentCompletionWakeMainSessionConfig = completionWakeMainSessionConfigFor(input);
-						if (WAKE_DIAG_ENABLED) {
-							try {
-								const fs = require("node:fs") as typeof import("node:fs");
-								fs.appendFileSync(wakeDiagnosticLogPath("wake-cond-diag.log"),
-									`${new Date().toISOString()} finalizationRelevant config=${currentCompletionWakeMainSessionConfig !== undefined} client=${eventMonitorClient !== undefined} parentRef=${currentCompletionWakeMainSessionConfig?.parentSessionRef ?? "NONE"}\n`, "utf8");
-							} catch { /* best-effort */ }
-						}
-						if (currentCompletionWakeMainSessionConfig !== undefined && eventMonitorClient !== undefined) {
-							try {
-								await consumeFlowDeskCompletionWakeForMainSessionV1({
-									config: currentCompletionWakeMainSessionConfig,
-									client: eventMonitorClient,
-								});
-							} catch {
-								// best-effort; advisory wake must not crash the plugin
-							}
 						}
 					}
 					const permissionCompletionWakeMainSessionConfig = completionWakeMainSessionConfigFor(input);

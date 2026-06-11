@@ -34,7 +34,7 @@ import {
 	FlowDeskTimeoutError,
 	withTimeout,
 } from "./shared/with-timeout.js";
-import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1 } from "./agent-task-runner.js";
+import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1, buildFlowDeskCaptureSafetyMetadataV1 } from "./agent-task-runner.js";
 import { flowDeskAgentTaskMessageItems, observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 
@@ -1710,13 +1710,13 @@ async function pollChildSessionOutput(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean } | null> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; finalBodyObserved: boolean; terminalMarkerObserved: boolean } | null> {
 	try {
 		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.terminalObserved && observed.latestText !== undefined && observed.latestText.trim().length > 0)
-			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError };
+			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: true };
 		return null;
 	} catch {
 		return null;
@@ -1727,13 +1727,13 @@ async function pollChildSessionCandidate(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean } | null> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; finalBodyObserved: boolean; terminalMarkerObserved: boolean } | null> {
 	try {
 		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.latestText !== undefined && observed.latestText.trim().length > 0)
-			return { text: observed.latestText, completionStatus: observed.terminalObserved ? "final" : "partial", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError };
+			return { text: observed.latestText, completionStatus: observed.terminalObserved ? "final" : "partial", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: observed.terminalObserved };
 		return null;
 	} catch {
 		return null;
@@ -1760,7 +1760,7 @@ async function pollChildSessionIdleConfirmedOutput(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<{ text: string | undefined; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; hasRunningTool: boolean } | null> {
+): Promise<{ text: string | undefined; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; hasRunningTool: boolean; terminalMarkerObserved: boolean } | null> {
 	try {
 		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
@@ -1771,6 +1771,7 @@ async function pollChildSessionIdleConfirmedOutput(
 			usableForSynthesis: observed.usableForSynthesis,
 			looksLikeRefusalOrError: observed.looksLikeRefusalOrError,
 			hasRunningTool: observed.hasRunningTool,
+			terminalMarkerObserved: observed.terminalObserved,
 		};
 	} catch {
 		return null;
@@ -3010,6 +3011,14 @@ export async function monitorChildSessionsV1(input: {
 				const token = randomBytes(4).toString("hex");
 				const completedAt = new Date(nowMs).toISOString();
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+					text: sanitizedResult.text,
+					completionStatus: "final",
+					outputKind: idleObservation.outputKind,
+					finalizationReason: "terminal_marker",
+					finalBodyObserved: true,
+					terminalMarkerObserved: idleObservation.terminalMarkerObserved || expectedTurnCompleted !== undefined,
+				});
 				const taskResultEvidenceId = `task-result-${taskId}-watchdog-turncompleted-${token}`;
 				const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
 					schema_version: "flowdesk.task_result.v1",
@@ -3024,7 +3033,7 @@ export async function monitorChildSessionsV1(input: {
 					result_text_sha256: createHash("sha256").update(idleObservation.text).digest("hex"),
 					completion_status: "final",
 					output_kind: idleObservation.outputKind,
-					usable_for_synthesis: idleObservation.usableForSynthesis,
+					usable_for_synthesis: captureSafetyMetadata.safe_for_auto_synthesis,
 					missing_contract: false,
 					// turn-completed is an authoritative turn-end observation; reuse the
 					// existing valid finalization_reason enum value (no schema change in
@@ -3032,6 +3041,7 @@ export async function monitorChildSessionsV1(input: {
 					// event provenance for diagnostics.
 					finalization_reason: "terminal_marker",
 					looks_like_refusal_or_error: idleObservation.looksLikeRefusalOrError,
+					...captureSafetyMetadata,
 					created_at: completedAt,
 					dispatch_authority_enabled: false,
 				});
@@ -3089,6 +3099,11 @@ export async function monitorChildSessionsV1(input: {
 				if (finalizingWaitExpired) {
 					if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 						const token = randomBytes(4).toString("hex");
+						const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+							outputKind: "empty",
+							finalBodyObserved: false,
+							terminalMarkerObserved: true,
+						});
 						writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-finalizing-absolute-${token}`, {
 							schema_version: "flowdesk.task_failed.v1",
 							workflow_id: input.workflowId,
@@ -3098,6 +3113,7 @@ export async function monitorChildSessionsV1(input: {
 							provider_qualified_model_id: modelId,
 							failure_category: "no_response",
 							redacted_reason: `turn completed but no body captured before finalizing absolute max ${finalizingAbsoluteMaxMs}ms (turn_completed_empty)`,
+							...noOutputCaptureMetadata,
 							created_at: nowIso,
 							dispatch_authority_enabled: false,
 						});
@@ -3210,6 +3226,11 @@ export async function monitorChildSessionsV1(input: {
 						capture_failure_terminalized_at: nowIso,
 					}, captureDiagnostic, "turn_completed_empty_terminalized"));
 					const token = randomBytes(4).toString("hex");
+					const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+						outputKind: "empty",
+						finalBodyObserved: false,
+						terminalMarkerObserved: true,
+					});
 					writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-turncompleted-empty-${token}`, {
 						schema_version: "flowdesk.task_failed.v1",
 						workflow_id: input.workflowId,
@@ -3219,6 +3240,7 @@ export async function monitorChildSessionsV1(input: {
 						provider_qualified_model_id: modelId,
 						failure_category: "no_response",
 						redacted_reason: `turn completed but no body captured after ${bodyRetryMax} bounded retries (turn_completed_empty)`,
+						...noOutputCaptureMetadata,
 						created_at: nowIso,
 						dispatch_authority_enabled: false,
 					});
@@ -3258,6 +3280,14 @@ export async function monitorChildSessionsV1(input: {
 			const completedAt = new Date(nowMs).toISOString();
 			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultObservation.text);
 			const finalText = sanitizedResult.text;
+			const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+				text: finalText,
+				completionStatus: resultObservation.completionStatus,
+				outputKind: resultObservation.outputKind,
+				finalizationReason: "terminal_marker",
+				finalBodyObserved: resultObservation.finalBodyObserved,
+				terminalMarkerObserved: resultObservation.terminalMarkerObserved,
+			});
 
 			const taskResultEvidenceId = `task-result-${taskId}-watchdog-${token}`;
 			const taskResultWritten = input._forceTaskResultWriteFailureForTest === true
@@ -3275,10 +3305,11 @@ export async function monitorChildSessionsV1(input: {
 				result_text_sha256: createHash("sha256").update(resultObservation.text).digest("hex"),
 				completion_status: resultObservation.completionStatus,
 				output_kind: resultObservation.outputKind,
-				usable_for_synthesis: resultObservation.usableForSynthesis,
+				usable_for_synthesis: captureSafetyMetadata.safe_for_auto_synthesis,
 				missing_contract: false,
 				finalization_reason: "terminal_marker",
 				looks_like_refusal_or_error: resultObservation.looksLikeRefusalOrError,
+				...captureSafetyMetadata,
 				created_at: completedAt,
 				dispatch_authority_enabled: false,
 			});
@@ -3297,6 +3328,7 @@ export async function monitorChildSessionsV1(input: {
 					provider_qualified_model_id: modelId,
 					failure_category: "unknown",
 					redacted_reason: "watchdog could not persist task_result evidence",
+					...captureSafetyMetadata,
 					created_at: completedAt,
 					dispatch_authority_enabled: false,
 				});
@@ -3415,6 +3447,14 @@ export async function monitorChildSessionsV1(input: {
 				const token = randomBytes(4).toString("hex");
 				const completedAt = new Date(nowMs).toISOString();
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+					text: sanitizedResult.text,
+					completionStatus: "final",
+					outputKind: idleObservation.outputKind,
+					finalizationReason: "stable_idle",
+					finalBodyObserved: true,
+					terminalMarkerObserved: idleObservation.terminalMarkerObserved,
+				});
 				const taskResultEvidenceId = `task-result-${taskId}-watchdog-idle-${token}`;
 				const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
 					schema_version: "flowdesk.task_result.v1",
@@ -3429,10 +3469,11 @@ export async function monitorChildSessionsV1(input: {
 					result_text_sha256: createHash("sha256").update(idleObservation.text).digest("hex"),
 					completion_status: "final",
 					output_kind: idleObservation.outputKind,
-					usable_for_synthesis: idleObservation.usableForSynthesis,
+					usable_for_synthesis: captureSafetyMetadata.safe_for_auto_synthesis,
 					missing_contract: false,
 					finalization_reason: "stable_idle",
 					looks_like_refusal_or_error: idleObservation.looksLikeRefusalOrError,
+					...captureSafetyMetadata,
 					created_at: completedAt,
 					dispatch_authority_enabled: false,
 				});
@@ -3595,6 +3636,14 @@ export async function monitorChildSessionsV1(input: {
 			const partialObservation = await pollChildSessionCandidate(input.client, childSessionId);
 			if (partialObservation !== null && partialObservation.text.trim().length > 0) {
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(partialObservation.text);
+				const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+					text: sanitizedResult.text,
+					completionStatus: "partial",
+					outputKind: partialObservation.outputKind,
+					finalizationReason: "timeout_partial",
+					finalBodyObserved: partialObservation.finalBodyObserved,
+					terminalMarkerObserved: partialObservation.terminalMarkerObserved,
+				});
 				const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, `task-result-${taskId}-watchdog-partial-${token}`, {
 					schema_version: "flowdesk.task_result.v1",
 					workflow_id: input.workflowId,
@@ -3608,12 +3657,13 @@ export async function monitorChildSessionsV1(input: {
 					result_text_sha256: createHash("sha256").update(partialObservation.text).digest("hex"),
 					completion_status: "partial",
 					output_kind: partialObservation.outputKind,
-					usable_for_synthesis: partialObservation.usableForSynthesis,
+					usable_for_synthesis: captureSafetyMetadata.safe_for_auto_synthesis,
 					// Captured partial text is still a usable result, not a contract
 					// failure. The coordinator judges substance from the advisory fields.
 					missing_contract: false,
 					finalization_reason: "timeout_partial",
 					looks_like_refusal_or_error: partialObservation.looksLikeRefusalOrError,
+					...captureSafetyMetadata,
 					created_at: abortedAt,
 					dispatch_authority_enabled: false,
 				});
@@ -3666,6 +3716,11 @@ export async function monitorChildSessionsV1(input: {
 					: idleContinuationsUsed > 0
 						? `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no final answer following ${idleContinuationsUsed} idle continuation attempt(s)`
 						: `watchdog aborted child session after ${Math.round(totalAgeMs / 1000)}s with no response`;
+			const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+				outputKind: "empty",
+				finalBodyObserved: false,
+				terminalMarkerObserved: false,
+			});
 			writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-abort-${token}`, {
 				schema_version: "flowdesk.task_failed.v1",
 				workflow_id: input.workflowId,
@@ -3675,6 +3730,7 @@ export async function monitorChildSessionsV1(input: {
 				provider_qualified_model_id: modelId,
 				failure_category: failureCategory,
 				redacted_reason: abortReason,
+				...noOutputCaptureMetadata,
 				created_at: abortedAt,
 				dispatch_authority_enabled: false,
 			});

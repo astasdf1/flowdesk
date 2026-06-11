@@ -1,0 +1,114 @@
+# FlowDesk Pages Summary
+#
+# Purpose: Generates and deploys a static HTML summary of the FlowDesk score
+# ledger rollup to GitHub Pages.
+#
+# Security notes:
+#   - persist-credentials: false — prevents the Actions token from being stored
+#     on disk after checkout; reduces blast-radius of a compromised subsequent
+#     step that reads $GITHUB_WORKSPACE.
+#   - npm ci --ignore-scripts — prevents arbitrary lifecycle scripts
+#     (postinstall, prepare, etc.) from executing during dependency
+#     installation, which defends against supply-chain attacks.
+#   - Least-privilege permissions block — only contents:write, pages:write,
+#     and id-token:write are granted; these are the minimum permissions
+#     required for GitHub Pages deployment via actions/deploy-pages.
+#   - workflow_dispatch only — there is no push/PR trigger to prevent
+#     accidental publication on every commit; all deploys are explicit.
+#   - Advisory only — the generated page is advisory_only: true with no
+#     dispatch, ranking, or provider-call authority.
+
+name: FlowDesk Pages Summary
+
+on:
+  workflow_dispatch: {}
+
+# Least-privilege: grant only what is needed for GitHub Pages deployment.
+# - contents: write  — required for GitHub Pages branch/artifact commits.
+# - pages: write     — required by actions/deploy-pages to upload artifacts.
+# - id-token: write  — required by actions/deploy-pages for OIDC token
+#                      used to authenticate the Pages deployment.
+# No other permissions are granted; all others default to none.
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Configure the GitHub Pages environment so the deployment shows in the
+    # repository's Deployments tab.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # persist-credentials: false prevents the GITHUB_TOKEN from being
+          # written to the Git credential store after checkout, reducing the
+          # window during which a compromised subsequent step could extract it.
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # --ignore-scripts: prevents arbitrary postinstall/prepare scripts
+        # from running, which defends against supply-chain attacks in
+        # transitive dependencies.
+        run: npm ci --ignore-scripts
+
+      - name: Generate summary page
+        # Placeholder: when the rollup-static-export module is built and a
+        # durable rollup result is available in .flowdesk/, replace the body
+        # of this step with:
+        #
+        #   node -e "
+        #     import { generateRollupStaticPageV1 } from
+        #       './packages/opencode-plugin/dist/rollup-static-export.js';
+        #     import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+        #     const rollup = JSON.parse(readFileSync('.flowdesk/oi/rollup.json', 'utf8'));
+        #     const result = generateRollupStaticPageV1({ rollup });
+        #     mkdirSync('./dist/pages', { recursive: true });
+        #     writeFileSync('./dist/pages/index.html', result.html, 'utf8');
+        #     console.log('Page generated. advisory_only:', result.advisory_only);
+        #     console.log('dispatch_authority_enabled:', result.dispatch_authority_enabled);
+        #   "
+        #
+        # This placeholder creates a minimal advisory-only index.html that
+        # satisfies the upload-pages-artifact step without requiring a live
+        # rollup file. The advisory_only and dispatch_authority_enabled flags
+        # are embedded as HTML comments.
+        run: |
+          node -e "/* rollup static export placeholder */
+            const { mkdirSync, writeFileSync } = require('node:fs');
+            mkdirSync('./dist/pages', { recursive: true });
+            const html = [
+              '<!DOCTYPE html>',
+              '<html lang=\"en\"><head><meta charset=\"UTF-8\">',
+              '<title>FlowDesk Score Ledger Summary</title></head>',
+              '<body>',
+              '<!-- advisory_only: true | dispatch_authority_enabled: false -->',
+              '<h1>FlowDesk Score Ledger Summary</h1>',
+              '<p>No rollup data available yet. Run the score ledger workflow first.</p>',
+              '</body></html>'
+            ].join('\n');
+            writeFileSync('./dist/pages/index.html', html, 'utf8');
+            console.log('Placeholder page written to dist/pages/index.html');
+          "
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist/pages
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

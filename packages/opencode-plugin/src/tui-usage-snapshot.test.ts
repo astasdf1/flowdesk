@@ -126,6 +126,29 @@ test("TUI usage snapshot view renders connected provider rows from durable snaps
 	}
 });
 
+test("TUI usage snapshot view can skip durable evidence fallback for chat hook", () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-usage-sidebar-only-"));
+	try {
+		const workflowId = "workflow-provider-usage-live";
+		writeSnapshot(root, workflowId, "claude", "20260527T010000000Z", {
+			reset_bucket: "94% claude-5h",
+		});
+
+		const view = loadFlowDeskTuiUsageSnapshotViewV1({
+			rootDir: root,
+			workflowId,
+			now: () => new Date("2026-05-27T01:10:00.000Z"),
+			sidebarCacheOnly: true,
+		});
+
+		assert.equal(view.status, "missing");
+		assert.match(view.redactedReason ?? "", /skipped evidence fallback in chat hook/);
+		assert.equal(view.providers.find((provider) => provider.providerFamily === "claude")?.connected, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("TUI usage snapshot view reads remaining_percent from durable snapshots", () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-tui-usage-remaining-percent-"));
 	try {

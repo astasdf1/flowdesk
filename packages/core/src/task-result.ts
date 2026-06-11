@@ -32,6 +32,15 @@ export interface FlowDeskTaskResultV1 {
 	 * but capture never drops the result because of it.
 	 */
 	looks_like_refusal_or_error?: boolean;
+	/** Additive capture-safety metadata. Advisory only; conservative synthesis gate. */
+	capture_status?: "captured" | "uncertain" | "no_output";
+	capture_confidence?: "high" | "medium" | "low" | "none";
+	observed_text_kind?: "final_answer" | "partial_findings" | "process_notes" | "tool_trace_only" | "empty";
+	final_body_observed?: boolean;
+	terminal_marker_observed?: boolean;
+	requires_coordinator_review?: boolean;
+	safe_for_auto_synthesis?: boolean;
+	display_as_uncertain_result?: boolean;
 	created_at: string;
 	dispatch_authority_enabled: false;
 }
@@ -54,6 +63,15 @@ export interface FlowDeskTaskFailedV1 {
 		| "unknown";
 	redacted_reason: string;
 	redacted_error_details?: string;
+	/** Additive capture-safety metadata for capture-path failures. Advisory only. */
+	capture_status?: "captured" | "uncertain" | "no_output";
+	capture_confidence?: "high" | "medium" | "low" | "none";
+	observed_text_kind?: "final_answer" | "partial_findings" | "process_notes" | "tool_trace_only" | "empty";
+	final_body_observed?: boolean;
+	terminal_marker_observed?: boolean;
+	requires_coordinator_review?: boolean;
+	safe_for_auto_synthesis?: boolean;
+	display_as_uncertain_result?: boolean;
 	created_at: string;
 	dispatch_authority_enabled: false;
 }
@@ -177,6 +195,8 @@ const VALID_AGENT_TASK_INCONSISTENCY_ACTIONS = new Set([
 ]);
 const VALID_TASK_RESULT_COMPLETION_STATUS = new Set(["final", "partial"]);
 const VALID_TASK_RESULT_OUTPUT_KIND = new Set(["final_answer", "partial_findings", "process_notes", "tool_trace_only", "empty"]);
+const VALID_TASK_CAPTURE_STATUS = new Set(["captured", "uncertain", "no_output"]);
+const VALID_TASK_CAPTURE_CONFIDENCE = new Set(["high", "medium", "low", "none"]);
 const VALID_TASK_RESULT_FINALIZATION_REASON = new Set([
 	"terminal_marker",
 	"finish_reason",
@@ -268,6 +288,14 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 		"missing_contract",
 		"finalization_reason",
 		"looks_like_refusal_or_error",
+		"capture_status",
+		"capture_confidence",
+		"observed_text_kind",
+		"final_body_observed",
+		"terminal_marker_observed",
+		"requires_coordinator_review",
+		"safe_for_auto_synthesis",
+		"display_as_uncertain_result",
 		"created_at",
 		"dispatch_authority_enabled",
 	]);
@@ -298,6 +326,21 @@ export function validateFlowDeskTaskResultV1(value: unknown): ValidationResult {
 		errors.push("finalization_reason is invalid");
 	if (record.looks_like_refusal_or_error !== undefined && typeof record.looks_like_refusal_or_error !== "boolean")
 		errors.push("looks_like_refusal_or_error must be a boolean");
+	if (record.capture_status !== undefined && !VALID_TASK_CAPTURE_STATUS.has(record.capture_status))
+		errors.push("capture_status is invalid");
+	if (record.capture_confidence !== undefined && !VALID_TASK_CAPTURE_CONFIDENCE.has(record.capture_confidence))
+		errors.push("capture_confidence is invalid");
+	if (record.observed_text_kind !== undefined && !VALID_TASK_RESULT_OUTPUT_KIND.has(record.observed_text_kind))
+		errors.push("observed_text_kind is invalid");
+	for (const [key, value] of Object.entries({
+		final_body_observed: record.final_body_observed,
+		terminal_marker_observed: record.terminal_marker_observed,
+		requires_coordinator_review: record.requires_coordinator_review,
+		safe_for_auto_synthesis: record.safe_for_auto_synthesis,
+		display_as_uncertain_result: record.display_as_uncertain_result,
+	})) {
+		if (value !== undefined && typeof value !== "boolean") errors.push(`${key} must be a boolean`);
+	}
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("task result cannot enable dispatch authority");
@@ -317,12 +360,20 @@ export function validateFlowDeskTaskFailedV1(value: unknown): ValidationResult {
 		"task_id",
 		"agent_ref",
 		"provider_qualified_model_id",
-			"failure_category",
-			"redacted_reason",
-			"redacted_error_details",
-			"created_at",
-			"dispatch_authority_enabled",
-		]);
+		"failure_category",
+		"redacted_reason",
+		"redacted_error_details",
+		"capture_status",
+		"capture_confidence",
+		"observed_text_kind",
+		"final_body_observed",
+		"terminal_marker_observed",
+		"requires_coordinator_review",
+		"safe_for_auto_synthesis",
+		"display_as_uncertain_result",
+		"created_at",
+		"dispatch_authority_enabled",
+	]);
 	for (const key of Object.keys(record)) if (!allowed.has(key)) errors.push(`unknown property: ${key}`);
 	errors.push(...exactString(record.schema_version, "flowdesk.task_failed.v1", "schema_version").errors);
 	errors.push(...validateOpaqueId(record.workflow_id, "workflow_id").errors);
@@ -335,6 +386,21 @@ export function validateFlowDeskTaskFailedV1(value: unknown): ValidationResult {
 	errors.push(...nonEmptyString(record.redacted_reason, "redacted_reason").errors);
 	if (record.redacted_error_details !== undefined)
 		errors.push(...nonEmptyString(record.redacted_error_details, "redacted_error_details").errors);
+	if (record.capture_status !== undefined && !VALID_TASK_CAPTURE_STATUS.has(record.capture_status))
+		errors.push("capture_status is invalid");
+	if (record.capture_confidence !== undefined && !VALID_TASK_CAPTURE_CONFIDENCE.has(record.capture_confidence))
+		errors.push("capture_confidence is invalid");
+	if (record.observed_text_kind !== undefined && !VALID_TASK_RESULT_OUTPUT_KIND.has(record.observed_text_kind))
+		errors.push("observed_text_kind is invalid");
+	for (const [key, value] of Object.entries({
+		final_body_observed: record.final_body_observed,
+		terminal_marker_observed: record.terminal_marker_observed,
+		requires_coordinator_review: record.requires_coordinator_review,
+		safe_for_auto_synthesis: record.safe_for_auto_synthesis,
+		display_as_uncertain_result: record.display_as_uncertain_result,
+	})) {
+		if (value !== undefined && typeof value !== "boolean") errors.push(`${key} must be a boolean`);
+	}
 	errors.push(...timestamp(record.created_at, "created_at").errors);
 	if (record.dispatch_authority_enabled !== false)
 		errors.push("task failed record cannot enable dispatch authority");

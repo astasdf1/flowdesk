@@ -7,7 +7,9 @@ import {
 	type FlowDeskTaskResultV1,
 	type FlowDeskTaskFailedV1,
 	type FlowDeskRuntimeLaneLaunchPlanV1,
+	type FlowDeskSessionAbortDecisionV1,
 	type FlowDeskTopTierReviewVerdictV1,
+	type FlowDeskUsageAwareModelOverrideEvidenceV1,
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	reloadFlowDeskSessionEvidenceV1,
@@ -15,10 +17,11 @@ import {
 } from "@flowdesk/core";
 import {
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	abortFlowDeskSessionWithDecisionV1,
 	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
 	materializeFlowDeskRuntimeLaneLaunchLifecycleEvidenceV1,
 } from "./managed-dispatch-adapter.js";
-import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
+import { observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1, type FlowDeskAgentTaskOutputKindV1 } from "./agent-task-output.js";
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 import { createOISessionAccumulator, type FlowDeskOISessionAccumulatorV1 } from "./oi-session-accumulator.js";
@@ -79,6 +82,23 @@ export interface FlowDeskAgentTaskInputV1 {
 	 * When absent, a fresh accumulator is created internally.
 	 */
 	_oiAccumulator?: FlowDeskOISessionAccumulatorV1;
+	/**
+	 * Optional — populated by the server handler (or other upstream caller)
+	 * when usage-aware model resolution applied a pre-launch preferred-model
+	 * substitution because the requested provider family was exhausted,
+	 * critical, non_dispatchable, or stale per cached usage snapshots.
+	 *
+	 * When present and `originalModelId` differs from `providerQualifiedModelId`,
+	 * `executeFlowDeskAgentTaskV1` writes a durable
+	 * `flowdesk.usage_aware_model_override.v1` evidence record. Selection-phase
+	 * evidence only — not managed fallback/reselection and does not carry
+	 * fallback, dispatch, or runtime authority.
+	 */
+	usageAwareOverride?: {
+		originalModelId: string;
+		overrideReason: "exhausted" | "critical" | "non_dispatchable" | "stale";
+		allowCrossFamily: boolean;
+	};
 }
 
 export type FlowDeskAgentTaskResultV1 =
@@ -98,11 +118,73 @@ export const AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION = "flowdesk.agent_task_chil
 type FlowDeskAgentTaskCaptureResultV1 = {
 	text: string;
 	completionStatus: FlowDeskAgentTaskCompletionStatusV1;
-	outputKind: string;
+	outputKind: FlowDeskAgentTaskOutputKindV1;
 	usableForSynthesis: boolean;
 	finalizationReason: "terminal_marker" | "stable_idle" | "nudge_exhausted_partial";
 	looksLikeRefusalOrError: boolean;
+	finalBodyObserved: boolean;
+	terminalMarkerObserved: boolean;
 };
+
+export type FlowDeskCaptureSafetyMetadataV1 = {
+	capture_status: "captured" | "uncertain" | "no_output";
+	capture_confidence: "high" | "medium" | "low" | "none";
+	observed_text_kind: FlowDeskAgentTaskOutputKindV1;
+	final_body_observed: boolean;
+	terminal_marker_observed: boolean;
+	requires_coordinator_review: boolean;
+	safe_for_auto_synthesis: boolean;
+	display_as_uncertain_result: boolean;
+};
+
+export function buildFlowDeskCaptureSafetyMetadataV1(input: {
+	text?: string;
+	completionStatus?: FlowDeskAgentTaskCompletionStatusV1;
+	outputKind?: string;
+	finalizationReason?: string;
+	finalBodyObserved?: boolean;
+	terminalMarkerObserved?: boolean;
+}): FlowDeskCaptureSafetyMetadataV1 {
+	const textPresent = typeof input.text === "string" && input.text.trim().length > 0;
+	const outputKind = (["final_answer", "partial_findings", "process_notes", "tool_trace_only", "empty"] as const)
+		.includes(input.outputKind as FlowDeskAgentTaskOutputKindV1)
+		? input.outputKind as FlowDeskAgentTaskOutputKindV1
+		: textPresent ? "partial_findings" : "empty";
+	const finalBodyObserved = input.finalBodyObserved ?? textPresent;
+	const terminalMarkerObserved = input.terminalMarkerObserved ?? (input.finalizationReason === "terminal_marker" || input.finalizationReason === "finish_reason");
+	// Enforcement invariant: process_notes (and tool_trace_only/empty) MUST NEVER be
+	// safe for auto-synthesis, regardless of completionStatus, finalBodyObserved, or
+	// terminalMarkerObserved. Only "final_answer" is synthesis-eligible. This guard
+	// is the single authoritative enforcement point for the task_result evidence path.
+	const synthesisEligibleKind = outputKind === "final_answer";
+	const safeForAutoSynthesis = synthesisEligibleKind &&
+		textPresent &&
+		finalBodyObserved &&
+		terminalMarkerObserved &&
+		input.completionStatus !== "partial";
+	if (!textPresent) {
+		return {
+			capture_status: "no_output",
+			capture_confidence: "none",
+			observed_text_kind: "empty",
+			final_body_observed: false,
+			terminal_marker_observed: terminalMarkerObserved,
+			requires_coordinator_review: false,
+			safe_for_auto_synthesis: false,
+			display_as_uncertain_result: false,
+		};
+	}
+	return {
+		capture_status: safeForAutoSynthesis ? "captured" : "uncertain",
+		capture_confidence: safeForAutoSynthesis ? "high" : "low",
+		observed_text_kind: outputKind,
+		final_body_observed: finalBodyObserved,
+		terminal_marker_observed: terminalMarkerObserved,
+		requires_coordinator_review: !safeForAutoSynthesis,
+		safe_for_auto_synthesis: safeForAutoSynthesis,
+		display_as_uncertain_result: !safeForAutoSynthesis,
+	};
+}
 
 /** Stable-idle finalization thresholds for non-terminal captured text. */
 const STABLE_IDLE_MIN_CYCLES = 3;
@@ -391,7 +473,10 @@ async function extractAssistantTextFromResponse(
 				}
 			}
 			if (observed?.terminalObserved === true && observed.latestText !== undefined && observed.latestText.trim().length > 0) {
-				return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, finalizationReason: "terminal_marker", looksLikeRefusalOrError: observed.looksLikeRefusalOrError };
+				return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, finalizationReason: "terminal_marker", looksLikeRefusalOrError: observed.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: true };
+			}
+			if (observed?.terminalObserved === true && latestCandidate?.latestText !== undefined && latestCandidate.latestText.trim().length > 0) {
+				return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: false, finalizationReason: "terminal_marker", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError, finalBodyObserved: false, terminalMarkerObserved: true };
 			}
 			// Stable-idle: non-terminal text that has been unchanged across several
 			// poll cycles and a minimum interval is treated as captured (not a
@@ -404,7 +489,7 @@ async function extractAssistantTextFromResponse(
 				stableCount >= STABLE_IDLE_MIN_CYCLES &&
 				nowMs - firstStableMs >= STABLE_IDLE_MIN_MS
 			) {
-				return { text: latestCandidate.latestText, completionStatus: "final", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "stable_idle", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError };
+				return { text: latestCandidate.latestText, completionStatus: "final", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "stable_idle", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: false };
 			}
 
 			const silenceMs = nowMs - lastActivityMs;
@@ -451,7 +536,7 @@ async function extractAssistantTextFromResponse(
 			} else {
 				// Exhausted all nudges. Preserve usable candidate text as partial output.
 				if (latestCandidate?.latestText !== undefined && latestCandidate.latestText.trim().length > 0) {
-					return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "nudge_exhausted_partial", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError };
+					return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "nudge_exhausted_partial", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: false };
 				}
 				return undefined;
 			}
@@ -559,6 +644,51 @@ function writeRuntimeLaunchModelSelectionEvidence(input: {
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,
 		evidenceId: `model-selection-fallback-${input.taskId}-${input.token}`,
+		record: record as unknown as Record<string, unknown>,
+	});
+}
+
+/**
+ * Persist a durable evidence record for a usage-aware pre-launch
+ * preferred-model substitution that was applied earlier (e.g. by the server
+ * handler) before the runtime launch plan was constructed. Selection-phase
+ * evidence only — not managed fallback/reselection and does not carry
+ * fallback, dispatch, or runtime authority.
+ */
+export function writeUsageAwareModelOverrideEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	token: string;
+	originalModelId: string;
+	resolvedModelId: string;
+	overrideReason: "exhausted" | "critical" | "non_dispatchable" | "stale";
+	allowCrossFamily: boolean;
+	observedAt: string;
+}): void {
+	const evidenceId = `usage-aware-override-${input.laneId}-${input.token}`;
+	const record: FlowDeskUsageAwareModelOverrideEvidenceV1 = {
+		schema_version: "flowdesk.usage_aware_model_override.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		original_model_id: input.originalModelId,
+		resolved_model_id: input.resolvedModelId,
+		override_reason: input.overrideReason,
+		allow_cross_family: input.allowCrossFamily,
+		provider_binding_changed_before_launch: true,
+		model_substitution_kind: "pre_launch_preferred_model_substitution",
+		managed_fallback_reselection: false,
+		observed_at: input.observedAt,
+		selection_phase_only: true,
+		fallback_authority_enabled: false,
+		dispatch_authority_enabled: false,
+	};
+	writeSessionEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId,
 		record: record as unknown as Record<string, unknown>,
 	});
 }
@@ -829,6 +959,27 @@ export async function executeFlowDeskAgentTaskV1(
 		blockedLabels: modelBinding.ok ? [] : ["runtime-launch-model-binding-unavailable"],
 		createdAt: observedAt,
 	});
+	// Selection-phase-only: when an upstream caller (e.g. the server handler)
+	// applied a usage-aware pre-launch preferred-model substitution before
+	// invoking this runner, persist that decision as durable evidence. Not
+	// managed fallback/reselection; no dispatch/fallback authority.
+	if (
+		input.usageAwareOverride !== undefined &&
+		input.usageAwareOverride.originalModelId !== input.providerQualifiedModelId
+	) {
+		writeUsageAwareModelOverrideEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			taskId: input.taskId,
+			token,
+			originalModelId: input.usageAwareOverride.originalModelId,
+			resolvedModelId: input.providerQualifiedModelId,
+			overrideReason: input.usageAwareOverride.overrideReason,
+			allowCrossFamily: input.usageAwareOverride.allowCrossFamily,
+			observedAt,
+		});
+	}
 	if (!modelBinding.ok) {
 		const redactedReason = modelBinding.redactedReason;
 		writeSessionEvidence({
@@ -1256,6 +1407,12 @@ export async function executeFlowDeskAgentTaskV1(
 		const failureCategory = "no_response";
 		const evidenceFailureCategory = "no_response";
 		const redactedReason = "lane launched but no assistant response text found";
+		const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+			text: undefined,
+			outputKind: "empty",
+			finalBodyObserved: false,
+			terminalMarkerObserved: false,
+		});
 		const taskFailedRecord: FlowDeskTaskFailedV1 = {
 			schema_version: "flowdesk.task_failed.v1",
 			workflow_id: input.workflowId,
@@ -1265,6 +1422,7 @@ export async function executeFlowDeskAgentTaskV1(
 			provider_qualified_model_id: effectiveProviderQualifiedModelId,
 			failure_category: evidenceFailureCategory,
 			redacted_reason: redactedReason,
+			...noOutputCaptureMetadata,
 			created_at: observedAt,
 			dispatch_authority_enabled: false,
 		};
@@ -1347,9 +1505,27 @@ export async function executeFlowDeskAgentTaskV1(
 	const storedResultText = sanitizedResult.text;
 	const promptSha256 = sha256Hex(input.promptText);
 	const resultSha256 = sha256Hex(fullResultText);
+	const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+		text: storedResultText,
+		completionStatus: resultObservation?.completionStatus ?? "final",
+		outputKind: resultObservation?.outputKind ?? "final_answer",
+		finalizationReason: resultObservation?.finalizationReason,
+		finalBodyObserved: resultObservation?.finalBodyObserved ?? true,
+		terminalMarkerObserved: resultObservation?.terminalMarkerObserved,
+	});
 
 	// Write task_result evidence
 	const taskResultEvidenceId = `task-result-${input.taskId}-${token}`;
+	const resolvedOutputKind = resultObservation?.outputKind as FlowDeskTaskResultV1["output_kind"] ?? "final_answer";
+	// Enforcement invariant (evidence boundary): process_notes output can NEVER be
+	// usable_for_synthesis=true or safe_for_auto_synthesis=true in the persisted
+	// task_result evidence record. This clamp is applied after all upstream
+	// calculations to guarantee the invariant even if capture metadata is
+	// reconstructed from a path that did not apply the outputKind guard.
+	const processNotesOutputKind =
+		resolvedOutputKind === "process_notes" ||
+		resolvedOutputKind === "tool_trace_only" ||
+		resolvedOutputKind === "empty";
 	const taskResultRecord: FlowDeskTaskResultV1 = {
 		schema_version: "flowdesk.task_result.v1",
 		workflow_id: input.workflowId,
@@ -1362,8 +1538,8 @@ export async function executeFlowDeskAgentTaskV1(
 		result_text_truncated: sanitizedResult.truncated,
 		result_text_sha256: resultSha256,
 		completion_status: resultObservation?.completionStatus ?? "final",
-		output_kind: resultObservation?.outputKind as FlowDeskTaskResultV1["output_kind"] ?? "final_answer",
-		usable_for_synthesis: resultObservation?.usableForSynthesis ?? true,
+		output_kind: resolvedOutputKind,
+		usable_for_synthesis: processNotesOutputKind ? false : captureSafetyMetadata.safe_for_auto_synthesis,
 		// Capture/judgement separation: text was captured, so this is NOT a
 		// contract failure. output_kind/completion_status/looks_like_refusal_or_error
 		// are advisory inputs for the coordinator's substance judgement, never a
@@ -1375,6 +1551,10 @@ export async function executeFlowDeskAgentTaskV1(
 			? {}
 			: { finalization_reason: resultObservation.finalizationReason }),
 		looks_like_refusal_or_error: resultObservation?.looksLikeRefusalOrError ?? false,
+		...captureSafetyMetadata,
+		// Re-enforce synthesis safety flags after spread: the spread must not
+		// silently override the process_notes enforcement clamp above.
+		...(processNotesOutputKind ? { usable_for_synthesis: false, safe_for_auto_synthesis: false } : {}),
 		created_at: observedAt,
 		dispatch_authority_enabled: false,
 	};
@@ -1400,6 +1580,7 @@ export async function executeFlowDeskAgentTaskV1(
 					provider_qualified_model_id: effectiveProviderQualifiedModelId,
 					failure_category: "unknown",
 					redacted_reason: redactedReason,
+					...captureSafetyMetadata,
 					created_at: observedAt,
 					dispatch_authority_enabled: false,
 				} as unknown as Record<string, unknown>,
@@ -1526,8 +1707,10 @@ export async function executeFlowDeskAgentTaskV1(
 }
 
 /**
- * Abort a running agent task lane by calling the OpenCode SDK session.abort and
- * writing terminal task_failed + lane_lifecycle(aborted) evidence.
+ * Abort a running dev/beta agent task lane through the canonical typed session
+ * abort control adapter, then write terminal task_failed + lane_lifecycle
+ * evidence for the task. The command-backed /flowdesk-abort diagnostic path is
+ * intentionally separate and non-runtime.
  *
  * Returns:
  *   "aborted"      — SDK abort was attempted and terminal evidence was written.
@@ -1573,14 +1756,34 @@ export async function abortFlowDeskAgentTaskV1(input: {
 
 	let sdkAbortStatus: "aborted" | "abort_skipped" | "abort_failed" = "aborted";
 
-	// 2. Attempt SDK abort — best-effort, must not throw
-	if (childSessionId.length === 0 || typeof input.client.session.abort !== "function") {
+	// 2. Attempt SDK abort through the canonical typed session abort adapter — best-effort, must not throw.
+	if (childSessionId.length === 0) {
 		sdkAbortStatus = "abort_skipped";
 	} else {
+		const abortDecision: FlowDeskSessionAbortDecisionV1 = {
+			schema_version: "flowdesk.session_abort_decision.v1",
+			decision_id: `session-abort-decision-${token}`,
+			workflow_id: input.workflowId,
+			attempt_id: attemptId,
+			session_ref: childSessionId,
+			abort_reason: "user_requested_abort",
+			policy_pack_ref: `policy-pack-abort-${token}`,
+			guard_decision_ref: `guard-decision-abort-${token}`,
+			pre_abort_audit_ref: `pre-abort-audit-${token}`,
+			created_at: observedAt,
+			dispatch_authority_enabled: false,
+			providerCall: false,
+			actualLaneLaunch: false,
+			runtimeExecution: false,
+			hardCancelOrNoReplyAuthority: false,
+			session_abort_authorized: true,
+		};
 		try {
-			await (input.client.session.abort as (o: unknown) => unknown).call(input.client.session, {
-				sessionID: childSessionId,
+			const adapterResult = await abortFlowDeskSessionWithDecisionV1({
+				client: input.client,
+				decision: abortDecision,
 			});
+			if (adapterResult.status !== "session_abort_sent") sdkAbortStatus = "abort_skipped";
 		} catch {
 			sdkAbortStatus = "abort_failed";
 		}

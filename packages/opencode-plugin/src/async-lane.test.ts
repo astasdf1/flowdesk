@@ -1816,8 +1816,9 @@ test("abortFlowDeskAgentTaskV1 calls session.abort and writes task_failed + term
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-abort-task-"));
 	try {
 		let abortCalls = 0;
+		let abortOptions: unknown;
 		const client = makeClient({
-			abort: async (_o: unknown) => { abortCalls += 1; },
+			abort: async (o: unknown) => { abortCalls += 1; abortOptions = o; },
 		});
 		// Launch async lane first to populate child session evidence
 		const launched = await executeFlowDeskAgentTaskV1({
@@ -1848,6 +1849,7 @@ test("abortFlowDeskAgentTaskV1 calls session.abort and writes task_failed + term
 
 		assert.equal(abortResult.status, "aborted");
 		assert.equal(abortCalls, 1, "session.abort must have been called once");
+		assert.deepEqual(abortOptions, { sessionID: childSessionId }, "task abort must route to the canonical typed session abort adapter payload");
 
 		// Verify task_failed evidence written
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-abort-test-1" });

@@ -19,6 +19,10 @@ import {
 	createFlowDeskOptimizerProposalScoreV1,
 } from "./score-dimensions.js";
 import { type FlowDeskUsageSustainabilitySignalV1 } from "../schemas/index.js";
+import {
+	type FlowDeskTaskBlockScoringV1,
+	validateFlowDeskTaskBlockScoringV1,
+} from "./task-block-scoring.js";
 
 // ─── Public input / output contracts ─────────────────────────────────────────
 
@@ -35,6 +39,11 @@ export interface FlowDeskScoringEngineInputV1 {
 	maxConcurrentLanes?: number;      // configured max (default 5)
 	requestedLaneCount?: number;      // how many lanes requested
 	contextWindowTokens?: number;     // optional model context window hint
+	blockScoring?: FlowDeskTaskBlockScoringV1;  // optional block scoring for judgment 1 (real calc)
+	variantId?: "simple" | "standard" | "detailed" | "high_assurance";  // variant for detail_fit/simplicity_fit weight
+	proposalSetContext?: {
+		distinctProviderFamilyCount?: number;  // for model_diversity calculation
+	};
 }
 
 export interface FlowDeskScoringEngineResultV1 {
@@ -73,6 +82,9 @@ function countAvailableInputs(input: FlowDeskScoringEngineInputV1): number {
 	if (input.maxConcurrentLanes !== undefined) count++;
 	if (input.requestedLaneCount !== undefined) count++;
 	if (input.contextWindowTokens !== undefined) count++;
+	if (input.blockScoring !== undefined) count++;
+	if (input.variantId !== undefined) count++;
+	if (input.proposalSetContext?.distinctProviderFamilyCount !== undefined) count++;
 	return count;
 }
 
@@ -192,12 +204,111 @@ export function computeUsageScore(
 /**
  * Compute confidence score based on how many evidence inputs are available.
  * all inputs (7) → 80, partial (3-6) → 60, minimal (0-2) → 40.
+ * blockScoring presence grants an additional +2 (max still 100).
  */
 function computeConfidenceScore(input: FlowDeskScoringEngineInputV1): number {
 	const available = countAvailableInputs(input);
-	if (available >= 7) return 80;
-	if (available >= 3) return 60;
-	return 40;
+	let base: number;
+	if (available >= 7) base = 80;
+	else if (available >= 3) base = 60;
+	else base = 40;
+	const blockScoringBonus = input.blockScoring !== undefined ? 2 : 0;
+	return Math.min(100, base + blockScoringBonus);
+}
+
+// ─── Judgment-1 dimension calculators (blockScoring-based) ───────────────────
+
+/**
+ * goal_fit: scope=5 is optimal, penalty grows toward either extreme.
+ * scope 1..10 → score 0..100, clamped.
+ */
+function computeGoalFitScore(scope: number): number {
+	return Math.max(0, Math.min(100, Math.round(100 - Math.abs(scope - 5) * 8)));
+}
+
+/** taxonomy_fit: category-based lookup into a curated fit table. */
+const CATEGORY_FIT: Record<string, number> = {
+	schema_only: 85,
+	implementation: 80,
+	integration: 75,
+	orchestration: 70,
+	security_boundary: 70,
+	design: 60,
+};
+
+function computeTaxonomyFitScore(category: string): number {
+	const base = CATEGORY_FIT[category];
+	return base !== undefined ? base : 65; // neutral fallback for unknown category
+}
+
+/**
+ * verification_coverage: higher authority_sensitivity means harder to verify
+ * fully, so score decreases linearly.  Range 1..10 → score 95..50.
+ */
+function computeVerificationCoverageScore(authoritySensitivity: number): number {
+	return Math.max(0, Math.min(100, Math.round(100 - authoritySensitivity * 5)));
+}
+
+/**
+ * risk: composite of novelty, coupling, authority_sensitivity.
+ * All three inputs increase risk; novelty is weighted heaviest.
+ */
+function computeRiskScore(novelty: number, coupling: number, authoritySensitivity: number): number {
+	return Math.max(0, Math.min(100, Math.round(100 - (novelty * 5 + coupling * 3 + authoritySensitivity * 2) / 2)));
+}
+
+/**
+ * dependency_impact: coupling-driven.  High coupling means larger blast radius.
+ * Range 1..10 → score 92..20.
+ */
+function computeDependencyImpactScore(coupling: number): number {
+	return Math.max(0, Math.min(100, Math.round(100 - coupling * 8)));
+}
+
+/**
+ * model_diversity: more distinct provider families → higher score.
+ * 0 families → 25, 1 → 50, 2 → 75, 3+ → 100.
+ */
+function computeModelDiversityScore(distinctProviderFamilyCount: number): number {
+	return Math.min(100, distinctProviderFamilyCount * 25 + 25);
+}
+
+/**
+ * safety: authority_sensitivity drives safety concern.
+ * Range 1..10 → score 92..20.
+ */
+function computeSafetyScore(authoritySensitivity: number): number {
+	return Math.max(0, Math.min(100, Math.round(100 - authoritySensitivity * 8)));
+}
+
+/**
+ * simplicity_fit: lower complexity + smaller scope → more suitable for simple
+ * variants.  variantId="simple" amplifies the reward for low complexity/scope.
+ */
+function computeSimplicityFitScore(
+	complexity: number,
+	scope: number,
+	variantId?: string,
+): number {
+	// Base: 100 minus complexity (weight 5) minus scope distance from 1 (weight 3)
+	const base = 100 - complexity * 5 - (scope - 1) * 3;
+	const boost = variantId === "simple" ? 10 : variantId === "high_assurance" || variantId === "detailed" ? -10 : 0;
+	return Math.max(0, Math.min(100, Math.round(base + boost)));
+}
+
+/**
+ * detail_fit: higher complexity + larger scope → more appropriate for detailed
+ * variants.  variantId="high_assurance"/"detailed" amplifies the reward.
+ */
+function computeDetailFitScore(
+	complexity: number,
+	scope: number,
+	variantId?: string,
+): number {
+	// Base: starts at 50, grows with complexity and scope
+	const base = 50 + complexity * 3 + (scope - 1) * 2;
+	const boost = variantId === "high_assurance" || variantId === "detailed" ? 10 : variantId === "simple" ? -10 : 0;
+	return Math.max(0, Math.min(100, Math.round(base + boost)));
 }
 
 // ─── Main engine function ─────────────────────────────────────────────────────
@@ -261,6 +372,32 @@ export function scoreWorkflowProposal(
 		errors.push(`alertLevel must be one of: ${validAlertLevels.join(", ")}`);
 	}
 
+	if (input.blockScoring !== undefined) {
+		const blockScoringValidation = validateFlowDeskTaskBlockScoringV1(input.blockScoring);
+		if (!blockScoringValidation.ok) {
+			errors.push(`blockScoring validation failed: ${blockScoringValidation.errors.join("; ")}`);
+		}
+	}
+
+	if (input.variantId !== undefined) {
+		const validVariants = ["simple", "standard", "detailed", "high_assurance"];
+		if (!validVariants.includes(input.variantId)) {
+			errors.push(`variantId must be one of: ${validVariants.join(", ")}`);
+		}
+	}
+
+	if (input.proposalSetContext !== undefined) {
+		if (typeof input.proposalSetContext !== "object" || input.proposalSetContext === null) {
+			errors.push("proposalSetContext must be an object");
+		} else {
+			if (input.proposalSetContext.distinctProviderFamilyCount !== undefined) {
+				if (typeof input.proposalSetContext.distinctProviderFamilyCount !== "number" || !Number.isInteger(input.proposalSetContext.distinctProviderFamilyCount) || input.proposalSetContext.distinctProviderFamilyCount < 0) {
+					errors.push("proposalSetContext.distinctProviderFamilyCount must be a non-negative integer");
+				}
+			}
+		}
+	}
+
 	if (errors.length > 0) {
 		return { ok: false, errors, healthLabel: "unknown" };
 	}
@@ -280,28 +417,134 @@ export function scoreWorkflowProposal(
 	const usagePenalty = usageScore && "appliedBecause" in usageScore ? usageScore.penalty : 0;
 	const auditUsageSustainabilityApplied = usagePenalty > 0;
 
+	// ── Variant-based weight adjustments for detail_fit and simplicity_fit ──────
+	let detailFitWeight = 1;
+	let simplicityFitWeight = 1;
+	if (input.variantId) {
+		// Adjust weights based on variant: detailed/high_assurance prioritize detail_fit
+		if (input.variantId === "detailed" || input.variantId === "high_assurance") {
+			detailFitWeight = 1.5;
+			simplicityFitWeight = 0.7;
+		} else if (input.variantId === "simple") {
+			detailFitWeight = 0.7;
+			simplicityFitWeight = 1.5;
+		}
+		// "standard" uses default weights (1.0 each)
+	}
+
+	// ── Model diversity score from provider family count ──────────────────────
+	let modelDiversityScore: number;
+	let modelDiversityReasonRef: string;
+	if (input.proposalSetContext?.distinctProviderFamilyCount !== undefined) {
+		modelDiversityScore = computeModelDiversityScore(input.proposalSetContext.distinctProviderFamilyCount);
+		modelDiversityReasonRef = "reason-model-diversity-provider-count";
+	} else {
+		modelDiversityScore = 70;
+		modelDiversityReasonRef = "reason-model-diversity-placeholder";
+	}
+
 	// Score ID: deterministic from workflowId + proposalId + candidateRef
 	const scoreId = `score-engine-${input.workflowId}-${input.proposalId}`;
+
+	// ── Judgment-1: real dimension calculation when blockScoring is available ──
+	let safetyScore: number;
+	let safetyReasonRef: string;
+	let goalFitScore: number;
+	let goalFitReasonRef: string;
+	let simplicityFitScore: number;
+	let simplicityFitReasonRef: string;
+	let detailFitScore: number;
+	let detailFitReasonRef: string;
+	let taxonomyFitScore: number;
+	let taxonomyFitReasonRef: string;
+	let verificationCoverageScore: number;
+	let verificationCoverageReasonRef: string;
+	let riskScore: number;
+	let riskReasonRef: string;
+	let dependencyImpactScore: number;
+	let dependencyImpactReasonRef: string;
+
+	if (input.blockScoring !== undefined) {
+		const bs = input.blockScoring;
+
+		safetyScore = computeSafetyScore(bs.authority_sensitivity);
+		safetyReasonRef = "reason-safety-block-scoring";
+
+		goalFitScore = computeGoalFitScore(bs.scope);
+		goalFitReasonRef = "reason-goal-fit-block-scoring";
+
+		simplicityFitScore = computeSimplicityFitScore(bs.complexity, bs.scope, input.variantId);
+		simplicityFitReasonRef = input.variantId
+			? `reason-simplicity-fit-block-scoring-${input.variantId}`
+			: "reason-simplicity-fit-block-scoring";
+
+		detailFitScore = computeDetailFitScore(bs.complexity, bs.scope, input.variantId);
+		detailFitReasonRef = input.variantId
+			? `reason-detail-fit-block-scoring-${input.variantId}`
+			: "reason-detail-fit-block-scoring";
+
+		taxonomyFitScore = computeTaxonomyFitScore(bs.category);
+		taxonomyFitReasonRef = "reason-taxonomy-fit-block-scoring";
+
+		verificationCoverageScore = computeVerificationCoverageScore(bs.authority_sensitivity);
+		verificationCoverageReasonRef = "reason-verification-coverage-block-scoring";
+
+		riskScore = computeRiskScore(bs.novelty, bs.coupling, bs.authority_sensitivity);
+		riskReasonRef = "reason-risk-block-scoring";
+
+		dependencyImpactScore = computeDependencyImpactScore(bs.coupling);
+		dependencyImpactReasonRef = "reason-dependency-impact-block-scoring";
+	} else {
+		// No blockScoring available — retain legacy placeholder values
+		safetyScore = 80;
+		safetyReasonRef = "reason-safety-neutral-placeholder-no-block-scoring";
+
+		goalFitScore = 70;
+		goalFitReasonRef = "reason-goal-fit-placeholder-no-block-scoring";
+
+		simplicityFitScore = 65;
+		simplicityFitReasonRef = input.variantId
+			? `reason-simplicity-fit-variant-${input.variantId}-no-block-scoring`
+			: "reason-simplicity-fit-placeholder-no-block-scoring";
+
+		detailFitScore = 65;
+		detailFitReasonRef = input.variantId
+			? `reason-detail-fit-variant-${input.variantId}-no-block-scoring`
+			: "reason-detail-fit-placeholder-no-block-scoring";
+
+		taxonomyFitScore = 65;
+		taxonomyFitReasonRef = "reason-taxonomy-fit-placeholder-no-block-scoring";
+
+		verificationCoverageScore = 65;
+		verificationCoverageReasonRef = "reason-verification-coverage-placeholder-no-block-scoring";
+
+		riskScore = 65;
+		riskReasonRef = "reason-risk-placeholder-no-block-scoring";
+
+		dependencyImpactScore = 65;
+		dependencyImpactReasonRef = "reason-dependency-impact-placeholder-no-block-scoring";
+	}
 
 	const dimensions: FlowDeskOptimizerScoreDimensionV1[] = [
 		{ dimension: "cost", score: costScore, weight: 1, reason_ref: "reason-cost-usage-snapshot" },
 		{ dimension: "latency", score: latencyScore, weight: 1, reason_ref: "reason-latency-reset-bucket" },
-		{ dimension: "model_diversity", score: 70, weight: 1, reason_ref: "reason-model-diversity-placeholder" },
+		{ dimension: "model_diversity", score: modelDiversityScore, weight: 1, reason_ref: modelDiversityReasonRef },
 		{ dimension: "confidence", score: confidenceScore, weight: 1, reason_ref: "reason-confidence-input-completeness" },
-		{ dimension: "safety", score: 80, weight: 1, reason_ref: "reason-safety-neutral-placeholder" },
-		{ dimension: "goal_fit", score: 70, weight: 1, reason_ref: "reason-goal-fit-placeholder" },
-		{ dimension: "simplicity_fit", score: 65, weight: 1, reason_ref: "reason-simplicity-fit-placeholder" },
-		{ dimension: "detail_fit", score: 65, weight: 1, reason_ref: "reason-detail-fit-placeholder" },
-		{ dimension: "taxonomy_fit", score: 65, weight: 1, reason_ref: "reason-taxonomy-fit-placeholder" },
-		{ dimension: "verification_coverage", score: 65, weight: 1, reason_ref: "reason-verification-coverage-placeholder" },
-		{ dimension: "risk", score: 65, weight: 1, reason_ref: "reason-risk-placeholder" },
-		{ dimension: "dependency_impact", score: 65, weight: 1, reason_ref: "reason-dependency-impact-placeholder" },
+		{ dimension: "safety", score: safetyScore, weight: 1, reason_ref: safetyReasonRef },
+		{ dimension: "goal_fit", score: goalFitScore, weight: 1, reason_ref: goalFitReasonRef },
+		{ dimension: "simplicity_fit", score: simplicityFitScore, weight: simplicityFitWeight, reason_ref: simplicityFitReasonRef },
+		{ dimension: "detail_fit", score: detailFitScore, weight: detailFitWeight, reason_ref: detailFitReasonRef },
+		{ dimension: "taxonomy_fit", score: taxonomyFitScore, weight: 1, reason_ref: taxonomyFitReasonRef },
+		{ dimension: "verification_coverage", score: verificationCoverageScore, weight: 1, reason_ref: verificationCoverageReasonRef },
+		{ dimension: "risk", score: riskScore, weight: 1, reason_ref: riskReasonRef },
+		{ dimension: "dependency_impact", score: dependencyImpactScore, weight: 1, reason_ref: dependencyImpactReasonRef },
 	];
 
-	// Advisory score: average of all dimensions, minus an optional bounded usage
+	// Advisory score: weighted average of all dimensions, minus an optional bounded usage
 	// sustainability penalty. The usage path stays separate from latency scoring.
+	const totalWeight = dimensions.reduce((sum, d) => sum + d.weight, 0);
 	const baseAdvisoryScore = Math.round(
-		dimensions.reduce((sum, d) => sum + d.score, 0) / dimensions.length,
+		dimensions.reduce((sum, d) => sum + d.score * d.weight, 0) / totalWeight,
 	);
 	const advisoryScore = Math.max(0, baseAdvisoryScore - usagePenalty);
 

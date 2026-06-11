@@ -5,6 +5,12 @@
  * runs a multi-model advisory scoring fanout using the high_assurance variant
  * against multiple model profiles using an already-reserved R3 fanout reservation.
  *
+ * P7-S07 additive: accepts an optional cadenceDecision input.  When present and
+ * cadenceDecision.cadence_decision !== "allow", ALL models are skipped with
+ * eligibility_status: "skipped" and skip_reason set to the cadence_decision label.
+ * The envelope execution_status becomes "failed" (reservation_consumed: false).
+ * When cadenceDecision is absent the existing behaviour is unchanged.
+ *
  * Release gate: operational_intelligence_later_gate
  * Advisory-only, non-authorizing.  No dispatch, provider, runtime, lane-launch,
  * fallback, write, or hard-chat authority is granted.
@@ -15,6 +21,7 @@ import type { FlowDeskR3FanoutReservationV1 } from "./admission.js";
 import type { FlowDeskModelCapabilityProfileV1 } from "./model-capability-profile.js";
 import { scoreWorkflowProposal } from "./scoring-engine.js";
 import type { FlowDeskScoringEngineInputV1 } from "./scoring-engine.js";
+import type { FlowDeskFanoutCadenceDecisionV1 } from "./multi-model-fanout-cadence.js";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -120,6 +127,13 @@ export interface ExecuteMultiModelFanoutTestV1Input {
 		| "requestedLaneCount"
 		| "contextWindowTokens"
 	>>;
+	/**
+	 * Optional cadence decision from evaluateFanoutCadenceDecisionV1 (P7-S07).
+	 * When present and cadence_decision !== "allow", ALL models are skipped and
+	 * the envelope is returned as failed (reservation_consumed: false).
+	 * When absent, existing scoring behaviour applies unchanged.
+	 */
+	cadenceDecision?: FlowDeskFanoutCadenceDecisionV1;
 	/** ISO timestamp when execution began */
 	executed_at?: string;
 }
@@ -249,6 +263,60 @@ export function executeMultiModelFanoutTestV1(
 			);
 		}
 		seenModelRefs.add(m.model_ref);
+	}
+
+	// ── Step 1b: Cadence gate check (P7-S07) ──────────────────────────────────
+	// If a cadenceDecision was supplied and is not "allow", skip all models and
+	// return a failed envelope.  The reservation is NOT consumed.
+
+	if (input.cadenceDecision !== undefined && input.cadenceDecision.cadence_decision !== "allow") {
+		const skipReason = input.cadenceDecision.cadence_decision;
+		const skippedResults: FlowDeskModelFanoutResultV1[] = input.selectedModels.map((m) => ({
+			model_ref: m.model_ref,
+			provider_qualified_model_id: m.provider_qualified_model_id,
+			variant_id: "high_assurance",
+			proposal_score: 0,
+			capability_score: 0,
+			composite_score: 0,
+			evaluated_at: evaluatedAt,
+			eligibility_status: "skipped",
+			skip_reason: skipReason,
+			advisory_only: true,
+		}));
+
+		const cadencePlaceholderAggregation: FlowDeskMultiModelAggregationV1 = {
+			schema_version: "flowdesk.multi_model_aggregation.v1",
+			aggregation_id: `agg-cadence-blocked-${execution_id}`,
+			best_model_ref: "model-ref-unknown",
+			best_provider_qualified_model_id: "unknown/unknown",
+			best_composite_score: 0,
+			model_results: skippedResults,
+			scored_model_count: 0,
+			skipped_model_count: skippedResults.length,
+			score_delta: 0,
+			election_confidence: "low",
+			tie_break_applied: false,
+			aggregated_at: evaluatedAt,
+			advisory_only: true,
+			non_authorizing: true,
+			dispatch_authority_enabled: false,
+		};
+
+		return {
+			schema_version: "flowdesk.multi_model_fanout_result_envelope.v1",
+			execution_id,
+			execution_mode: "multi_model_fanout",
+			admission_ref: admissionRef,
+			reservation_ref: reservationRef,
+			workflow_signature: workflowSignature,
+			variant_used: "high_assurance",
+			aggregation: cadencePlaceholderAggregation,
+			reservation_consumed: false,
+			execution_status: "failed",
+			failure_reason: `cadence_blocked:${skipReason}`,
+			evaluated_at: evaluatedAt,
+			advisory_only: true,
+		};
 	}
 
 	// ── Step 2: Get high_assurance proposal ───────────────────────────────────

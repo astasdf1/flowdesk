@@ -14,7 +14,7 @@ Fuzzy fallback is a **selection-phase, same-family, same-group downgrade**. When
 
 1. Belongs to the same provider family (Claude / OpenAI / Gemini), and
 2. Belongs to the same model group within that family (e.g. `haiku`, `sonnet`, `opus`, `mini`, `flash`, `pro`), and
-3. Is present in the durable working-model snapshot (`<durableStateRoot>/model-availability/working-models.json`), and
+3. Is present in the durable model availability DB (`<durableStateRoot>/model-availability/model-availability.db`), and
 4. Is in FlowDesk's OpenCode-supported exact-model set.
 
 If no candidate satisfies all four conditions, the task **fails closed before any SDK call**. Fuzzy fallback never crosses model groups (no `haiku → sonnet` silent upgrades) and never crosses provider families (no `claude → openai` silent switches).
@@ -35,7 +35,7 @@ Fuzzy fallback is applied in two selection-phase callsites only:
 | Callsite | File | When |
 |---|---|---|
 | Direct runtime task launch | `packages/opencode-plugin/src/agent-task-runner.ts` (`executeFlowDeskAgentTaskV1()`) | Before `agentTaskLaunchPlan()` is constructed and before any SDK session is created. |
-| Managed dispatch pre-SDK working-model gate | `packages/opencode-plugin/src/managed-dispatch-adapter.ts` | Before idempotency reservation or runtime dispatch. |
+| Managed dispatch pre-SDK model availability gate | `packages/opencode-plugin/src/managed-dispatch-adapter.ts` | Before idempotency reservation or runtime dispatch. |
 
 The same selection-phase resolver (`resolveSameFamilyOpenCodeSupportedModelFallback()` / `resolveOpenCodeRuntimeLaunchModelBindingV1()` in `packages/opencode-plugin/src/model-selection-engine.ts`) is used in both places. The managed dispatch path does **not** receive any additional fallback authority on top of selection-phase resolution.
 
@@ -112,10 +112,9 @@ If the selected effective model fails at runtime — for example, the SDK return
 The runtime binding resolver (`resolveOpenCodeRuntimeLaunchModelBindingV1()`) returns `{ ok: false, redactedReason }` in every situation where it cannot prove a safe binding, including:
 
 - `durableStateRootDir` is empty.
-- The computed `working-models.json` path escapes the durable state root (path-traversal guard).
-- `working-models.json` does not exist or is unreadable.
-- The requested model is not cached as available and no same-family supported fallback exists.
-- The cached working-model snapshot contains the requested id but no same-family OpenCode-supported entry.
+- `model-availability.db` does not exist (durable path) and the bundled fallback DB is also unreadable.
+- The requested model is not recorded as available and no same-family supported fallback exists.
+- The model availability DB contains the requested id but no same-family OpenCode-supported entry.
 - The resolved selection is somehow not in the OpenCode-supported set.
 
 When `ok: false` is returned, `executeFlowDeskAgentTaskV1()` does not call `session.create` or `session.promptAsync`. The lane terminates before any provider call.
@@ -159,7 +158,7 @@ Key validator behaviors to remember when inspecting evidence:
 
 ### Managed dispatch
 
-Managed dispatch reuses the same selection-phase resolver at its working-model gate (`managed-dispatch-adapter.ts`). It does **not** open any new fallback authority. If the resolver cannot bind a same-family same-group supported model, managed dispatch fails closed before idempotency reservation, before any runtime dispatch path, and before any SDK call.
+Managed dispatch reuses the same selection-phase resolver at its model availability gate (`managed-dispatch-adapter.ts`). It does **not** open any new fallback authority. If the resolver cannot bind a same-family same-group supported model, managed dispatch fails closed before idempotency reservation, before any runtime dispatch path, and before any SDK call.
 
 ### Launcher validation
 
@@ -187,8 +186,8 @@ OI performance scores (when enabled) act as a **tertiary tie-breaker** inside th
 
 ### To enable fuzzy fallback for a task
 
-1. Confirm that `.flowdesk/model-availability/working-models.json` exists under the configured durable state root.
-2. Confirm that the snapshot's `available_model_ids` array contains at least one OpenCode-supported model in the same group as the model you intend to request.
+1. Confirm that `model-availability.db` exists — either at `<durableStateRoot>/model-availability/model-availability.db` or as the package-bundled fallback.
+2. Confirm that the DB's `models` table contains at least one `available=1` row with an OpenCode-supported model in the same group as the model you intend to request (`SELECT model_id FROM models WHERE available=1`).
 3. Submit the task with the desired (possibly version-mismatched) `providerQualifiedModelId`.
 
 If both conditions hold and the resolver succeeds, the lane will run on the resolved sibling and the substitution will be visible in `flowdesk.task_model_selection.v1` evidence and in the runtime binding record.
@@ -201,7 +200,7 @@ Request a model id that is already an exact, supported, cached entry. The resolv
 
 - Run `/flowdesk-status` for the workflow and look at the per-task model rows.
 - Inspect the `task_model_selection` evidence directly under the workflow's durable evidence directory. The `provider_qualified_model_id` field is the model that actually ran. The `attempted_provider_qualified_model_ids` field is the audit trail of what was tried.
-- If the requested model is missing from `working-models.json`, refresh the working-model snapshot before re-running the task; the resolver fails closed rather than guessing.
+- If the requested model is missing from `model-availability.db`, run `npm run models:refresh` to regenerate the DB before re-running the task; the resolver fails closed rather than guessing.
 
 ### To audit that no cross-group or cross-family substitution occurred
 
@@ -231,7 +230,7 @@ If any of these checks fails, the validator should already have rejected the rec
   - `PROVIDER_FAMILY_PREFIX_ALIASES`
 - `packages/opencode-plugin/src/agent-task-runner.ts`
   - `executeFlowDeskAgentTaskV1()` (callsite that fails closed before SDK)
-- `packages/opencode-plugin/src/managed-dispatch-adapter.ts` (pre-SDK working-model gate)
+- `packages/opencode-plugin/src/managed-dispatch-adapter.ts` (pre-SDK model availability gate: `loadAvailableModelIdsFromDb()`, `workingModelCacheAllowsDispatch()`)
 - `docs/PROGRESS_SNAPSHOT.md`
   - "Runtime fuzzy model binding for direct agent tasks" (2026-06-08)
   - "Runtime task-model-selection alias evidence persistence fix" (2026-06-08)
@@ -241,7 +240,7 @@ If any of these checks fails, the validator should already have rejected the rec
 
 ## Assumptions
 
-- The `.flowdesk/model-availability/working-models.json` snapshot path is canonical and is the only durable input the resolver consults. (Confirmed in `resolveOpenCodeRuntimeLaunchModelBindingV1()`.)
+- The durable model availability DB path is `<durableStateRoot>/model-availability/model-availability.db`; the package-bundled fallback is `packages/opencode-plugin/data/model-availability.db`. Both are read via `loadAvailableModelIdsFromDb()`. (Confirmed in `managed-dispatch-adapter.ts` and `workflow-assign-tool.ts`.)
 - The OpenCode-supported set is the literal `OPENCODE_SUPPORTED_PROVIDER_QUALIFIED_MODEL_IDS` set in `model-selection-engine.ts`. Any addition or removal of supported ids is a code change, not a configuration change.
 - Group keyword extraction is case-insensitive and checks more-specific keywords (`flash-lite`) before broader ones (`flash`). For OpenAI, a bare `openai/gpt-*` id with no other group keyword falls into the `normal` group.
 

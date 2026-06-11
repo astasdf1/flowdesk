@@ -26,6 +26,23 @@ export interface FlowDeskCompactionEvidenceV1 {
 	merkleRootBefore: string;
 	merkleRootAfter: string;
 	failedReason?: string;
+	// Phase 8b additive fields (R-NEW-1 lock-path unification + script ledger support).
+	// All optional; omitted entries remain valid evidence for back-compat callers.
+	records_preserved_due_to_pending_gate_promotion?: number;
+	lock_path?: string;
+	records_quarantined?: number;
+	compaction_run_id?: string;
+}
+
+/**
+ * Canonical FlowDesk compaction lock path under a durable state root.
+ *
+ * Phase 8b R-NEW-1: both the federated-registry connector (publisher pre-check)
+ * and the standalone `scripts/compact-flowdesk-ledger.mjs` runner reference this
+ * single helper so the publisher lock and the script lock cannot drift.
+ */
+export function flowDeskCompactionLockPathV1(stateRoot: string): string {
+	return join(stateRoot, ".locks", "compaction.lock");
 }
 
 export interface FlowDeskCompactionControlV1 {

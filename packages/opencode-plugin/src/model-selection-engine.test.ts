@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	selectModelForTask,
 	buildUsageMapFromProviders,
 	resolveSameFamilyOpenCodeSupportedModelFallback,
 	SAME_FAMILY_MODEL_FALLBACK_CHAINS,
+	loadProviderCatalog,
+	validateProviderCatalogV1,
+	opencodeProviderIdFromCatalog,
 	type ProviderUsageInput,
 	type WorkingModelSelectionInput,
 } from "./model-selection-engine.js";
@@ -648,4 +653,114 @@ test("routingAdvisory and oiPerformanceScores fuse: advisory wins where present,
 		"openai/gpt-5.5",
 		"explicit map score (0.9) should beat advisory score (0.1) for the un-mentioned model",
 	);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8f: provider-catalog.json tests
+// ---------------------------------------------------------------------------
+
+test("loadProviderCatalog loads and validates the bundle catalog successfully", () => {
+	const catalog = loadProviderCatalog();
+	assert.equal(catalog.schema_version, "flowdesk.provider_catalog.v1");
+	assert.ok(Array.isArray(catalog.families) && catalog.families.length >= 3, "must have at least 3 families");
+	assert.ok(Array.isArray(catalog.supported_model_ids) && catalog.supported_model_ids.length > 0);
+	// All three families must be present
+	const familyNames = catalog.families.map((f) => f.family);
+	assert.ok(familyNames.includes("claude"), "claude family must be present");
+	assert.ok(familyNames.includes("openai"), "openai family must be present");
+	assert.ok(familyNames.includes("gemini"), "gemini family must be present");
+	// Tiers must have expected structure
+	assert.ok(Array.isArray(catalog.tiers.heavy) && catalog.tiers.heavy.length > 0);
+	assert.ok(Array.isArray(catalog.tiers.medium) && catalog.tiers.medium.length > 0);
+	assert.ok(Array.isArray(catalog.tiers.light) && catalog.tiers.light.length > 0);
+});
+
+test("validateProviderCatalogV1 accepts a valid catalog and rejects invalid ones", () => {
+	// Valid catalog
+	const validCatalog = {
+		schema_version: "flowdesk.provider_catalog.v1",
+		updated_at: "2026-06-10T00:00:00Z",
+		families: [
+			{
+				family: "claude",
+				opencode_provider_id: "anthropic",
+				prefixes: ["anthropic/"],
+				stage_keywords: ["opus"],
+				fallback_chains: [["anthropic/claude-opus-4-7"]],
+				deprecated_model_ids: [],
+				agent_name: "reviewer-claude-opus",
+			},
+		],
+		supported_model_ids: ["anthropic/claude-opus-4-7"],
+		tiers: {
+			heavy: [{ providerQualifiedModelId: "anthropic/claude-opus-4-7", providerFamily: "claude", agentName: "reviewer-claude-opus" }],
+			medium: [],
+			light: [],
+		},
+		roles: {},
+	};
+	assert.deepEqual(validateProviderCatalogV1(validCatalog), [], "valid catalog should have no errors");
+
+	// Missing schema_version
+	const noVersion = { ...validCatalog, schema_version: "wrong.version" };
+	const noVersionErrors = validateProviderCatalogV1(noVersion);
+	assert.ok(noVersionErrors.length > 0, "wrong schema_version should produce errors");
+
+	// Invalid opencode_provider_id (injection attempt)
+	const badProviderId = {
+		...validCatalog,
+		families: [{ ...validCatalog.families[0], opencode_provider_id: "../../malicious" }],
+	};
+	const badProviderErrors = validateProviderCatalogV1(badProviderId);
+	assert.ok(badProviderErrors.length > 0, "path-traversal provider id should produce errors");
+	assert.ok(badProviderErrors.some((e) => e.includes("opencode_provider_id")));
+
+	// Invalid agent_name (path traversal attempt)
+	const badAgentName = {
+		...validCatalog,
+		families: [{ ...validCatalog.families[0], agent_name: "../../../etc/passwd" }],
+	};
+	const badAgentErrors = validateProviderCatalogV1(badAgentName);
+	assert.ok(badAgentErrors.length > 0, "path-traversal agent_name should produce errors");
+	assert.ok(badAgentErrors.some((e) => e.includes("agent_name")));
+
+	// Invalid model ID format in fallback chain
+	const badModelId = {
+		...validCatalog,
+		families: [{
+			...validCatalog.families[0],
+			fallback_chains: [["not-a-valid/model/id/with/slashes"]],
+		}],
+	};
+	// The pattern allows "provider/model" - multiple slashes should fail
+	// or check that single-component (no slash) fails
+	const noSlashModel = {
+		...validCatalog,
+		families: [{
+			...validCatalog.families[0],
+			fallback_chains: [["justmodelname"]],
+		}],
+	};
+	const noSlashErrors = validateProviderCatalogV1(noSlashModel);
+	assert.ok(noSlashErrors.length > 0, "model id without slash should produce errors");
+});
+
+test("opencodeProviderIdFromCatalog maps family names and legacy prefixes correctly", () => {
+	const catalog = loadProviderCatalog();
+
+	// Primary family name mappings
+	assert.equal(opencodeProviderIdFromCatalog("claude", catalog), "anthropic");
+	assert.equal(opencodeProviderIdFromCatalog("openai", catalog), "openai");
+	assert.equal(opencodeProviderIdFromCatalog("gemini", catalog), "google");
+
+	// Prefix-based lookups (aliases without trailing slash)
+	assert.equal(opencodeProviderIdFromCatalog("anthropic", catalog), "anthropic");
+	assert.equal(opencodeProviderIdFromCatalog("google", catalog), "google");
+
+	// Legacy opencode runtime aliases
+	assert.equal(opencodeProviderIdFromCatalog("opencode", catalog), "opencode");
+	assert.equal(opencodeProviderIdFromCatalog("opencode_go", catalog), "opencode");
+
+	// Unknown family should return undefined
+	assert.equal(opencodeProviderIdFromCatalog("unknown_provider_xyz", catalog), undefined);
 });

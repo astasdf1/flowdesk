@@ -257,6 +257,7 @@ When classifications overlap, use the most safety-critical route first:
 1. **Security/policy first** for permissions, redaction, auth, provider use, dispatch, fallback/reselection, external writes, or controlled file writes.
 2. **Verification before completion** when the task claims behavior changed, tests passed, or a bug is fixed.
 3. **Architecture before implementation** when module boundaries, public APIs, persistence contracts, or workflow semantics change.
+   - **Interface-first for cross-cutting features**: if a feature touches authority/gates, durable evidence schemas, provider/model selection, OI/GitHub data flows, status/doctor/debug, runtime/watchdog/session control, chat/message hooks/TUI, or docs/conformance, dispatch architecture/design first to define contracts, evidence, authority boundaries, module boundaries, integration points, and acceptance criteria; only then split implementation into focused lanes.
 4. **Critical review before user-ready claims** for public docs, release notes, agent prompts, workflow dispatch, and later-gate authority changes.
 5. **Oracle/decision only after source lanes** when reviews conflict or the user asks for a tradeoff recommendation.
 

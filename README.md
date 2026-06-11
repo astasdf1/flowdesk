@@ -62,7 +62,7 @@ Modern coding users often have access to several capable AI systems: Claude, GPT
 - whether a reviewer lane was separate from the authoring lane,
 - and whether a fallback or retry would be safe rather than wasteful.
 
-FlowDesk treats those as product requirements, not nice-to-have logs. Usage readiness and provider health are separate signals. Unknown, stale, shared-limit, refused, or untrusted usage does not authorize real model selection. Later releases can use remaining-usage evidence to route work, but only after performance and suitability have already selected an eligible candidate set; usage is a reserve/tie-break signal, not a replacement for fit.
+FlowDesk treats those as product requirements, not nice-to-have logs. Usage readiness and provider health are separate signals. Unknown, stale, shared-limit, refused, or untrusted usage does not authorize real model selection. Release 3 uses remaining-usage evidence advisory-only via OI tools, but only after performance and suitability have already selected an eligible candidate set; usage is a reserve/tie-break signal, not a replacement for fit.
 
 ## Current Commands
 
@@ -107,7 +107,7 @@ Release 1 default behavior does not claim:
 - real OpenCode provider dispatch by default,
 - automatic provider/model fallback,
 - actual OpenCode subtask/model/provider lane launch by default,
-- hard chat cancellation or hard no-reply control,
+- main-chat cancellation or SDK-scoped noReply control,
 - hidden prompt-prefix takeover,
 - score-based approval,
 - or community telemetry upload.

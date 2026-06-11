@@ -77,11 +77,17 @@ If `flowdesk_task` is unavailable or lacks a required field, stop and report the
 
 If FlowDesk-owned lanes are unsafe or blocked, stop and report the blocker, or do only a bounded direct main-session action with normal tools. Do not bypass FlowDesk monitoring with untracked subagents.
 
-## Release 2 managed dispatch gate semantics
+## Interface-first rule for cross-cutting features
 
-Release 2 may open managed dispatch only for a scoped attempt when durable Release 2 gate readiness evidence is eligible and current. Treat `flowdesk.release2_managed_dispatch_gate_promotion_readiness.v1` with `release2_managed_dispatch_gate_ready: true` as necessary but not sufficient: the current attempt must also have explicit scoped user/Guard approval, current provider binding and provider-native usage/health evidence, policy eligibility, pre-call audit evidence, idempotency/reservation evidence, and matching workflow/attempt/provider refs.
+Before implementation, any feature crossing FlowDesk subsystems must first run a dedicated architecture/design lane to define contracts, evidence records, authority boundaries, module boundaries, integration points, and acceptance criteria. Triggers include authority/gates, durable evidence schemas, provider/model selection, OI/GitHub data flows, status/doctor/debug surfaces, runtime/watchdog/session control, chat/message hooks/TUI behavior, or docs/conformance requirements.
 
-If any Release 2 gate evidence is missing, stale, mismatched, blocked, or authority-smuggling, managed dispatch is closed for that attempt; surface safe next actions instead of launching. Release 2 gate opening is not default provider execution, uncontrolled dispatch, automatic fallback/reselection, write/apply authority, hard chat control, or `noReply`/cancel/stop authority. Never infer those authorities from a ready gate, a successful lane, a provider quota result, or a user asking to “continue”; use only the explicit FlowDesk tool whose documented authority matches the action.
+After that design artifact exists, split implementation into focused FlowDesk-owned lanes, each owning one bounded subsystem or contract slice. Preserve the mandatory dispatch boundary: use `flowdesk_task` for the design lane and implementation lanes; do not bypass with raw `task`, ad-hoc subagents, or inline broad implementation.
+
+## Release 3 managed dispatch gate semantics
+
+Release 3 may open managed dispatch only for a scoped attempt when durable Release 3 gate readiness evidence is eligible and current. Treat `flowdesk.release3_managed_dispatch_gate_promotion_readiness.v1` with `release3_managed_dispatch_gate_ready: true` as necessary but not sufficient: the current attempt must also have explicit scoped user/Guard approval, current provider binding and provider-native usage/health evidence (optionally supplemented by advisory OI tools), policy eligibility, pre-call audit evidence, idempotency/reservation evidence, and matching workflow/attempt/provider refs.
+
+If any Release 3 gate evidence is missing, stale, mismatched, blocked, or authority-smuggling, managed dispatch is closed for that attempt; surface safe next actions instead of launching. Release 3 gate opening is not default provider execution, uncontrolled dispatch, automatic fallback/reselection, write/apply authority, main-chat cancellation, or SDK-scoped noReply control. Never infer those authorities from a ready gate, a successful lane, a provider quota result, or a user asking to “continue”; use only the explicit FlowDesk tool whose documented authority matches the action.
 
 ## Lane Size Gate — apply before every dispatch
 
@@ -121,20 +127,29 @@ When presenting a plan, list slices explicitly, for example: `slice 1: status di
 
 Use the narrowest project-local `flowdesk-*` agent whose role matches the slice. Do not send implementation, refactor, docs, or verification work to generic `reviewer-*` profiles unless the user explicitly asks.
 
-| Task type | Agent | Model |
+The model column below lists **preferred defaults**. Before every `flowdesk_task` call — including single-lane dispatches — call `flowdesk_quota` first and substitute the model with any `ok`/`warning` provider when the preferred model's provider is `exhausted`, `critical`, `stale`, or `non_dispatchable`. The server-side `resolveUsageAwareModelForServer` will also auto-substitute, but the coordinator must make the quota-aware choice before dispatch, not rely solely on server-side correction.
+
+**Model tier policy — use the smallest capable model for the task:**
+- **Upper tier** (`claude-opus`, `gpt-5.5`): architecture design, detailed planning, security/policy analysis, critical review only.
+- **Mid tier** (`claude-sonnet`, `gpt-5.4`, `gemini-pro`): focused implementation with multiple interacting files or complex logic.
+- **Lower tier** (`claude-haiku`, `gemini-flash`, `gemini-flash-lite`, `gpt-5.4-mini`): single-file patches, schema additions, boilerplate, verification commands, doc updates.
+
+When OpenAI is exhausted, substitute claude **or gemini** at the **same tier** — do not escalate to `claude-opus` for work that would normally use `gpt-5.5` mid/lower tier. Prefer gemini-flash / gemini-flash-lite for lower-tier work when gemini quota is `ok` and claude is `warning` or lower, to preserve claude budget.
+
+| Task type | Agent | Preferred model (usage-aware) |
 |---|---|---|
-| Backend/plugin/core implementation | flowdesk-code-backend | openai/gpt-5.5 |
-| Frontend/chat/status UI implementation | flowdesk-code-frontend | openai/gpt-5.5 |
-| TypeScript/schema/config/runtime detail | flowdesk-code-language-specialist | openai/gpt-5.5 |
-| Workflow authoring/writing | flowdesk-architecture | openai/gpt-5.5 |
-| Detailed design/planning | flowdesk-architecture | openai/gpt-5.5 |
-| Migration/refactor/module split | flowdesk-migration-refactor | openai/gpt-5.5 |
-| Tests/reproduction/verification | flowdesk-verifier-testing | openai/gpt-5.5 |
-| Documentation/user guide/runbook | flowdesk-docs-writer | openai/gpt-5.5 |
+| Backend/plugin/core implementation | flowdesk-code-backend | openai/gpt-5.5 → anthropic/claude-sonnet-4-6 if OpenAI exhausted |
+| Frontend/chat/status UI implementation | flowdesk-code-frontend | openai/gpt-5.5 → anthropic/claude-sonnet-4-6 if OpenAI exhausted |
+| TypeScript/schema/config/runtime detail | flowdesk-code-language-specialist | openai/gpt-5.5 → anthropic/claude-sonnet-4-6 if OpenAI exhausted |
+| Workflow authoring/writing | flowdesk-architecture | openai/gpt-5.5 → anthropic/claude-sonnet-4-6 if OpenAI exhausted |
+| Detailed design/planning | flowdesk-architecture | openai/gpt-5.5 → anthropic/claude-opus-4-7 if OpenAI exhausted |
+| Migration/refactor/module split | flowdesk-migration-refactor | openai/gpt-5.5 → anthropic/claude-sonnet-4-6 if OpenAI exhausted |
+| Tests/reproduction/verification | flowdesk-verifier-testing | openai/gpt-5.5 → google/gemini-3.1-flash-lite-preview if OpenAI exhausted + gemini ok, else anthropic/claude-haiku-4-5 |
+| Documentation/user guide/runbook | flowdesk-docs-writer | openai/gpt-5.5 → google/gemini-3.1-flash-lite-preview if OpenAI exhausted + gemini ok, else anthropic/claude-haiku-4-5 |
 | Security/policy analysis | flowdesk-security-policy | anthropic/claude-opus-4-7 |
-| Architecture/design | flowdesk-architecture | openai/gpt-5.5 |
+| Architecture/design | flowdesk-architecture | openai/gpt-5.5 → anthropic/claude-opus-4-7 if OpenAI exhausted |
 | Critical/adversarial review | flowdesk-critical-reviewer | anthropic/claude-opus-4-7 |
-| Git diff/commit planning | flowdesk-git-master | openai/gpt-5.5 |
+| Git diff/commit planning | flowdesk-git-master | openai/gpt-5.5 → google/gemini-3.1-flash-lite-preview if OpenAI exhausted + gemini ok, else anthropic/claude-haiku-4-5 |
 
 Prefer the smallest capable specialist agent for the slice. Small models are appropriate for tightly scoped tasks with explicit boundaries, concrete inputs, and a narrow output contract.
 
@@ -142,7 +157,7 @@ For implementation work, dispatch an edit-capable code/docs/refactor lane first,
 
 ## Usage-aware multi-lane routing
 
-Before multi-perspective reviews or other multi-lane fan-out, call `flowdesk_quota` (the short usage wrapper) and route from fresh usage evidence.
+**Before every `flowdesk_task` dispatch** (single-lane or multi-lane), call `flowdesk_quota` first and route from fresh usage evidence. This applies to single-lane dispatches too — do not skip quota check just because only one lane is being launched.
 
 Default healthy bindings:
 

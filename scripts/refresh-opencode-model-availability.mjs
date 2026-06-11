@@ -38,35 +38,53 @@ function shouldExcludeModelId(modelId) {
   return /-image(?:-|$)/i.test(modelId);
 }
 
+// Patterns that mean the model genuinely does not exist on the provider
+// and will never be available regardless of subscription.
+// These entries are permanently skipped on subsequent refreshes.
+const PERMANENTLY_UNSUPPORTED_PATTERNS = [
+  "api 404",
+  "requested entity was not found",   // google: model not in catalog
+  "provider not found",
+  "model not found",
+];
+
+// Patterns that mean the model exists but THIS environment cannot reach it
+// (wrong subscription tier, account type, org settings, credentials, etc.).
+// These entries are NOT skipped — they are retried on every refresh so that
+// a different environment can still probe and mark them available.
+const ACCOUNT_SPECIFIC_PATTERNS = [
+  "fast mode is not enabled",          // anthropic: org plan gate
+  "credentials are expired",           // anthropic: expired oauth
+  "not supported when using codex",    // openai: chatgpt account vs codex subscription
+  "you do not have access",            // generic subscription gate
+  "subscription",                      // generic subscription gate
+  "quota",                             // provider quota exhausted
+  "permission",                        // permission / entitlement gate
+  "bad request",                       // catch-all for account-specific 400s
+];
+
+function classifyUnavailability(text) {
+  const lower = text.toLowerCase();
+  if (PERMANENTLY_UNSUPPORTED_PATTERNS.some((p) => lower.includes(p))) return "unsupported";
+  if (ACCOUNT_SPECIFIC_PATTERNS.some((p) => lower.includes(p))) return "account_specific";
+  return "temporary_or_unknown";
+}
+
 function shouldSkipAsUnsupported(modelId, previousSnapshot) {
   const previousEntry = previousSnapshot?.results?.find((entry) => entry?.model_id === modelId);
   if (!previousEntry) return false;
-  const reason = `${previousEntry.reason ?? ""} ${previousEntry.output_excerpt ?? ""}`.toLowerCase();
-  return (
-    reason.includes("api 404") ||
-    reason.includes("requested entity was not found") ||
-    reason.includes("provider not found") ||
-    reason.includes("model not found") ||
-    reason.includes("not supported")
-  );
+  const text = `${previousEntry.reason ?? ""} ${previousEntry.output_excerpt ?? ""}`;
+  // Only skip if permanently unsupported AND not merely account-specific.
+  return classifyUnavailability(text) === "unsupported";
 }
 
 function classifyPreviousUnavailability(modelId, previousSnapshot) {
   const previousEntry = previousSnapshot?.results?.find((entry) => entry?.model_id === modelId);
   if (!previousEntry) return "unknown";
-  const reason = `${previousEntry.reason ?? ""} ${previousEntry.output_excerpt ?? ""}`.toLowerCase();
-  if (
-    reason.includes("api 404") ||
-    reason.includes("requested entity was not found") ||
-    reason.includes("provider not found") ||
-    reason.includes("model not found") ||
-    reason.includes("not supported")
-  ) {
-    return "unsupported";
-  }
-  if (reason.includes("fast mode is not enabled") || reason.includes("credentials are expired") || reason.includes("bad request")) {
-    return "temporary_or_account_specific";
-  }
+  const text = `${previousEntry.reason ?? ""} ${previousEntry.output_excerpt ?? ""}`;
+  const cls = classifyUnavailability(text);
+  if (cls === "unsupported") return "unsupported";
+  // Both account_specific and temporary_or_unknown should be retried.
   return "temporary_or_account_specific";
 }
 
@@ -91,18 +109,44 @@ function parseJsonLines(text) {
   return { events, nonJsonLines };
 }
 
+// Per-provider credential/auth failure patterns detectable from the catalog
+// output BEFORE probing individual models. When a whole provider family is
+// blocked at the auth level, we skip every model in that family rather than
+// generating N identical auth-failure probe results — and crucially we record
+// them as status:"blocked" (not "unavailable") so the merge logic can
+// distinguish "could not reach" from "tried and failed".
+const FAMILY_BLOCK_PATTERNS = [
+  {
+    family: "anthropic",
+    patterns: [/Claude credentials are expired/i, /opencode-claude-auth/i],
+    reason: "provider_credentials_unavailable",
+  },
+  {
+    family: "openai",
+    patterns: [/openai.*credentials.*expired/i, /openai.*not authenticated/i, /codex.*auth/i],
+    reason: "provider_credentials_unavailable",
+  },
+  {
+    family: "google",
+    patterns: [/google.*credentials.*expired/i, /gemini.*not authenticated/i, /google.*auth.*fail/i],
+    reason: "provider_credentials_unavailable",
+  },
+  {
+    family: "opencode",
+    patterns: [/opencode.*credentials.*expired/i, /opencode.*not authenticated/i],
+    reason: "provider_credentials_unavailable",
+  },
+];
+
 function familyBlockMapFromCatalog(catalogText) {
   const blocks = new Map();
-  if (/Claude credentials are expired/i.test(catalogText) || /opencode-claude-auth/i.test(catalogText)) {
-    blocks.set("anthropic", {
-      reason: "provider_credentials_unavailable",
-      output_excerpt: redact(
-        catalogText
-          .split(/\r?\n/)
-          .find((line) => /Claude credentials are expired/i.test(line) || /opencode-claude-auth/i.test(line)) ??
-          "Claude credentials are expired",
-      ),
-    });
+  for (const { family, patterns, reason } of FAMILY_BLOCK_PATTERNS) {
+    const matchingLine = catalogText
+      .split(/\r?\n/)
+      .find((line) => patterns.some((p) => p.test(line)));
+    if (matchingLine !== undefined) {
+      blocks.set(family, { reason, output_excerpt: redact(matchingLine) });
+    }
   }
   return blocks;
 }
@@ -137,10 +181,16 @@ function probeModel(modelId, prompt, timeoutMs) {
   } else if (timedOut) {
     status = "timeout";
     reason = "probe_timed_out";
-  } else if (/provider not found/i.test(stderr) || /model not found/i.test(stderr) || /credentials are expired/i.test(stdout) || /credentials are expired/i.test(stderr)) {
-    reason = "provider_or_credentials_unavailable";
-  } else if (finishEvent?.part?.reason) {
-    reason = `step_finish:${finishEvent.part.reason}`;
+  } else {
+    const combinedOutput = `${stdout} ${stderr}`;
+    const cls = classifyUnavailability(combinedOutput);
+    if (cls === "unsupported") {
+      reason = "model_not_supported";
+    } else if (cls === "account_specific") {
+      reason = "account_or_subscription_required";
+    } else if (finishEvent?.part?.reason) {
+      reason = `step_finish:${finishEvent.part.reason}`;
+    }
   }
 
   return {

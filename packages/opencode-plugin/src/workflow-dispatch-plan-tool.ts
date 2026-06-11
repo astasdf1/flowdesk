@@ -54,6 +54,8 @@ export interface FlowDeskWorkflowDispatchPlanToolResultV1 {
 	};
 }
 
+import { isRecord, createAuthoritySmugglingValidator, stringField, stableToken } from "./shared/tool-utils.js";
+
 const authoritySmugglingKeys = new Set([
 	"allowProviderCall",
 	"actualLaneLaunch",
@@ -64,6 +66,8 @@ const authoritySmugglingKeys = new Set([
 	"runtimeExecution",
 	"toolAuthority",
 ]);
+
+const hasForbiddenAuthority = createAuthoritySmugglingValidator(authoritySmugglingKeys);
 
 function authority(persisted: boolean): FlowDeskWorkflowDispatchPlanToolResultV1["authority"] {
 	return {
@@ -109,27 +113,6 @@ function blocked(input: {
 		safeNextActions: safeNextActions(),
 		authority: authority(false),
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stableToken(value: string, fallback: string): string {
-	const token = value.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 96);
-	return token.length >= 3 ? token : fallback;
-}
-
-function hasAuthoritySmuggling(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	for (const [key, entry] of Object.entries(value)) {
-		if (authoritySmugglingKeys.has(key) && entry !== false && entry !== undefined)
-			return true;
-		if (isRecord(entry) && hasAuthoritySmuggling(entry)) return true;
-		if (Array.isArray(entry) && entry.some((item) => hasAuthoritySmuggling(item)))
-			return true;
-	}
-	return false;
 }
 
 function normalizeRequest(value: unknown): FlowDeskWorkflowDispatchPlanToolRequestV1 {
@@ -187,7 +170,7 @@ export function executeFlowDeskWorkflowDispatchPlanToolV1(input: {
 			request,
 			reason: "workflowDispatchPlanTool requires a durable state root directory",
 		});
-	if (hasAuthoritySmuggling(input.rawInput ?? request))
+	if (hasForbiddenAuthority(input.rawInput ?? request))
 		return blocked({
 			config: input.config,
 			request,

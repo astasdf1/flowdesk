@@ -16,8 +16,7 @@
     "test:integration": "npm run build && node scripts/run-tests.mjs --mode integration",
     "test:full": "npm run build && node scripts/run-tests.mjs --mode full",
     "models:list": "opencode models",
-    "models:refresh": "node scripts/refresh-opencode-model-availability.mjs",
-    "models:working": "node scripts/export-working-models.mjs"
+    "models:refresh": "node scripts/refresh-opencode-model-availability.mjs && node scripts/export-model-availability-db.mjs"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.15.6",

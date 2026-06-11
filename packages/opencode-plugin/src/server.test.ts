@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
@@ -10320,6 +10321,92 @@ test("event hook maps child session errors to terminal task failure", async () =
 	}
 });
 
+test("event hook consumes completion wake after direct monitor captures task_result", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-event-hook-wake-after-monitor-"));
+	try {
+		const workflowId = "workflow-event-hook-wake-after-monitor";
+		const assistantText = "Direct monitor captured completion result.";
+		const childIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-child-session-event-hook-wake-after-monitor",
+			record: {
+				schema_version: "flowdesk.agent_task_child_session.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-event-hook-wake-after-monitor",
+				task_id: "task-event-hook-wake-after-monitor",
+				child_session_id: "child-event-hook-wake-after-monitor",
+				parent_session_ref: "ses-event-hook-wake-parent",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				agent_ref: "agent-reviewer-gpt-frontier",
+				nudge_count: 0,
+				last_nudge_at: null,
+				created_at: "2026-06-11T00:00:00.000Z",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(childIntent.ok, true, childIntent.errors.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [childIntent.writeIntent as never]).ok, true);
+
+		const wakePrompts: unknown[] = [];
+		const client = {
+			session: {
+				messages() {
+					return Promise.resolve([{ role: "assistant", parts: [{ type: "text", text: assistantText }] }]);
+				},
+				promptAsync(options: unknown) {
+					wakePrompts.push(options);
+					return Promise.resolve({ info: { id: "wake-message-event-hook-wake-after-monitor" } });
+				},
+			},
+		};
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			{ client } as never,
+			{
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskCompletionWakeMainSessionOption]: {
+					enabled: true,
+					providerQualifiedModelId: "openai/gpt-5.5",
+					parentSessionRef: "ses-event-hook-wake-parent",
+				},
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		)) as ChatMessageHooks;
+		assert.ok(hooks.event);
+
+		await hooks.event({
+			event: {
+				type: "message.updated",
+				properties: {
+					sessionID: "child-event-hook-wake-after-monitor",
+					info: {
+						id: "msg-event-hook-wake-after-monitor",
+						role: "assistant",
+						time: { created: Date.parse("2026-06-11T00:00:01.000Z"), completed: Date.parse("2026-06-11T00:00:02.000Z") },
+					},
+				},
+			},
+		});
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.entries.some((entry) =>
+			entry.evidenceClass === "task_result" &&
+			entry.record.lane_id === "lane-event-hook-wake-after-monitor" &&
+			String(entry.record.result_text).includes(assistantText),
+		));
+		assert.equal(wakePrompts.length, 1, "wake prompt should be dispatched after task_result cache refresh");
+		const wakeCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json"), "utf8")) as Record<string, unknown>;
+		const rows = Array.isArray(wakeCache.rows) ? wakeCache.rows as Record<string, unknown>[] : [];
+		assert.ok(rows.some((row) =>
+			row.workflowId === workflowId &&
+			row.completionKind === "task_result" &&
+			row.consumed === true,
+		));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("chat.message appended parts carry opencode 1.x TextPart schema fields (id, sessionID, messageID)", async () => {
 	const hooks = (await flowdeskOpenCodeServerPlugin.server(undefined as never, {
 		[flowdeskNaturalLanguageRoutingOption]: true,
@@ -12765,16 +12852,32 @@ function slice4WriteDurableEvidence(root: string, workflowId: string): void {
 	// approval shape (action_type=managed_dispatch_beta, attempt_id matches
 	// manifest) and a fresh idempotency_snapshot for reservation diff.
 	//
-	// The working-model gate (restored in SLICE 3) requires a durable
-	// model-availability/working-models.json snapshot. Write it here so the
-	// end-to-end test can reach dispatch_accepted.
+	// The model-availability gate requires a durable model-availability/model-availability.db.
+	// Write it here so the end-to-end test can reach dispatch_accepted.
 	const modelAvailabilityDir = join(root, "model-availability");
 	mkdirSync(modelAvailabilityDir, { recursive: true });
-	writeFileSync(
-		join(modelAvailabilityDir, "working-models.json"),
-		JSON.stringify({ available_model_ids: ["claude/sonnet-4"] }, null, 2),
-		"utf8",
+	const modelDb = new DatabaseSync(join(modelAvailabilityDir, "model-availability.db"));
+	modelDb.exec(`
+		CREATE TABLE IF NOT EXISTS models (
+			model_id TEXT PRIMARY KEY,
+			provider_family TEXT NOT NULL,
+			status TEXT NOT NULL,
+			available INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE IF NOT EXISTS snapshot (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			schema_version TEXT NOT NULL,
+			observed_at TEXT NOT NULL
+		);
+	`);
+	modelDb.prepare("INSERT OR REPLACE INTO snapshot (id, schema_version, observed_at) VALUES (1, ?, ?)").run(
+		"flowdesk.opencode_model_availability_snapshot.v1",
+		new Date().toISOString(),
 	);
+	modelDb.prepare("INSERT OR REPLACE INTO models (model_id, provider_family, status, available) VALUES (?, ?, ?, ?)").run(
+		"anthropic/claude-sonnet-4-6", "anthropic", "available", 1,
+	);
+	modelDb.close();
 	const records: Array<{ evidenceId: string; record: Record<string, unknown> }> = [
 		{
 			evidenceId: "working-model-cache-slice4-v1",
@@ -13292,6 +13395,110 @@ test("Slice 4 — flowdesk_run managed-dispatch blocks before dispatch when SDK 
 		assert.equal(runOutput.status, "blocked_before_dispatch");
 		assert.equal(runOutput.dispatchAttempted, false);
 		assert.equal(typeof runOutput.redactedBlockReason, "string");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_agent_task_run terminal reviewer lane produces durable verdict record", async () => {
+	const verdictId = `verdict-test-${Date.now()}`;
+	const workflowId = "workflow-task-verdict-exec-1";
+	const attemptId = "attempt-task-verdict-1";
+	const laneId = "lane-task-verdict-1";
+
+	const verdictJson = JSON.stringify({
+		schema_version: "flowdesk.top_tier_review_verdict.v1",
+		verdict_id: verdictId,
+		workflow_id: workflowId,
+		attempt_id: attemptId,
+		lane_id: laneId,
+		lane_plan_ref: "plan-1",
+		binding_ref: "bind-1",
+		perspective: "policy_security",
+		source: "test",
+		created_at: new Date().toISOString(),
+		scored_at: new Date().toISOString(),
+		redaction_version: "v1",
+		findings: [],
+		evidence_refs: [],
+		uncertainty: "confident",
+		required_fixes: [],
+		verdict_label: "pass",
+		safe_next_actions: [],
+		dispatch_authority_enabled: false,
+		guard_replacement_authority_enabled: false
+	});
+
+	const assistantText = `Here is my review:\n\n\`\`\`json\n${verdictJson}\n\`\`\`\n\nAll good.`;
+	const dummyClient = {
+		session: {
+			create() {
+				return Promise.resolve({ id: "parent-agent-task-exec-verdict" });
+			},
+			prompt() {
+				return Promise.resolve([
+					{
+						role: "assistant",
+						parts: [{ type: "text", text: assistantText }],
+					},
+				]);
+			},
+			messages(options: unknown) {
+				void options;
+				return Promise.resolve([
+					{
+						role: "assistant",
+						parts: [{ type: "text", text: assistantText }],
+					},
+				]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-agent-task-exec-verdict-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const agentTool = hooks.tool?.[flowdeskAgentTaskRunToolName];
+		assert.ok(agentTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await agentTool.execute(
+					{
+						workflowId,
+						taskDescription: "Review this.",
+						agentName: "reviewer-claude-opus",
+						providerQualifiedModelId: "anthropic/claude-opus-4-7",
+						parentSessionId: "parent-agent-task-exec-verdict",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+						_nudgeQuietPeriodMs: 100,
+						_messagesTimeoutMs: 0,
+					},
+					undefined as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_completed");
+
+		const evidence = reloadFlowDeskSessionEvidenceV1({
+			workflowId,
+			rootDir: root,
+		});
+		assert.equal(evidence.ok, true, evidence.errors.join("; "));
+		const verdicts = evidence.entries.filter(e => e.evidenceClass === "reviewer_verdict");
+		assert.equal(verdicts.length, 1, "Should produce exactly 1 durable verdict record");
+		const storedVerdict = verdicts[0].record as Record<string, unknown>;
+		assert.equal(storedVerdict.verdict_id, verdictId);
+		assert.equal(storedVerdict.verdict_label, "pass");
+		assert.equal(storedVerdict.lane_id, laneId);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

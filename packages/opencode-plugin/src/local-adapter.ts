@@ -174,6 +174,20 @@ export interface FlowDeskLocalNonDispatchAdapterSessionOptionsV1 {
 		hasInjectedSdkClient: boolean;
 		durableStateRootConfigured: boolean;
 	};
+	/**
+	 * Phase 8d: GitHub connector diagnostic summary for the doctor surface.
+	 * Only ref labels and boolean availability; raw tokens are never included.
+	 */
+	githubConnector?: {
+		productionPublish: "disabled" | "enabled" | "unknown";
+		lastConfiguredAt: string | null;
+		githubTokenAvailable: boolean;
+		authSource: "env_github_token" | "env_flowdesk_oauth_token" | "missing" | string;
+		freshness: {
+			surplusUsageGate: "fresh" | "stale" | "missing";
+			minimizationPolicy: "fresh" | "stale" | "missing";
+		};
+	};
 }
 
 export interface FlowDeskLocalProjectConfigFileOptionsV1 {
@@ -224,6 +238,8 @@ interface LocalAdapterState {
 		hasInjectedSdkClient: boolean;
 		durableStateRootConfigured: boolean;
 	};
+	/** Phase 8d: GitHub connector diagnostic summary; raw tokens never stored. */
+	githubConnector?: FlowDeskLocalNonDispatchAdapterSessionOptionsV1["githubConnector"];
 	policyContext: LocalPolicyContext;
 	durableStateWrites: number;
 	lastDurableStateWriteApplied: boolean;
@@ -1794,6 +1810,8 @@ function contextFor(
 			},
 			laneAbortResult,
 			compactionHealth,
+			// Phase 8d: GitHub connector diagnostic — ref labels only, no raw tokens.
+			githubConnector: state.githubConnector,
 		},
 	};
 }
@@ -1861,6 +1879,7 @@ export function createFlowDeskLocalNonDispatchAdapterSession(
 		productionEnablement: options.productionEnablement,
 		reviewerFanoutDiagnostics: options.reviewerFanoutDiagnostics,
 		devBetaAgentTaskRun: options.devBetaAgentTaskRun,
+		githubConnector: options.githubConnector,
 		policyContext: loadLocalPolicyContext(initialParts, options.projectConfig),
 		durableStateWrites: 0,
 		lastDurableStateWriteApplied: false,

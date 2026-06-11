@@ -29,6 +29,7 @@
     "!dist/**/*.test.js",
     "!dist/**/*.test.js.map",
     "!dist/.tsbuildinfo",
+    "data/model-availability.db",
     "README.md",
     "LICENSE"
   ],

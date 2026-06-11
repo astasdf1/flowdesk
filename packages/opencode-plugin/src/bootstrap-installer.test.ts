@@ -204,6 +204,10 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		assert.match(mainAgent, /quarantined reviewer fan-out helper.*flowdesk_task/s);
 		assert.doesNotMatch(mainAgent, /flowdesk_quick_reviewer_run/);
 		assert.match(mainAgent, /Release 2 managed dispatch gate semantics/);
+		assert.match(mainAgent, /Interface-first rule for cross-cutting features/);
+		assert.match(mainAgent, /dedicated architecture\/design lane to define contracts, evidence records, authority boundaries, module boundaries, integration points, and acceptance criteria/);
+		assert.match(mainAgent, /authority\/gates, durable evidence schemas, provider\/model selection, OI\/GitHub data flows, status\/doctor\/debug surfaces, runtime\/watchdog\/session control, chat\/message hooks\/TUI behavior, or docs\/conformance requirements/);
+		assert.match(mainAgent, /split implementation into focused FlowDesk-owned lanes/);
 		assert.match(mainAgent, /flowdesk\.release2_managed_dispatch_gate_promotion_readiness\.v1.*release2_managed_dispatch_gate_ready: true.*necessary but not sufficient/s);
 		assert.match(mainAgent, /explicit scoped user\/Guard approval.*current provider binding.*provider-native usage\/health evidence.*policy eligibility.*pre-call audit evidence.*idempotency\/reservation evidence/s);
 		assert.match(mainAgent, /Release 2 gate opening is not default provider execution, uncontrolled dispatch, automatic fallback\/reselection, write\/apply authority, hard chat control, or `noReply`\/cancel\/stop authority/s);

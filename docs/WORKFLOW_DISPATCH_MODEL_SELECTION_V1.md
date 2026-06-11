@@ -308,7 +308,7 @@ If `taskCostClass` is missing, malformed, or caller-controlled, default to the h
 
 ### 9.6 Model selection algorithm
 
-For each candidate model already proven available in the working-model cache:
+For each candidate model already proven available in the model availability DB (`model-availability.db`, `available=1`):
 
 1. Load its relevant usage buckets.
 2. Normalize them into `UsageBucketDescriptor` values.

@@ -77,6 +77,8 @@ export interface FlowDeskWorkflowDispatchToolResultV1 {
 	};
 }
 
+import { isRecord, createAuthoritySmugglingValidator, stringField, stableToken } from "./shared/tool-utils.js";
+
 const authoritySmugglingKeys = new Set([
 	"fallbackAuthority",
 	"providerFallback",
@@ -89,6 +91,8 @@ const authoritySmugglingKeys = new Set([
 ]);
 
 const forbiddenTextPattern = /\b(?:fallback|reselection|reselect|retry\s+with\s+(?:another|different)|switch\s+(?:provider|model)|controlled\s+write|write\s+apply|apply\s+write|apply\s+changes|write\s+files?|edit\s+files?|modify\s+files?|opencode\s+run|hidden\s+injection|omo)\b/i;
+
+const hasForbiddenAuthority = createAuthoritySmugglingValidator(authoritySmugglingKeys, forbiddenTextPattern);
 
 function safeNextActions(): FlowDeskWorkflowDispatchToolResultV1["safeNextActions"] {
 	return ["/flowdesk-status", "/flowdesk-export-debug", "/flowdesk-doctor"];
@@ -144,26 +148,6 @@ function blocked(input: {
 			actualLaneLaunchAttempted: input.actualLaneLaunchAttempted === true,
 		}),
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stableToken(value: string, fallback: string): string {
-	const token = value.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 96);
-	return token.length >= 3 ? token : fallback;
-}
-
-function hasForbiddenAuthority(value: unknown): boolean {
-	if (typeof value === "string") return forbiddenTextPattern.test(value);
-	if (!isRecord(value)) return false;
-	for (const [key, entry] of Object.entries(value)) {
-		if (authoritySmugglingKeys.has(key) && entry !== false && entry !== undefined)
-			return true;
-		if (hasForbiddenAuthority(entry)) return true;
-	}
-	return false;
 }
 
 function normalizeRequest(value: unknown): FlowDeskWorkflowDispatchToolRequestV1 {

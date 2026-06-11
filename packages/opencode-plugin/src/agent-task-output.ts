@@ -247,6 +247,15 @@ export function observeFlowDeskAgentTaskOutputV1(response: unknown): FlowDeskAge
 	}
 
 	const outputKind = classifyFlowDeskAgentTaskOutputKindV1(latestText);
+	// Enforcement invariant: process_notes output MUST NEVER be usableForSynthesis.
+	// Text is preserved for display, but process-note text classified as such can
+	// never be treated as a synthesizable final answer by any downstream consumer.
+	// This guard is unconditional: no completionStatus, terminalMarker, or other
+	// capture signal can override it.
+	const usableForSynthesis =
+		outputKind !== "empty" &&
+		outputKind !== "tool_trace_only" &&
+		outputKind !== "process_notes";
 	return {
 		latestText,
 		terminalObserved,
@@ -256,10 +265,7 @@ export function observeFlowDeskAgentTaskOutputV1(response: unknown): FlowDeskAge
 		reasoningPartCount,
 		messageCount: items.length,
 		outputKind,
-		// Capture-side usability = "there is some text to keep". This is advisory
-		// transport metadata, NOT a substance/quality judgement (that is the
-		// coordinator's job). Only genuinely empty/tool-only captures are unusable.
-		usableForSynthesis: outputKind !== "empty" && outputKind !== "tool_trace_only",
+		usableForSynthesis,
 		looksLikeRefusalOrError: flowDeskTextLooksLikeRefusalOrErrorV1(latestText),
 	};
 }

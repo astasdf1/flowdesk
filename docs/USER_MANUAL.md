@@ -4,7 +4,7 @@
 
 This manual explains how ordinary OpenCode users should work with FlowDesk for opencode Release 1 and how to avoid abnormal use that can weaken safety or create confusing results.
 
-Release 1 is a General-Use MVP. Use natural-language chat first. FlowDesk routes accepted chat requests into guarded command-backed workflows. Commands are still available for setup, status, recovery, diagnostics, and fallback.
+Release 1 is a General-Use MVP, with Release 3 advisory OI/provider-catalog capabilities now included. Use natural-language chat first. FlowDesk routes accepted chat requests into guarded command-backed workflows. Commands are still available for setup, status, recovery, diagnostics, and fallback.
 
 Final product purpose: FlowDesk keeps the main agent from carrying the whole plan in context. Heavy workflow drafting, refinement, and review should run in bounded subagent lanes when the active release and pinned OpenCode conformance permit actual lane launch. In Release 1, FlowDesk may instead use delegated authoring records, fake-runtime lane summaries, and command-backed fallback summaries. The main agent routes the request, receives compact typed summaries, shows status, and asks FlowDesk Guard for any required decision.
 
@@ -111,7 +111,35 @@ When FlowDesk is loaded in the active OpenCode profile and the natural-language 
 
 For explicit review work, the supported route is `flowdesk_agent_task_run`. The older `flowdesk_quick_reviewer_run` helper remains quarantined until revalidated by current coordinator policy.
 
-None of these promote default real dispatch, automatic provider/model switching, or hard chat cancellation. FlowDesk verifies plugin-side evidence only (what it requested, what it persisted, and what OpenCode returned through SDK interfaces). Platform-internal execution facts are not verified by FlowDesk. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence. Watchdog auto-abort, auto-retry, and stall handling are opt-in diagnostics/recovery behaviors, not default Release 1 authority.
+### Operational Intelligence (OI) Tools
+
+When `operationalIntelligence.exposeMcpTools: true` is configured in `.flowdesk/config.json`, five advisory-only OI tools become available for workflow scoring, proposal evaluation, and ledger inspection. These tools are advisory and non-dispatch only:
+
+1. **`flowdesk_oi_score_preview`**: Preview workflow optimization scores for eligible candidates before running a plan. Shows normalized aggregates, sample counts, confidence intervals, and recency information. Advisory only; does not influence dispatch eligibility.
+
+2. **`flowdesk_oi_threshold_gate`**: Evaluate whether accumulated scores meet the reuse threshold (minimum sample count, task-signature match, recency/decay, confidence threshold, scorer diversity, policy/taxonomy compatibility, recent-failure checks). Returns pass/fail for score reuse; cannot authorize execution.
+
+3. **`flowdesk_oi_ledger_list`**: Query local and remote (GitHub-backed) JSONL score ledgers. Returns redacted partition refs, manifest metadata, last-observed time, and sample counts. Supports filtering by task category, date range, and scorer identity. No payload persistence.
+
+4. **`flowdesk_oi_ledger_compact`**: Trigger compaction of active raw partitions into normalized sealed snapshots. Produces RFC 8785 canonical hash chains, dedupe handling, and conflict resolution. Updates manifest and trusted chain head references. Does not expose or persist raw events.
+
+5. **`flowdesk_oi_session_summary`**: Generate a local provider-free summary of current session OI state, including loaded proposals, score snapshots, fan-out cadence status, and policy compliance. Read-only; does not call providers or execute workflows.
+
+All OI tools are advisory-only, dispatch-free, and cannot make ineligible workflows eligible, override Guard, reduce verification, skip approval, or override usage/Plugin-SDK-compatibility checks. Multi-model proposal fan-out is controlled by separate explicit opt-in, usage confirmation, and policy gates; it remains disabled by default. Score snapshots are ignored or fail-closed when stale, malformed, hand-edited, below threshold, or outside the matching task signature.
+
+To enable OI tooling, add to `.flowdesk/config.json`:
+
+```json
+{
+  "operationalIntelligence": {
+    "exposeMcpTools": true,
+    "ledgerPath": ".flowdesk/ledgers",
+    "githubLedgerEnabled": false
+  }
+}
+```
+
+None of the OI tools promote default real dispatch, automatic provider/model switching, or hard chat cancellation. FlowDesk verifies plugin-side evidence only (what it requested, what it persisted, and what OpenCode returned through SDK interfaces). Platform-internal execution facts are not verified by FlowDesk. Explicit developer-mode reviewer/task helpers can make real provider calls only when separately enabled and acknowledged; they still cannot approve dispatch, switch providers, or bypass Guard. The preview/status/usage tools only read or write redacted diagnostic/planning/local-preview evidence. Watchdog auto-abort, auto-retry, and stall handling are opt-in diagnostics/recovery behaviors, not default Release 1 authority.
 
 ### Short Wrapper Tools
 
@@ -303,12 +331,12 @@ Show the current plan and ask for approval for the exact next step.
 Abnormal request:
 
 ```text
-Use noReply or cancel so OpenCode cannot answer outside FlowDesk.
+Use `noReply` or `cancel` (SDK-scoped child-session control) so OpenCode cannot answer outside FlowDesk.
 ```
 
-What FlowDesk does: unsupported `noReply`, `cancel`, and `stop` fields are not treated as hard cancellation authority. Release 1 can use proven mutation/throw behavior for routing, but it does not claim hard chat interception.
+What FlowDesk does: unsupported `noReply`, `cancel`, and `stop` fields are not treated as main-chat cancellation authority. Release 1 can use proven mutation/throw behavior for routing, but it does not claim hard chat interception.
 
-`/flowdesk-abort` records a cancellation request and moves the workflow toward the safest available state. It reports whether cancellation was requested, observed, failed, or proven hard by conformance. Unless hard cancellation is proven, users should treat abort as best-effort containment plus recovery guidance, not as proof that an external runtime stopped.
+`/flowdesk-abort` is the Release 1 diagnostic abort surface: it records a cancellation request or lane abort evidence and moves the workflow toward the safest available state without calling the OpenCode SDK or claiming runtime kill authority. Dev/beta SDK task aborts, when explicitly enabled by the plugin, are separate from `/flowdesk-abort` and route through FlowDesk's typed session-abort control adapter before writing `task_failed` and terminal lifecycle evidence. Unless hard cancellation is proven by conformance, users should treat abort as best-effort containment plus recovery guidance, not as proof that an external runtime stopped.
 
 What you should do instead:
 
@@ -324,7 +352,7 @@ Abnormal request:
 Claude is unavailable, but run anyway with whatever model is available.
 ```
 
-What FlowDesk does: stale, unknown, refused, shared-limit-suspected, fallback-derived, or non-exact usage is non-dispatchable for real provider/model selection. Provider health problems such as missing or expired auth, provider outage, rate limit, unavailable model, transport timeout, provider error, OpenCode provider-load failure, or ambiguous telemetry can block or degrade the affected path. Release 1 dry-run and fake-runtime paths may still show warnings or block only the parts that depend on provider readiness. Missing provider auth, missing actual usage/quota/reset evidence, alias model ids, or mismatched account/auth scope block real dispatch without exposing credentials. FlowDesk does not automatically switch provider/model in Release 1.
+What FlowDesk does: stale, unknown, refused, shared-limit-suspected, fallback-derived, or non-exact usage is non-dispatchable for managed fallback/reselection. Provider health problems such as missing or expired auth, provider outage, rate limit, unavailable model, transport timeout, provider error, OpenCode provider-load failure, or ambiguous telemetry can block or degrade the affected path. Release 1 dry-run and fake-runtime paths may still show warnings or block only the parts that depend on provider readiness. Missing provider auth, missing actual usage/quota/reset evidence, alias model ids, or mismatched account/auth scope block managed fallback/reselection without exposing credentials. In dev/beta lane-launch tools, `providerQualifiedModelId` is treated as a preferred pre-launch model: if cached usage marks that provider exhausted, critical, stale, or non-dispatchable, FlowDesk may substitute a healthier available model before launch with `allowCrossFamily=true` by default. That pre-launch preferred-model substitution is reported as `providerBindingChangedBeforeLaunch`, `preLaunchModelSubstitution`, and `modelSubstitutionKind=pre_launch_preferred_model_substitution`; it is not managed fallback/reselection and does not grant fallback authority.
 
 For OpenCode Go or z.ai, this also means FlowDesk will not use provider-side balance behavior, model substitution, coding-plan mode, or a suggested alternate model as fallback authority. Those signals can be displayed as diagnostics only.
 
@@ -393,7 +421,7 @@ Release 1 does not promise:
 
 1. Real OpenCode dispatch.
 2. Automatic provider/model fallback or reselection.
-3. Hard chat cancellation, no-reply, or stop authority.
+3. Main-chat cancellation or SDK-scoped noReply control.
 4. Verification of platform-internal execution facts beyond plugin-side evidence.
 5. Evaluation-based ranking or workflow optimization as an approval path.
 6. Patent, legal, or medical-device professional signoff.

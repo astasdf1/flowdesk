@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { openReadonlyDb } from "./shared/sqlite-adapter.js";
 import {
 	validateFlowDeskTaskAgentAssignmentV1,
 	validateFlowDeskTaskModelSelectionV1,
@@ -16,6 +17,7 @@ import type { FlowDeskTuiUsageProviderRowV1 } from "./tui-usage-snapshot.js";
 import { selectModelForTask, buildUsageMapFromProviders, intersectWorkingAndOpenCodeSupportedModelIds } from "./model-selection-engine.js";
 import { buildOIAssignmentAdvisoryV1, type OIAssignmentAdvisoryInputV1 } from "./oi-assignment-advisor.js";
 import { loadRoutingAdvisoryLedgerV1 } from "./oi-ledger-reader.js";
+import { evaluateAndRecordRoutingAdvisoryV1 } from "./routing-advisory-pipeline.js";
 
 export interface FlowDeskWorkflowAssignToolResultV1 {
 	status: "assignments_written" | "blocked_before_assignments";
@@ -43,6 +45,12 @@ export interface FlowDeskWorkflowAssignToolResultV1 {
 		advisoryScore?: number;
 		hardFilterState?: string;
 		skippedReason?: string;
+		/**
+		 * Pipeline result from routing-advisory-pipeline (P7-S05).
+		 * Advisory-only: never influences selection, routing, dispatch, or fallback.
+		 */
+		pipelineStatus?: string;
+		pipelineGateDecision?: string;
 	}[];
 }
 
@@ -52,11 +60,20 @@ function blocked(reason: string, workflowId?: string): FlowDeskWorkflowAssignToo
 	return { status: "blocked_before_assignments", workflowId, redactedBlockReason: reason, summaryForUser: `Blocked: ${reason}`, safeNextActions: ["/flowdesk-status", "/flowdesk-doctor"], authority: SAFE_AUTHORITY };
 }
 
-function loadWorkingModelIds(rootDir: string): string[] {
-	const snapshotPath = join(rootDir, "model-availability/working-models.json");
-	const raw = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
-	const ids = raw.available_model_ids;
-	return Array.isArray(ids) ? ids.filter((value): value is string => typeof value === "string" && value.includes("/")).filter((value, index, array) => array.indexOf(value) === index) : [];
+function loadAvailableModelIdsFromDb(rootDir: string): string[] {
+	// Prefer the durable state root DB; fall back to the package-bundled DB.
+	const durableDbPath = join(rootDir, "model-availability/model-availability.db");
+	const bundledDbPath = new URL("../../data/model-availability.db", import.meta.url);
+	const dbPath = existsSync(durableDbPath) ? durableDbPath : bundledDbPath.pathname;
+	const db = openReadonlyDb(dbPath);
+	try {
+		const rows = db.prepare<{ model_id: string }>(
+			"SELECT model_id FROM models WHERE available = 1 ORDER BY model_id"
+		).all();
+		return rows.map((r) => r.model_id);
+	} finally {
+		db.close();
+	}
 }
 
 export function executeFlowDeskWorkflowAssignToolV1(input: {
@@ -79,15 +96,15 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 
 	const rows = input.sidebarCacheRows ?? [];
 	if (rows.length === 0) return blocked("no provider usage data available – run flowdesk_quota first", input.workflowId);
-	let workingModelIds: string[];
+	let availableModelIds: string[];
 	try {
-		workingModelIds = loadWorkingModelIds(input.rootDir);
+		availableModelIds = loadAvailableModelIdsFromDb(input.rootDir);
 	} catch {
-		return blocked("working-model cache missing – run models refresh first", input.workflowId);
+		return blocked("model availability db missing – run npm run models:refresh first", input.workflowId);
 	}
-	if (workingModelIds.length === 0) return blocked("working-model cache empty – run models refresh first", input.workflowId);
-	const selectableModelIds = intersectWorkingAndOpenCodeSupportedModelIds(workingModelIds);
-	if (selectableModelIds.length === 0) return blocked("working-model cache has no OpenCode-supported exact models – refresh working-model evidence before assignment", input.workflowId);
+	if (availableModelIds.length === 0) return blocked("model availability db empty – run npm run models:refresh first", input.workflowId);
+	const selectableModelIds = intersectWorkingAndOpenCodeSupportedModelIds(availableModelIds);
+	if (selectableModelIds.length === 0) return blocked("model availability db has no OpenCode-supported models – run npm run models:refresh first", input.workflowId);
 
 	const taskSignatureRef = "signature-default"; // TODO: Derive real signature from task properties
 	const routingLedger = loadRoutingAdvisoryLedgerV1(input.rootDir);
@@ -121,6 +138,8 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 		advisoryScore?: number;
 		hardFilterState?: string;
 		skippedReason?: string;
+		pipelineStatus?: string;
+		pipelineGateDecision?: string;
 	}> = [];
 
 	for (const node of nodes) {
@@ -155,6 +174,15 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 			...(selectedRow?.alertLevel !== undefined ? { alertLevel: selectedRow.alertLevel as OIAssignmentAdvisoryInputV1["alertLevel"] } : {}),
 			oiEnabled: true,
 		});
+		// ── P7-S05: Routing advisory pipeline (additive — must not influence selection) ──
+		// Advisory-only: result is metadata only; never fed back into selectModelForTask.
+		const pipelineResult = evaluateAndRecordRoutingAdvisoryV1({
+			workflowId: input.workflowId,
+			taskId,
+			rootDir: input.rootDir,
+			...(oiAdvisory.advisoryScore !== undefined ? { currentScore: oiAdvisory.advisoryScore } : {}),
+		});
+
 		oiAdvisories.push({
 			taskId,
 			included: oiAdvisory.included,
@@ -162,6 +190,8 @@ export function executeFlowDeskWorkflowAssignToolV1(input: {
 			...(oiAdvisory.advisoryScore !== undefined ? { advisoryScore: oiAdvisory.advisoryScore } : {}),
 			...(oiAdvisory.hardFilterState !== undefined ? { hardFilterState: oiAdvisory.hardFilterState } : {}),
 			...(oiAdvisory.skippedReason !== undefined ? { skippedReason: oiAdvisory.skippedReason } : {}),
+			pipelineStatus: pipelineResult.status,
+			...(pipelineResult.gateDecision !== undefined ? { pipelineGateDecision: pipelineResult.gateDecision } : {}),
 		});
 
 		const assignmentId = `assignment-${randomBytes(4).toString("hex")}`;
