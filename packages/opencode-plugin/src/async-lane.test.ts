@@ -27,6 +27,37 @@ function makeClient(overrides: Partial<{
 	} as unknown as FlowDeskManagedDispatchBetaOpenCodeClientV1;
 }
 
+function writeTurnCompletedProgress(input: {
+	root: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	observedAtMs: number;
+	messageId?: string;
+}): void {
+	const progress = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
+		evidenceId: `agent-task-progress-turn-completed-${input.laneId}-${input.observedAtMs}`,
+		record: {
+			schema_version: "flowdesk.agent_task_progress.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: input.taskId,
+			agent_ref: "agent-test",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			progress_seq: 2,
+			observed_at: new Date(input.observedAtMs).toISOString(),
+			phase: "waiting",
+			progress_label: `agent task turn completed msgid=${input.messageId ?? "msg-test-turn"} created=${input.observedAtMs - 100} completed=${input.observedAtMs}`,
+			progress_ref: `progress-turn-completed-${input.laneId}`,
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		},
+	});
+	assert.equal(progress.ok, true, progress.errors?.join("; "));
+	assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(input.root, [progress.writeIntent as never]).ok, true);
+}
+
 test("asyncMode returns task_launched immediately after lane launch", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-async-lane-"));
 	try {
@@ -961,6 +992,195 @@ test("monitorChildSessions captures single-message SDK response with step-finish
 		assert.equal((taskResult?.record as Record<string, unknown>).result_text, "watchdog single message final answer");
 		assert.equal((taskResult?.record as Record<string, unknown>).finalization_reason, "terminal_marker");
 		assert.equal(reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions keeps empty turn_completed awaiting body capture before retry window expires", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-turn-empty-awaiting-"));
+	try {
+		const workflowId = "workflow-monitor-turn-empty-awaiting";
+		const laneId = "lane-turn-empty-awaiting";
+		const taskId = "task-turn-empty-awaiting";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const createdAtMs = Date.parse(String(child?.created_at));
+		const turnCompletedAtMs = createdAtMs + 1_000;
+		writeTurnCompletedProgress({ root, workflowId, laneId, taskId, observedAtMs: turnCompletedAtMs });
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ({
+					info: { role: "assistant" },
+					parts: [{ type: "step-finish", reason: "stop" }],
+				}),
+			}),
+			now: new Date(turnCompletedAtMs + 500),
+			bodyRetryMax: 2,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+
+		assert.equal(monResult.lanesCompleted, 0);
+		assert.equal(monResult.lanesAborted, 0);
+		assert.equal(monResult.lanesAwaitingCapture, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false, "empty turn_completed must not terminalize before retry/absolute windows expire");
+		const childAfter = reloaded.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.equal(childAfter?.awaiting_body_capture_attempts, 1);
+		assert.equal(childAfter?.capture_failure_diagnostic_reason, "awaiting_body_capture_empty");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions persists late body after initial empty turn_completed", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-turn-empty-late-body-"));
+	try {
+		const workflowId = "workflow-monitor-turn-empty-late-body";
+		const laneId = "lane-turn-empty-late-body";
+		const taskId = "task-turn-empty-late-body";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const createdAtMs = Date.parse(String(child?.created_at));
+		const turnCompletedAtMs = createdAtMs + 1_000;
+		writeTurnCompletedProgress({ root, workflowId, laneId, taskId, observedAtMs: turnCompletedAtMs });
+
+		const emptyClient = makeClient({
+			messages: async () => ({ info: { role: "assistant" }, parts: [{ type: "step-finish", reason: "stop" }] }),
+		});
+		const first = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: emptyClient,
+			now: new Date(turnCompletedAtMs + 500),
+			bodyRetryMax: 2,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+		assert.equal(first.lanesAwaitingCapture, 1);
+
+		const lateBodyClient = makeClient({
+			messages: async () => ({
+				info: { role: "assistant" },
+				parts: [{ type: "text", text: "late final answer after empty turn_completed" }, { type: "step-finish", reason: "stop" }],
+			}),
+		});
+		const second = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: lateBodyClient,
+			now: new Date(turnCompletedAtMs + 2_500),
+			bodyRetryMax: 2,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+
+		assert.equal(second.lanesCompleted, 1);
+		assert.equal(second.lanesAborted, 0);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.equal(taskResult?.result_text, "late final answer after empty turn_completed");
+		assert.equal(taskResult?.finalization_reason, "terminal_marker");
+		assert.equal(taskResult?.capture_status, "captured");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions terminalizes no_output only after empty turn_completed retry budget expires", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-turn-empty-terminal-"));
+	try {
+		const workflowId = "workflow-monitor-turn-empty-terminal";
+		const laneId = "lane-turn-empty-terminal";
+		const taskId = "task-turn-empty-terminal";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const createdAtMs = Date.parse(String(child?.created_at));
+		const turnCompletedAtMs = createdAtMs + 1_000;
+		writeTurnCompletedProgress({ root, workflowId, laneId, taskId, observedAtMs: turnCompletedAtMs });
+
+		const emptyClient = makeClient({
+			messages: async () => ({ info: { role: "assistant" }, parts: [{ type: "step-finish", reason: "stop" }] }),
+			promptAsync: async () => { throw new Error("repair prompt unavailable in test"); },
+		});
+		const first = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: emptyClient,
+			now: new Date(turnCompletedAtMs + 500),
+			bodyRetryMax: 1,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+		assert.equal(first.lanesAwaitingCapture, 1);
+		let reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false, "first empty turn_completed remains repairable");
+
+		const second = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: emptyClient,
+			now: new Date(turnCompletedAtMs + 3_000),
+			bodyRetryMax: 1,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+
+		assert.equal(second.lanesAborted, 1);
+		reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
+		const taskFailed = reloaded.entries.find(e => e.evidenceClass === "task_failed")?.record as Record<string, unknown> | undefined;
+		assert.equal(taskFailed?.failure_category, "no_response");
+		assert.match(String(taskFailed?.redacted_reason), /turn completed but no body captured after 1 bounded retries/);
+		assert.equal(taskFailed?.capture_status, "no_output");
+		assert.equal(taskFailed?.final_body_observed, false);
+		assert.equal(taskFailed?.terminal_marker_observed, true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
