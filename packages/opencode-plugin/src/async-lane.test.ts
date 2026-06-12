@@ -1120,7 +1120,7 @@ test("monitorChildSessions persists late body after initial empty turn_completed
 	}
 });
 
-test("monitorChildSessions terminalizes no_output only after empty turn_completed retry budget expires", async () => {
+test("monitorChildSessions does not terminalize no_output only because empty turn_completed retry budget expires", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-turn-empty-terminal-"));
 	try {
 		const workflowId = "workflow-monitor-turn-empty-terminal";
@@ -1172,15 +1172,33 @@ test("monitorChildSessions terminalizes no_output only after empty turn_complete
 			finalizingAbsoluteMaxMs: 60_000,
 		});
 
-		assert.equal(second.lanesAborted, 1);
+		assert.equal(second.lanesAborted, 0);
 		reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
 		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
-		const taskFailed = reloaded.entries.find(e => e.evidenceClass === "task_failed")?.record as Record<string, unknown> | undefined;
-		assert.equal(taskFailed?.failure_category, "no_response");
-		assert.match(String(taskFailed?.redacted_reason), /turn completed but no body captured after 1 bounded retries/);
-		assert.equal(taskFailed?.capture_status, "no_output");
-		assert.equal(taskFailed?.final_body_observed, false);
-		assert.equal(taskFailed?.terminal_marker_observed, true);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false, "step-finish plus empty body is not terminal no_output by itself");
+		const childAfter = reloaded.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		assert.ok(
+			childAfter?.capture_failure_diagnostic_reason === "awaiting_session_quiescence_empty" ||
+			childAfter?.capture_failure_diagnostic_reason === "turn_completed_empty_repair_prompt",
+			"empty step-finish should stay pending/repairable instead of terminalizing",
+		);
+
+		const lateBodyClient = makeClient({
+			messages: async () => ({ info: { role: "assistant" }, parts: [{ type: "text", text: "final text after exhausted empty step-finish retries" }, { type: "step-finish", reason: "stop" }] }),
+		});
+		const third = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: lateBodyClient,
+			now: new Date(turnCompletedAtMs + 4_000),
+			bodyRetryMax: 1,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+		assert.equal(third.lanesCompleted, 1);
+		reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.equal(taskResult?.result_text, "final text after exhausted empty step-finish retries");
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

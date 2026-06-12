@@ -1279,7 +1279,7 @@ test("V11.2 Slice 2: intermediate TURN_COMPLETED before later tool activity does
 	}
 });
 
-test("V11.2 Slice 3: turn completed but empty body retries, injects final-report repair, then terminalizes if still empty", async () => {
+test("V11.2 Slice 3: turn completed but empty body retries, injects final-report repair, and stays non-terminal before absolute cap", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-awaiting-body-"));
 	try {
 		const workflowId = "workflow-v112-awaiting-body";
@@ -1358,9 +1358,9 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
 		});
-		assert.equal(c6.lanesAborted, 1, "must terminalize as turn_completed_empty after repair and bounded retries");
+		assert.equal(c6.lanesAborted, 0, "retry/repair budget alone must not terminalize empty step-finish as no_output");
 
-		// Evidence: a task_failed with the turn_completed_empty reason exists.
+		// Evidence: no task_failed is written before an independent absolute-cap/timeout signal.
 		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
 		assert.equal(reload.ok, true);
 		const failed = reload.entries.find((e) =>
@@ -1368,7 +1368,7 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 			&& typeof (e.record as Record<string, unknown>).redacted_reason === "string"
 			&& ((e.record as Record<string, unknown>).redacted_reason as string).includes("turn_completed_empty"),
 		);
-		assert.ok(failed, "must record a turn_completed_empty task_failed");
+		assert.equal(failed, undefined, "must not record turn_completed_empty task_failed before absolute cap");
 		const repairEvidence = reload.entries.find((e) =>
 			e.evidenceClass === "agent_task_child_session"
 			&& (e.record as Record<string, unknown>).turn_completed_empty_repair_count === 1,

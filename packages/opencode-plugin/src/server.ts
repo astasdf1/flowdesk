@@ -7361,7 +7361,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 									) {
 										await consumeCompletionWakeForMainSessionBestEffort(input);
 									}
-									if (monResult.lanesAwaitingCapture > 0 && retriesLeft > 0) {
+									if ((monResult.lanesAwaitingCapture ?? 0) > 0 && retriesLeft > 0) {
 										const retryTimer = setTimeout(
 											() => runMonitorWithBodyCaptureRetry(retriesLeft - 1),
 											5_000,

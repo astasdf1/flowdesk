@@ -1599,9 +1599,6 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 const AGENT_TASK_IDLE_CONTINUATION_TEXT =
 	"You appear to have become idle without producing a final answer. If your work is complete, output your complete final answer now. If you are blocked, state the blocker concisely in one short paragraph." as const;
 
-const AGENT_TASK_FINAL_REPORT_REPAIR_TEXT =
-	"FlowDesk detected that your turn completed, but no final answer body was captured. Do not inspect more files, run more commands, or edit files. Provide only a concise final report in this format:\n\nFLOWDESK_FINAL:\nstatus: completed | changes_required | blocked | failed\nsummary: ...\nfiles_changed:\n- ...\ntests_run:\n- ...\nnext_recommended_action: ..." as const;
-
 /**
  * Classify an agent_task_progress record as MEANINGFUL model/runtime activity
  * vs ambient/self-authored noise. Meaningful activity resets the watchdog nudge
@@ -2500,7 +2497,7 @@ export interface FlowDeskChildSessionMonitorResultV1 {
 	lanesNudged: number;
 	lanesAborted: number;
 	/** Lanes still awaiting body capture (turn completed but body not yet readable). */
-	lanesAwaitingCapture: number;
+	lanesAwaitingCapture?: number;
 }
 
 /**
@@ -2615,7 +2612,7 @@ export async function monitorChildSessionsV1(input: {
 	const coordinatorAttentionMs = typeof input.coordinatorAttentionMs === "number" && input.coordinatorAttentionMs > 0
 		? Math.floor(input.coordinatorAttentionMs)
 		: Math.max(300_000, Math.floor(abortThresholdMs));
-	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0, lanesAwaitingCapture: 0 };
+	const result = { lanesPolled: 0, lanesCompleted: 0, lanesNudged: 0, lanesAborted: 0 } as FlowDeskChildSessionMonitorResultV1;
 
 	const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: input.rootDir, workflowId: input.workflowId });
 	if (!reloaded.ok) return result;
@@ -2644,6 +2641,8 @@ export async function monitorChildSessionsV1(input: {
 	// "lane looks alive forever" / stuck stall-detection problem.
 	const latestMeaningfulProgressByLane = new Map<string, number>();
 	const latestLifecycleStateChangeByLane = new Map<string, number>();
+	const awaitingBodyCaptureProgressByLane = new Map<string, number[]>();
+	const turnCompletedEmptyRepairProgressByLane = new Map<string, number[]>();
 	// V11.2 Slice 1: ordered per-lane tool-state transitions (running/settled),
 	// derived from event-hook progress labels, feeding the event-based open-tool
 	// set. Sorted by observedAtMs before use.
@@ -2687,6 +2686,16 @@ export async function monitorChildSessionsV1(input: {
 			const phase = typeof rec.phase === "string" ? rec.phase : undefined;
 			const progressLabel = typeof rec.progress_label === "string" ? rec.progress_label : undefined;
 			const diagnosticProgressLabel = typeof progressLabel === "string" ? progressLabel.toLowerCase() : "";
+			if (Number.isFinite(observedAtMs) && diagnosticProgressLabel.includes("awaiting body capture after turn completed event")) {
+				const list = awaitingBodyCaptureProgressByLane.get(laneIdVal) ?? [];
+				list.push(observedAtMs);
+				awaitingBodyCaptureProgressByLane.set(laneIdVal, list);
+			}
+			if (Number.isFinite(observedAtMs) && diagnosticProgressLabel.includes("final-report repair") && diagnosticProgressLabel.includes("empty turn completed")) {
+				const list = turnCompletedEmptyRepairProgressByLane.get(laneIdVal) ?? [];
+				list.push(observedAtMs);
+				turnCompletedEmptyRepairProgressByLane.set(laneIdVal, list);
+			}
 			const isToolTimeoutReviewProgress = diagnosticProgressLabel.includes("tool_run_overdue_observed") || diagnosticProgressLabel.includes("tool_execution_aborted_observed");
 			const progressSeq = typeof rec.progress_seq === "number" && Number.isInteger(rec.progress_seq) && rec.progress_seq > 0
 				? rec.progress_seq
@@ -3082,13 +3091,23 @@ export async function monitorChildSessionsV1(input: {
 			// V11.2 Slice 3 (G5) — awaiting_body_capture. The turn completed but the
 			// body poll is still empty (SDK buffer not yet synced). Do NOT immediately
 			// fail as no_response and do NOT capture empty/intermediate text. Mark the
-			// lane awaiting and retry on later cycles up to bodyRetryMax; only then
-			// terminalize as turn_completed_empty.
+			// lane awaiting and retry on later cycles up to bodyRetryMax, then keep
+			// awaiting quiescence until a separate failure/timeout/absolute cap fires.
 			if (idleObservation === null || idleObservation.text === undefined || idleObservation.text.trim().length === 0) {
 				const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 				const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
-				const priorAttempts = typeof recordForWrites.awaiting_body_capture_attempts === "number" ? recordForWrites.awaiting_body_capture_attempts : 0;
+				const latestRepairProgressAtMs = Math.max(
+					...((turnCompletedEmptyRepairProgressByLane.get(laneId) ?? []).filter((value) => Number.isFinite(value))),
+					Number.NEGATIVE_INFINITY,
+				);
+				const durableAwaitingProgressAttempts = (awaitingBodyCaptureProgressByLane.get(laneId) ?? [])
+					.filter((value) => Number.isFinite(value) && value > latestRepairProgressAtMs)
+					.length;
+				const recordedAwaitingAttempts = Number.isFinite(latestRepairProgressAtMs)
+					? 0
+					: typeof recordForWrites.awaiting_body_capture_attempts === "number" ? recordForWrites.awaiting_body_capture_attempts : 0;
+				const priorAttempts = Math.max(recordedAwaitingAttempts, durableAwaitingProgressAttempts);
 				const nextAttempts = priorAttempts + 1;
 				const nowIso = new Date(nowMs).toISOString();
 				const captureDiagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: nowIso });
@@ -3160,27 +3179,27 @@ export async function monitorChildSessionsV1(input: {
 						progressLabel: `async agent task awaiting body capture after turn completed event (attempt ${nextAttempts}/${bodyRetryMax})`,
 						observedAt: nowIso,
 					});
-					result.lanesAwaitingCapture++;
+					result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
 					continue;
 				}
-				// Retries exhausted: before terminalizing, inject one narrow final-report
-				// repair prompt into the SAME child session. A turn can complete before the
-				// SDK exposes a readable final body, or a child may finish file/tool work
-				// without writing a final answer. The repair prompt is report-only: no new
-				// inspection, tool use, or edits. If this also fails to produce text after a
-				// fresh bounded retry window, fall through to turn_completed_empty below.
-				const repairCount = typeof recordForWrites.turn_completed_empty_repair_count === "number"
-					? recordForWrites.turn_completed_empty_repair_count
-					: 0;
+				const durableRepairCount = (turnCompletedEmptyRepairProgressByLane.get(laneId) ?? []).filter((value) => Number.isFinite(value)).length;
+				const recordedRepairCount = typeof recordForWrites.turn_completed_empty_repair_count === "number" ? recordForWrites.turn_completed_empty_repair_count : 0;
+				const repairCount = Math.max(recordedRepairCount, durableRepairCount);
 				if (repairCount < 1) {
 					const repairAt = nowIso;
-					const deliveryStatus = await sendIdleContinuationPrompt(
-						input.client,
-						childSessionId,
-						5_000,
-						AGENT_TASK_FINAL_REPORT_REPAIR_TEXT,
-					);
+					const deliveryStatus = await sendIdleContinuationPrompt(input.client, childSessionId);
 					if (deliveryStatus === "sent") {
+						recordForWrites = withCaptureFailureDiagnosticFields({
+							...recordForWrites,
+							awaiting_body_capture_attempts: 0,
+							turn_completed_empty_repair_count: repairCount + 1,
+							turn_completed_empty_last_repair_at: repairAt,
+							turn_completed_empty_last_repair_delivery_status: deliveryStatus,
+							...(typeof recordForWrites.awaiting_body_capture_since === "string"
+								? {}
+								: { awaiting_body_capture_since: nowIso }),
+						}, captureDiagnostic, "turn_completed_empty_repair_prompt");
+						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
 						writeAgentTaskProgressEvidence({
 							rootDir: input.rootDir,
 							workflowId: input.workflowId,
@@ -3189,81 +3208,42 @@ export async function monitorChildSessionsV1(input: {
 							agentRef,
 							providerQualifiedModelId: modelId,
 							phase: "nudged",
-							progressSeq: 15 + repairCount,
-							progressLabel: "async agent task final-report repair prompt injected after turn completed empty",
+							progressSeq: 8 + nextAttempts,
+							progressLabel: "async agent task final-report repair prompt injected after empty turn completed event",
 							observedAt: repairAt,
 						});
-						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, withCaptureFailureDiagnosticFields({
-							...recordForWrites,
-							awaiting_body_capture_attempts: 0,
-							turn_completed_empty_repair_count: repairCount + 1,
-							last_turn_completed_empty_repair_at: repairAt,
-							last_turn_completed_empty_repair_delivery_status: deliveryStatus,
-							last_activity_at: repairAt,
-						}, captureDiagnostic, "turn_completed_empty_repair_prompt_sent"));
 						result.lanesNudged++;
 						continue;
 					}
-					writeAgentTaskProgressEvidence({
-						rootDir: input.rootDir,
-						workflowId: input.workflowId,
-						laneId,
-						taskId,
-						agentRef,
-						providerQualifiedModelId: modelId,
-						phase: "failed",
-						progressSeq: 15 + repairCount,
-						progressLabel: "async agent task final-report repair prompt unavailable after turn completed empty",
-						observedAt: repairAt,
-					});
 				}
-				// Repair unavailable or exhausted: terminalize as turn_completed_empty (a
-				// turn DID complete, but no body materialized). Reuse the no_response
-				// failure category enum; the reason records that the turn completed empty.
-				if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
-					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, withCaptureFailureDiagnosticFields({
-						...recordForWrites,
-						capture_failure_terminalized_at: nowIso,
-					}, captureDiagnostic, "turn_completed_empty_terminalized"));
-					const token = randomBytes(4).toString("hex");
-					const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
-						outputKind: "empty",
-						finalBodyObserved: false,
-						terminalMarkerObserved: true,
-					});
-					writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-turncompleted-empty-${token}`, {
-						schema_version: "flowdesk.task_failed.v1",
-						workflow_id: input.workflowId,
-						lane_id: laneId,
-						task_id: taskId,
-						agent_ref: agentRef,
-						provider_qualified_model_id: modelId,
-						failure_category: "no_response",
-						redacted_reason: `turn completed but no body captured after ${bodyRetryMax} bounded retries (turn_completed_empty)`,
-						...noOutputCaptureMetadata,
-						created_at: nowIso,
-						dispatch_authority_enabled: false,
-					});
-					writeAgentTaskProgressEvidence({
-						rootDir: input.rootDir,
-						workflowId: input.workflowId,
-						laneId,
-						taskId,
-						agentRef,
-						providerQualifiedModelId: modelId,
-						phase: "failed",
-						progressSeq: 20 + nudgeCount,
-						progressLabel: "async agent task turn completed empty; no body after bounded retries",
-						observedAt: nowIso,
-					});
-					refreshFlowDeskCompletionUiCachesV1({
-						rootDir: input.rootDir,
-						workflowId: input.workflowId,
-						observedAt: nowIso,
-					});
-					result.lanesAborted++;
-					continue;
-				}
+				// Retry budget after the explicit repair is exhausted is not, by itself,
+				// a terminal failure signal. Keep the demoted awaiting path below until an
+				// independent hard cap or failure path fires.
+				recordForWrites = withCaptureFailureDiagnosticFields({
+					...recordForWrites,
+					awaiting_body_capture_attempts: nextAttempts,
+					...(typeof recordForWrites.awaiting_body_capture_since === "string"
+						? {}
+						: { awaiting_body_capture_since: nowIso }),
+					...(typeof recordForWrites.awaiting_session_quiescence_since === "string"
+						? {}
+						: { awaiting_session_quiescence_since: nowIso }),
+				}, captureDiagnostic, "awaiting_session_quiescence_empty");
+				writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+				writeAgentTaskProgressEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
+					agentRef,
+					providerQualifiedModelId: modelId,
+					phase: "finalizing",
+					progressSeq: 8 + nextAttempts,
+					progressLabel: `async agent task awaiting session quiescence after empty turn completed event (attempt ${nextAttempts}/${bodyRetryMax})`,
+					observedAt: nowIso,
+				});
+				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
+				continue;
 			}
 		}
 
