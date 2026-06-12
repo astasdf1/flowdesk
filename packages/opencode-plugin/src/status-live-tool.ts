@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
@@ -12,6 +12,7 @@ import {
 	prepareFlowDeskSessionEvidenceWriteIntentV1,
 	projectFlowDeskLaneStallV1,
 	reloadFlowDeskSessionEvidenceV1,
+	sessionEvidenceDirectoryPath,
 } from "@flowdesk/core";
 import { backfillTerminalAgentTaskFailedLanesV1 } from "./stall-recovery.js";
 
@@ -184,6 +185,7 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestTaskResultExcerpts?: readonly FlowDeskStatusLiveTaskResultExcerptV1[];
 	latestWorkflowDispatchPlanRevisionId?: string;
 	latestWorkflowDispatchPlanTaskCount?: number;
+	latestSessionFinalizationSummaries?: readonly FlowDeskStatusLiveSessionFinalizationSummaryV1[];
 	latestOIAdvisoryHealthLabel?: string;
 	laneStallProjection?: FlowDeskLaneStallProjectionResultV1;
 	worstLaneStallClassification?: FlowDeskLaneStallClassificationV1;
@@ -206,6 +208,18 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 		nextActionKind?: "synthesis" | "collect_result" | "repair_summary" | "salvage_or_verify" | "retry_or_debug";
 		nextActionRefs: readonly ("/flowdesk-status" | "/flowdesk-export-debug")[];
 	};
+}
+
+export interface FlowDeskStatusLiveSessionFinalizationSummaryV1 {
+	evidenceId: string;
+	decision?: string;
+	blockReason?: string;
+	observedTextRef?: string;
+	observedTextCharCount?: number;
+	safeCaptureReady?: boolean;
+	usableForSynthesis?: boolean;
+	requiresReview?: boolean;
+	redactionVersion?: string;
 }
 
 export interface FlowDeskStatusLiveTaskResultExcerptV1 {
@@ -433,6 +447,108 @@ function taskResultExcerptFromRecord(
 		truncated,
 		...(typeof record.result_text_truncated === "boolean" ? { sourceResultTextTruncated: record.result_text_truncated } : {}),
 	};
+}
+
+function sessionFinalizationSummaryFromEntry(
+	entry: FlowDeskSessionEvidenceReloadEntryV1,
+): FlowDeskStatusLiveSessionFinalizationSummaryV1 {
+	const decision = getStringField(entry.record, "decision");
+	const blockReason = getStringField(entry.record, "block_reason");
+	const observedTextRef = getStringField(entry.record, "observed_text_ref");
+	const observedTextCharCount = getPositiveIntegerField(
+		entry.record,
+		"observed_text_char_count",
+	);
+	const redactionVersion = getStringField(entry.record, "redaction_version");
+	return {
+		evidenceId: entry.evidenceId,
+		...(decision === undefined ? {} : { decision }),
+		...(blockReason === undefined ? {} : { blockReason }),
+		...(observedTextRef === undefined ? {} : { observedTextRef }),
+		...(observedTextCharCount === undefined ? {} : { observedTextCharCount }),
+		...(typeof entry.record.safe_capture_ready === "boolean"
+			? { safeCaptureReady: entry.record.safe_capture_ready }
+			: {}),
+		...(typeof entry.record.usable_for_synthesis === "boolean"
+			? { usableForSynthesis: entry.record.usable_for_synthesis }
+			: {}),
+		...(typeof entry.record.requires_review === "boolean"
+			? { requiresReview: entry.record.requires_review }
+			: {}),
+		...(redactionVersion === undefined ? {} : { redactionVersion }),
+	};
+}
+
+function sessionFinalizationObservedAtMs(record: Record<string, unknown>): number {
+	const observedAt =
+		getStringField(record, "created_at") ??
+		getStringField(record, "observed_at") ??
+		getStringField(record, "updated_at");
+	if (observedAt === undefined) return Number.NEGATIVE_INFINITY;
+	const observedAtMs = Date.parse(observedAt);
+	return Number.isFinite(observedAtMs) ? observedAtMs : Number.NEGATIVE_INFINITY;
+}
+
+function loadSessionFinalizationSummariesFromDurableEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	maxRecent: number;
+}): FlowDeskStatusLiveSessionFinalizationSummaryV1[] | undefined {
+	const evidenceDir = join(
+		input.rootDir,
+		sessionEvidenceDirectoryPath(
+			input.workflowId,
+			"session_finalization_evidence",
+		),
+	);
+	if (!existsSync(evidenceDir)) return undefined;
+	let fileNames: string[];
+	try {
+		const stat = statSync(evidenceDir);
+		if (!stat.isDirectory()) return undefined;
+		fileNames = readdirSync(evidenceDir).filter((name) => name.endsWith(".json"));
+	} catch {
+		return undefined;
+	}
+	const summaries: Array<{
+		summary: FlowDeskStatusLiveSessionFinalizationSummaryV1;
+		observedAtMs: number;
+	}> = [];
+	for (const fileName of fileNames) {
+		const evidenceId = fileName.slice(0, -5);
+		try {
+			const parsed = JSON.parse(readFileSync(join(evidenceDir, fileName), "utf8"));
+			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+			const record = parsed as Record<string, unknown>;
+			if (record.schema_version !== "flowdesk.session_finalization_evidence.v1") continue;
+			if (record.workflow_id !== input.workflowId) continue;
+			summaries.push({
+				summary: sessionFinalizationSummaryFromEntry({
+					evidenceClass: "session_finalization_evidence",
+					evidenceId,
+					record,
+					path: join(
+						sessionEvidenceDirectoryPath(
+							input.workflowId,
+							"session_finalization_evidence",
+						),
+						fileName,
+					),
+				}),
+				observedAtMs: sessionFinalizationObservedAtMs(record),
+			});
+		} catch {
+			continue;
+		}
+	}
+	if (summaries.length === 0) return undefined;
+	return summaries
+		.sort((a, b) =>
+			b.observedAtMs - a.observedAtMs ||
+			b.summary.evidenceId.localeCompare(a.summary.evidenceId),
+		)
+		.slice(0, input.maxRecent)
+		.map((entry) => entry.summary);
 }
 
 const DEFAULT_AGENT_TASK_FINALIZING_INCONSISTENCY_GRACE_MS = 90_000;
@@ -685,6 +801,7 @@ function compactPromptPreview(value: string | undefined, max = 96): string | und
 
 function summarizeWorkflow(
 	workflowId: string,
+	rootDir: string,
 	reload: FlowDeskSessionEvidenceReloadResultV1,
 	maxRecent: number,
 ): FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
@@ -713,6 +830,7 @@ function summarizeWorkflow(
 	let latestTaskResultExcerpts: FlowDeskStatusLiveTaskResultExcerptV1[] | undefined;
 	let workflowDispatchPlanRevisionId: string | undefined;
 	let workflowDispatchPlanTaskCount: number | undefined;
+	let latestSessionFinalizationSummaries: FlowDeskStatusLiveSessionFinalizationSummaryV1[] | undefined;
 	let oiAdvisoryHealthLabel: string | undefined;
 	let oiAdvisoryHealthLabelCapturedAtMs = -1;
 	const toolRunOverdueLaneIds = new Set<string>();
@@ -825,6 +943,19 @@ function summarizeWorkflow(
 				if (Array.isArray(tasks)) workflowDispatchPlanTaskCount = tasks.length;
 			}
 		}
+		if (evidenceClass === "session_finalization_evidence") {
+			latestSessionFinalizationSummaries = classEntries
+				.map((entry) => ({
+					entry,
+					observedAtMs: sessionFinalizationObservedAtMs(entry.record),
+				}))
+				.sort((a, b) =>
+					b.observedAtMs - a.observedAtMs ||
+					b.entry.evidenceId.localeCompare(a.entry.evidenceId),
+				)
+				.slice(0, maxRecent)
+				.map(({ entry }) => sessionFinalizationSummaryFromEntry(entry));
+		}
 		if (evidenceClass === "agent_task_inconsistency") {
 			for (const entry of classEntries) {
 				if (getStringField(entry.record, "inconsistency_kind") !== "tool_run_overdue_observed") continue;
@@ -852,6 +983,13 @@ function summarizeWorkflow(
 	const providerUsageSummary = summarizeLatestProviderUsageSnapshot(
 		reload.entries,
 	);
+	const durableFinalizationSummaries = loadSessionFinalizationSummariesFromDurableEvidence({
+		rootDir,
+		workflowId,
+		maxRecent,
+	});
+	if (durableFinalizationSummaries !== undefined)
+		latestSessionFinalizationSummaries = durableFinalizationSummaries;
 
 	return {
 		workflowId,
@@ -926,6 +1064,9 @@ function summarizeWorkflow(
 			: {}),
 		...(workflowDispatchPlanTaskCount !== undefined
 			? { latestWorkflowDispatchPlanTaskCount: workflowDispatchPlanTaskCount }
+			: {}),
+		...(latestSessionFinalizationSummaries !== undefined && latestSessionFinalizationSummaries.length > 0
+			? { latestSessionFinalizationSummaries }
 			: {}),
 		...(oiAdvisoryHealthLabel !== undefined
 			? { latestOIAdvisoryHealthLabel: oiAdvisoryHealthLabel }
@@ -1395,7 +1536,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		let projectionReload: FlowDeskSessionEvidenceReloadResultV1;
 		let projection: FlowDeskLaneStallProjectionResultV1;
 		const buildWorkflowSummary = () => {
-			summary = summarizeWorkflow(workflowId, reload, maxRecentEvidencePerClass);
+			summary = summarizeWorkflow(workflowId, rootDir, reload, maxRecentEvidencePerClass);
 			projectionReload = pruneInconsistencySnapshotsNoLongerValid(pruneNonTerminalLifecycleSnapshotsNoLongerValid(reload));
 			projection = projectFlowDeskLaneStallV1({
 				workflowId,
@@ -1655,6 +1796,19 @@ function buildStatusLiveSummaryForUser(input: {
 			.map((diagnostic) => `${diagnostic.laneId}:child=${compactDiagnosticRef(diagnostic.childSessionId)}/part=${diagnostic.lastPartKind ?? "unknown"}/text=${diagnostic.finalTextPresent === true ? "yes" : "no"}/step_finish=${diagnostic.stepFinishPresent === true ? "yes" : "no"}/tool=${compactDiagnosticRef(diagnostic.runningToolCallId)}/${diagnostic.runningToolStatus ?? "none"}/next=${diagnostic.recommendedNextAction ?? "/flowdesk-export-debug"}`)
 			.join("; ");
 		const captureDiagText = captureDiagPreview.length > 0 ? `, capture_diag=${captureDiagPreview}` : "";
+		const finalizationPreview = (workflow.latestSessionFinalizationSummaries ?? [])
+			.slice(0, 2)
+			.map((finalization) => {
+				const textRef = finalization.observedTextRef === undefined
+					? ""
+					: `/text_ref=${compactDiagnosticRef(finalization.observedTextRef)}`;
+				const textChars = finalization.observedTextCharCount === undefined
+					? ""
+					: `/chars=${finalization.observedTextCharCount}`;
+				return `${finalization.evidenceId}:${finalization.decision ?? "unknown"}/block=${finalization.blockReason ?? "unknown"}${textRef}${textChars}`;
+			})
+			.join("; ");
+		const finalizationText = finalizationPreview.length > 0 ? `, finalization=${finalizationPreview}` : "";
 		const taskResultPreview = (workflow.latestTaskResultExcerpts ?? [])
 			.slice(0, 1)
 			.map((excerpt) => `${excerpt.taskId}${excerpt.truncated || excerpt.sourceResultTextTruncated ? " (truncated)" : ""}:\n${excerpt.resultText.length > STATUS_TASK_RESULT_SUMMARY_MAX_CHARS ? `${excerpt.resultText.slice(0, STATUS_TASK_RESULT_SUMMARY_MAX_CHARS - 1)}…` : excerpt.resultText}`)
@@ -1663,7 +1817,7 @@ function buildStatusLiveSummaryForUser(input: {
 		const oiHealthText = workflow.latestOIAdvisoryHealthLabel !== undefined
 			? `, oi_health=${workflow.latestOIAdvisoryHealthLabel}`
 			: "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${oiHealthText}${taskResultText}`;
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${finalizationText}${oiHealthText}${taskResultText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

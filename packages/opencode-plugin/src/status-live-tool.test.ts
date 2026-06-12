@@ -160,6 +160,164 @@ test("status live omits forbidden task_result excerpts", async () => {
 	}
 });
 
+test("status live surfaces latest awaiting_body_capture finalization evidence without raw text", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalization-awaiting-"));
+	try {
+		const workflowId = "workflow-status-finalization-awaiting";
+		writeEvidence(rootDir, workflowId, "session_finalization_evidence", "session-finalization-awaiting-1", {
+			schema_version: "flowdesk.session_finalization_evidence.v1",
+			workflow_id: workflowId,
+			evidence_source: "flowdesk_session_finalization_pure_evaluator",
+			decision: "awaiting_body_capture",
+			block_reason: "blocked_text_absent",
+			safe_capture_ready: false,
+			usable_for_synthesis: false,
+			requires_review: false,
+			observation: {
+				schema_version: "flowdesk.session_finalization_observation.v1",
+				projection_source: "flowdesk_session_finalization_pure_evaluator",
+				session_ref: "ses-finalization-awaiting",
+				final_text_kind: "empty",
+				session_idle_state: "confirmed_idle",
+				running_tools_state: "none_running_confirmed",
+				confidence: "medium",
+				step_finish_observed: true,
+				opencode_internal_validation_performed: false,
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+				provider_call_made: false,
+				runtime_execution: false,
+				actual_lane_launch: false,
+				fallback_authority_enabled: false,
+				write_authority_enabled: false,
+			},
+			opencode_internal_validation_performed: false,
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+			provider_call_made: false,
+			runtime_execution: false,
+			actual_lane_launch: false,
+			fallback_authority_enabled: false,
+			write_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:01:00.000Z"),
+		});
+
+		const summary = result.workflows[0].latestSessionFinalizationSummaries?.[0];
+		assert.equal(summary?.evidenceId, "session-finalization-awaiting-1");
+		assert.equal(summary?.decision, "awaiting_body_capture");
+		assert.equal(summary?.blockReason, "blocked_text_absent");
+		assert.equal(summary?.observedTextRef, undefined);
+		assert.equal(summary?.observedTextCharCount, undefined);
+		assert.equal(summary?.safeCaptureReady, false);
+		assert.equal(summary?.usableForSynthesis, false);
+		assert.match(result.summaryForUser ?? "", /finalization=session-finalization-awaiting-1:awaiting_body_capture\/block=blocked_text_absent/);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.runtimeExecution, false);
+		assert.equal(result.authority.actualLaneLaunch, false);
+		assert.equal(result.authority.fallbackAuthority, false);
+		assert.equal(result.authority.toolAuthority, false);
+		assert.doesNotMatch(JSON.stringify(result), /assistant final text|raw_text/i);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live surfaces latest safe_capture_ready finalization ref and char count only", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-finalization-ready-"));
+	try {
+		const workflowId = "workflow-status-finalization-ready";
+		writeEvidence(rootDir, workflowId, "session_finalization_evidence", "session-finalization-ready-1", {
+			schema_version: "flowdesk.session_finalization_evidence.v1",
+			workflow_id: workflowId,
+			evidence_source: "flowdesk_session_finalization_pure_evaluator",
+			decision: "requires_review",
+			block_reason: "confidence_low",
+			safe_capture_ready: false,
+			usable_for_synthesis: false,
+			requires_review: true,
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+			provider_call_made: false,
+			runtime_execution: false,
+			actual_lane_launch: false,
+			fallback_authority_enabled: false,
+			write_authority_enabled: false,
+		});
+		writeEvidence(rootDir, workflowId, "session_finalization_evidence", "session-finalization-ready-2", {
+			schema_version: "flowdesk.session_finalization_evidence.v1",
+			workflow_id: workflowId,
+			evidence_source: "flowdesk_session_finalization_pure_evaluator",
+			decision: "safe_capture_ready",
+			block_reason: "none",
+			observed_text_ref: "text-ref-final-answer-safe",
+			observed_text_char_count: 42,
+			safe_capture_ready: true,
+			usable_for_synthesis: true,
+			requires_review: false,
+			observation: {
+				schema_version: "flowdesk.session_finalization_observation.v1",
+				projection_source: "flowdesk_session_finalization_pure_evaluator",
+				session_ref: "ses-finalization-ready",
+				observed_text_ref: "text-ref-final-answer-safe",
+				observed_text_char_count: 42,
+				final_text_kind: "assistant_final_text",
+				session_idle_state: "confirmed_idle",
+				running_tools_state: "none_running_confirmed",
+				confidence: "high",
+				step_finish_observed: true,
+				opencode_internal_validation_performed: false,
+				redaction_version: "v1",
+				dispatch_authority_enabled: false,
+				provider_call_made: false,
+				runtime_execution: false,
+				actual_lane_launch: false,
+				fallback_authority_enabled: false,
+				write_authority_enabled: false,
+			},
+			opencode_internal_validation_performed: false,
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+			provider_call_made: false,
+			runtime_execution: false,
+			actual_lane_launch: false,
+			fallback_authority_enabled: false,
+			write_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir, maxRecentEvidencePerClass: 1 },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:01:00.000Z"),
+		});
+
+		assert.equal(result.workflows[0].latestSessionFinalizationSummaries?.length, 1);
+		const summary = result.workflows[0].latestSessionFinalizationSummaries?.[0];
+		assert.equal(summary?.evidenceId, "session-finalization-ready-2");
+		assert.equal(summary?.decision, "safe_capture_ready");
+		assert.equal(summary?.blockReason, "none");
+		assert.equal(summary?.observedTextRef, "text-ref-final-answer-safe");
+		assert.equal(summary?.observedTextCharCount, 42);
+		assert.equal(summary?.safeCaptureReady, true);
+		assert.equal(summary?.usableForSynthesis, true);
+		assert.match(result.summaryForUser ?? "", /safe_capture_ready\/block=none\/text_ref=.*\/chars=42/);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.runtimeExecution, false);
+		assert.equal(result.authority.actualLaneLaunch, false);
+		assert.equal(result.authority.fallbackAuthority, false);
+		assert.equal(result.authority.toolAuthority, false);
+		assert.doesNotMatch(JSON.stringify(result), /assistant final text|raw_text/i);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("status live does not show progress observed after terminal lifecycle", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-terminal-progress-"));
 	try {
