@@ -58,6 +58,38 @@ function writeTurnCompletedProgress(input: {
 	assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(input.root, [progress.writeIntent as never]).ok, true);
 }
 
+function writeToolStateProgress(input: {
+	root: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	observedAtMs: number;
+	state: "running" | "settled" | "error";
+	callId?: string;
+}): void {
+	const progress = prepareFlowDeskSessionEvidenceWriteIntentV1({
+		workflowId: input.workflowId,
+		evidenceId: `agent-task-progress-tool-${input.state}-${input.laneId}-${input.observedAtMs}`,
+		record: {
+			schema_version: "flowdesk.agent_task_progress.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: input.taskId,
+			agent_ref: "agent-test",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			progress_seq: 3,
+			observed_at: new Date(input.observedAtMs).toISOString(),
+			phase: "waiting",
+			progress_label: `agent task tool ${input.state} callid=${input.callId ?? "call-test-tool"}`,
+			progress_ref: `progress-tool-${input.state}-${input.laneId}`,
+			redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		},
+	});
+	assert.equal(progress.ok, true, progress.errors?.join("; "));
+	assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(input.root, [progress.writeIntent as never]).ok, true);
+}
+
 test("asyncMode returns task_launched immediately after lane launch", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-async-lane-"));
 	try {
@@ -476,6 +508,157 @@ test("monitorChildSessions collects result when child session has text", async (
 		assert.equal(workflows[0]?.workflowId, "workflow-monitor-1");
 		const subtaskCache = JSON.parse(readFileSync(join(root, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
 		assert.equal(subtaskCache.schema_version, "flowdesk.subtask_activity_sidebar_cache.v1");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions gates final text capture when a tool is running", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-final-tool-running-"));
+	try {
+		const workflowId = "workflow-monitor-final-tool-running";
+		const taskId = "task-final-tool-running";
+		const laneId = "lane-final-tool-running";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const createdAtMs = Date.parse(String(child?.created_at));
+		writeToolStateProgress({ root, workflowId, laneId, taskId, observedAtMs: createdAtMs + 1_000, state: "running", callId: "call-running" });
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [
+					{ type: "text", text: "final text while a tool is still running" },
+					{ type: "tool", callID: "call-running", state: { status: "running" } },
+					{ type: "step-finish", reason: "stop" },
+				] }]),
+			}),
+			now: new Date(createdAtMs + 2_000),
+			staleToolMs: 60_000,
+		});
+
+		assert.equal(monResult.lanesCompleted, 0);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
+		const finalization = reloaded.entries.find(e => e.evidenceClass === "session_finalization_evidence")?.record as Record<string, unknown> | undefined;
+		assert.equal(finalization?.decision, "blocked_running_tools");
+		assert.equal(finalization?.safe_capture_ready, false);
+		assert.equal("result_text" in (finalization ?? {}), false);
+		const review = reloaded.entries.find(e => e.evidenceClass === "agent_task_progress" && String((e.record as Record<string, unknown>).progress_label).includes("session finalization blocked: running_tools_present"));
+		assert.ok(review, "blocked capture should request coordinator review without raw text");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions does not auto-capture final text when tool state is unknown", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-final-tool-unknown-"));
+	try {
+		const workflowId = "workflow-monitor-final-tool-unknown";
+		const taskId = "task-final-tool-unknown";
+		const laneId = "lane-final-tool-unknown";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		const initial = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		const child = initial.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
+		const createdAtMs = Date.parse(String(child?.created_at));
+		writeToolStateProgress({ root, workflowId, laneId, taskId, observedAtMs: createdAtMs + 1_000, state: "running", callId: "call-unknown" });
+
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [
+					{ type: "text", text: "final text while tool settle state is unknown" },
+					{ type: "step-finish", reason: "stop" },
+				] }]),
+			}),
+			now: new Date(createdAtMs + 5_000),
+			staleToolMs: 1_000,
+		});
+
+		assert.equal(monResult.lanesCompleted, 0);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
+		const finalization = reloaded.entries.find(e => e.evidenceClass === "session_finalization_evidence")?.record as Record<string, unknown> | undefined;
+		assert.equal(finalization?.decision, "requires_review");
+		assert.equal(finalization?.block_reason, "tool_state_unknown");
+		assert.equal(finalization?.safe_capture_ready, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessions writes task_result when final text is idle with no running tools", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-final-safe-gate-"));
+	try {
+		const workflowId = "workflow-monitor-final-safe-gate";
+		const taskId = "task-final-safe-gate";
+		const laneId = "lane-final-safe-gate";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId,
+			laneId,
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "analyze",
+			parentSessionId: "parent-1",
+			rootDir: root,
+			client: makeClient({}),
+			asyncMode: true,
+			_launchTimeoutMs: 5_000,
+			_messagesTimeoutMs: 100,
+		});
+		const monResult = await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ([{ role: "assistant", parts: [
+					{ type: "text", text: "safe final text after idle and no tools" },
+					{ type: "step-finish", reason: "stop" },
+				] }]),
+			}),
+			now: new Date("2026-06-01T00:05:00.000Z"),
+		});
+
+		assert.equal(monResult.lanesCompleted, 1);
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(reloaded.ok);
+		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.equal(taskResult?.result_text, "safe final text after idle and no tools");
+		const finalization = reloaded.entries.find(e => e.evidenceClass === "session_finalization_evidence")?.record as Record<string, unknown> | undefined;
+		assert.equal(finalization?.decision, "safe_capture_ready");
+		assert.equal(finalization?.safe_capture_ready, true);
+		assert.equal(finalization?.observed_text_char_count, "safe final text after idle and no tools".length);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -1467,7 +1650,7 @@ test("monitorChildSessions wakes coordinator for aborted tool snapshot without a
 	}
 });
 
-test("monitorChildSessions captures final text before overdue tool diagnostic", async () => {
+test("monitorChildSessions blocks final text capture before overdue tool diagnostic when tool state is unknown", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-monitor-tool-overdue-final-"));
 	try {
 		const workflowId = "workflow-monitor-tool-overdue-final";
@@ -1523,12 +1706,13 @@ test("monitorChildSessions captures final text before overdue tool diagnostic", 
 			abortThresholdMs: 1_000,
 		});
 
-		assert.equal(monResult.lanesCompleted, 1);
+		assert.equal(monResult.lanesCompleted, 0);
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
-		assert.equal(reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency"), false);
-		const taskResult = reloaded.entries.find(e => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
-		assert.equal(taskResult?.result_text, "final after tool");
-		assert.equal(taskResult?.finalization_reason, "terminal_marker");
+		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
+		const finalization = reloaded.entries.find(e => e.evidenceClass === "session_finalization_evidence")?.record as Record<string, unknown> | undefined;
+		assert.equal(finalization?.decision, "requires_review");
+		assert.equal(finalization?.block_reason, "tool_state_unknown");
+		assert.equal(finalization?.safe_capture_ready, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -1713,13 +1713,13 @@ async function pollChildSessionOutput(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
 	messagesTimeoutMs = 3_000,
-): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; finalBodyObserved: boolean; terminalMarkerObserved: boolean } | null> {
+): Promise<{ text: string; completionStatus: FlowDeskAgentTaskCompletionStatusV1; outputKind: string; usableForSynthesis: boolean; looksLikeRefusalOrError: boolean; finalBodyObserved: boolean; terminalMarkerObserved: boolean; hasRunningTool: boolean } | null> {
 	try {
 		const raw = await readAsyncMonitorChildSessionMessages(client, childSessionId, messagesTimeoutMs);
 		if (raw === null) return null;
 		const observed = observeFlowDeskAgentTaskOutputV1(raw);
 		if (observed.terminalObserved && observed.latestText !== undefined && observed.latestText.trim().length > 0)
-			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: true };
+			return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, looksLikeRefusalOrError: observed.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: true, hasRunningTool: observed.hasRunningTool };
 		return null;
 	} catch {
 		return null;
@@ -1872,6 +1872,28 @@ function sessionFinalizationEvidenceAlreadyRecorded(input: {
 	});
 }
 
+function evaluateSessionFinalizationForObservedText(input: {
+	childSessionId: string;
+	text?: string;
+	stepFinishObserved: boolean;
+	sessionIdleState: "confirmed_idle" | "not_idle" | "unknown";
+	runningToolsState: FlowDeskSessionRunningToolsState;
+	confidence: "high" | "medium" | "low";
+}) {
+	const textRef = stableSessionFinalizationTextRef(input.text);
+	const observation = buildFlowDeskSessionFinalizationObservation({
+		sessionRef: input.childSessionId,
+		observedTextRef: textRef.observedTextRef,
+		observedTextCharCount: textRef.observedTextCharCount,
+		finalTextKind: textRef.observedTextRef !== undefined || textRef.observedTextCharCount !== undefined ? "assistant_final_text" : "empty",
+		sessionIdleState: input.sessionIdleState,
+		runningToolsState: input.runningToolsState,
+		confidence: input.confidence,
+		stepFinishObserved: input.stepFinishObserved,
+	});
+	return evaluateFlowDeskSessionFinalizationEvidence(observation);
+}
+
 function writeSessionFinalizationEvidenceIfMeaningful(input: {
 	rootDir: string;
 	workflowId: string;
@@ -1886,19 +1908,8 @@ function writeSessionFinalizationEvidenceIfMeaningful(input: {
 	sessionIdleState: "confirmed_idle" | "not_idle" | "unknown";
 	runningToolsState: FlowDeskSessionRunningToolsState;
 	confidence: "high" | "medium" | "low";
-}): boolean {
-	const textRef = stableSessionFinalizationTextRef(input.text);
-	const observation = buildFlowDeskSessionFinalizationObservation({
-		sessionRef: input.childSessionId,
-		observedTextRef: textRef.observedTextRef,
-		observedTextCharCount: textRef.observedTextCharCount,
-		finalTextKind: textRef.observedTextRef !== undefined || textRef.observedTextCharCount !== undefined ? "assistant_final_text" : "empty",
-		sessionIdleState: input.sessionIdleState,
-		runningToolsState: input.runningToolsState,
-		confidence: input.confidence,
-		stepFinishObserved: input.stepFinishObserved,
-	});
-	const evaluated = evaluateFlowDeskSessionFinalizationEvidence(observation);
+}): { written: boolean; evaluated: ReturnType<typeof evaluateFlowDeskSessionFinalizationEvidence> } {
+	const evaluated = evaluateSessionFinalizationForObservedText(input);
 	const record: Record<string, unknown> = {
 		...evaluated,
 		workflow_id: input.workflowId,
@@ -1909,15 +1920,16 @@ function writeSessionFinalizationEvidenceIfMeaningful(input: {
 		observed_at: input.observedAt,
 	};
 	const transitionKey = sessionFinalizationTransitionKey(record);
-	if (sessionFinalizationEvidenceAlreadyRecorded({ entries: input.reloadedEntries, laneId: input.laneId, transitionKey })) return false;
+	if (sessionFinalizationEvidenceAlreadyRecorded({ entries: input.reloadedEntries, laneId: input.laneId, transitionKey })) return { written: false, evaluated };
 	const transitionDigest = createHash("sha256").update(transitionKey, "utf8").digest("hex").slice(0, 16);
 	const decision = typeof evaluated.decision === "string" ? evaluated.decision as FlowDeskSessionFinalizationDecision : "requires_review";
-	return writeChildSessionEvidence(
+	const written = writeChildSessionEvidence(
 		input.rootDir,
 		input.workflowId,
 		`session-finalization-${safeToken(input.laneId)}-${safeToken(decision)}-${transitionDigest}`,
 		record,
 	);
+	return { written, evaluated };
 }
 
 function extractJsonBlocksFromText(raw: string): string[] {
@@ -3378,7 +3390,12 @@ export async function monitorChildSessionsV1(input: {
 			const completedAt = new Date(nowMs).toISOString();
 			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultObservation.text);
 			const finalText = sanitizedResult.text;
-			writeSessionFinalizationEvidenceIfMeaningful({
+			const runningToolsState: FlowDeskSessionRunningToolsState = resultObservation.hasRunningTool || toolRunningNow
+				? "running_confirmed"
+				: toolStateUnknown
+					? "unknown"
+					: "none_running_confirmed";
+			const finalizationGate = writeSessionFinalizationEvidenceIfMeaningful({
 				rootDir: input.rootDir,
 				workflowId: input.workflowId,
 				reloadedEntries: reloaded.entries,
@@ -3390,9 +3407,38 @@ export async function monitorChildSessionsV1(input: {
 				text: finalText,
 				stepFinishObserved: resultObservation.terminalMarkerObserved,
 				sessionIdleState: "confirmed_idle",
-				runningToolsState: "none_running_confirmed",
+				runningToolsState,
 				confidence: "high",
 			});
+			if (finalizationGate.evaluated.safe_capture_ready !== true) {
+				const reviewAt = new Date(nowMs).toISOString();
+				const diagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: reviewAt });
+				recordForWrites = withCaptureFailureDiagnosticFields({
+					...recordForWrites,
+					coordinator_attention_status: "review_requested",
+					coordinator_attention_last_review_requested_at: reviewAt,
+					coordinator_attention_last_review_reason: `session_finalization_${finalizationGate.evaluated.block_reason}`,
+				}, diagnostic, `session_finalization_${finalizationGate.evaluated.block_reason}`);
+				writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+				writeCoordinatorAttentionReviewRequestedEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
+					agentRef,
+					providerQualifiedModelId: modelId,
+					progressSeq: 30 + nudgeCount,
+					observedAt: reviewAt,
+					reason: `session finalization blocked: ${finalizationGate.evaluated.block_reason}`,
+				});
+				refreshFlowDeskCompletionUiCachesV1({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					observedAt: reviewAt,
+				});
+				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
+				continue;
+			}
 			const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
 				text: finalText,
 				completionStatus: resultObservation.completionStatus,
