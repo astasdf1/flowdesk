@@ -7,5 +7,6 @@ export * from "./local-adapter.js";
 export * from "./managed-dispatch-adapter.js";
 export * from "./route-decision-guard.js";
 export * from "./capture-finalization-v2.js";
+export * from "./session-finalization-evidence.js";
 export { default, flowdeskOpenCodeServerPlugin } from "./server.js";
 export * from "./tool-stubs.js";
