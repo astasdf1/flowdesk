@@ -147,6 +147,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	agent_task_progress: "flowdesk.agent_task_progress.v1",
 	agent_task_inconsistency: "flowdesk.agent_task_inconsistency.v1",
 	agent_task_child_session: "flowdesk.agent_task_child_session.v1",
+	session_finalization_evidence: "flowdesk.session_finalization_evidence.v1",
 	pending_retry_plan: "flowdesk.pending_retry_plan.v1",
 	retry_executed: "flowdesk.retry_executed.v1",
 	retry_failed: "flowdesk.retry_failed.v1",

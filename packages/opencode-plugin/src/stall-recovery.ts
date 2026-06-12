@@ -37,6 +37,12 @@ import {
 import { executeFlowDeskAgentTaskV1, AGENT_TASK_CHILD_SESSION_SCHEMA_VERSION, sanitizeFlowDeskTaskResultTextV1, buildFlowDeskCaptureSafetyMetadataV1 } from "./agent-task-runner.js";
 import { flowDeskAgentTaskMessageItems, observeFlowDeskAgentTaskOutputV1, type FlowDeskAgentTaskCompletionStatusV1 } from "./agent-task-output.js";
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
+import {
+	buildFlowDeskSessionFinalizationObservation,
+	evaluateFlowDeskSessionFinalizationEvidence,
+	type FlowDeskSessionFinalizationDecision,
+	type FlowDeskSessionRunningToolsState,
+} from "./session-finalization-evidence.js";
 
 export interface FlowDeskTimeoutConfig {
 	sessionReadMs?: number;
@@ -1831,6 +1837,89 @@ function writeChildSessionEvidence(
 	return applied.ok && applied.writtenPaths.length > 0;
 }
 
+function stableSessionFinalizationTextRef(text: string | undefined): { observedTextRef?: string; observedTextCharCount?: number } {
+	if (typeof text !== "string" || text.length === 0) return {};
+	return {
+		observedTextRef: `observed-text-sha256-${createHash("sha256").update(text, "utf8").digest("hex")}`,
+		observedTextCharCount: text.length,
+	};
+}
+
+function sessionFinalizationTransitionKey(record: Record<string, unknown>): string {
+	const observation = isRecord(record.observation) ? record.observation : {};
+	return JSON.stringify({
+		lane_id: record.lane_id,
+		decision: record.decision,
+		block_reason: record.block_reason,
+		observed_text_ref: record.observed_text_ref,
+		observed_text_char_count: record.observed_text_char_count,
+		final_text_kind: observation.final_text_kind,
+		session_idle_state: observation.session_idle_state,
+		running_tools_state: observation.running_tools_state,
+		confidence: observation.confidence,
+		step_finish_observed: observation.step_finish_observed,
+	});
+}
+
+function sessionFinalizationEvidenceAlreadyRecorded(input: {
+	entries: readonly { evidenceClass: string; record: unknown }[];
+	laneId: string;
+	transitionKey: string;
+}): boolean {
+	return input.entries.some((entry) => {
+		if (entry.evidenceClass !== "session_finalization_evidence" || !isRecord(entry.record)) return false;
+		return entry.record.lane_id === input.laneId && sessionFinalizationTransitionKey(entry.record) === input.transitionKey;
+	});
+}
+
+function writeSessionFinalizationEvidenceIfMeaningful(input: {
+	rootDir: string;
+	workflowId: string;
+	reloadedEntries: readonly { evidenceClass: string; record: unknown }[];
+	laneId: string;
+	taskId: string;
+	childSessionId: string;
+	observedAt: string;
+	decisionContext: "turn_completed_empty" | "turn_completed_text" | "watchdog_terminal_text" | "idle_confirmed_text";
+	text?: string;
+	stepFinishObserved: boolean;
+	sessionIdleState: "confirmed_idle" | "not_idle" | "unknown";
+	runningToolsState: FlowDeskSessionRunningToolsState;
+	confidence: "high" | "medium" | "low";
+}): boolean {
+	const textRef = stableSessionFinalizationTextRef(input.text);
+	const observation = buildFlowDeskSessionFinalizationObservation({
+		sessionRef: input.childSessionId,
+		observedTextRef: textRef.observedTextRef,
+		observedTextCharCount: textRef.observedTextCharCount,
+		finalTextKind: textRef.observedTextRef !== undefined || textRef.observedTextCharCount !== undefined ? "assistant_final_text" : "empty",
+		sessionIdleState: input.sessionIdleState,
+		runningToolsState: input.runningToolsState,
+		confidence: input.confidence,
+		stepFinishObserved: input.stepFinishObserved,
+	});
+	const evaluated = evaluateFlowDeskSessionFinalizationEvidence(observation);
+	const record: Record<string, unknown> = {
+		...evaluated,
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		child_session_id: input.childSessionId,
+		decision_context: input.decisionContext,
+		observed_at: input.observedAt,
+	};
+	const transitionKey = sessionFinalizationTransitionKey(record);
+	if (sessionFinalizationEvidenceAlreadyRecorded({ entries: input.reloadedEntries, laneId: input.laneId, transitionKey })) return false;
+	const transitionDigest = createHash("sha256").update(transitionKey, "utf8").digest("hex").slice(0, 16);
+	const decision = typeof evaluated.decision === "string" ? evaluated.decision as FlowDeskSessionFinalizationDecision : "requires_review";
+	return writeChildSessionEvidence(
+		input.rootDir,
+		input.workflowId,
+		`session-finalization-${safeToken(input.laneId)}-${safeToken(decision)}-${transitionDigest}`,
+		record,
+	);
+}
+
 function extractJsonBlocksFromText(raw: string): string[] {
 	const trimmed = raw.trim();
 	const results: string[] = [];
@@ -3020,6 +3109,21 @@ export async function monitorChildSessionsV1(input: {
 				const token = randomBytes(4).toString("hex");
 				const completedAt = new Date(nowMs).toISOString();
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				writeSessionFinalizationEvidenceIfMeaningful({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					reloadedEntries: reloaded.entries,
+					laneId,
+					taskId,
+					childSessionId,
+					observedAt: completedAt,
+					decisionContext: "turn_completed_text",
+					text: sanitizedResult.text,
+					stepFinishObserved: idleObservation.terminalMarkerObserved || expectedTurnCompleted !== undefined,
+					sessionIdleState: "confirmed_idle",
+					runningToolsState: "none_running_confirmed",
+					confidence: "high",
+				});
 				const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
 					text: sanitizedResult.text,
 					completionStatus: "final",
@@ -3111,6 +3215,20 @@ export async function monitorChildSessionsV1(input: {
 				const nextAttempts = priorAttempts + 1;
 				const nowIso = new Date(nowMs).toISOString();
 				const captureDiagnostic = await pollCaptureFailureDiagnostic({ client: input.client, childSessionId, observedAt: nowIso });
+				writeSessionFinalizationEvidenceIfMeaningful({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					reloadedEntries: reloaded.entries,
+					laneId,
+					taskId,
+					childSessionId,
+					observedAt: nowIso,
+					decisionContext: "turn_completed_empty",
+					stepFinishObserved: true,
+					sessionIdleState: "confirmed_idle",
+					runningToolsState: "none_running_confirmed",
+					confidence: "medium",
+				});
 				const awaitingSinceMs = typeof recordForWrites.awaiting_body_capture_since === "string"
 					? Date.parse(recordForWrites.awaiting_body_capture_since)
 					: nowMs;
@@ -3260,6 +3378,21 @@ export async function monitorChildSessionsV1(input: {
 			const completedAt = new Date(nowMs).toISOString();
 			const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(resultObservation.text);
 			const finalText = sanitizedResult.text;
+			writeSessionFinalizationEvidenceIfMeaningful({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				reloadedEntries: reloaded.entries,
+				laneId,
+				taskId,
+				childSessionId,
+				observedAt: completedAt,
+				decisionContext: "watchdog_terminal_text",
+				text: finalText,
+				stepFinishObserved: resultObservation.terminalMarkerObserved,
+				sessionIdleState: "confirmed_idle",
+				runningToolsState: "none_running_confirmed",
+				confidence: "high",
+			});
 			const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
 				text: finalText,
 				completionStatus: resultObservation.completionStatus,
@@ -3427,6 +3560,21 @@ export async function monitorChildSessionsV1(input: {
 				const token = randomBytes(4).toString("hex");
 				const completedAt = new Date(nowMs).toISOString();
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				writeSessionFinalizationEvidenceIfMeaningful({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					reloadedEntries: reloaded.entries,
+					laneId,
+					taskId,
+					childSessionId,
+					observedAt: completedAt,
+					decisionContext: "idle_confirmed_text",
+					text: sanitizedResult.text,
+					stepFinishObserved: idleObservation.terminalMarkerObserved,
+					sessionIdleState: "confirmed_idle",
+					runningToolsState: "none_running_confirmed",
+					confidence: "high",
+				});
 				const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
 					text: sanitizedResult.text,
 					completionStatus: "final",

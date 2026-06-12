@@ -1044,9 +1044,40 @@ test("monitorChildSessions keeps empty turn_completed awaiting body capture befo
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
 		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_result"), false);
 		assert.equal(reloaded.entries.some(e => e.evidenceClass === "task_failed"), false, "empty turn_completed must not terminalize before retry/absolute windows expire");
+		const finalizationEvidence = reloaded.entries.filter(e => e.evidenceClass === "session_finalization_evidence");
+		assert.equal(finalizationEvidence.length, 1, "empty step-finish should write one finalization evidence record");
+		const finalizationRecord = finalizationEvidence[0]?.record as Record<string, unknown>;
+		assert.equal(finalizationRecord.decision, "awaiting_body_capture");
+		assert.equal(finalizationRecord.safe_capture_ready, false);
+		assert.equal(finalizationRecord.dispatch_authority_enabled, false);
+		assert.equal(finalizationRecord.provider_call_made, false);
+		assert.equal(finalizationRecord.runtime_execution, false);
+		assert.equal(finalizationRecord.actual_lane_launch, false);
+		assert.equal(finalizationRecord.fallback_authority_enabled, false);
+		assert.equal(finalizationRecord.write_authority_enabled, false);
+		assert.equal(finalizationRecord.opencode_internal_validation_performed, false);
+		assert.equal("result_text" in finalizationRecord, false, "finalization evidence must not store raw text");
 		const childAfter = reloaded.entries.find(e => e.evidenceClass === "agent_task_child_session")?.record as Record<string, unknown> | undefined;
 		assert.equal(childAfter?.awaiting_body_capture_attempts, 1);
 		assert.equal(childAfter?.capture_failure_diagnostic_reason, "awaiting_body_capture_empty");
+
+		await monitorChildSessionsV1({
+			rootDir: root,
+			workflowId,
+			client: makeClient({
+				messages: async () => ({
+					info: { role: "assistant" },
+					parts: [{ type: "step-finish", reason: "stop" }],
+				}),
+			}),
+			now: new Date(turnCompletedAtMs + 1_500),
+			bodyRetryMax: 2,
+			finalizingAbsoluteMaxMs: 60_000,
+		});
+		const afterSecond = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.equal(afterSecond.entries.filter(e => e.evidenceClass === "session_finalization_evidence").length, 1, "same awaiting transition should not duplicate finalization evidence");
+		assert.equal(afterSecond.entries.some(e => e.evidenceClass === "task_result"), false);
+		assert.equal(afterSecond.entries.some(e => e.evidenceClass === "task_failed"), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -1115,6 +1146,25 @@ test("monitorChildSessions persists late body after initial empty turn_completed
 		assert.equal(taskResult?.result_text, "late final answer after empty turn_completed");
 		assert.equal(taskResult?.finalization_reason, "terminal_marker");
 		assert.equal(taskResult?.capture_status, "captured");
+		const finalizationEvidence = reloaded.entries.filter(e => e.evidenceClass === "session_finalization_evidence");
+		assert.equal(finalizationEvidence.length, 2, "awaiting and safe-capture transitions should both be represented");
+		const safeEvidence = finalizationEvidence
+			.map(e => e.record as Record<string, unknown>)
+			.find(record => record.decision === "safe_capture_ready");
+		assert.ok(safeEvidence, "safe final text observation should write finalization evidence");
+		assert.equal(safeEvidence?.safe_capture_ready, true);
+		assert.equal(safeEvidence?.usable_for_synthesis, true);
+		assert.equal(safeEvidence?.observed_text_char_count, "late final answer after empty turn_completed".length);
+		assert.match(String(safeEvidence?.observed_text_ref), /^observed-text-sha256-[a-f0-9]{64}$/);
+		assert.equal("result_text" in safeEvidence!, false, "safe finalization evidence must not store raw text");
+		assert.equal(String(JSON.stringify(safeEvidence)).includes("late final answer after empty turn_completed"), false);
+		assert.equal(safeEvidence?.dispatch_authority_enabled, false);
+		assert.equal(safeEvidence?.provider_call_made, false);
+		assert.equal(safeEvidence?.runtime_execution, false);
+		assert.equal(safeEvidence?.actual_lane_launch, false);
+		assert.equal(safeEvidence?.fallback_authority_enabled, false);
+		assert.equal(safeEvidence?.write_authority_enabled, false);
+		assert.equal(safeEvidence?.opencode_internal_validation_performed, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
