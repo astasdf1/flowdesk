@@ -6,6 +6,12 @@ import type {
 	FlowDeskDefaultManagedDispatchPromotionReadinessV1,
 	FlowDeskProductionEnablementEvaluationV1,
 } from "./production-enablement.js";
+import {
+	invalid,
+	type ValidationResult,
+	valid,
+	validateNoForbiddenRawPayloads,
+} from "./validators.js";
 
 export const FLOWDESK_MANAGED_DISPATCH_BUNDLE_ITEMS = [
 	"configured_authorization",
@@ -300,4 +306,76 @@ export function evaluateFlowDeskManagedDispatchBundleV1(
 		actualLaneLaunch: false,
 		runtimeExecution: false,
 	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isBundleItem(value: unknown): value is FlowDeskManagedDispatchBundleItemV1 {
+	return (
+		typeof value === "string" &&
+		(FLOWDESK_MANAGED_DISPATCH_BUNDLE_ITEMS as readonly string[]).includes(value)
+	);
+}
+
+function validateStringArray(value: unknown, label: string): string[] {
+	if (!Array.isArray(value)) return [`${label} must be an array`];
+	return value.every((entry) => typeof entry === "string")
+		? []
+		: [`${label} must contain only strings`];
+}
+
+export function validateFlowDeskManagedDispatchBundleEvaluationV1(
+	value: unknown,
+): ValidationResult {
+	const errors: string[] = [];
+	if (!isRecord(value)) return invalid("bundle evaluation must be an object");
+	if (value.schema_version !== "flowdesk.managed_dispatch_bundle_evaluation.v1")
+		errors.push("bundle evaluation schema_version is invalid");
+	if (value.gate_result !== "pass" && value.gate_result !== "blocked")
+		errors.push("bundle evaluation gate_result is invalid");
+	if (typeof value.managed_dispatch_bundle_passed !== "boolean")
+		errors.push("bundle evaluation managed_dispatch_bundle_passed must be boolean");
+	if (!Array.isArray(value.items)) {
+		errors.push("bundle evaluation items must be an array");
+	} else {
+		for (const [index, entry] of value.items.entries()) {
+			if (!isRecord(entry)) {
+				errors.push(`bundle evaluation items[${index}] must be an object`);
+				continue;
+			}
+			if (!isBundleItem(entry.item))
+				errors.push(`bundle evaluation items[${index}].item is invalid`);
+			if (entry.status !== "pass" && entry.status !== "blocked")
+				errors.push(`bundle evaluation items[${index}].status is invalid`);
+			errors.push(
+				...validateStringArray(
+					entry.evidence_refs,
+					`bundle evaluation items[${index}].evidence_refs`,
+				),
+			);
+		}
+	}
+	if (!Array.isArray(value.blocked_items)) {
+		errors.push("bundle evaluation blocked_items must be an array");
+	} else if (!value.blocked_items.every(isBundleItem)) {
+		errors.push("bundle evaluation blocked_items contains invalid item");
+	}
+	errors.push(
+		...validateStringArray(value.blocked_labels, "bundle evaluation blocked_labels"),
+		...validateStringArray(value.evidence_refs, "bundle evaluation evidence_refs"),
+	);
+	if (
+		value.dispatch_authority_enabled !== false ||
+		value.fallback_authority_enabled !== false ||
+		value.hard_chat_authority_enabled !== false ||
+		value.external_write_authority_enabled !== false ||
+		value.providerCall !== false ||
+		value.actualLaneLaunch !== false ||
+		value.runtimeExecution !== false
+	)
+		errors.push("bundle evaluation cannot enable authority");
+	errors.push(...validateNoForbiddenRawPayloads(value, "managed_dispatch_bundle_evaluation").errors);
+	return errors.length === 0 ? valid() : invalid(...errors);
 }

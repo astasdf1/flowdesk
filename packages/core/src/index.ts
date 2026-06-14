@@ -83,6 +83,7 @@ export * from "./runtime-lane-productization.js";
 export * from "./sanitized-auth-capture.js";
 export * from "./schema-artifacts.js";
 export * from "./schema-registry.js";
+export * from "./sdk-adapter-capability-smoke.js";
 export * from "./schemas/index.js";
 export * from "./session-evidence.js";
 export * from "./state-paths.js";

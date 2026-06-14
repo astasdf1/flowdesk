@@ -362,6 +362,20 @@ export function evaluateFlowDeskDispatchAttemptDurablePrecallV1(input: {
 	);
 	if (auditEntry === undefined)
 		durableBlockedLabels.push("reloaded_pre_dispatch_audit_missing");
+	else {
+		const auditWorkflowId = getRecordString(auditEntry.record, "workflow_id");
+		const auditAttemptId = getRecordString(auditEntry.record, "attempt_id");
+		if (
+			(auditWorkflowId !== undefined &&
+				auditWorkflowId !== input.manifest.workflow_id) ||
+			(auditAttemptId !== undefined &&
+				auditAttemptId !== input.manifest.attempt_id)
+		) {
+			durableBlockedLabels.push(
+				"reloaded_pre_dispatch_audit_workflow_attempt_mismatch",
+			);
+		}
+	}
 	const idempotencyEntry = input.reloadedEvidence.entries.find(
 		(entry) => entry.evidenceClass === "dispatch_idempotency",
 	);

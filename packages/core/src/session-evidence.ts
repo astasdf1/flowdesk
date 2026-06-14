@@ -21,6 +21,7 @@ import {
 	validateFlowDeskManagedDispatchBetaTelemetryCorrelationShapeV1,
 	validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1,
 } from "./managed-dispatch-evidence-shape.js";
+import { validateFlowDeskManagedDispatchBundleEvaluationV1 } from "./managed-dispatch-bundle-evaluator.js";
 import { validateFlowDeskPreDispatchAuditRecordV1 } from "./pre-dispatch-audit-record.js";
 import {
 	validateFlowDeskPendingAbortCancelV1,
@@ -46,6 +47,7 @@ import { validateFlowDeskTaskModelSelectionV1 } from "./task-model-selection.js"
 import { validateFlowDeskWorkflowSynthesisResultV1 } from "./workflow-synthesis.js";
 import { validateFlowDeskWorkflowAuthoringResultV1 } from "./workflow-authoring-result.js";
 import { validateFlowDeskWorkflowDispatchPlanV1 } from "./workflow-dispatch-plan.js";
+import { validateFlowDeskSdkAdapterCapabilitySmokeV1 } from "./sdk-adapter-capability-smoke.js";
 import { validateFlowDeskProductionApprovalDecisionV1 } from "./production-enablement.js";
 import { validateFlowDeskOISessionSummaryV1 } from "./operational-intelligence/session-summary.js";
 import {
@@ -116,6 +118,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	production_approval_source: "flowdesk.production_approval_source.v1",
 	dispatch_idempotency: "flowdesk.dispatch_idempotency_snapshot.v1",
 	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
+	managed_dispatch_bundle_evaluation:
+		"flowdesk.managed_dispatch_bundle_evaluation.v1",
 	exact_model_availability_cache:
 		"flowdesk.exact_model_availability_cache.v1",
 	exact_model_availability_cache_refresh_plan:
@@ -159,6 +163,7 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	task_model_selection: "flowdesk.task_model_selection.v1",
 	workflow_synthesis_result: "flowdesk.workflow_synthesis_result.v1",
 	workflow_dispatch_plan: "flowdesk.workflow_dispatch_plan.v1",
+	sdk_adapter_capability_smoke: "flowdesk.sdk_adapter_capability_smoke.v1",
 	coordinator_retry_decision: "flowdesk.coordinator_retry_decision.v1",
 	oi_session_summary: "flowdesk.oi_session_summary.v1",
 	block_decomposition: "flowdesk.block_decomposition.v1",
@@ -881,6 +886,8 @@ function validateEvidenceShape(
 		return validateFlowDeskWorkflowSynthesisResultV1(record);
 	if (evidenceClass === "workflow_dispatch_plan")
 		return validateFlowDeskWorkflowDispatchPlanV1(record);
+	if (evidenceClass === "sdk_adapter_capability_smoke")
+		return validateFlowDeskSdkAdapterCapabilitySmokeV1(record);
 	if (evidenceClass === "reviewer_lane_conformance")
 		return validateFlowDeskReviewerLaneConformanceObservationV1(record);
 	if (evidenceClass === "controlled_conformance_doc_write")
@@ -905,6 +912,8 @@ function validateEvidenceShape(
 		return validateFlowDeskProductionApprovalDecisionV1(record);
 	if (evidenceClass === "pre_dispatch_audit")
 		return validateFlowDeskPreDispatchAuditRecordV1(record);
+	if (evidenceClass === "managed_dispatch_bundle_evaluation")
+		return validateFlowDeskManagedDispatchBundleEvaluationV1(record);
 	if (evidenceClass === "usage_authority")
 		return validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1(record);
 	if (evidenceClass === "runtime_echo")

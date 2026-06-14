@@ -170,6 +170,10 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestProviderUsageDispatchability?: string;
 	latestProviderUsageFreshness?: string;
 	latestProviderUsageResetBucket?: string;
+	latestManagedDispatchBundleGateResult?: "pass" | "blocked" | "not_yet_evaluated";
+	latestManagedDispatchBundleBlockedItemsCount?: number;
+	latestManagedDispatchBundleBlockedLabels?: readonly string[];
+	latestManagedDispatchBundleEvidenceRefsCount?: number;
 	providerUsageSnapshotCount?: number;
 	latestWorkflowAuthoringStatus?: string;
 	latestWorkflowAuthoringGoalSummary?: string;
@@ -833,6 +837,10 @@ function summarizeWorkflow(
 	let latestSessionFinalizationSummaries: FlowDeskStatusLiveSessionFinalizationSummaryV1[] | undefined;
 	let oiAdvisoryHealthLabel: string | undefined;
 	let oiAdvisoryHealthLabelCapturedAtMs = -1;
+	let managedDispatchBundleGateResult: "pass" | "blocked" | undefined;
+	let managedDispatchBundleBlockedItemsCount: number | undefined;
+	let managedDispatchBundleBlockedLabels: string[] | undefined;
+	let managedDispatchBundleEvidenceRefsCount: number | undefined;
 	const toolRunOverdueLaneIds = new Set<string>();
 
 	for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
@@ -943,6 +951,29 @@ function summarizeWorkflow(
 				if (Array.isArray(tasks)) workflowDispatchPlanTaskCount = tasks.length;
 			}
 		}
+		if (evidenceClass === "managed_dispatch_bundle_evaluation") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				const gateResult = getStringField(last.record, "gate_result");
+				if (gateResult === "pass" || gateResult === "blocked")
+					managedDispatchBundleGateResult = gateResult;
+				const blockedItems = last.record.blocked_items;
+				if (Array.isArray(blockedItems))
+					managedDispatchBundleBlockedItemsCount = blockedItems.filter(
+						(item): item is string => typeof item === "string",
+					).length;
+				const blockedLabels = last.record.blocked_labels;
+				if (Array.isArray(blockedLabels))
+					managedDispatchBundleBlockedLabels = blockedLabels.filter(
+						(label): label is string => typeof label === "string",
+					);
+				const evidenceRefs = last.record.evidence_refs;
+				if (Array.isArray(evidenceRefs))
+					managedDispatchBundleEvidenceRefsCount = evidenceRefs.filter(
+						(ref): ref is string => typeof ref === "string",
+					).length;
+			}
+		}
 		if (evidenceClass === "session_finalization_evidence") {
 			latestSessionFinalizationSummaries = classEntries
 				.map((entry) => ({
@@ -1016,6 +1047,17 @@ function summarizeWorkflow(
 			: {}),
 		...(providerUsageSummary.resetBucket !== undefined
 			? { latestProviderUsageResetBucket: providerUsageSummary.resetBucket }
+			: {}),
+		latestManagedDispatchBundleGateResult:
+			managedDispatchBundleGateResult ?? "not_yet_evaluated",
+		...(managedDispatchBundleBlockedItemsCount !== undefined
+			? { latestManagedDispatchBundleBlockedItemsCount: managedDispatchBundleBlockedItemsCount }
+			: {}),
+		...(managedDispatchBundleBlockedLabels !== undefined
+			? { latestManagedDispatchBundleBlockedLabels: managedDispatchBundleBlockedLabels }
+			: {}),
+		...(managedDispatchBundleEvidenceRefsCount !== undefined
+			? { latestManagedDispatchBundleEvidenceRefsCount: managedDispatchBundleEvidenceRefsCount }
 			: {}),
 		...(providerUsageSummary.count > 0
 			? { providerUsageSnapshotCount: providerUsageSummary.count }

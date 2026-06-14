@@ -10,6 +10,7 @@ import type {
 	FlowDeskExternalAuthProviderPolicyResultV1,
 	FlowDeskFallbackRegatePlanV1,
 	FlowDeskLaneRecordV1,
+	FlowDeskManagedDispatchBundleEvaluationV1,
 	FlowDeskNonDispatchPermissionV1,
 	FlowDeskPolicyPackV1,
 	FlowDeskProductionApprovalDecisionV1,
@@ -1663,6 +1664,23 @@ function productionEnablementContext(
 	});
 }
 
+function managedDispatchBundleEvaluationContext(
+	state: LocalAdapterState,
+	request: Record<string, unknown>,
+): FlowDeskManagedDispatchBundleEvaluationV1 | undefined {
+	if (state.durableStateRootDir === undefined) return undefined;
+	const workflowId = workflowIdFrom(request);
+	const evidenceReload = reloadFlowDeskSessionEvidenceV1({
+		workflowId,
+		rootDir: state.durableStateRootDir,
+	});
+	const entries = evidenceReload.entries.filter(
+		(entry) => entry.evidenceClass === "managed_dispatch_bundle_evaluation",
+	);
+	const last = entries[entries.length - 1];
+	return last?.record as unknown as FlowDeskManagedDispatchBundleEvaluationV1 | undefined;
+}
+
 function reviewerFanoutDiagnosticsContext(
 	state: LocalAdapterState,
 	request: Record<string, unknown>,
@@ -1792,6 +1810,10 @@ function contextFor(
 			deleteAfterIso: parts.expiresAtIso,
 			providerHealthSnapshotRef: "health-local",
 			productionEnablement: productionEnablementContext(state, record),
+			managedDispatchBundleEvaluation: managedDispatchBundleEvaluationContext(
+				state,
+				record,
+			),
 			...(fanoutDiagnostics?.selection.cacheRefreshPlan === undefined
 				? {}
 				: {

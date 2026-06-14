@@ -15,6 +15,7 @@ import type { FlowDeskFallbackRegatePlanV1,
   FlowDeskGuardedDryRunCommandInputV1,
   FlowDeskPlanCommandInputV1,
   FlowDeskProductionEnablementEvaluationV1,
+  FlowDeskManagedDispatchBundleEvaluationV1,
   FlowDeskReviewerFanoutPlanV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskResumeRequestV1,
@@ -83,6 +84,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     productionEnablement?: FlowDeskProductionEnablementEvaluationV1;
     exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
+    managedDispatchBundleEvaluation?: FlowDeskManagedDispatchBundleEvaluationV1;
     reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
     fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
     laneAbortResult?: FlowDeskLaneAbortHelperResultV1;
@@ -312,6 +314,18 @@ function defaultManagedDispatchPromotionRefs(context: FlowDeskCommandBackedHandl
   ];
 }
 
+function managedDispatchBundleEvaluationRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const evaluation = context.diagnostic?.managedDispatchBundleEvaluation;
+  if (evaluation === undefined) return ["managed_dispatch_bundle_status=not_yet_evaluated"];
+  return [
+    `managed_dispatch_bundle_gate_result=${evaluation.gate_result}`,
+    `managed_dispatch_bundle_blocked_items_count=${evaluation.blocked_items.length}`,
+    `managed_dispatch_bundle_evidence_refs_count=${evaluation.evidence_refs.length}`,
+    ...evaluation.blocked_items.map((item) => `managed_dispatch_bundle_blocked_item=${item}`),
+    ...evaluation.blocked_labels.map((label) => `managed_dispatch_bundle_blocked_label=${label}`)
+  ];
+}
+
 function exactModelAvailabilityCacheRefreshRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
   const plan = context.diagnostic?.exactModelAvailabilityCacheRefreshPlan;
   if (plan === undefined) return ["exact_model_cache_refresh_state=blocked", "exact_model_cache_evidence=missing"];
@@ -425,6 +439,7 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const productionReadiness = getFlowDeskRelease1ProductionReadinessSummary();
   const enablementRefs = productionEnablementRefs(context);
   const promotionRefs = defaultManagedDispatchPromotionRefs(context);
+  const bundleRefs = managedDispatchBundleEvaluationRefs(context);
   const exactModelCacheRefs = exactModelAvailabilityCacheRefreshRefs(context);
   const fanoutRefs = reviewerFanoutRefs(context);
   const fallbackRefs = fallbackRegateRefs(context);
@@ -433,7 +448,7 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const compactionRefs = evidenceCompactionRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...bundleRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"]),
     doctorSectionFor("evidence_compaction", "informational", request, "Evidence Compaction reports native agent-task-progress cleanup health, archive counts, and merkle-root integrity without granting dispatch, fallback, or write authority outside the configured state root.", ["doctor-evidence-compaction-ref", ...compactionRefs]),
