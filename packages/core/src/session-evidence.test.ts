@@ -32,6 +32,8 @@ const now = "2026-05-24T12:00:00.000Z";
 function usageAuthorityRecord(overrides: Record<string, unknown> = {}) {
   return {
     schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+    observedAt: new Date().toISOString(),
+    attestation_scope: "plugin_observed_only",
     authority_ref: "authority-ref-1",
     usage_snapshot_ref: "usage-snapshot-1",
     provider_family: "claude",
@@ -60,6 +62,8 @@ function usageAuthorityRecord(overrides: Record<string, unknown> = {}) {
 function runtimeEchoRecord(overrides: Record<string, unknown> = {}) {
   return {
     schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1",
+    observedAt: new Date().toISOString(),
+    attestation_scope: "plugin_observed_only",
     runtime_echo_ref: "runtime-echo-ref-1",
     workflow_id: workflowId,
     step_id: "step-1",
@@ -79,6 +83,8 @@ function runtimeEchoRecord(overrides: Record<string, unknown> = {}) {
 function telemetryRecord(overrides: Record<string, unknown> = {}) {
   return {
     schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
+    observedAt: new Date().toISOString(),
+    attestation_scope: "plugin_observed_only",
     telemetry_ref: "telemetry-ref-1",
     workflow_id: workflowId,
     step_id: "step-1",
@@ -122,7 +128,14 @@ function preDispatchAuditRecord(overrides: Record<string, unknown> = {}) {
     schema_version: "flowdesk.pre_dispatch_audit_record.v1",
     workflow_id: workflowId,
     pre_dispatch_audit_ref: "audit-predispatch-1",
-    observed_at: "2026-05-19T00:00:00.000Z",
+    attempt_id: "attempt-1",
+    binding_ref: "binding-provider-model-1",
+    verification_ref: "verification-1",
+    approval_source_ref: "approval-source-1",
+    idempotency_ref: "idempotency-1",
+    evidence_bundle_refs: ["evidence-bundle-1"],
+    redaction_validation_passed: true,
+    auditor_observed_at: "2026-05-19T00:00:00.000Z",
     ...overrides
   };
 }
