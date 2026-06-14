@@ -58,6 +58,7 @@ export * from "./lane-lifecycle-record.js";
 export * from "./pending-abort.js";
 export * from "./lane-observability.js";
 export * from "./lane-stall-projection.js";
+export * from "./managed-dispatch-bundle-evaluator.js";
 export * from "./managed-dispatch-evidence-shape.js";
 export * from "./model-availability-cache.js";
 export * from "./operational-intelligence.js";
