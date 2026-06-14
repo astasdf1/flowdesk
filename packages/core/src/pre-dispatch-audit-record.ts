@@ -11,8 +11,15 @@ export interface FlowDeskPreDispatchAuditRecordV1 {
 	schema_version: "flowdesk.pre_dispatch_audit_record.v1";
 	workflow_id: string;
 	pre_dispatch_audit_ref: string;
-	observed_at: string;
-	attempt_id?: string;
+	attempt_id: string;
+	binding_ref: string;
+	verification_ref: string;
+	approval_source_ref: string;
+	idempotency_ref: string;
+	evidence_bundle_refs: string[];
+	redaction_validation_passed: true;
+	auditor_observed_at: string;
+	observed_at?: string;
 	plan_revision_id?: string;
 	approval_ref?: string;
 	policy_pack_hash?: string;
@@ -30,18 +37,55 @@ function isParseableTimestamp(value: unknown): value is string {
 	return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
+function validateRequiredFields(
+	value: Record<string, unknown>,
+	fields: readonly string[],
+): string[] {
+	const missing = fields.filter((field) => !(field in value));
+	return missing.length === 0
+		? []
+		: [`missing required fields: ${missing.join(",")}`];
+}
+
+function validateOpaqueRefArray(value: unknown, label: string): string[] {
+	if (!Array.isArray(value)) return [`${label} must be an array`];
+	return value.flatMap((entry, index) =>
+		validateOpaqueRef(entry, `${label}[${index}]`).errors,
+	);
+}
+
 export function validateFlowDeskPreDispatchAuditRecordV1(
 	value: unknown,
 ): ValidationResult {
 	if (!isRecord(value))
 		return invalid("pre-dispatch audit record must be an object");
 	const errors: string[] = [];
+	const requiredFields = [
+		"schema_version",
+		"workflow_id",
+		"pre_dispatch_audit_ref",
+		"attempt_id",
+		"binding_ref",
+		"verification_ref",
+		"approval_source_ref",
+		"idempotency_ref",
+		"evidence_bundle_refs",
+		"redaction_validation_passed",
+		"auditor_observed_at",
+	] as const;
 	const allowed = new Set([
 		"schema_version",
 		"workflow_id",
 		"pre_dispatch_audit_ref",
-		"observed_at",
 		"attempt_id",
+		"binding_ref",
+		"verification_ref",
+		"approval_source_ref",
+		"idempotency_ref",
+		"evidence_bundle_refs",
+		"redaction_validation_passed",
+		"auditor_observed_at",
+		"observed_at",
 		"plan_revision_id",
 		"approval_ref",
 		"policy_pack_hash",
@@ -52,6 +96,7 @@ export function validateFlowDeskPreDispatchAuditRecordV1(
 	]);
 	for (const key of Object.keys(value))
 		if (!allowed.has(key)) errors.push(`unknown properties: ${key}`);
+	errors.push(...validateRequiredFields(value, requiredFields));
 	if (value.schema_version !== "flowdesk.pre_dispatch_audit_record.v1")
 		errors.push("pre-dispatch audit record schema_version is invalid");
 	errors.push(...validateOpaqueId(value.workflow_id, "workflow_id").errors);
@@ -61,10 +106,19 @@ export function validateFlowDeskPreDispatchAuditRecordV1(
 			"pre_dispatch_audit_ref",
 		).errors,
 	);
-	if (!isParseableTimestamp(value.observed_at))
+	if (value.observed_at !== undefined && !isParseableTimestamp(value.observed_at))
 		errors.push("observed_at must be a parseable timestamp");
+	if (!isParseableTimestamp(value.auditor_observed_at))
+		errors.push("auditor_observed_at must be a parseable timestamp");
+	if (value.redaction_validation_passed !== true)
+		errors.push("redaction_validation_passed must be true");
+	errors.push(...validateOpaqueRefArray(value.evidence_bundle_refs, "evidence_bundle_refs"));
 	for (const [field, label] of [
 		[value.attempt_id, "attempt_id"],
+		[value.binding_ref, "binding_ref"],
+		[value.verification_ref, "verification_ref"],
+		[value.approval_source_ref, "approval_source_ref"],
+		[value.idempotency_ref, "idempotency_ref"],
 		[value.plan_revision_id, "plan_revision_id"],
 		[value.approval_ref, "approval_ref"],
 		[value.policy_pack_hash, "policy_pack_hash"],
