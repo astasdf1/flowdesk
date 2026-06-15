@@ -105,9 +105,31 @@ export interface FlowDeskRemoteWriteConnectorExecutionReadinessV1 extends Valida
 	runtimeExecution: false;
 }
 
+export interface FlowDeskConnectorDryRunReadinessV1 {
+	gate_result: "dry_run_ready" | "blocked";
+	blocked_labels: string[];
+	capability_discovery_present: boolean;
+	install_plan_present: boolean;
+	dry_run_write_plan_present: boolean;
+	auth_scope_ref_present: boolean;
+	remote_write_attempted: false;
+	dispatch_authority_enabled: false;
+	providerCall: false;
+	actualLaneLaunch: false;
+	runtimeExecution: false;
+}
+
 const disabledRemoteWriteAuthority = {
 	remote_write_authority_enabled: false as const,
 	external_write_authority_enabled: false as const,
+	dispatch_authority_enabled: false as const,
+	providerCall: false as const,
+	actualLaneLaunch: false as const,
+	runtimeExecution: false as const,
+};
+
+const disabledConnectorDryRunAuthority = {
+	remote_write_attempted: false as const,
 	dispatch_authority_enabled: false as const,
 	providerCall: false as const,
 	actualLaneLaunch: false as const,
@@ -350,6 +372,62 @@ export function validateFlowDeskRemoteWritePlanV1(value: unknown): ValidationRes
 		errors.push("remote write plan cannot attempt writes or enable authority");
 	errors.push(...validateNoForbiddenRawPayloads(record, "remote_write_plan").errors);
 	return errors.length === 0 ? valid() : invalid(...errors);
+}
+
+export function evaluateFlowDeskConnectorDryRunReadinessV1(input: {
+	capability?: FlowDeskRemoteWriteConnectorCapabilityV1;
+	installPlan?: FlowDeskRemoteWriteConnectorInstallPlanV1;
+	dryRunWritePlan?: FlowDeskRemoteWritePlanV1;
+}): FlowDeskConnectorDryRunReadinessV1 {
+	const blockedLabels: string[] = [];
+	const capabilityDiscoveryPresent = input.capability !== undefined;
+	const installPlanPresent = input.installPlan !== undefined || input.capability?.installation_plan_ref !== undefined;
+	const dryRunWritePlanPresent = input.dryRunWritePlan !== undefined;
+	const authScopeRefPresent = input.capability?.auth_scope_ref !== undefined && input.dryRunWritePlan?.auth_scope_ref !== undefined;
+
+	if (!capabilityDiscoveryPresent) blockedLabels.push("capability_discovery_missing");
+	if (!installPlanPresent) blockedLabels.push("install_plan_missing");
+	if (!dryRunWritePlanPresent) blockedLabels.push("dry_run_write_plan_missing");
+	if (!authScopeRefPresent) blockedLabels.push("auth_scope_ref_missing");
+
+	if (input.capability !== undefined) {
+		const capabilityResult = validateFlowDeskRemoteWriteConnectorCapabilityV1(input.capability);
+		if (!capabilityResult.ok) blockedLabels.push("capability_invalid");
+		if (input.capability.capability_state !== "available") blockedLabels.push("connector_not_available");
+	}
+
+	if (input.installPlan !== undefined) {
+		const installPlanResult = validateFlowDeskRemoteWriteConnectorInstallPlanV1(input.installPlan);
+		if (!installPlanResult.ok) blockedLabels.push("install_plan_invalid");
+	}
+
+	if (input.dryRunWritePlan !== undefined) {
+		const dryRunPlanResult = validateFlowDeskRemoteWritePlanV1(input.dryRunWritePlan);
+		if (!dryRunPlanResult.ok) blockedLabels.push("dry_run_write_plan_invalid");
+	}
+
+	if (input.capability !== undefined && input.installPlan !== undefined) {
+		if (input.capability.capability_id !== input.installPlan.capability_ref) blockedLabels.push("install_capability_ref_mismatch");
+		if (input.capability.connector_kind !== input.installPlan.connector_kind) blockedLabels.push("install_connector_kind_mismatch");
+		if (input.capability.active_profile_ref !== input.installPlan.active_profile_ref) blockedLabels.push("install_active_profile_mismatch");
+	}
+
+	if (input.capability !== undefined && input.dryRunWritePlan !== undefined) {
+		if (input.capability.capability_id !== input.dryRunWritePlan.capability_ref) blockedLabels.push("capability_ref_mismatch");
+		if (input.capability.connector_kind !== input.dryRunWritePlan.connector_kind) blockedLabels.push("connector_kind_mismatch");
+		if (input.capability.connector_ref !== input.dryRunWritePlan.connector_ref) blockedLabels.push("connector_ref_mismatch");
+		if (input.capability.auth_scope_ref !== input.dryRunWritePlan.auth_scope_ref) blockedLabels.push("auth_scope_mismatch");
+	}
+
+	return {
+		gate_result: blockedLabels.length === 0 ? "dry_run_ready" : "blocked",
+		blocked_labels: [...new Set(blockedLabels)],
+		capability_discovery_present: capabilityDiscoveryPresent,
+		install_plan_present: installPlanPresent,
+		dry_run_write_plan_present: dryRunWritePlanPresent,
+		auth_scope_ref_present: authScopeRefPresent,
+		...disabledConnectorDryRunAuthority,
+	};
 }
 
 export function evaluateFlowDeskRemoteWriteConnectorExecutionReadinessV1(input: {

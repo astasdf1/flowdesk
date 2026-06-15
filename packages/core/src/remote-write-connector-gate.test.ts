@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { FlowDeskProductionApprovalSourceV1 } from "./production-approval-source.js";
 import {
+	evaluateFlowDeskConnectorDryRunReadinessV1,
 	evaluateFlowDeskRemoteWriteConnectorExecutionReadinessV1,
 	type FlowDeskRemoteWriteConnectorCapabilityV1,
 	type FlowDeskRemoteWriteConnectorInstallPlanV1,
@@ -184,4 +185,66 @@ test("remote write connector readiness requires available connector and consumed
 			"approval_not_consumed",
 		]),
 	);
+});
+
+test("connector dry-run readiness is ready when capability, install plan, write plan, and auth scope are present", () => {
+	const readiness = evaluateFlowDeskConnectorDryRunReadinessV1({
+		capability: capability(),
+		installPlan: installPlan(),
+		dryRunWritePlan: writePlan(),
+	});
+
+	assert.equal(readiness.gate_result, "dry_run_ready");
+	assert.deepEqual(readiness.blocked_labels, []);
+	assert.equal(readiness.capability_discovery_present, true);
+	assert.equal(readiness.install_plan_present, true);
+	assert.equal(readiness.dry_run_write_plan_present, true);
+	assert.equal(readiness.auth_scope_ref_present, true);
+	assert.equal(readiness.remote_write_attempted, false);
+	assert.equal(readiness.dispatch_authority_enabled, false);
+	assert.equal(readiness.providerCall, false);
+	assert.equal(readiness.actualLaneLaunch, false);
+	assert.equal(readiness.runtimeExecution, false);
+});
+
+test("connector dry-run readiness blocks when capability discovery is missing", () => {
+	const readiness = evaluateFlowDeskConnectorDryRunReadinessV1({
+		installPlan: installPlan(),
+		dryRunWritePlan: writePlan(),
+	});
+
+	assert.equal(readiness.gate_result, "blocked");
+	assert.equal(readiness.capability_discovery_present, false);
+	assert.equal(readiness.remote_write_attempted, false);
+	assert.ok(readiness.blocked_labels.includes("capability_discovery_missing"));
+	assert.ok(readiness.blocked_labels.includes("auth_scope_ref_missing"));
+});
+
+test("connector dry-run readiness blocks when dry-run write plan is missing", () => {
+	const readiness = evaluateFlowDeskConnectorDryRunReadinessV1({
+		capability: capability(),
+		installPlan: installPlan(),
+	});
+
+	assert.equal(readiness.gate_result, "blocked");
+	assert.equal(readiness.dry_run_write_plan_present, false);
+	assert.equal(readiness.remote_write_attempted, false);
+	assert.ok(readiness.blocked_labels.includes("dry_run_write_plan_missing"));
+	assert.ok(readiness.blocked_labels.includes("auth_scope_ref_missing"));
+});
+
+test("connector dry-run readiness never reports remote write attempted", () => {
+	const readiness = evaluateFlowDeskConnectorDryRunReadinessV1({
+		capability: capability(),
+		installPlan: installPlan(),
+		dryRunWritePlan: writePlan({ remote_write_attempted: true as false }),
+	});
+
+	assert.equal(readiness.gate_result, "blocked");
+	assert.equal(readiness.remote_write_attempted, false);
+	assert.equal(readiness.dispatch_authority_enabled, false);
+	assert.equal(readiness.providerCall, false);
+	assert.equal(readiness.actualLaneLaunch, false);
+	assert.equal(readiness.runtimeExecution, false);
+	assert.ok(readiness.blocked_labels.includes("dry_run_write_plan_invalid"));
 });

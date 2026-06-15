@@ -27,6 +27,7 @@ import type {
 	FlowDeskRuntimeLaneLaunchPlanV1,
 	FlowDeskSessionAbortDecisionV1,
 	FlowDeskSessionEvidenceReloadResultV1,
+	FlowDeskTaskFailedV1,
 	FlowDeskTopTierReviewPerspective,
 	FlowDeskTopTierReviewVerdictV1,
 	GuardBoundaryDecisionV1,
@@ -4275,6 +4276,7 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 	// OpenCode 1.15.x accepts; the path fallback can surface literal {id} route
 	// errors in live sessions.
 	let raw: unknown = null;
+	let messagesReadFailed = false;
 	const messages = input.client.session.messages;
 	if (typeof messages === "function") {
 		try {
@@ -4284,6 +4286,7 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 				new Promise<null>((resolve) => setTimeout(() => resolve(null), messagesTimeoutMs)),
 			]);
 		} catch {
+			messagesReadFailed = true;
 			raw = null;
 		}
 	}
@@ -4302,7 +4305,11 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 			agent_ref: input.agentRef,
 			provider_qualified_model_id: input.providerQualifiedModelId,
 			state,
+			...(state === "complete" ? { message_ref: `msg-${input.laneId}` } : {}),
+			...(state === "complete" ? { verdict_ref: `verdict-${input.laneId}` } : {}),
 			...(outputRef === undefined ? {} : { output_ref: outputRef }),
+			...(state === "complete" ? { runtime_echo_ref: `runtime-echo-${input.laneId}` } : {}),
+			...(state === "complete" ? { telemetry_ref: `telemetry-${input.laneId}` } : {}),
 			timeout_ms: 0,
 			orphan_max_age_ms: 0,
 			retry_count: 0,
@@ -4381,9 +4388,9 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 		if (terminalEvidence?.conflict === true)
 			return blocked(`terminal evidence conflict; quarantine recommended: ${terminalEvidence.evidenceId}`);
 		const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
-		if (!writeLifecycle("incomplete", `output-${taskResultEvidenceId}`, terminalLifecycleEvidenceId))
+		if (!writeLifecycle("complete", `output-${taskResultEvidenceId}`, terminalLifecycleEvidenceId))
 			return blocked("terminal lane_lifecycle evidence write failed");
-		if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "incomplete"))
+		if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "complete"))
 			return blocked("terminal lane_lifecycle evidence reload verification failed");
 
 		// Slice 2: Hardened finalizer reload verification (fail-closed lifecycle linkage).
@@ -4444,6 +4451,112 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 			finalizationReason,
 			completionStatus,
 			looksLikeRefusalOrError: observed?.looksLikeRefusalOrError ?? false,
+			authority: baseAuthority,
+		};
+	}
+
+	if (messagesReadFailed) {
+		const taskFailedEvidenceId = `task-failed-managed-dispatch-${input.laneId}`;
+		const taskFailedRecord: FlowDeskTaskFailedV1 = {
+			schema_version: "flowdesk.task_failed.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: taskId,
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			failure_category: "provider_dispatch_error",
+			redacted_reason: "managed-dispatch child session messages read failed before output could be observed",
+			redacted_error_details: "messages_read_failed",
+			capture_status: "no_output",
+			capture_confidence: "none",
+			observed_text_kind: "empty",
+			final_body_observed: false,
+			terminal_marker_observed: false,
+			requires_coordinator_review: true,
+			safe_for_auto_synthesis: false,
+			display_as_uncertain_result: true,
+			created_at: observedAt,
+			dispatch_authority_enabled: false,
+		};
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId,
+			evidenceId: taskFailedEvidenceId,
+			record: taskFailedRecord as unknown as Record<string, unknown>,
+		});
+		if (!prepared.ok || prepared.writeIntent === undefined)
+			return blocked(prepared.errors.join(", ") || "task_failed evidence intent invalid");
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+		if (!applied.ok || applied.writtenPaths.length === 0)
+			return blocked("task_failed evidence write failed");
+		if (!reloadHas((entry) => entry.evidenceClass === "task_failed" && entry.evidenceId === taskFailedEvidenceId && entry.record.lane_id === input.laneId))
+			return blocked("task_failed evidence reload verification failed");
+
+		const terminalEvidence = persistManagedDispatchTerminalEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			attemptId: input.attemptId,
+			laneId: input.laneId,
+			taskId,
+			responseObserved: false,
+			errorCategory: "provider_api",
+		});
+		if (terminalEvidence?.conflict === true)
+			return blocked(`terminal evidence conflict; quarantine recommended: ${terminalEvidence.evidenceId}`);
+		const terminalLifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
+		if (!writeLifecycle("invocation_failed", undefined, terminalLifecycleEvidenceId))
+			return blocked("terminal failed lane_lifecycle evidence write failed");
+		if (!reloadHas((entry) => entry.evidenceClass === "lane_lifecycle" && entry.evidenceId === terminalLifecycleEvidenceId && entry.record.lane_id === input.laneId && entry.record.state === "invocation_failed"))
+			return blocked("terminal failed lane_lifecycle evidence reload verification failed");
+
+		const failureLinkageReload = reloadFlowDeskSessionEvidenceV1({
+			workflowId: input.workflowId,
+			rootDir: input.rootDir,
+		});
+		const hasTaskFailedRecord =
+			failureLinkageReload.ok &&
+			failureLinkageReload.blocked.length === 0 &&
+			failureLinkageReload.entries.some(
+				(entry) =>
+					entry.evidenceClass === "task_failed" &&
+					entry.evidenceId === taskFailedEvidenceId &&
+					(entry.record as Record<string, unknown>).lane_id === input.laneId,
+			);
+		const hasFailedLifecycleRecord =
+			failureLinkageReload.ok &&
+			failureLinkageReload.blocked.length === 0 &&
+			failureLinkageReload.entries.some(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					entry.evidenceId === terminalLifecycleEvidenceId &&
+					(entry.record as Record<string, unknown>).lane_id === input.laneId,
+			);
+		if (!hasTaskFailedRecord || !hasFailedLifecycleRecord) {
+			return {
+				adapterProfile: "managed_dispatch_lane_finalize_observer",
+				status: "terminal_linkage_failed",
+				workflowId: input.workflowId,
+				laneId: input.laneId,
+				terminalLifecycleEvidenceId,
+				terminalLinkageVerified: false,
+				redactedBlockReason: [
+					!hasTaskFailedRecord ? "terminal task_failed record missing or stale after reload" : undefined,
+					!hasFailedLifecycleRecord ? "terminal lane_lifecycle record missing or stale after failed reload" : undefined,
+				].filter((r): r is string => r !== undefined).join("; "),
+				authority: baseAuthority,
+			};
+		}
+
+		return {
+			adapterProfile: "managed_dispatch_lane_finalize_observer",
+			status: "lane_no_output",
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			terminalLifecycleEvidenceId,
+			terminalLinkageVerified: true,
+			...(terminalEvidence === undefined ? {} : {
+				terminalEvidenceId: terminalEvidence.evidenceId,
+				terminalEvidenceConflict: terminalEvidence.conflict ?? false,
+			}),
 			authority: baseAuthority,
 		};
 	}
