@@ -73,6 +73,7 @@ export * from "./production-enablement.js";
 export * from "./production-verification.js";
 export * from "./provider-failures.js";
 export * from "./provider-usage-collector.js";
+export * from "./provider-evidence-writer.js";
 export * from "./redaction.js";
 export * from "./release1-contracts.js";
 export * from "./remote-write-connector-gate.js";
