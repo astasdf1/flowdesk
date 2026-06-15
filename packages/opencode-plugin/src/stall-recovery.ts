@@ -3241,6 +3241,55 @@ export async function monitorChildSessionsV1(input: {
 					runningToolsState: "none_running_confirmed",
 					confidence: "medium",
 				});
+				if (captureDiagnostic.finalTextPresent === true) {
+					try {
+						const rescueRaw = await readAsyncMonitorChildSessionMessages(input.client, childSessionId, 5_000);
+						if (rescueRaw !== null) {
+							const rescueObserved = observeFlowDeskAgentTaskOutputV1(rescueRaw);
+							const latestText = rescueObserved.latestText;
+							if (typeof latestText === "string" && latestText.trim().length > 0) {
+								if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+									const token = randomBytes(4).toString("hex");
+									const captureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+										outputKind: rescueObserved.outputKind,
+										finalBodyObserved: true,
+										terminalMarkerObserved: rescueObserved.terminalObserved,
+									});
+									writeChildSessionEvidence(input.rootDir, input.workflowId, `task-result-${taskId}-watchdog-awaiting-body-rescue-${token}`, {
+										schema_version: "flowdesk.task_result.v1",
+										workflow_id: input.workflowId,
+										lane_id: laneId,
+										task_id: taskId,
+										agent_ref: agentRef,
+										provider_qualified_model_id: modelId,
+										child_session_id: childSessionId,
+										completion_status: rescueObserved.terminalObserved ? "final" : "partial",
+										result_text: latestText,
+										output_kind: rescueObserved.outputKind,
+										usable_for_synthesis: rescueObserved.usableForSynthesis,
+										looks_like_refusal_or_error: rescueObserved.looksLikeRefusalOrError,
+										capture_safety_metadata: captureMetadata,
+										capture_failure_diagnostic: captureDiagnostic,
+										observed_at: nowIso,
+									});
+									writeChildSessionEvidence(input.rootDir, input.workflowId, `runtime-lane-lifecycle-${laneId}-complete-awaiting-body-rescue-${token}`, {
+										schema_version: "flowdesk.runtime_lane_lifecycle.v1",
+										workflow_id: input.workflowId,
+										lane_id: laneId,
+										task_id: taskId,
+										agent_ref: agentRef,
+										provider_qualified_model_id: modelId,
+										child_session_id: childSessionId,
+										state: "complete",
+										reason: "awaiting_body_capture_active_messages_rescue",
+										observed_at: nowIso,
+									});
+								}
+								continue;
+							}
+						}
+					} catch { /* rescue is best-effort; keep existing retry/timeout path */ }
+				}
 				const awaitingSinceMs = typeof recordForWrites.awaiting_body_capture_since === "string"
 					? Date.parse(recordForWrites.awaiting_body_capture_since)
 					: nowMs;
