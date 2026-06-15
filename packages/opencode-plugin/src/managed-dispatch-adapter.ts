@@ -28,6 +28,7 @@ import type {
 	FlowDeskSessionAbortDecisionV1,
 	FlowDeskSessionEvidenceReloadResultV1,
 	FlowDeskTaskFailedV1,
+	FlowDeskTaskResultV1,
 	FlowDeskTopTierReviewPerspective,
 	FlowDeskTopTierReviewVerdictV1,
 	GuardBoundaryDecisionV1,
@@ -4223,6 +4224,135 @@ function persistManagedDispatchTerminalEvidence(input: {
 	});
 }
 
+function writeManagedDispatchPromptTerminalEvidence(input: {
+	rootDir: string | undefined;
+	workflowId: string | undefined;
+	attemptId: string | undefined;
+	laneId: string | undefined;
+	parentSessionId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	promptText: string;
+	response?: unknown;
+	failureCategory?: FlowDeskTaskFailedV1["failure_category"];
+	redactedFailureReason?: string;
+	observedAt?: string;
+}): { taskEvidenceId?: string; lifecycleEvidenceId?: string; lifecycleState?: FlowDeskLaneLifecycleRecordV1["state"] } | undefined {
+	if (
+		input.rootDir === undefined ||
+		input.workflowId === undefined ||
+		input.attemptId === undefined ||
+		input.laneId === undefined ||
+		input.rootDir.trim().length === 0 ||
+		input.workflowId.trim().length === 0 ||
+		input.attemptId.trim().length === 0 ||
+		input.laneId.trim().length === 0
+	) return undefined;
+	const observedAt = input.observedAt ?? new Date().toISOString();
+	const taskId = managedDispatchTerminalTaskId(input.laneId);
+	const parentSessionRef = input.parentSessionId.startsWith("ses-")
+		? input.parentSessionId
+		: `ses-${input.parentSessionId}`;
+	const childSessionRef = `ses-${input.laneId}`;
+	const writeRecord = (evidenceId: string, record: Record<string, unknown>): boolean => {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId ?? "workflow-missing",
+			evidenceId,
+			record,
+		});
+		if (!prepared.ok || prepared.writeIntent === undefined) return false;
+		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir ?? "", [prepared.writeIntent]);
+		return applied.ok && applied.writtenPaths.length > 0;
+	};
+	const observed = input.response === undefined ? undefined : observeFlowDeskAgentTaskOutputV1(input.response);
+	const latestText = observed?.latestText;
+	let taskEvidenceId: string | undefined;
+	let lifecycleState: FlowDeskLaneLifecycleRecordV1["state"];
+	let outputRef: string | undefined;
+	if (input.failureCategory !== undefined) {
+		taskEvidenceId = `task-failed-managed-dispatch-${input.laneId}`;
+		const failed: FlowDeskTaskFailedV1 = {
+			schema_version: "flowdesk.task_failed.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: taskId,
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			failure_category: input.failureCategory,
+			redacted_reason: input.redactedFailureReason ?? "managed-dispatch prompt failed before output could be observed",
+			capture_status: "no_output",
+			capture_confidence: "none",
+			observed_text_kind: "empty",
+			final_body_observed: false,
+			terminal_marker_observed: false,
+			requires_coordinator_review: true,
+			safe_for_auto_synthesis: false,
+			display_as_uncertain_result: true,
+			created_at: observedAt,
+			dispatch_authority_enabled: false,
+		};
+		if (!writeRecord(taskEvidenceId, failed as unknown as Record<string, unknown>)) return undefined;
+		lifecycleState = "invocation_failed";
+	} else if (typeof latestText === "string" && latestText.trim().length > 0) {
+		taskEvidenceId = `task-result-managed-dispatch-${input.laneId}`;
+		const truncated = latestText.length > MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT;
+		const storedText = truncated ? latestText.slice(0, MANAGED_DISPATCH_LANE_RESULT_MAX_TEXT) : latestText;
+		const result: FlowDeskTaskResultV1 = {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: taskId,
+			agent_ref: input.agentRef,
+			provider_qualified_model_id: input.providerQualifiedModelId,
+			task_prompt_sha256: createHash("sha256").update(input.promptText).digest("hex"),
+			result_text: storedText,
+			result_text_truncated: truncated,
+			result_text_sha256: createHash("sha256").update(latestText).digest("hex"),
+			completion_status: observed?.terminalObserved === true ? "final" : "partial",
+			output_kind: observed?.outputKind ?? "final_answer",
+			usable_for_synthesis: observed?.usableForSynthesis ?? true,
+			missing_contract: false,
+			finalization_reason: observed?.terminalObserved === true ? "terminal_marker" : "timeout_partial",
+			looks_like_refusal_or_error: observed?.looksLikeRefusalOrError ?? false,
+			created_at: observedAt,
+			dispatch_authority_enabled: false,
+		};
+		if (!writeRecord(taskEvidenceId, result as unknown as Record<string, unknown>)) return undefined;
+		outputRef = `output-${taskEvidenceId}`;
+		lifecycleState = "complete";
+	} else {
+		lifecycleState = "no_output";
+	}
+	const lifecycleEvidenceId = `lifecycle-managed-dispatch-terminal-${input.laneId}`;
+	const lifecycle: FlowDeskLaneLifecycleRecordV1 = {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: input.laneId,
+		workflow_id: input.workflowId,
+		attempt_id: input.attemptId,
+		parent_session_ref: parentSessionRef,
+		child_session_ref: childSessionRef,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		state: lifecycleState,
+		...(lifecycleState === "complete" ? { message_ref: `msg-${input.laneId}` } : {}),
+		...(lifecycleState === "complete" ? { verdict_ref: `verdict-${input.laneId}` } : {}),
+		...(outputRef === undefined ? {} : { output_ref: outputRef }),
+		...(lifecycleState === "complete" ? { runtime_echo_ref: `runtime-echo-${input.laneId}` } : {}),
+		...(lifecycleState === "complete" ? { telemetry_ref: `telemetry-${input.laneId}` } : {}),
+		timeout_ms: 0,
+		orphan_max_age_ms: 0,
+		retry_count: 0,
+		created_at: observedAt,
+		updated_at: observedAt,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	};
+	if (!writeRecord(lifecycleEvidenceId, lifecycle as unknown as Record<string, unknown>)) return undefined;
+	return { taskEvidenceId, lifecycleEvidenceId, lifecycleState };
+}
+
 /**
  * Observe a launched managed-dispatch lane's child session once and record
  * terminal evidence (task_result + terminal lane_lifecycle, or a no_output
@@ -5262,6 +5392,18 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			errorCategory: redactedErrorCategory,
 			responseObserved: false,
 		});
+		const promptTerminalEvidence = writeManagedDispatchPromptTerminalEvidence({
+			rootDir: input.durableStateRootDir,
+			workflowId: input.dispatchManifest.workflow_id,
+			attemptId: input.dispatchManifest.attempt_id,
+			laneId: input.request.laneId,
+			parentSessionId: input.request.sessionId,
+			agentRef: `agent-${input.request.agent}`,
+			providerQualifiedModelId: resolvedRequest.provider_qualified_model_id,
+			promptText: text,
+			failureCategory: redactedErrorCategory === "provider_api" ? "provider_dispatch_error" : "unknown",
+			redactedFailureReason: "managed-dispatch prompt failed before output could be observed",
+		});
 		return {
 			adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
 			status: "dispatch_failed",
@@ -5279,6 +5421,8 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 				terminalEvidenceId: terminalEvidence.evidenceId,
 				terminalEvidenceConflict: terminalEvidence.conflict === true,
 			}),
+			...(promptTerminalEvidence?.taskEvidenceId === undefined ? {} : { taskEvidenceId: promptTerminalEvidence.taskEvidenceId }),
+			...(promptTerminalEvidence?.lifecycleEvidenceId === undefined ? {} : { terminalLifecycleEvidenceId: promptTerminalEvidence.lifecycleEvidenceId }),
 			modelSelectionFallback: workingModelGate.fallbackEvidence,
 			authority: { ...enabledDispatchAuthority(), runtimeExecution: false },
 			verification: verificationFor(input.boundaryInput),
@@ -5310,6 +5454,17 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			verification: verificationFor(input.boundaryInput),
 		};
 	}
+	const promptTerminalEvidence = writeManagedDispatchPromptTerminalEvidence({
+		rootDir: input.durableStateRootDir,
+		workflowId: input.dispatchManifest.workflow_id,
+		attemptId: input.dispatchManifest.attempt_id,
+		laneId: input.request.laneId,
+		parentSessionId: input.request.sessionId,
+		agentRef: `agent-${input.request.agent}`,
+		providerQualifiedModelId: resolvedRequest.provider_qualified_model_id,
+		promptText: text,
+		response,
+	});
 	return {
 		adapterProfile: flowdeskManagedDispatchBetaAdapterProfile,
 		status:
@@ -5326,6 +5481,8 @@ export async function dispatchManagedDispatchBetaPromptV1(input: {
 			? {}
 			: { directory: input.request.directory }),
 		...(response === undefined ? {} : { response }),
+		...(promptTerminalEvidence?.taskEvidenceId === undefined ? {} : { taskEvidenceId: promptTerminalEvidence.taskEvidenceId }),
+		...(promptTerminalEvidence?.lifecycleEvidenceId === undefined ? {} : { terminalLifecycleEvidenceId: promptTerminalEvidence.lifecycleEvidenceId }),
 		modelSelectionFallback: workingModelGate.fallbackEvidence,
 		authority: enabledDispatchAuthority(),
 		verification: verificationFor(input.boundaryInput),
