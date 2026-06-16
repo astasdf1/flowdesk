@@ -115,6 +115,7 @@ export const FLOWDESK_SESSION_EVIDENCE_CLASSES = [
 	"dispatch_idempotency",
 	"pre_dispatch_audit",
 	"managed_dispatch_bundle_evaluation",
+	"managed_dispatch_exposure_authorization",
 	"exact_model_availability_cache",
 	"exact_model_availability_cache_refresh_plan",
 	"exact_model_availability_cache_acquisition_plan",
@@ -177,6 +178,8 @@ const evidenceClassSegment: Record<FlowDeskSessionEvidenceClass, string> = {
 	dispatch_idempotency: "dispatch-idempotency",
 	pre_dispatch_audit: "pre-dispatch-audit",
 	managed_dispatch_bundle_evaluation: "managed-dispatch-bundle-evaluation",
+	managed_dispatch_exposure_authorization:
+		"managed-dispatch-exposure-authorization",
 	exact_model_availability_cache: "exact-model-availability-cache",
 	exact_model_availability_cache_refresh_plan:
 		"exact-model-availability-cache-refresh-plan",

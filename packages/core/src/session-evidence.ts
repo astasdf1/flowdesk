@@ -22,6 +22,7 @@ import {
 	validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1,
 } from "./managed-dispatch-evidence-shape.js";
 import { validateFlowDeskManagedDispatchBundleEvaluationV1 } from "./managed-dispatch-bundle-evaluator.js";
+import { validateFlowDeskManagedDispatchExposureAuthorizationV1 } from "./managed-dispatch-exposure-authorization.js";
 import { validateFlowDeskPreDispatchAuditRecordV1 } from "./pre-dispatch-audit-record.js";
 import {
 	validateFlowDeskPendingAbortCancelV1,
@@ -120,6 +121,8 @@ const EVIDENCE_SCHEMA_BY_CLASS: Record<FlowDeskSessionEvidenceClass, string> = {
 	pre_dispatch_audit: "flowdesk.pre_dispatch_audit_record.v1",
 	managed_dispatch_bundle_evaluation:
 		"flowdesk.managed_dispatch_bundle_evaluation.v1",
+	managed_dispatch_exposure_authorization:
+		"flowdesk.managed_dispatch_exposure_authorization.v1",
 	exact_model_availability_cache:
 		"flowdesk.exact_model_availability_cache.v1",
 	exact_model_availability_cache_refresh_plan:
@@ -914,6 +917,8 @@ function validateEvidenceShape(
 		return validateFlowDeskPreDispatchAuditRecordV1(record);
 	if (evidenceClass === "managed_dispatch_bundle_evaluation")
 		return validateFlowDeskManagedDispatchBundleEvaluationV1(record);
+	if (evidenceClass === "managed_dispatch_exposure_authorization")
+		return validateFlowDeskManagedDispatchExposureAuthorizationV1(record);
 	if (evidenceClass === "usage_authority")
 		return validateFlowDeskManagedDispatchBetaUsageAuthorityShapeV1(record);
 	if (evidenceClass === "runtime_echo")

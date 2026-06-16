@@ -9,6 +9,8 @@ import {
   createFlowDeskExternalAuthProviderPolicyResultV1,
   createFlowDeskProductionApprovalDecisionV1,
   createFlowDeskSanitizedAuthCaptureResultV1,
+  evaluateFlowDeskManagedDispatchExposureAuthorizationV1,
+  FLOWDESK_S7_REQUIRED_S6_TUPLE,
   FLOWDESK_SESSION_EVIDENCE_CLASSES,
   type FlowDeskExactModelAvailabilityCacheRefreshPlanV1,
   materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
@@ -27,7 +29,18 @@ import {
 } from "./index.js";
 
 const workflowId = "workflow-evidence-1";
+const s7ExposureWorkflowId = FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id;
 const now = "2026-05-24T12:00:00.000Z";
+
+function s7ExposureAuthorizationRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    ...evaluateFlowDeskManagedDispatchExposureAuthorizationV1({
+      now: "2026-06-15T12:00:00.000Z",
+      expiresAt: "2026-06-15T12:10:00.000Z"
+    }),
+    ...overrides
+  };
+}
 
 function usageAuthorityRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -719,6 +732,83 @@ test("session evidence path builders produce per-class relative paths", () => {
     assert.ok(record.startsWith(dir));
     assert.ok(record.endsWith("/evidence-1.json"));
   }
+});
+
+test("session evidence registry includes S7 exposure authorization paths", () => {
+  assert.ok(FLOWDESK_SESSION_EVIDENCE_CLASSES.includes("managed_dispatch_exposure_authorization"));
+  const dir = sessionEvidenceDirectoryPath(s7ExposureWorkflowId, "managed_dispatch_exposure_authorization");
+  assert.equal(dir, `.flowdesk/sessions/${s7ExposureWorkflowId}/evidence/managed-dispatch-exposure-authorization`);
+  const record = sessionEvidenceRecordPath(s7ExposureWorkflowId, "managed_dispatch_exposure_authorization", "s7-authorization-1");
+  assert.equal(record, `${dir}/s7-authorization-1.json`);
+});
+
+test("session evidence write and reload accepts S7 exposure authorization records", () => {
+  withEvidenceTree((rootDir) => {
+    const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+      workflowId: s7ExposureWorkflowId,
+      evidenceId: "s7-authorization-1",
+      record: s7ExposureAuthorizationRecord()
+    });
+    assert.equal(prepared.ok, true, prepared.errors.join("; "));
+    assert.ok(prepared.writeIntent);
+    assert.equal(prepared.writeIntent.evidenceClass, "managed_dispatch_exposure_authorization");
+    assert.equal(prepared.writeIntent.schemaId, "flowdesk.managed_dispatch_exposure_authorization.v1");
+    assert.equal(prepared.writeIntent.providerCall, false);
+    assert.equal(prepared.writeIntent.actualLaneLaunch, false);
+    assert.equal(prepared.writeIntent.runtimeExecution, false);
+    assert.equal(prepared.writeIntent.realOpenCodeDispatch, false);
+
+    const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
+    assert.equal(applied.ok, true, applied.errors.join("; "));
+
+    const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId: s7ExposureWorkflowId, rootDir });
+    assert.equal(reloaded.ok, true, reloaded.errors.join("; "));
+    assert.equal(reloaded.entries.length, 1);
+    assert.equal(reloaded.entries[0].evidenceClass, "managed_dispatch_exposure_authorization");
+    assert.equal(reloaded.entries[0].record.schema_version, "flowdesk.managed_dispatch_exposure_authorization.v1");
+    assert.equal(reloaded.providerCall, false);
+    assert.equal(reloaded.actualLaneLaunch, false);
+    assert.equal(reloaded.runtimeExecution, false);
+    assert.equal(reloaded.realOpenCodeDispatch, false);
+  });
+});
+
+test("session evidence blocks malformed S7 exposure authorization records", () => {
+  const wrongWorkflow = prepareFlowDeskSessionEvidenceWriteIntentV1({
+    workflowId,
+    evidenceId: "s7-authorization-wrong-workflow",
+    record: s7ExposureAuthorizationRecord()
+  });
+  assert.equal(wrongWorkflow.ok, false);
+  assert.match(wrongWorkflow.errors.join("|"), /workflow_id mismatch/);
+
+  const unknownField = prepareFlowDeskSessionEvidenceWriteIntentV1({
+    workflowId: s7ExposureWorkflowId,
+    evidenceId: "s7-authorization-unknown",
+    record: s7ExposureAuthorizationRecord({ rawProviderPayload: "redacted" })
+  });
+  assert.equal(unknownField.ok, false);
+  assert.match(unknownField.errors.join("|"), /unknown property: rawProviderPayload|forbidden raw payload field/);
+
+  const authorityLeak = prepareFlowDeskSessionEvidenceWriteIntentV1({
+    workflowId: s7ExposureWorkflowId,
+    evidenceId: "s7-authorization-authority-leak",
+    record: s7ExposureAuthorizationRecord({ providerCall: true })
+  });
+  assert.equal(authorityLeak.ok, false);
+  assert.match(authorityLeak.errors.join("|"), /negative authority not explicit: providerCall/);
+
+  withEvidenceTree((rootDir) => {
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(s7ExposureWorkflowId, "managed_dispatch_exposure_authorization", "s7-good"), JSON.stringify(s7ExposureAuthorizationRecord()));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(s7ExposureWorkflowId, "managed_dispatch_exposure_authorization", "s7-raw"), JSON.stringify(s7ExposureAuthorizationRecord({ required_s6_sentinel: "system prompt hidden" })));
+    writeEvidenceFile(rootDir, sessionEvidenceRecordPath(s7ExposureWorkflowId, "managed_dispatch_exposure_authorization", "s7-unknown"), JSON.stringify({ schema_version: "flowdesk.managed_dispatch_exposure_authorization.v2" }));
+
+    const result = reloadFlowDeskSessionEvidenceV1({ workflowId: s7ExposureWorkflowId, rootDir });
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].evidenceId, "s7-good");
+    assert.equal(result.blocked.length, 2);
+    assert.match(result.blocked.map((entry) => entry.reason).join("|"), /prompt-like or raw payload marker|schema_version must be flowdesk\.managed_dispatch_exposure_authorization\.v1/);
+  });
 });
 
 test("session evidence write intent succeeds for valid usage authority records", () => {
