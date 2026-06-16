@@ -457,6 +457,12 @@ function taskResultExcerptFromRecord(
 	};
 }
 
+function taskResultUsableForStatusSuccess(record: Record<string, unknown>): boolean {
+	if (record.usable_for_synthesis === true) return true;
+	const rawText = typeof record.result_text === "string" ? record.result_text.trim() : "";
+	return rawText.length > 0;
+}
+
 function sessionFinalizationSummaryFromEntry(
 	entry: FlowDeskSessionEvidenceReloadEntryV1,
 ): FlowDeskStatusLiveSessionFinalizationSummaryV1 {
@@ -1199,6 +1205,7 @@ function buildLaneProgressCards(
 			completionStatus?: string;
 			outputKind?: string;
 			usableForSynthesis?: boolean;
+			usableForStatusSuccess: boolean;
 		}
 	>();
 	const agentTaskContextByLane = new Map<
@@ -1316,6 +1323,7 @@ function buildLaneProgressCards(
 					...(typeof entry.record.usable_for_synthesis === "boolean"
 						? { usableForSynthesis: entry.record.usable_for_synthesis }
 						: {}),
+					usableForStatusSuccess: taskResultUsableForStatusSuccess(entry.record),
 				});
 			}
 			continue;
@@ -1399,6 +1407,14 @@ function buildLaneProgressCards(
 			meta?.verdictRef === undefined
 				? undefined
 				: verdictLabels.get(meta.verdictRef);
+		// Status-display reconciliation invariant:
+		// 1. usable task_result => success for this lane
+		// 2. task_failed/failure lifecycle => failure
+		// 3. capture-failure diagnostic without task_result => warning/diagnostic
+		// 4. capture-failure diagnostic with usable task_result => historical only, not a failure signal
+		const captureFailureDiagnostic = taskResult?.usableForStatusSuccess === true
+			? undefined
+			: childSession?.captureFailureDiagnostic;
 		return {
 			workflowId,
 			laneId: entry.laneId,
@@ -1439,9 +1455,9 @@ function buildLaneProgressCards(
 			...(entry.failureHint === undefined
 				? {}
 				: { failureHint: entry.failureHint }),
-			...(childSession?.captureFailureDiagnostic === undefined
+			...(captureFailureDiagnostic === undefined
 				? {}
-				: { captureFailureDiagnostic: childSession.captureFailureDiagnostic }),
+				: { captureFailureDiagnostic }),
 			statusCommandRef: "/flowdesk-status" as const,
 			debugCommandRef: "/flowdesk-export-debug" as const,
 		};

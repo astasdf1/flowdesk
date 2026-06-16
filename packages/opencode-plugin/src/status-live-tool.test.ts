@@ -648,9 +648,180 @@ test("status live surfaces redaction-safe capture-failure diagnostics from child
 		assert.equal(diagnostic?.runningToolCallId, "call-safe");
 		assert.equal(diagnostic?.runningToolStatus, "running");
 		assert.equal(diagnostic?.recommendedNextAction, "/flowdesk-status");
+		assert.match(result.summaryForUser ?? "", /capture-failure diagnostics available/);
 		assert.match(result.summaryForUser ?? "", /capture_diag=.*child=…agnostic/);
 		assert.equal(result.authority.realOpenCodeDispatch, false);
 		assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live treats capture-failure diagnostics as historical when lane has usable task_result", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-capture-historical-result-"));
+	try {
+		const workflowId = "workflow-status-capture-historical-result";
+		const laneId = "lane-status-capture-historical-result";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-capture-historical-result", runningLifecycle(workflowId, laneId, "attempt-capture-historical-result"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-capture-historical-result", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-capture-historical-result",
+			child_session_id: "ses-child-capture-historical-result",
+			parent_session_ref: "ses-parent",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 0,
+			created_at: "2026-05-27T00:00:00.000Z",
+			capture_failure_diagnostic_observed_at: "2026-05-27T00:01:00.000Z",
+			capture_failure_diagnostic_reason: "attention_timer_overdue",
+			capture_failure_child_session_id: "ses-child-capture-historical-result",
+			capture_failure_last_part_kind: "step-finish",
+			capture_failure_final_text_present: false,
+			capture_failure_step_finish_present: true,
+			capture_failure_recommended_next_action: "/flowdesk-status",
+			capture_failure_redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-capture-historical-result", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-capture-historical-result",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "Recovered final result after historical capture diagnostic.",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			created_at: "2026-05-27T00:02:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+
+		const workflow = result.workflows[0];
+		assert.equal(workflow.captureFailureDiagnostics?.length ?? 0, 0);
+		assert.equal(workflow.laneProgressCards?.[0]?.captureFailureDiagnostic, undefined);
+		assert.equal(workflow.subtaskActivityRows?.[0]?.captureFailureDiagnostic, undefined);
+		assert.equal(workflow.laneProgressAggregate?.normalCompleted, 1);
+		assert.equal(workflow.laneProgressAggregate?.nextActionKind, "synthesis");
+		assert.doesNotMatch(result.summaryForUser ?? "", /capture-failure diagnostics available/);
+		assert.doesNotMatch(result.summaryForUser ?? "", /capture_diag=/);
+		assert.match(result.summaryForUser ?? "", /lane_state=task_result\/terminal/);
+		assert.match(result.summaryForUser ?? "", /next_action=synthesis_ready/);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live keeps capture-failure warning when lane has no usable task_result", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-capture-no-result-"));
+	try {
+		const workflowId = "workflow-status-capture-no-result";
+		const laneId = "lane-status-capture-no-result";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-capture-no-result", runningLifecycle(workflowId, laneId, "attempt-capture-no-result"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-capture-no-result", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-capture-no-result",
+			child_session_id: "ses-child-capture-no-result",
+			parent_session_ref: "ses-parent",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			nudge_count: 0,
+			created_at: "2026-05-27T00:00:00.000Z",
+			capture_failure_diagnostic_observed_at: "2026-05-27T00:01:00.000Z",
+			capture_failure_diagnostic_reason: "attention_timer_overdue",
+			capture_failure_child_session_id: "ses-child-capture-no-result",
+			capture_failure_last_part_kind: "tool",
+			capture_failure_final_text_present: false,
+			capture_failure_step_finish_present: false,
+			capture_failure_running_tool_call_id: "call-safe-no-result",
+			capture_failure_running_tool_status: "running",
+			capture_failure_recommended_next_action: "/flowdesk-status",
+			capture_failure_redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:02:00.000Z"),
+		});
+
+		assert.equal(result.workflows[0].captureFailureDiagnostics?.length, 1);
+		assert.match(result.summaryForUser ?? "", /capture-failure diagnostics available/);
+		assert.match(result.summaryForUser ?? "", /capture_diag=.*tool=…o-result\/running/);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live counts normalCompleted from task_result despite historical capture diagnostic", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-normal-completed-capture-"));
+	try {
+		const workflowId = "workflow-status-normal-completed-capture";
+		const laneId = "lane-status-normal-completed-capture";
+		writeStatusRecord(rootDir, workflowId, "lane_lifecycle", "lifecycle-normal-completed-capture", runningLifecycle(workflowId, laneId, "attempt-normal-completed-capture"));
+		writeStatusRecord(rootDir, workflowId, "agent_task_child_session", "agent-task-child-session-normal-completed-capture", {
+			schema_version: "flowdesk.agent_task_child_session.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-normal-completed-capture",
+			child_session_id: "ses-child-normal-completed-capture",
+			parent_session_ref: "ses-parent",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			created_at: "2026-05-27T00:00:00.000Z",
+			capture_failure_diagnostic_observed_at: "2026-05-27T00:01:00.000Z",
+			capture_failure_diagnostic_reason: "attention_timer_overdue",
+			capture_failure_child_session_id: "ses-child-normal-completed-capture",
+			capture_failure_last_part_kind: "step-finish",
+			capture_failure_final_text_present: false,
+			capture_failure_step_finish_present: true,
+			capture_failure_recommended_next_action: "/flowdesk-status",
+			capture_failure_redaction_version: "v1",
+			dispatch_authority_enabled: false,
+		});
+		writeStatusRecord(rootDir, workflowId, "task_result", "task-result-normal-completed-capture", {
+			schema_version: "flowdesk.task_result.v1",
+			workflow_id: workflowId,
+			lane_id: laneId,
+			task_id: "task-normal-completed-capture",
+			agent_ref: "agent-reviewer-gpt-frontier",
+			provider_qualified_model_id: "openai/gpt-5.5",
+			task_prompt_sha256: "a".repeat(64),
+			result_text: "Recovered non-empty result text.",
+			result_text_truncated: false,
+			result_text_sha256: "b".repeat(64),
+			completion_status: "final",
+			output_kind: "final_answer",
+			usable_for_synthesis: true,
+			created_at: "2026-05-27T00:02:00.000Z",
+			dispatch_authority_enabled: false,
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-05-27T00:03:00.000Z"),
+		});
+
+		assert.equal(result.workflows[0].captureFailureDiagnostics?.length ?? 0, 0);
+		assert.equal(result.workflows[0].laneProgressAggregate?.taskResult, 1);
+		assert.equal(result.workflows[0].laneProgressAggregate?.normalCompleted, 1);
+		assert.equal(result.workflows[0].laneProgressAggregate?.nextActionKind, "synthesis");
+		assert.doesNotMatch(result.summaryForUser ?? "", /capture-failure diagnostics available|capture_diag=/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
