@@ -3214,8 +3214,7 @@ export async function monitorChildSessionsV1(input: {
 		};
 		const silenceSinceLastProgressMs = nowMs - finalizationObservation.lastProgressEventAtMs;
 		const turnCompletedFinalizationReady = expectedTurnCompleted !== undefined
-			&& finalizationObservation.runningToolsCount === 0
-			&& silenceSinceLastProgressMs >= FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS;
+			&& finalizationObservation.runningToolsCount === 0;
 		const hasDurableAwaitingBodyCapture = typeof recordForWrites.awaiting_body_capture_since === "string";
 		const finalizingStartedAtMs = hasDurableAwaitingBodyCapture
 			? Date.parse(recordForWrites.awaiting_body_capture_since as string)
