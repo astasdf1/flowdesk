@@ -58,7 +58,10 @@ import type {
 	FlowDeskCommandBackedHandlerContextV1,
 	FlowDeskCommandBackedHandlerResultV1,
 } from "./command-handlers.js";
-import { evaluateFlowDeskCommandBackedHandlerV1 } from "./command-handlers.js";
+import {
+	evaluateFlowDeskCommandBackedHandlerV1,
+	managedDispatchExposureAuthorizationRefs,
+} from "./command-handlers.js";
 import { validateAndAbortFlowDeskLaneEvidenceV1 } from "./stall-recovery.js";
 
 export const flowdeskLocalNonDispatchAdapterProfile =
@@ -1164,6 +1167,7 @@ function recordRunState(
 function debugSectionSummaryLabels(
 	section: string,
 	state: LocalAdapterState,
+	extraSummaryLabels: readonly string[] = [],
 ): string[] {
 	const labels: string[] = [`flowdesk debug section ${section}`];
 	switch (section) {
@@ -1234,7 +1238,19 @@ function debugSectionSummaryLabels(
 			);
 			break;
 	}
+	labels.push(...extraSummaryLabels);
 	return labels;
+}
+
+function managedDispatchExposureAuthorizationDebugRefs(
+	state: LocalAdapterState,
+	request: Record<string, unknown>,
+): string[] {
+	return managedDispatchExposureAuthorizationRefs({
+		diagnostic: {
+			sessionEvidenceReload: sessionEvidenceReloadContext(state, request),
+		},
+	});
 }
 
 function recordDebugExportManifestState(
@@ -1258,6 +1274,13 @@ function recordDebugExportManifestState(
 	const sourceRefs = [
 		safeToken(request.redacted_intake_ref, "debug-export-request"),
 	];
+	const s7ExposureAuthorizationRefs =
+		managedDispatchExposureAuthorizationDebugRefs(state, request);
+	const s7LatestEvidenceRef = s7ExposureAuthorizationRefs
+		.find((ref) => ref.startsWith("s7_managed_dispatch_exposure_latest_evidence_ref="))
+		?.split("=")[1];
+	if (s7LatestEvidenceRef !== undefined)
+		sourceRefs.push(safeToken(s7LatestEvidenceRef, "s7-exposure-authorization"));
 	const sectionFiles: FlowDeskDebugSectionFileV1[] = [];
 	const updatedSummaries: FlowDeskDebugExportManifestV1["included_sections"] =
 		[];
@@ -1290,7 +1313,11 @@ function recordDebugExportManifestState(
 			warning_count: warningCount,
 			excluded_categories: excludedCategories,
 			source_refs: [...sourceRefs],
-			summary_labels: debugSectionSummaryLabels(sectionName, state),
+			summary_labels: debugSectionSummaryLabels(
+				sectionName,
+				state,
+				s7ExposureAuthorizationRefs,
+			),
 			audit_refs: ["audit-local"],
 		};
 		sectionFiles.push(sectionFile);

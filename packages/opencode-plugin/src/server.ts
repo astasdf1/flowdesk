@@ -144,6 +144,7 @@ import {
 	consumeFlowDeskCompletionWakeForMainSessionV1,
 	type FlowDeskCompletionWakeMainSessionConfigV1,
 } from "./completion-wake-main-session.js";
+import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import {
 	executeFlowDeskWorkflowDispatchToolV1,
 	type FlowDeskWorkflowDispatchToolConfigV1,
@@ -5019,7 +5020,7 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 		}),
 		[flowdeskTaskToolName]: createAgentTaskTool({
 			description:
-				"Compact dev/beta agent task launcher. Requires explicit developerModeAcknowledged and allowProviderCall; defaults parentSessionId='', nudgeQuietPeriodMs=10000, asyncMode=true. The providerQualifiedModelId is treated as a preferred pre-launch model: if that provider's quota is exhausted/critical/stale/non_dispatchable, the server substitutes the best available alternative before lane launch (allowCrossFamily=true). This is pre-launch preferred-model substitution, not managed fallback/reselection and not fallback authority. The response includes requestedModel, effectiveModel, modelOverrideApplied, modelOverrideReason, providerBindingChangedBeforeLaunch, preLaunchModelSubstitution, and modelSubstitutionKind so callers can observe any substitution.",
+				"Compact dev/beta task launcher. Req: developerModeAcknowledged, allowProviderCall. Defaults: parentSession='', nudgeQuietPeriodMs=10k, async=true. Substitutes models if quota exhausted. Returns model substitution details, requested/effective models, and metadata.",
 			defaultAsyncMode: true,
 			defaultNudgeQuietPeriodMs: 10_000,
 			compactArgs: true,
@@ -7368,6 +7369,10 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 										monResult.lanesAborted > 0 ||
 										observed.eventType === "session.error"
 									) {
+										refreshFlowDeskCompletionUiCachesV1({
+											rootDir: eventRootDir,
+											workflowId: capturedWorkflowId,
+										});
 										await consumeCompletionWakeForMainSessionBestEffort(input);
 									}
 									if ((monResult.lanesAwaitingCapture ?? 0) > 0 && retriesLeft > 0) {

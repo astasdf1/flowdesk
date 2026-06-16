@@ -32,6 +32,7 @@ import {
 	reconcileStalePendingRetryPlansV1,
 	isAutoAbortEnabledV1,
 	verifyGuardSignOffHmacV1,
+	runFlowDeskWatchdogCycleV1,
 	type FlowDeskGuardSignOffV1,
 } from "./stall-recovery.js";
 
@@ -2891,6 +2892,184 @@ test("monitorChildSessionsV1 automatically terminalizes inconsistent finalizing 
 		// assert.ok(failedEntry);
 		// assert.equal(failedEntry.record.failure_category, "orphaned");
 		// assert.match(failedEntry.record.redacted_reason as string, /finalizing_without_terminal state \(orphaned\)/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// ── Terminal wake candidate counting ─────────────────────────────────────────
+
+function writeWatchdogGuard(rootDir: string): void {
+	const adrDir = join(rootDir, "docs", "adr");
+	mkdirSync(adrDir, { recursive: true });
+	writeFileSync(join(adrDir, "0002-sdk-surface-verification.md"), guardMarkdown);
+	writeFileSync(
+		join(adrDir, "0002-sdk-surface-verification.guard_sign_off.json"),
+		JSON.stringify(signedGuardSignOff(), null, 2),
+	);
+}
+
+function writeWakeReadyCache(uiDir: string, rows: object[]): void {
+	mkdirSync(uiDir, { recursive: true });
+	writeFileSync(join(uiDir, "completion-wake-ready.json"), JSON.stringify({
+		schema_version: "flowdesk.completion_wake_ready_cache.v1",
+		observed_at: new Date().toISOString(),
+		rows,
+	}), "utf8");
+}
+
+test("watchdog cycle: unconsumed task_result wake row → retryableTerminalWakePendingCount >= 1", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-count-"));
+	try {
+		writeWatchdogGuard(root);
+		writeWakeReadyCache(join(root, ".flowdesk", "ui"), [{
+			workflowId: "wf-wake-test",
+			parentSessionRef: "ses-ses_abc1234wake",
+			completionKind: "task_result",
+			readyAt: new Date(Date.now() - 60_000).toISOString(),
+			dedupeKey: "ses-ses_abc1234wake\0wf-wake-test\0lane-wake-1",
+			consumptionKey: "ses-ses_abc1234wake:wf-wake-test:lane-wake-1:task-wake-1",
+			consumed: false,
+			laneIds: ["lane-wake-1"], taskIds: ["task-wake-1"],
+			taskResultRefs: [], taskFailedRefs: [], taskSummaries: [],
+			notificationLabel: "test done", nextActionRefs: ["/flowdesk-status"],
+		}]);
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config: { autoAbortOnStall: false, guardHmacKey: guardKey },
+			rootDir: root, client: undefined, parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, true);
+		assert.ok(
+			(result.retryableTerminalWakePendingCount ?? 0) >= 1,
+			`Expected retryableTerminalWakePendingCount >= 1, got ${result.retryableTerminalWakePendingCount ?? 0}`,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle: stale wake row (>5min) not counted as terminal wake candidate", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-stale-"));
+	try {
+		writeWatchdogGuard(root);
+		writeWakeReadyCache(join(root, ".flowdesk", "ui"), [{
+			workflowId: "wf-stale",
+			completionKind: "task_result",
+			readyAt: new Date(Date.now() - 400_000).toISOString(), // 400s > 300s TTL
+			dedupeKey: "key-stale", consumptionKey: "key-stale",
+			consumed: false,
+			laneIds: [], taskIds: [], taskResultRefs: [], taskFailedRefs: [],
+			taskSummaries: [], notificationLabel: "stale", nextActionRefs: [],
+		}]);
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config: { autoAbortOnStall: false, guardHmacKey: guardKey },
+			rootDir: root, client: undefined, parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, true);
+		assert.equal(result.retryableTerminalWakePendingCount ?? 0, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle: consumed:true wake row not counted", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-consumed-"));
+	try {
+		writeWatchdogGuard(root);
+		writeWakeReadyCache(join(root, ".flowdesk", "ui"), [{
+			workflowId: "wf-consumed",
+			completionKind: "task_result",
+			readyAt: new Date(Date.now() - 30_000).toISOString(),
+			dedupeKey: "key-consumed", consumptionKey: "key-consumed",
+			consumed: true,
+			laneIds: [], taskIds: [], taskResultRefs: [], taskFailedRefs: [],
+			taskSummaries: [], notificationLabel: "consumed", nextActionRefs: [],
+		}]);
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config: { autoAbortOnStall: false, guardHmacKey: guardKey },
+			rootDir: root, client: undefined, parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, true);
+		assert.equal(result.retryableTerminalWakePendingCount ?? 0, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle: awaiting_permission kind not counted as terminal wake candidate", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-perm-"));
+	try {
+		writeWatchdogGuard(root);
+		writeWakeReadyCache(join(root, ".flowdesk", "ui"), [{
+			workflowId: "wf-perm",
+			completionKind: "awaiting_permission",
+			readyAt: new Date(Date.now() - 30_000).toISOString(),
+			dedupeKey: "key-perm", consumptionKey: "key-perm",
+			consumed: false,
+			laneIds: [], taskIds: [], taskResultRefs: [], taskFailedRefs: [],
+			taskSummaries: [], notificationLabel: "perm", nextActionRefs: [],
+		}]);
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config: { autoAbortOnStall: false, guardHmacKey: guardKey },
+			rootDir: root, client: undefined, parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, true);
+		assert.equal(result.retryableTerminalWakePendingCount ?? 0, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle: missing wake-ready cache file does not crash cycle", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-nofile-"));
+	try {
+		writeWatchdogGuard(root);
+		// No completion-wake-ready.json written intentionally
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config: { autoAbortOnStall: false, guardHmacKey: guardKey },
+			rootDir: root, client: undefined, parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, true);
+		assert.equal(result.retryableTerminalWakePendingCount ?? 0, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("watchdog cycle: task_failed wake row counted as terminal wake candidate", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-failed-"));
+	try {
+		writeWatchdogGuard(root);
+		writeWakeReadyCache(join(root, ".flowdesk", "ui"), [{
+			workflowId: "wf-failed-wake",
+			completionKind: "task_failed",
+			readyAt: new Date(Date.now() - 45_000).toISOString(),
+			dedupeKey: "key-failed", consumptionKey: "key-failed",
+			consumed: false,
+			laneIds: [], taskIds: [], taskResultRefs: [], taskFailedRefs: [],
+			taskSummaries: [], notificationLabel: "task failed", nextActionRefs: [],
+		}]);
+
+		const result = await runFlowDeskWatchdogCycleV1({
+			config: { autoAbortOnStall: false, guardHmacKey: guardKey },
+			rootDir: root, client: undefined, parentSessionId: "",
+		});
+
+		assert.equal(result.guardValid, true);
+		assert.ok(
+			(result.retryableTerminalWakePendingCount ?? 0) >= 1,
+			`Expected retryableTerminalWakePendingCount >= 1 for task_failed row, got ${result.retryableTerminalWakePendingCount ?? 0}`,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

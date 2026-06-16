@@ -339,13 +339,22 @@ function safeBlockLabel(value: string, fallback: string): string {
   return label.length > 0 ? label : fallback;
 }
 
-function managedDispatchExposureAuthorizationRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+export function managedDispatchExposureAuthorizationRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const noDispatchAuthorityRefs = [
+    "s7_managed_dispatch_exposure_scope=readiness_only",
+    "s7_managed_dispatch_exposure_dispatch_authority_enabled=false",
+    "s7_managed_dispatch_exposure_providerCall=false",
+    "s7_managed_dispatch_exposure_actualLaneLaunch=false",
+    "s7_managed_dispatch_exposure_runtimeExecution=false",
+    "s7_managed_dispatch_exposure_realOpenCodeDispatch=false"
+  ];
   const reload = context.diagnostic?.sessionEvidenceReload;
-  if (reload === undefined) return ["s7_managed_dispatch_exposure_state=unknown", "s7_managed_dispatch_exposure_evidence=not_yet_evaluated"];
+  if (reload === undefined) return ["s7_managed_dispatch_exposure_state=unknown", "s7_managed_dispatch_exposure_evidence=not_yet_evaluated", ...noDispatchAuthorityRefs];
 
   const validEntries = reload.entries.filter((entry) => entry.evidenceClass === "managed_dispatch_exposure_authorization");
   const blockedEntries = reload.blocked.filter((entry) => entry.evidenceClass === "managed_dispatch_exposure_authorization");
-  const authorized = validEntries.find((entry) => {
+  const newestValidEntries = [...validEntries].reverse();
+  const authorized = newestValidEntries.find((entry) => {
     const record = entry.record as unknown as FlowDeskManagedDispatchExposureAuthorizationV1;
     return record.state === "authorized" && record.ok === true && record.exposure_readiness_authorized === true;
   });
@@ -353,16 +362,13 @@ function managedDispatchExposureAuthorizationRefs(context: FlowDeskCommandBacked
   if (authorized !== undefined) {
     return [
       "s7_managed_dispatch_exposure_state=authorized",
+      `s7_managed_dispatch_exposure_latest_evidence_ref=${safeRefToken(authorized.evidenceId, "managed-dispatch-exposure-authorization")}`,
       `s7_managed_dispatch_exposure_evidence_ref=${safeRefToken(authorized.evidenceId, "managed-dispatch-exposure-authorization")}`,
-      "s7_managed_dispatch_exposure_scope=readiness_only",
-      "s7_managed_dispatch_exposure_dispatch_authority_enabled=false",
-      "s7_managed_dispatch_exposure_providerCall=false",
-      "s7_managed_dispatch_exposure_actualLaneLaunch=false",
-      "s7_managed_dispatch_exposure_runtimeExecution=false"
+      ...noDispatchAuthorityRefs
     ];
   }
 
-  const blocked = validEntries.find((entry) => {
+  const blocked = newestValidEntries.find((entry) => {
     const record = entry.record as unknown as FlowDeskManagedDispatchExposureAuthorizationV1;
     return record.state === "blocked" || record.ok === false || record.exposure_readiness_authorized === false;
   });
@@ -370,9 +376,10 @@ function managedDispatchExposureAuthorizationRefs(context: FlowDeskCommandBacked
     const record = blocked.record as unknown as FlowDeskManagedDispatchExposureAuthorizationV1;
     return [
       "s7_managed_dispatch_exposure_state=blocked",
+      `s7_managed_dispatch_exposure_latest_evidence_ref=${safeRefToken(blocked.evidenceId, "managed-dispatch-exposure-authorization")}`,
       `s7_managed_dispatch_exposure_evidence_ref=${safeRefToken(blocked.evidenceId, "managed-dispatch-exposure-authorization")}`,
       ...record.blocked_labels.slice(0, 8).map((label) => `s7_managed_dispatch_exposure_block_label=${safeBlockLabel(label, "blocked")}`),
-      "s7_managed_dispatch_exposure_dispatch_authority_enabled=false"
+      ...noDispatchAuthorityRefs
     ];
   }
 
@@ -380,14 +387,15 @@ function managedDispatchExposureAuthorizationRefs(context: FlowDeskCommandBacked
     const latest = blockedEntries[blockedEntries.length - 1];
     return [
       "s7_managed_dispatch_exposure_state=blocked",
+      `s7_managed_dispatch_exposure_latest_evidence_ref=${safeRefToken(latest.evidenceId, "managed-dispatch-exposure-authorization")}`,
       `s7_managed_dispatch_exposure_blocked_ref=${safeRefToken(latest.evidenceId, "managed-dispatch-exposure-authorization")}`,
       "s7_managed_dispatch_exposure_block_label=invalid_or_unreadable_evidence",
       `s7_managed_dispatch_exposure_block_reason_label=${safeBlockLabel(latest.reason, "invalid_evidence")}`,
-      "s7_managed_dispatch_exposure_dispatch_authority_enabled=false"
+      ...noDispatchAuthorityRefs
     ];
   }
 
-  return ["s7_managed_dispatch_exposure_state=unknown", "s7_managed_dispatch_exposure_evidence=not_yet_evaluated"];
+  return ["s7_managed_dispatch_exposure_state=unknown", "s7_managed_dispatch_exposure_evidence=not_yet_evaluated", ...noDispatchAuthorityRefs];
 }
 
 function exactModelAvailabilityCacheRefreshRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
