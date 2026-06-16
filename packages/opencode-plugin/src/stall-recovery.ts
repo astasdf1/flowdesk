@@ -3263,6 +3263,14 @@ export async function monitorChildSessionsV1(input: {
 				continue;
 			}
 			const idleObservation = await pollChildSessionIdleConfirmedOutput(input.client, childSessionId);
+			if (idleObservation !== null
+				&& idleObservation.terminalMarkerObserved === true
+				&& idleObservation.text !== undefined
+				&& idleObservation.text.trim().length > 0
+				&& silenceSinceLastProgressMs < FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS) {
+				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
+				continue;
+			}
 			if (idleObservation !== null && idleObservation.hasRunningTool === false && idleObservation.text !== undefined && idleObservation.text.trim().length > 0) {
 				// V11.4 race fix: re-check terminal evidence AFTER the poll await.
 				// The event-awakened poke (V11.3) and the setInterval cycle can both
