@@ -13,6 +13,7 @@ import type {
   FlowDeskPolicyPackV1,
   FlowDeskProjectConfigV1,
   FlowDeskProviderHealthSnapshotV1,
+  FlowDeskTaskResultV1,
   FlowDeskUsageSnapshotV1,
   GuardApprovedDispatchV1,
   GuardRequestV1
@@ -28,6 +29,7 @@ import {
   evaluateGuardBoundaryV1,
   evaluateManagedDispatchBetaGuardBoundaryV1,
   evaluateRealDispatchPreconditionsV1,
+  FLOWDESK_S7_REQUIRED_S6_TUPLE,
   mergePolicyPacksV1,
   providerFamilyRequiresAuthReadinessV1,
   rejectMergedUsageProviderAuthorityV1,
@@ -312,6 +314,27 @@ function usageAuthorityEvidence(overrides: Partial<FlowDeskManagedDispatchBetaUs
   };
 }
 
+function s7ExposureTaskResult(overrides: Partial<FlowDeskTaskResultV1> = {}): FlowDeskTaskResultV1 {
+  return {
+    schema_version: "flowdesk.task_result.v1",
+    workflow_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id,
+    lane_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.lane_id,
+    task_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.task_id,
+    agent_ref: "agent-s6-live-smoke",
+    provider_qualified_model_id: "openai/gpt-5.5",
+    task_prompt_sha256: "sha256-s6-managed-dispatch-exposure-input",
+    result_text: `Managed-dispatch S6 smoke passed. ${FLOWDESK_S7_REQUIRED_S6_TUPLE.sentinel}`,
+    result_text_truncated: false,
+    result_text_sha256: "sha256-s6-managed-dispatch-exposure-result",
+    completion_status: "final",
+    output_kind: "final_answer",
+    usable_for_synthesis: true,
+    created_at: now,
+    dispatch_authority_enabled: false,
+    ...overrides
+  };
+}
+
 function managedDispatchInput(overrides: Partial<Parameters<typeof evaluateManagedDispatchBetaGuardBoundaryV1>[0]> = {}): Parameters<typeof evaluateManagedDispatchBetaGuardBoundaryV1>[0] {
   return {
     configHash: "config-hash-123",
@@ -333,6 +356,9 @@ function managedDispatchInput(overrides: Partial<Parameters<typeof evaluateManag
     telemetryCorrelation: telemetryCorrelation(),
     preDispatchAuditRef: "audit-123",
     configuredVerificationRef: "verification-123",
+    exposureAuthorizationTaskResultEvidence: s7ExposureTaskResult(),
+    exposureAuthorizationTaskResultEvidenceId: FLOWDESK_S7_REQUIRED_S6_TUPLE.result_evidence_id,
+    exposureAuthorizationProgressSnapshotWorkflowId: FLOWDESK_S7_REQUIRED_S6_TUPLE.progress_snapshot_workflow_id,
     fallbackOrReselectionAllowed: false,
     hardChatAuthorityAllowed: false,
     ambiguityQuarantined: true,
@@ -524,6 +550,10 @@ test("managed-dispatch beta evaluator is eligible only with all trusted evidence
   assert.ok(eligible.required_checks.some((check) => check.check === "provider_health" && check.result === "pass"));
   assert.ok(eligible.required_checks.some((check) => check.check === "audit" && check.result === "pass"));
 
+  const stillBlockedByExistingPolicyChecks = evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ betaPolicy: undefined }));
+  assert.equal(stillBlockedByExistingPolicyChecks.status, "blocked");
+  assert.match(stillBlockedByExistingPolicyChecks.redacted_reason, /policy mode is required/);
+
   assert.equal(validateManagedDispatchBetaApprovalFreshnessV1(guardApproval(), { expectedWorkflowId: "workflow-123", expectedStepId: "step-123", expectedAttemptId: "attempt-123", expectedProviderFamily: "claude", expectedProviderQualifiedModelId: "claude/sonnet-4", expectedUsageSnapshotRef: "usage-123", expectedProviderHealthSnapshotRef: "health-123", expectedRuntimeCapabilityRef: "runtime-123", expectedPreDispatchAuditRef: "audit-123", now: Date.parse(now) }).ok, true);
   assert.equal(validateManagedDispatchBetaBindingEvidenceV1(bindingEvidence(), { expectedWorkflowId: "workflow-123", expectedStepId: "step-123", expectedAttemptId: "attempt-123", expectedProviderFamily: "claude", expectedProviderQualifiedModelId: "claude/sonnet-4", now: Date.parse(now) }).ok, true);
   assert.equal(validateManagedDispatchBetaRuntimeEchoEvidenceV1(runtimeEchoEvidence(), conformanceMetadata(), { expectedWorkflowId: "workflow-123", expectedStepId: "step-123", expectedAttemptId: "attempt-123", expectedProviderFamily: "claude", expectedProviderQualifiedModelId: "claude/sonnet-4", expectedRuntimeCapabilityRef: "runtime-123", expectedConformanceRef: "conformance-123", now: Date.parse(now) }).ok, true);
@@ -542,6 +572,34 @@ test("managed-dispatch beta evaluator is eligible only with all trusted evidence
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ telemetryCorrelation: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ preDispatchAuditRef: undefined })).status, "blocked");
   assert.equal(evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({ configuredVerificationRef: undefined })).status, "blocked");
+});
+
+test("managed-dispatch beta exposure authorization fails closed before existing checks", () => {
+  const missing = evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({
+    exposureAuthorizationTaskResultEvidence: undefined,
+    exposureAuthorizationTaskResultEvidenceId: undefined,
+    exposureAuthorizationProgressSnapshotWorkflowId: undefined
+  }));
+  assert.equal(missing.status, "blocked");
+  assert.match(missing.redacted_reason, /task_result_missing/);
+
+  const mismatched = evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({
+    exposureAuthorizationTaskResultEvidence: s7ExposureTaskResult({ workflow_id: "workflow-s6-other" }),
+  }));
+  assert.equal(mismatched.status, "blocked");
+  assert.match(mismatched.redacted_reason, /s6_workflow_mismatched/);
+
+  const stale = evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({
+    exposureAuthorizationTaskResultEvidence: s7ExposureTaskResult({ created_at: "2026-05-15T23:59:59.000Z" }),
+  }));
+  assert.equal(stale.status, "blocked");
+  assert.match(stale.redacted_reason, /s6_task_result_stale/);
+
+  const expired = evaluateManagedDispatchBetaGuardBoundaryV1(managedDispatchInput({
+    exposureAuthorizationExpiresAt: now,
+  }));
+  assert.equal(expired.status, "blocked");
+  assert.match(expired.redacted_reason, /s7_authorization_expired/);
 });
 
 test("managed-dispatch beta fails closed on stale mismatched ambiguous or untrusted evidence", () => {

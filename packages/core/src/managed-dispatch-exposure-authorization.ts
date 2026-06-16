@@ -89,7 +89,7 @@ const DEFAULT_AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
 
 function timestampMs(value: unknown): number | undefined {
 	if (typeof value !== "string" && typeof value !== "number" && !(value instanceof Date)) return undefined;
-	const parsed = value instanceof Date ? value.getTime() : Date.parse(String(value));
+	const parsed = typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value);
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 

@@ -17,6 +17,10 @@ import type {
   RedactedErrorCategory
 } from "./release1-contracts.js";
 import {
+  evaluateFlowDeskManagedDispatchExposureAuthorizationV1,
+} from "./managed-dispatch-exposure-authorization.js";
+import type { FlowDeskTaskResultV1 } from "./task-result.js";
+import {
   validateManagedDispatchBetaApprovalFreshnessV1,
   validateManagedDispatchBetaBindingEvidenceV1,
   validateManagedDispatchBetaPolicyV1,
@@ -76,6 +80,11 @@ export interface ManagedDispatchBetaBoundaryInputV1 {
   telemetryCorrelation?: FlowDeskManagedDispatchBetaTelemetryCorrelationV1;
   preDispatchAuditRef?: OpaqueRef;
   configuredVerificationRef?: OpaqueRef;
+  exposureAuthorizationTaskResultEvidence?: FlowDeskTaskResultV1 | unknown;
+  exposureAuthorizationTaskResultEvidenceId?: OpaqueRef;
+  exposureAuthorizationProgressSnapshotWorkflowId?: string;
+  exposureAuthorizationMaxTaskResultAgeMs?: number;
+  exposureAuthorizationExpiresAt?: string;
   fallbackOrReselectionAllowed?: boolean;
   hardChatAuthorityAllowed?: boolean;
   ambiguityQuarantined?: boolean;
@@ -204,6 +213,25 @@ export function evaluateManagedDispatchBetaGuardBoundaryV1(input: ManagedDispatc
     expectedAccountBoundaryRef: input.expectedAccountBoundaryRef,
     now: input.now
   };
+
+  const exposureAuthorization = evaluateFlowDeskManagedDispatchExposureAuthorizationV1({
+    ...(input.exposureAuthorizationTaskResultEvidence === undefined ? {} : { taskResultEvidence: input.exposureAuthorizationTaskResultEvidence }),
+    ...(input.exposureAuthorizationTaskResultEvidenceId === undefined ? {} : { taskResultEvidenceId: input.exposureAuthorizationTaskResultEvidenceId }),
+    ...(input.exposureAuthorizationProgressSnapshotWorkflowId === undefined ? {} : { progressSnapshotWorkflowId: input.exposureAuthorizationProgressSnapshotWorkflowId }),
+    ...(input.now === undefined ? {} : { now: input.now }),
+    ...(input.exposureAuthorizationMaxTaskResultAgeMs === undefined ? {} : { maxTaskResultAgeMs: input.exposureAuthorizationMaxTaskResultAgeMs }),
+    ...(input.exposureAuthorizationExpiresAt === undefined ? {} : { expiresAt: input.exposureAuthorizationExpiresAt })
+  });
+  if (!exposureAuthorization.ok) {
+    checks.push(fail("approval", input.exposureAuthorizationTaskResultEvidenceId));
+    return boundaryDecision(
+      "blocked",
+      "policy",
+      `Managed-dispatch exposure authorization failed closed: ${exposureAuthorization.blocked_labels.join(",") || "unknown"}.`,
+      checks,
+    );
+  }
+  checks.push(pass("approval", input.exposureAuthorizationTaskResultEvidenceId));
 
   if (input.betaPolicy === undefined) {
     checks.push(fail("policy"));
