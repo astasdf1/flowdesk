@@ -89,7 +89,7 @@ describe("evaluateFlowDeskSessionFinalizationEvidence", () => {
 		const observation = buildFlowDeskSessionFinalizationObservation({
 			observedTextRef: "text-ref-maybe-final-answer",
 			sessionIdleState: "confirmed_idle",
-			runningToolsState: "running_confirmed",
+			runningToolsState: "tools_running",
 			confidence: "high",
 		});
 
@@ -101,6 +101,35 @@ describe("evaluateFlowDeskSessionFinalizationEvidence", () => {
 		assert.equal(result.observed_text_char_count, undefined);
 		assert.equal(result.safe_capture_ready, false);
 		assert.equal(result.usable_for_synthesis, false);
+	});
+
+	test("legacy running tool state still blocks capture", () => {
+		const observation = buildFlowDeskSessionFinalizationObservation({
+			observedTextRef: "text-ref-legacy-running-tools",
+			sessionIdleState: "confirmed_idle",
+			runningToolsState: "running_confirmed",
+			confidence: "high",
+		});
+
+		const result = evaluateFlowDeskSessionFinalizationEvidence(observation);
+
+		assert.equal(result.decision, "blocked_running_tools");
+		assert.equal(result.block_reason, "running_tools_present");
+		assert.equal(result.safe_capture_ready, false);
+	});
+
+	test("none_confirmed alias remains safe for backward-compatible evaluator inputs", () => {
+		const observation = buildFlowDeskSessionFinalizationObservation({
+			observedTextRef: "text-ref-alias-none-confirmed",
+			sessionIdleState: "confirmed_idle",
+			runningToolsState: "none_confirmed",
+			confidence: "high",
+		});
+
+		const result = evaluateFlowDeskSessionFinalizationEvidence(observation);
+
+		assert.equal(result.decision, "safe_capture_ready");
+		assert.equal(result.safe_capture_ready, true);
 	});
 
 	test("unknown tool state fails closed and requires review", () => {

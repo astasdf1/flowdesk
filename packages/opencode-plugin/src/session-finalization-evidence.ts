@@ -10,7 +10,12 @@ export type FlowDeskSessionFinalTextKind =
 	| "empty";
 
 export type FlowDeskSessionIdleState = "confirmed_idle" | "not_idle" | "unknown";
-export type FlowDeskSessionRunningToolsState = "none_running_confirmed" | "running_confirmed" | "unknown";
+export type FlowDeskSessionRunningToolsState =
+	| "none_running_confirmed"
+	| "running_confirmed"
+	| "none_confirmed"
+	| "tools_running"
+	| "unknown";
 export type FlowDeskSessionFinalizationConfidence = "high" | "medium" | "low";
 
 export type FlowDeskSessionFinalizationDecision =
@@ -152,12 +157,15 @@ export function evaluateFlowDeskSessionFinalizationEvidence(
 	} else if (observation.session_idle_state !== "confirmed_idle") {
 		decision = "blocked_session_not_idle";
 		blockReason = "session_not_idle";
-	} else if (observation.running_tools_state === "unknown") {
+} else if (observation.running_tools_state === "unknown") {
 		decision = "requires_review";
 		blockReason = "tool_state_unknown";
-	} else if (observation.running_tools_state !== "none_running_confirmed") {
+	} else if (observation.running_tools_state === "tools_running" || observation.running_tools_state === "running_confirmed") {
 		decision = "blocked_running_tools";
 		blockReason = "running_tools_present";
+	} else if (observation.running_tools_state !== "none_running_confirmed" && observation.running_tools_state !== "none_confirmed") {
+		decision = "requires_review";
+		blockReason = "tool_state_unknown";
 	} else if (observation.confidence === "low") {
 		decision = "requires_review";
 		blockReason = "confidence_low";

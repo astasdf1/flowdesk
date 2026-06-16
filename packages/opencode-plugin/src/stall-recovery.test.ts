@@ -651,7 +651,7 @@ test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives tool
 	// No tool transitions → not running, not unknown.
 	assert.deepEqual(
 		deriveFlowDeskLaneToolStateV1({ transitions: [], nowMs: base, staleToolMs }),
-		{ toolRunningNow: false, toolStateUnknown: false, oldestOpenAtMs: undefined },
+		{ toolRunningNow: false, toolStateUnknown: false, oldestOpenAtMs: undefined, runningToolsCount: 0 },
 	);
 	// Open then settle (same callid) → not running.
 	{
@@ -675,6 +675,7 @@ test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives tool
 		});
 		assert.equal(s.toolRunningNow, true);
 		assert.equal(s.toolStateUnknown, false);
+		assert.equal(s.runningToolsCount, 1);
 	}
 	// Open, no settle, past stale window → UNKNOWN (not idle, not running).
 	{
@@ -686,6 +687,7 @@ test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives tool
 		assert.equal(s.toolRunningNow, false);
 		assert.equal(s.toolStateUnknown, true);
 		assert.equal(s.oldestOpenAtMs, base);
+		assert.equal(s.runningToolsCount, 1);
 	}
 	// Concurrent tools A,B: A settles, B still open within window → still running.
 	{
@@ -700,6 +702,7 @@ test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives tool
 		});
 		assert.equal(s.toolRunningNow, true);
 		assert.equal(s.toolStateUnknown, false);
+		assert.equal(s.runningToolsCount, 1);
 	}
 	// Out-of-order: settle arrives for a callid that opens later in the list — both
 	// processed in given order; net result is the call is closed.
@@ -1135,7 +1138,7 @@ test("V11.2 Slice 2: TURN_COMPLETED event for this attempt captures body as fina
 		let abortCalls = 0;
 		const result = await monitorChildSessionsV1({
 			rootDir, workflowId,
-			now: new Date("2026-05-26T10:00:12.000Z"),
+			now: new Date("2026-05-26T10:00:38.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			client: {
@@ -1280,6 +1283,138 @@ test("V11.2 Slice 2: intermediate TURN_COMPLETED before later tool activity does
 	}
 });
 
+test("finalization timing: step_finish waits for 30s silence before evaluating", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-finalization-silence-wait-"));
+	try {
+		const workflowId = "workflow-finalization-silence-wait";
+		const laneId = "lane-finalization-silence-wait";
+		const taskId = "task-finalization-silence-wait";
+		writeAgentTaskChildSession(rootDir, { workflowId, laneId, taskId, childSessionId: "ses-finalization-silence-wait", createdAt: "2026-05-26T10:00:00.000Z" }, "agent-task-child-session-finalization-silence-wait");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-final-wait created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-finalization-silence-wait-tc");
+
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:37.000Z"),
+			abortThresholdMs: 60_000,
+			client: { session: { messages: async () => ({ messages: [{ role: "assistant", finish_reason: "stop", parts: [{ type: "text", text: "Final answer ready." }] }] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => ({}) } } as never,
+		});
+
+		assert.equal(result.lanesCompleted, 0);
+		assert.equal(result.lanesAwaitingCapture, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "session_finalization_evidence"), false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("finalization timing: step_finish, no running tools, and 30s silence starts evaluation", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-finalization-silence-ready-"));
+	try {
+		const workflowId = "workflow-finalization-silence-ready";
+		const laneId = "lane-finalization-silence-ready";
+		const taskId = "task-finalization-silence-ready";
+		writeAgentTaskChildSession(rootDir, { workflowId, laneId, taskId, childSessionId: "ses-finalization-silence-ready", createdAt: "2026-05-26T10:00:00.000Z" }, "agent-task-child-session-finalization-silence-ready");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-final-ready created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-finalization-silence-ready-tc");
+
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:38.000Z"),
+			abortThresholdMs: 60_000,
+			client: { session: { messages: async () => ({ messages: [{ role: "assistant", finish_reason: "stop", parts: [{ type: "text", text: "Final answer ready." }] }] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => ({}) } } as never,
+		});
+
+		assert.equal(result.lanesCompleted, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "session_finalization_evidence"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("finalization timing: running tools skip evaluation even after 30s silence", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-finalization-running-tool-skip-"));
+	try {
+		const workflowId = "workflow-finalization-running-tool-skip";
+		const laneId = "lane-finalization-running-tool-skip";
+		const taskId = "task-finalization-running-tool-skip";
+		writeAgentTaskChildSession(rootDir, { workflowId, laneId, taskId, childSessionId: "ses-finalization-running-tool-skip", createdAt: "2026-05-26T10:00:00.000Z" }, "agent-task-child-session-finalization-running-tool-skip");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, { workflowId, laneId, taskId, observedAt: "2026-05-26T10:00:08.000Z", phase: "finalizing", progressLabel: `agent task turn completed msgid=msg-final-tool created=${createdMs} completed=${completedMs}` }, "agent-task-progress-finalization-running-tool-tc");
+		writeAgentTaskProgressRecord(rootDir, { workflowId, laneId, taskId, observedAt: "2026-05-26T10:00:09.000Z", progressLabel: "agent task tool running callid=call-still-running" }, "agent-task-progress-finalization-running-tool-open");
+
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:39.000Z"),
+			abortThresholdMs: 60_000,
+			staleToolMs: 120_000,
+			client: { session: { messages: async () => ({ messages: [{ role: "assistant", finish_reason: "stop", parts: [{ type: "text", text: "Final answer ready." }] }] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => ({}) } } as never,
+		});
+
+		assert.equal(result.lanesCompleted, 0);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "session_finalization_evidence"), false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("finalization timing: finalizingAbsoluteMaxMs terminalizes regardless of silence or running tool gate", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-finalization-absolute-tool-"));
+	try {
+		const workflowId = "workflow-finalization-absolute-tool";
+		const laneId = "lane-finalization-absolute-tool";
+		const taskId = "task-finalization-absolute-tool";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-finalization-absolute-tool",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 1,
+			awaitingBodyCaptureSince: "2026-05-26T10:00:10.000Z",
+		}, "agent-task-child-session-finalization-absolute-tool");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, { workflowId, laneId, taskId, observedAt: "2026-05-26T10:00:08.000Z", phase: "finalizing", progressLabel: `agent task turn completed msgid=msg-final-absolute created=${createdMs} completed=${completedMs}` }, "agent-task-progress-finalization-absolute-tc");
+		writeAgentTaskProgressRecord(rootDir, { workflowId, laneId, taskId, observedAt: "2026-05-26T10:01:10.000Z", progressLabel: "agent task tool running callid=call-running-at-cap" }, "agent-task-progress-finalization-absolute-tool-open");
+
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:01:11.000Z"),
+			finalizingAbsoluteMaxMs: 60_000,
+			staleToolMs: 120_000,
+			client: { session: { messages: async () => ({ messages: [] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => ({}) } } as never,
+		});
+
+		assert.equal(result.lanesAborted, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_failed"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("V11.2 Slice 3: turn completed but empty body retries, injects final-report repair, and stays non-terminal before absolute cap", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-awaiting-body-"));
 	try {
@@ -1311,11 +1446,12 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 			},
 		} as never;
 
-		// bodyRetryMax=2: first two cycles RETRY (no completion, no failure), third
-		// cycle injects a final-report repair prompt, and only the next exhausted
-		// retry window terminalizes as turn_completed_empty.
+		// bodyRetryMax=2: after the required 30s post-progress silence, first two
+		// eligible cycles RETRY (no completion, no failure), third eligible cycle
+		// injects a final-report repair prompt, and retry/repair budget alone still
+		// does not terminalize before the independent absolute cap.
 		const c1 = await monitorChildSessionsV1({
-			rootDir, workflowId, now: new Date("2026-05-26T10:00:12.000Z"),
+			rootDir, workflowId, now: new Date("2026-05-26T10:00:38.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
@@ -1324,7 +1460,7 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 		assert.equal(c1.lanesAborted, 0, "cycle 1 must retry, not fail");
 
 		const c2 = await monitorChildSessionsV1({
-			rootDir, workflowId, now: new Date("2026-05-26T10:00:14.000Z"),
+			rootDir, workflowId, now: new Date("2026-05-26T10:01:08.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
@@ -1332,7 +1468,7 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 		assert.equal(c2.lanesAborted, 0, "cycle 2 must retry, not fail");
 
 		const c3 = await monitorChildSessionsV1({
-			rootDir, workflowId, now: new Date("2026-05-26T10:00:16.000Z"),
+			rootDir, workflowId, now: new Date("2026-05-26T10:01:38.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
@@ -1342,19 +1478,19 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 		assert.equal(promptCalls, 1);
 
 		await monitorChildSessionsV1({
-			rootDir, workflowId, now: new Date("2026-05-26T10:00:18.000Z"),
+			rootDir, workflowId, now: new Date("2026-05-26T10:02:08.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
 		});
 		await monitorChildSessionsV1({
-			rootDir, workflowId, now: new Date("2026-05-26T10:00:20.000Z"),
+			rootDir, workflowId, now: new Date("2026-05-26T10:02:38.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,
 		});
 		const c6 = await monitorChildSessionsV1({
-			rootDir, workflowId, now: new Date("2026-05-26T10:00:22.000Z"),
+			rootDir, workflowId, now: new Date("2026-05-26T10:03:07.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
 			staleToolMs: 60_000, unknownStateMaxMs: 60_000, absoluteLaneAgeMs: 600_000,
 			bodyRetryMax: 2, client: emptyBodyClient,

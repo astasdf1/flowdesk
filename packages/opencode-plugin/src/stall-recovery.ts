@@ -104,6 +104,14 @@ const TERMINAL_LANE_STATES = new Set([
 ]);
 
 const ABORT_ELIGIBLE_LANE_STATES = new Set(["created", "running"]);
+const FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS = 30_000;
+
+type FinalizationObservation = {
+	isStepFinished: boolean;
+	runningToolsCount: number;
+	lastProgressEventAtMs: number;
+	currentTurnId?: string;
+};
 
 export type FlowDeskLaneAbortHelperResultV1 =
 	| { status: "aborted"; lane_id: string; lifecycle_evidence_id: string; reason: string }
@@ -2123,6 +2131,57 @@ function writeAgentTaskTerminalLifecycleForTaskResult(input: {
 	});
 }
 
+function writeFinalizingAbsoluteMaxTaskFailed(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	observedAt: string;
+	finalizingAbsoluteMaxMs: number;
+	nudgeCount: number;
+}): boolean {
+	const token = randomBytes(4).toString("hex");
+	const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+		outputKind: "empty",
+		finalBodyObserved: false,
+		terminalMarkerObserved: true,
+	});
+	const taskFailedWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${input.taskId}-watchdog-finalizing-absolute-${token}`, {
+		schema_version: "flowdesk.task_failed.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		failure_category: "no_response",
+		redacted_reason: `turn completed but no body captured before finalizing absolute max ${input.finalizingAbsoluteMaxMs}ms (turn_completed_empty)`,
+		...noOutputCaptureMetadata,
+		created_at: input.observedAt,
+		dispatch_authority_enabled: false,
+	});
+	if (!taskFailedWritten) return false;
+	writeAgentTaskProgressEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		laneId: input.laneId,
+		taskId: input.taskId,
+		agentRef: input.agentRef,
+		providerQualifiedModelId: input.providerQualifiedModelId,
+		phase: "failed",
+		progressSeq: 20 + input.nudgeCount,
+		progressLabel: "async agent task turn completed empty; finalizing absolute max exceeded",
+		observedAt: input.observedAt,
+	});
+	refreshFlowDeskCompletionUiCachesV1({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		observedAt: input.observedAt,
+	});
+	return true;
+}
+
 function laneAlreadyHasTerminalTaskEvidence(input: {
 	rootDir: string;
 	workflowId: string;
@@ -2374,7 +2433,7 @@ export function deriveFlowDeskLaneToolStateV1(input: {
 	transitions: ReadonlyArray<{ observedAtMs: number; label: string }>;
 	nowMs: number;
 	staleToolMs: number;
-}): { toolRunningNow: boolean; toolStateUnknown: boolean; oldestOpenAtMs: number | undefined } {
+}): { toolRunningNow: boolean; toolStateUnknown: boolean; oldestOpenAtMs: number | undefined; runningToolsCount: number } {
 	// callId -> last open timestamp (deleted on settle)
 	const openAt = new Map<string, number>();
 	for (const t of input.transitions) {
@@ -2389,16 +2448,16 @@ export function deriveFlowDeskLaneToolStateV1(input: {
 		}
 	}
 	if (openAt.size === 0) {
-		return { toolRunningNow: false, toolStateUnknown: false, oldestOpenAtMs: undefined };
+		return { toolRunningNow: false, toolStateUnknown: false, oldestOpenAtMs: undefined, runningToolsCount: 0 };
 	}
 	let oldestOpenAtMs = Number.POSITIVE_INFINITY;
 	for (const at of openAt.values()) oldestOpenAtMs = Math.min(oldestOpenAtMs, at);
 	const ageMs = input.nowMs - oldestOpenAtMs;
 	if (ageMs >= input.staleToolMs) {
 		// Likely-dropped settle event: demote to UNKNOWN (not idle, not running).
-		return { toolRunningNow: false, toolStateUnknown: true, oldestOpenAtMs };
+		return { toolRunningNow: false, toolStateUnknown: true, oldestOpenAtMs, runningToolsCount: openAt.size };
 	}
-	return { toolRunningNow: true, toolStateUnknown: false, oldestOpenAtMs };
+	return { toolRunningNow: true, toolStateUnknown: false, oldestOpenAtMs, runningToolsCount: openAt.size };
 }
 
 function writeAgentTaskProgressEvidence(input: {
@@ -3141,6 +3200,58 @@ export async function monitorChildSessionsV1(input: {
 			laneEpochMs: createdAtMs,
 			minObservedAtMs: Math.max(createdAtMs, latestProgressAtMs ?? createdAtMs),
 		});
+		const observedStepFinish = expectedTurnCompleted ?? resolveFlowDeskExpectedTurnCompletedV1({
+			transitions: turnCompletedTransitions,
+			laneEpochMs: createdAtMs,
+			minObservedAtMs: createdAtMs,
+		});
+		const latestProgressEventAtMs = latestProgressByLane.get(laneId)?.observedAtMs ?? observedStepFinish?.observedAtMs ?? createdAtMs;
+		const finalizationObservation: FinalizationObservation = {
+			isStepFinished: observedStepFinish !== undefined,
+			runningToolsCount: laneToolState.runningToolsCount,
+			lastProgressEventAtMs: latestProgressEventAtMs,
+			...(observedStepFinish?.messageId === undefined ? {} : { currentTurnId: observedStepFinish.messageId }),
+		};
+		const silenceSinceLastProgressMs = nowMs - finalizationObservation.lastProgressEventAtMs;
+		const turnCompletedFinalizationReady = expectedTurnCompleted !== undefined
+			&& finalizationObservation.runningToolsCount === 0
+			&& silenceSinceLastProgressMs >= FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS;
+		const hasDurableAwaitingBodyCapture = typeof recordForWrites.awaiting_body_capture_since === "string";
+		const finalizingStartedAtMs = hasDurableAwaitingBodyCapture
+			? Date.parse(recordForWrites.awaiting_body_capture_since as string)
+			: expectedTurnCompleted?.observedAtMs;
+		const finalizingAbsoluteMaxReached = finalizationObservation.isStepFinished
+			&& (hasDurableAwaitingBodyCapture || expectedTurnCompleted !== undefined)
+			&& typeof finalizingStartedAtMs === "number"
+			&& Number.isFinite(finalizingStartedAtMs)
+			&& nowMs - finalizingStartedAtMs >= finalizingAbsoluteMaxMs;
+		if (finalizingAbsoluteMaxReached) {
+			if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+				continue;
+			}
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const terminalAt = new Date(nowMs).toISOString();
+			if (writeFinalizingAbsoluteMaxTaskFailed({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId,
+				agentRef,
+				providerQualifiedModelId: modelId,
+				observedAt: terminalAt,
+				finalizingAbsoluteMaxMs,
+				nudgeCount,
+			})) {
+				result.lanesAborted++;
+			}
+			continue;
+		}
+		if (expectedTurnCompleted !== undefined && !turnCompletedFinalizationReady) {
+			result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
+			continue;
+		}
 
 		// 0. V11.2 Slice 2 — event-primary TURN_COMPLETED capture. When an assistant
 		// turn for THIS attempt has reported time.completed (the authoritative turn-end
@@ -3148,7 +3259,7 @@ export async function monitorChildSessionsV1(input: {
 		// fetch the body and capture it as a turn_completed final result. The body poll
 		// only fetches WHAT; the event decided WHEN. Empty body falls through to the
 		// existing polling/idle/timeout paths (Slice 3 will add awaiting_body_capture).
-		if (expectedTurnCompleted !== undefined && !toolRunningNow && !toolStateUnknown) {
+		if (expectedTurnCompleted !== undefined && !toolRunningNow && !toolStateUnknown && turnCompletedFinalizationReady) {
 			if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 				continue;
 			}
@@ -3481,6 +3592,14 @@ export async function monitorChildSessionsV1(input: {
 			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 			if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+				continue;
+			}
+			const observedRunningToolsCount = laneToolState.runningToolsCount + (resultObservation.hasRunningTool ? 1 : 0);
+			const terminalTextFinalizationReady = resultObservation.terminalMarkerObserved
+				&& observedRunningToolsCount === 0
+				&& silenceSinceLastProgressMs >= FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS;
+			if (!terminalTextFinalizationReady) {
+				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
 				continue;
 			}
 			const token = randomBytes(4).toString("hex");
@@ -3850,10 +3969,10 @@ export async function monitorChildSessionsV1(input: {
 		const unknownForceTerminate = false;
 		// Phase 7.5: auto-mark inconsistent lanes as orphaned after 1h (3,600,000ms)
 		const inconsistentOrphanMs = 3_600_000;
-		const latestInconsistencyAtMs = latestLifecycleStateChangeAtMs !== undefined && 
+		const latestInconsistencyAtMs = latestLifecycleStateChangeAtMs !== undefined &&
 			reloaded.entries.some(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId)
 			? latestLifecycleStateChangeAtMs
-			: (reloaded.entries.find(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId) 
+			: (reloaded.entries.find(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId)
 				? Date.parse((reloaded.entries.find(e => e.evidenceClass === "agent_task_inconsistency" && (e.record as any).lane_id === laneId)!.record as any).observed_at)
 				: NaN);
 		const inconsistentForceTerminate = Number.isFinite(latestInconsistencyAtMs) && (nowMs - latestInconsistencyAtMs >= inconsistentOrphanMs);
