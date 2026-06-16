@@ -17,6 +17,7 @@ import type {
 	FlowDeskRelease1MinimumToolName,
 	FlowDeskReviewerFanoutPlanV1,
 	FlowDeskRunRequestV1,
+	FlowDeskSessionEvidenceReloadResultV1,
 	FlowDeskStatusCommandInputV1,
 	FlowDeskUsageResponseV1,
 	FlowDeskWorkflowActiveV1,
@@ -25,6 +26,8 @@ import type {
 } from "@flowdesk/core";
 import {
 	FLOWDESK_FDS1_FIXTURE_CATALOG,
+	evaluateFlowDeskManagedDispatchExposureAuthorizationV1,
+	FLOWDESK_S7_REQUIRED_S6_TUPLE,
 	mergePolicyPacksV1,
 } from "@flowdesk/core";
 import type { FlowDeskCommandBackedHandlerResultV1 } from "./index.js";
@@ -84,6 +87,61 @@ function assertNoRuntimeAuthority(
 	assert.equal(result.runtimeExecution, false);
 	assert.equal(result.fallbackAuthority, false);
 	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+}
+
+function s7TaskResult(overrides: Record<string, unknown> = {}) {
+	return {
+		schema_version: "flowdesk.task_result.v1",
+		workflow_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id,
+		lane_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.lane_id,
+		task_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.task_id,
+		agent_ref: "agent-flowdesk-s6-smoke",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		task_prompt_sha256: "sha256-s6-input-digest",
+		result_text: `S6 completed. ${FLOWDESK_S7_REQUIRED_S6_TUPLE.sentinel}`,
+		result_text_truncated: false,
+		result_text_sha256: "sha256-s6-result",
+		created_at: "2026-06-15T11:55:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function s7ExposureAuthorization(overrides: Record<string, unknown> = {}) {
+	return evaluateFlowDeskManagedDispatchExposureAuthorizationV1({
+		taskResultEvidence: s7TaskResult(),
+		taskResultEvidenceId: FLOWDESK_S7_REQUIRED_S6_TUPLE.result_evidence_id,
+		progressSnapshotWorkflowId:
+			FLOWDESK_S7_REQUIRED_S6_TUPLE.progress_snapshot_workflow_id,
+		now: "2026-06-15T12:00:00.000Z",
+		...overrides,
+	});
+}
+
+function s7Reload(
+	overrides: Partial<FlowDeskSessionEvidenceReloadResultV1> = {},
+): FlowDeskSessionEvidenceReloadResultV1 {
+	return {
+		ok: true,
+		errors: [],
+		entries: [],
+		blocked: [],
+		realOpenCodeDispatch: false,
+		actualLaneLaunch: false,
+		providerCall: false,
+		runtimeExecution: false,
+		...overrides,
+	};
+}
+
+function doctorCompatibilityRefs(
+	response: FlowDeskDoctorResponseV1,
+): readonly string[] {
+	const section = response.doctor_results.find(
+		(result) => result.section === "opencode_plugin_compatibility",
+	);
+	assert.ok(section, "expected compatibility doctor section");
+	return section.refs;
 }
 
 function retention(days = { session: 14, debug: 7, conformance: 30 }) {
@@ -726,6 +784,127 @@ test("doctor diagnostic handler reports Release 1 disabled modes without runtime
 	assert.equal(JSON.stringify(response).includes("provider_payload"), false);
 	assert.equal(JSON.stringify(response).includes("/Users/"), false);
 	assertNoRuntimeAuthority(result);
+});
+
+test("doctor reports S7 exposure authorization as unknown when evidence is absent", () => {
+	const result = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{ diagnostic: { sessionEvidenceReload: s7Reload() } },
+	);
+	assert.equal(result.ok, true);
+	const refs = doctorCompatibilityRefs(result.response as FlowDeskDoctorResponseV1);
+	assert.ok(refs.includes("s7_managed_dispatch_exposure_state=unknown"));
+	assert.ok(
+		refs.includes("s7_managed_dispatch_exposure_evidence=not_yet_evaluated"),
+	);
+	assertNoRuntimeAuthority(result);
+});
+
+test("doctor reports S7 exposure authorization as authorized without dispatch authority", () => {
+	const authorization = s7ExposureAuthorization();
+	const result = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				sessionEvidenceReload: s7Reload({
+					entries: [
+						{
+							evidenceClass: "managed_dispatch_exposure_authorization",
+							evidenceId: "managed-dispatch-exposure-authorization-s7",
+							record: authorization as unknown as Record<string, unknown>,
+							path: ".flowdesk/sessions/workflow/evidence/managed-dispatch-exposure-authorization/managed-dispatch-exposure-authorization-s7.json",
+						},
+					],
+				}),
+			},
+		},
+	);
+	assert.equal(result.ok, true);
+	const refs = doctorCompatibilityRefs(result.response as FlowDeskDoctorResponseV1);
+	assert.ok(refs.includes("s7_managed_dispatch_exposure_state=authorized"));
+	assert.ok(
+		refs.includes(
+			"s7_managed_dispatch_exposure_evidence_ref=managed-dispatch-exposure-authorization-s7",
+		),
+	);
+	assert.ok(
+		refs.includes("s7_managed_dispatch_exposure_scope=readiness_only"),
+	);
+	assert.ok(
+		refs.includes(
+			"s7_managed_dispatch_exposure_dispatch_authority_enabled=false",
+		),
+	);
+	assert.ok(refs.includes("s7_managed_dispatch_exposure_providerCall=false"));
+	assertNoRuntimeAuthority(result);
+});
+
+test("doctor reports S7 exposure authorization as blocked for blocked or invalid evidence", () => {
+	const blockedAuthorization = s7ExposureAuthorization({
+		taskResultEvidenceId: "task-result-wrong",
+	});
+	const blockedResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				sessionEvidenceReload: s7Reload({
+					entries: [
+						{
+							evidenceClass: "managed_dispatch_exposure_authorization",
+							evidenceId: "managed-dispatch-exposure-authorization-blocked",
+							record: blockedAuthorization as unknown as Record<string, unknown>,
+							path: ".flowdesk/sessions/workflow/evidence/managed-dispatch-exposure-authorization/managed-dispatch-exposure-authorization-blocked.json",
+						},
+					],
+				}),
+			},
+		},
+	);
+	const blockedRefs = doctorCompatibilityRefs(
+		blockedResult.response as FlowDeskDoctorResponseV1,
+	);
+	assert.ok(blockedRefs.includes("s7_managed_dispatch_exposure_state=blocked"));
+	assert.ok(
+		blockedRefs.includes(
+			"s7_managed_dispatch_exposure_block_label=s6_result_evidence_mismatched",
+		),
+	);
+	assertNoRuntimeAuthority(blockedResult);
+
+	const invalidResult = evaluateFlowDeskCommandBackedHandlerV1(
+		"flowdesk_doctor",
+		doctorRequest(),
+		{
+			diagnostic: {
+				sessionEvidenceReload: s7Reload({
+					blocked: [
+						{
+							evidenceClass: "managed_dispatch_exposure_authorization",
+							evidenceId: "managed-dispatch-exposure-authorization-invalid",
+							reason: "evidence is stale",
+							path: ".flowdesk/sessions/workflow/evidence/managed-dispatch-exposure-authorization/managed-dispatch-exposure-authorization-invalid.json",
+						},
+					],
+				}),
+			},
+		},
+	);
+	const invalidRefs = doctorCompatibilityRefs(
+		invalidResult.response as FlowDeskDoctorResponseV1,
+	);
+	assert.ok(invalidRefs.includes("s7_managed_dispatch_exposure_state=blocked"));
+	assert.ok(
+		invalidRefs.includes(
+			"s7_managed_dispatch_exposure_block_label=invalid_or_unreadable_evidence",
+		),
+	);
+	assert.ok(
+		invalidRefs.includes("s7_managed_dispatch_exposure_block_reason_label=evidence_is_stale"),
+	);
+	assertNoRuntimeAuthority(invalidResult);
 });
 
 test("doctor diagnostic handler can surface evaluated production enablement without authority", () => {

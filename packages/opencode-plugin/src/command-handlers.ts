@@ -16,12 +16,14 @@ import type { FlowDeskFallbackRegatePlanV1,
   FlowDeskPlanCommandInputV1,
   FlowDeskProductionEnablementEvaluationV1,
   FlowDeskManagedDispatchBundleEvaluationV1,
+  FlowDeskManagedDispatchExposureAuthorizationV1,
   FlowDeskReviewerFanoutPlanV1,
   FlowDeskRelease1MinimumToolName,
   FlowDeskResumeRequestV1,
   FlowDeskResumeResponseV1,
   FlowDeskRetryPlanningInputV1,
   FlowDeskRunRequestV1,
+  FlowDeskSessionEvidenceReloadResultV1,
   FlowDeskStatusCommandInputV1,
   FlowDeskUsageRequestV1,
   FlowDeskUsageResponseV1,
@@ -85,6 +87,7 @@ export interface FlowDeskCommandBackedHandlerContextV1 {
     exactModelAvailabilityCacheRefreshPlan?: FlowDeskExactModelAvailabilityCacheRefreshPlanV1;
     defaultManagedDispatchPromotionReadiness?: FlowDeskDefaultManagedDispatchPromotionReadinessV1;
     managedDispatchBundleEvaluation?: FlowDeskManagedDispatchBundleEvaluationV1;
+    sessionEvidenceReload?: FlowDeskSessionEvidenceReloadResultV1;
     reviewerFanoutPlan?: FlowDeskReviewerFanoutPlanV1;
     fallbackRegatePlan?: FlowDeskFallbackRegatePlanV1;
     laneAbortResult?: FlowDeskLaneAbortHelperResultV1;
@@ -326,6 +329,67 @@ function managedDispatchBundleEvaluationRefs(context: FlowDeskCommandBackedHandl
   ];
 }
 
+function safeRefToken(value: string, fallback: string): string {
+  const token = value.replaceAll(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 96);
+  return token.length > 0 ? token : fallback;
+}
+
+function safeBlockLabel(value: string, fallback: string): string {
+  const label = value.replaceAll(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 80);
+  return label.length > 0 ? label : fallback;
+}
+
+function managedDispatchExposureAuthorizationRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
+  const reload = context.diagnostic?.sessionEvidenceReload;
+  if (reload === undefined) return ["s7_managed_dispatch_exposure_state=unknown", "s7_managed_dispatch_exposure_evidence=not_yet_evaluated"];
+
+  const validEntries = reload.entries.filter((entry) => entry.evidenceClass === "managed_dispatch_exposure_authorization");
+  const blockedEntries = reload.blocked.filter((entry) => entry.evidenceClass === "managed_dispatch_exposure_authorization");
+  const authorized = validEntries.find((entry) => {
+    const record = entry.record as unknown as FlowDeskManagedDispatchExposureAuthorizationV1;
+    return record.state === "authorized" && record.ok === true && record.exposure_readiness_authorized === true;
+  });
+
+  if (authorized !== undefined) {
+    return [
+      "s7_managed_dispatch_exposure_state=authorized",
+      `s7_managed_dispatch_exposure_evidence_ref=${safeRefToken(authorized.evidenceId, "managed-dispatch-exposure-authorization")}`,
+      "s7_managed_dispatch_exposure_scope=readiness_only",
+      "s7_managed_dispatch_exposure_dispatch_authority_enabled=false",
+      "s7_managed_dispatch_exposure_providerCall=false",
+      "s7_managed_dispatch_exposure_actualLaneLaunch=false",
+      "s7_managed_dispatch_exposure_runtimeExecution=false"
+    ];
+  }
+
+  const blocked = validEntries.find((entry) => {
+    const record = entry.record as unknown as FlowDeskManagedDispatchExposureAuthorizationV1;
+    return record.state === "blocked" || record.ok === false || record.exposure_readiness_authorized === false;
+  });
+  if (blocked !== undefined) {
+    const record = blocked.record as unknown as FlowDeskManagedDispatchExposureAuthorizationV1;
+    return [
+      "s7_managed_dispatch_exposure_state=blocked",
+      `s7_managed_dispatch_exposure_evidence_ref=${safeRefToken(blocked.evidenceId, "managed-dispatch-exposure-authorization")}`,
+      ...record.blocked_labels.slice(0, 8).map((label) => `s7_managed_dispatch_exposure_block_label=${safeBlockLabel(label, "blocked")}`),
+      "s7_managed_dispatch_exposure_dispatch_authority_enabled=false"
+    ];
+  }
+
+  if (blockedEntries.length > 0) {
+    const latest = blockedEntries[blockedEntries.length - 1];
+    return [
+      "s7_managed_dispatch_exposure_state=blocked",
+      `s7_managed_dispatch_exposure_blocked_ref=${safeRefToken(latest.evidenceId, "managed-dispatch-exposure-authorization")}`,
+      "s7_managed_dispatch_exposure_block_label=invalid_or_unreadable_evidence",
+      `s7_managed_dispatch_exposure_block_reason_label=${safeBlockLabel(latest.reason, "invalid_evidence")}`,
+      "s7_managed_dispatch_exposure_dispatch_authority_enabled=false"
+    ];
+  }
+
+  return ["s7_managed_dispatch_exposure_state=unknown", "s7_managed_dispatch_exposure_evidence=not_yet_evaluated"];
+}
+
 function exactModelAvailabilityCacheRefreshRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
   const plan = context.diagnostic?.exactModelAvailabilityCacheRefreshPlan;
   if (plan === undefined) return ["exact_model_cache_refresh_state=blocked", "exact_model_cache_evidence=missing"];
@@ -440,6 +504,7 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const enablementRefs = productionEnablementRefs(context);
   const promotionRefs = defaultManagedDispatchPromotionRefs(context);
   const bundleRefs = managedDispatchBundleEvaluationRefs(context);
+  const exposureAuthorizationRefs = managedDispatchExposureAuthorizationRefs(context);
   const exactModelCacheRefs = exactModelAvailabilityCacheRefreshRefs(context);
   const fanoutRefs = reviewerFanoutRefs(context);
   const fallbackRefs = fallbackRegateRefs(context);
@@ -448,7 +513,7 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const compactionRefs = evidenceCompactionRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...bundleRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; S7 managed-dispatch exposure authorization is diagnostic/readiness-only and does not open production dispatch. Use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...bundleRefs, ...exposureAuthorizationRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"]),
     doctorSectionFor("evidence_compaction", "informational", request, "Evidence Compaction reports native agent-task-progress cleanup health, archive counts, and merkle-root integrity without granting dispatch, fallback, or write authority outside the configured state root.", ["doctor-evidence-compaction-ref", ...compactionRefs]),

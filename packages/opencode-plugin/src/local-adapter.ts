@@ -23,6 +23,7 @@ import type {
 	FlowDeskReviewerFanoutFromReloadedCacheEvidencePlanV1,
 	FlowDeskReviewerFanoutPlanV1,
 	FlowDeskSanitizedAuthCaptureResultV1,
+	FlowDeskSessionEvidenceReloadResultV1,
 	FlowDeskStateWriteIntent,
 	FlowDeskWorkflowActiveV1,
 	FlowDeskWorkflowRecordV1,
@@ -35,6 +36,7 @@ import {
 	applyWriteIntentsToDurableState,
 	applyWriteIntentsToInMemoryState,
 	evaluateFlowDeskProductionEnablementV1,
+	FLOWDESK_S7_REQUIRED_S6_TUPLE,
 	invalid,
 	loadFlowDeskCompactionHealthV1,
 	loadFlowDeskDurableWorkflowState,
@@ -1681,6 +1683,36 @@ function managedDispatchBundleEvaluationContext(
 	return last?.record as unknown as FlowDeskManagedDispatchBundleEvaluationV1 | undefined;
 }
 
+function sessionEvidenceReloadContext(
+  state: LocalAdapterState,
+  request: Record<string, unknown>,
+) : FlowDeskSessionEvidenceReloadResultV1 | undefined {
+  if (state.durableStateRootDir === undefined) return undefined;
+	const workflowIds = [
+		workflowIdFrom(request),
+		...(typeof request.workflow_id === "string"
+			? []
+			: [FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id]),
+	].filter((workflowId, index, values) => values.indexOf(workflowId) === index);
+	const reloads = workflowIds.map((workflowId) =>
+		reloadFlowDeskSessionEvidenceV1({
+			workflowId,
+			rootDir: state.durableStateRootDir as string,
+		}),
+	);
+	if (reloads.length === 1) return reloads[0];
+	return {
+		ok: reloads.every((reload) => reload.ok),
+		errors: reloads.flatMap((reload) => reload.errors),
+		entries: reloads.flatMap((reload) => reload.entries),
+		blocked: reloads.flatMap((reload) => reload.blocked),
+		realOpenCodeDispatch: false,
+		actualLaneLaunch: false,
+		providerCall: false,
+		runtimeExecution: false,
+	};
+}
+
 function reviewerFanoutDiagnosticsContext(
 	state: LocalAdapterState,
 	request: Record<string, unknown>,
@@ -1804,6 +1836,7 @@ function contextFor(
 				? ({ status: "blocked", reason: "durable_state_root_missing" } as const)
 				: undefined;
 	const compactionHealth = state.durableStateRootDir === undefined ? undefined : loadFlowDeskCompactionHealthV1(state.durableStateRootDir, false);
+	const sessionEvidenceReload = toolName === "flowdesk_doctor" ? sessionEvidenceReloadContext(state, record) : undefined;
 	return {
 		diagnostic: {
 			nowIso: parts.nowIso,
@@ -1814,6 +1847,7 @@ function contextFor(
 				state,
 				record,
 			),
+			...(sessionEvidenceReload === undefined ? {} : { sessionEvidenceReload }),
 			...(fanoutDiagnostics?.selection.cacheRefreshPlan === undefined
 				? {}
 				: {

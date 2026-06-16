@@ -174,6 +174,10 @@ export interface FlowDeskStatusLiveWorkflowEvidenceSummaryV1 {
 	latestManagedDispatchBundleBlockedItemsCount?: number;
 	latestManagedDispatchBundleBlockedLabels?: readonly string[];
 	latestManagedDispatchBundleEvidenceRefsCount?: number;
+	latestManagedDispatchExposureAuthorizationState?: "authorized" | "blocked" | "unknown";
+	latestManagedDispatchExposureAuthorizationEvidenceId?: string;
+	latestManagedDispatchExposureAuthorizationBlockedLabels?: readonly string[];
+	latestManagedDispatchExposureAuthorizationAuthorityNote?: string;
 	providerUsageSnapshotCount?: number;
 	latestWorkflowAuthoringStatus?: string;
 	latestWorkflowAuthoringGoalSummary?: string;
@@ -803,6 +807,20 @@ function compactPromptPreview(value: string | undefined, max = 96): string | und
 	return compact.length > max ? `${compact.slice(0, Math.max(0, max - 1))}…` : compact;
 }
 
+function boundedStatusLabel(value: string, max = 80): string {
+	const compact = value.replace(/[^a-zA-Z0-9_.:-]+/g, "_").replace(/^_+|_+$/g, "");
+	if (compact.length === 0) return "unknown";
+	return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+}
+
+function boundedStatusLabels(value: unknown, fallback: readonly string[] = []): string[] {
+	if (!Array.isArray(value)) return [...fallback];
+	return value
+		.filter((label): label is string => typeof label === "string")
+		.slice(0, 8)
+		.map((label) => boundedStatusLabel(label));
+}
+
 function summarizeWorkflow(
 	workflowId: string,
 	rootDir: string,
@@ -841,6 +859,9 @@ function summarizeWorkflow(
 	let managedDispatchBundleBlockedItemsCount: number | undefined;
 	let managedDispatchBundleBlockedLabels: string[] | undefined;
 	let managedDispatchBundleEvidenceRefsCount: number | undefined;
+	let managedDispatchExposureAuthorizationState: "authorized" | "blocked" | "unknown" = "unknown";
+	let managedDispatchExposureAuthorizationEvidenceId: string | undefined;
+	let managedDispatchExposureAuthorizationBlockedLabels: string[] | undefined;
 	const toolRunOverdueLaneIds = new Set<string>();
 
 	for (const evidenceClass of FLOWDESK_SESSION_EVIDENCE_CLASSES) {
@@ -974,6 +995,21 @@ function summarizeWorkflow(
 					).length;
 			}
 		}
+		if (evidenceClass === "managed_dispatch_exposure_authorization") {
+			const last = classEntries[classEntries.length - 1];
+			if (last !== undefined) {
+				const state = getStringField(last.record, "state");
+				managedDispatchExposureAuthorizationEvidenceId = last.evidenceId;
+				managedDispatchExposureAuthorizationState =
+					state === "authorized" && last.record.ok === true
+						? "authorized"
+						: "blocked";
+				managedDispatchExposureAuthorizationBlockedLabels = boundedStatusLabels(
+					last.record.blocked_labels,
+					managedDispatchExposureAuthorizationState === "blocked" ? ["blocked"] : [],
+				);
+			}
+		}
 		if (evidenceClass === "session_finalization_evidence") {
 			latestSessionFinalizationSummaries = classEntries
 				.map((entry) => ({
@@ -1014,6 +1050,14 @@ function summarizeWorkflow(
 	const providerUsageSummary = summarizeLatestProviderUsageSnapshot(
 		reload.entries,
 	);
+	const blockedExposureAuthorization = reload.blocked
+		.filter((entry) => entry.evidenceClass === "managed_dispatch_exposure_authorization")
+		.slice(-1)[0];
+	if (blockedExposureAuthorization !== undefined) {
+		managedDispatchExposureAuthorizationState = "blocked";
+		managedDispatchExposureAuthorizationEvidenceId = blockedExposureAuthorization.evidenceId;
+		managedDispatchExposureAuthorizationBlockedLabels = ["invalid_or_blocked_evidence"];
+	}
 	const durableFinalizationSummaries = loadSessionFinalizationSummariesFromDurableEvidence({
 		rootDir,
 		workflowId,
@@ -1059,6 +1103,15 @@ function summarizeWorkflow(
 		...(managedDispatchBundleEvidenceRefsCount !== undefined
 			? { latestManagedDispatchBundleEvidenceRefsCount: managedDispatchBundleEvidenceRefsCount }
 			: {}),
+		latestManagedDispatchExposureAuthorizationState: managedDispatchExposureAuthorizationState,
+		...(managedDispatchExposureAuthorizationEvidenceId !== undefined
+			? { latestManagedDispatchExposureAuthorizationEvidenceId: managedDispatchExposureAuthorizationEvidenceId }
+			: {}),
+		...(managedDispatchExposureAuthorizationBlockedLabels !== undefined && managedDispatchExposureAuthorizationBlockedLabels.length > 0
+			? { latestManagedDispatchExposureAuthorizationBlockedLabels: managedDispatchExposureAuthorizationBlockedLabels }
+			: {}),
+		latestManagedDispatchExposureAuthorizationAuthorityNote:
+			"S7 exposure authorization is read-only status evidence only; it does not grant dispatch, provider, fallback, write, hard-chat, noReply, or OpenCode-internal authority.",
 		...(providerUsageSummary.count > 0
 			? { providerUsageSnapshotCount: providerUsageSummary.count }
 			: {}),
@@ -1859,7 +1912,11 @@ function buildStatusLiveSummaryForUser(input: {
 		const oiHealthText = workflow.latestOIAdvisoryHealthLabel !== undefined
 			? `, oi_health=${workflow.latestOIAdvisoryHealthLabel}`
 			: "";
-		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${finalizationText}${oiHealthText}${taskResultText}`;
+		const s7BlockedLabels = (workflow.latestManagedDispatchExposureAuthorizationBlockedLabels ?? [])
+			.slice(0, 3)
+			.join("/");
+		const s7Text = `, s7_exposure=${workflow.latestManagedDispatchExposureAuthorizationState ?? "unknown"}${workflow.latestManagedDispatchExposureAuthorizationEvidenceId === undefined ? "" : `/ref=${workflow.latestManagedDispatchExposureAuthorizationEvidenceId}`}${s7BlockedLabels.length === 0 ? "" : `/blocked=${s7BlockedLabels}`}/authority=read_only_no_dispatch`;
+		return `- ${workflow.workflowId}: ${classification}, ${verdictText}, ${lifecycleText}, ${planText}${laneText}${subtaskText}${captureDiagText}${finalizationText}${oiHealthText}${s7Text}${taskResultText}`;
 	});
 
 	return [headline, ...perWorkflow].join("\n");

@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { sessionEvidenceRecordPath } from "@flowdesk/core";
+import {
+	evaluateFlowDeskManagedDispatchExposureAuthorizationV1,
+	FLOWDESK_S7_REQUIRED_S6_TUPLE,
+	sessionEvidenceRecordPath,
+} from "@flowdesk/core";
 import { executeFlowDeskStatusLiveV1 } from "./status-live-tool.js";
 
 function writeEvidence(rootDir: string, workflowId: string, evidenceClass: string, evidenceId: string, record: Record<string, unknown>): void {
@@ -12,6 +16,199 @@ function writeEvidence(rootDir: string, workflowId: string, evidenceClass: strin
 	mkdirSync(join(absolutePath, ".."), { recursive: true });
 	writeFileSync(absolutePath, JSON.stringify(record), "utf8");
 }
+
+const s7Now = "2026-06-15T12:00:00.000Z";
+const s7WorkflowId = FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id;
+
+function s7TaskResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		schema_version: "flowdesk.task_result.v1",
+		workflow_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id,
+		lane_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.lane_id,
+		task_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.task_id,
+		agent_ref: "agent-flowdesk-s6-smoke",
+		provider_qualified_model_id: "openai/gpt-5.5",
+		task_prompt_sha256: "sha256-s6-input-digest",
+		result_text: `S6 completed. ${FLOWDESK_S7_REQUIRED_S6_TUPLE.sentinel}`,
+		result_text_truncated: false,
+		result_text_sha256: "sha256-s6-result",
+		created_at: "2026-06-15T11:55:00.000Z",
+		dispatch_authority_enabled: false,
+		...overrides,
+	};
+}
+
+function s7ExposureAuthorizationRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		...evaluateFlowDeskManagedDispatchExposureAuthorizationV1({
+			taskResultEvidence: s7TaskResult(),
+			taskResultEvidenceId: FLOWDESK_S7_REQUIRED_S6_TUPLE.result_evidence_id,
+			progressSnapshotWorkflowId: FLOWDESK_S7_REQUIRED_S6_TUPLE.progress_snapshot_workflow_id,
+			now: s7Now,
+		}),
+		...overrides,
+	};
+}
+
+test("status live surfaces S7 exposure authorization as read-only authorized", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-s7-authorized-"));
+	try {
+		writeEvidence(
+			rootDir,
+			s7WorkflowId,
+			"managed_dispatch_exposure_authorization",
+			"s7-exposure-authorized-1",
+			s7ExposureAuthorizationRecord(),
+		);
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId: s7WorkflowId },
+			now: () => new Date(s7Now),
+		});
+
+		const workflow = result.workflows[0];
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationState, "authorized");
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationEvidenceId, "s7-exposure-authorized-1");
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationBlockedLabels, undefined);
+		assert.match(workflow.latestManagedDispatchExposureAuthorizationAuthorityNote ?? "", /read-only status evidence only/);
+		assert.match(result.summaryForUser ?? "", /s7_exposure=authorized\/ref=s7-exposure-authorized-1\/authority=read_only_no_dispatch/);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.runtimeExecution, false);
+		assert.equal(result.authority.actualLaneLaunch, false);
+		assert.equal(result.authority.fallbackAuthority, false);
+		assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(result.authority.toolAuthority, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live surfaces S7 exposure authorization blocked labels compactly", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-s7-blocked-"));
+	try {
+		const blocked = evaluateFlowDeskManagedDispatchExposureAuthorizationV1({
+			taskResultEvidence: s7TaskResult({ result_text: "S6 completed without sentinel" }),
+			taskResultEvidenceId: "task-result-other",
+			progressSnapshotWorkflowId: FLOWDESK_S7_REQUIRED_S6_TUPLE.progress_snapshot_workflow_id,
+			now: s7Now,
+		});
+		writeEvidence(
+			rootDir,
+			s7WorkflowId,
+			"managed_dispatch_exposure_authorization",
+			"s7-exposure-blocked-1",
+			{ ...blocked },
+		);
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId: s7WorkflowId },
+			now: () => new Date(s7Now),
+		});
+
+		const workflow = result.workflows[0];
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationState, "blocked");
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationEvidenceId, "s7-exposure-blocked-1");
+		assert.deepEqual(workflow.latestManagedDispatchExposureAuthorizationBlockedLabels, [
+			"s6_sentinel_mismatched",
+			"s6_result_evidence_mismatched",
+		]);
+		assert.match(result.summaryForUser ?? "", /s7_exposure=blocked\/ref=s7-exposure-blocked-1\/blocked=s6_sentinel_mismatched\/s6_result_evidence_mismatched\/authority=read_only_no_dispatch/);
+		assert.doesNotMatch(JSON.stringify(result), /S6 completed without sentinel/);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live treats invalid latest S7 exposure authorization evidence as blocked", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-s7-invalid-"));
+	try {
+		writeEvidence(
+			rootDir,
+			s7WorkflowId,
+			"managed_dispatch_exposure_authorization",
+			"s7-exposure-invalid-1",
+			s7ExposureAuthorizationRecord({ providerCall: true }),
+		);
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId: s7WorkflowId },
+			now: () => new Date(s7Now),
+		});
+
+		const workflow = result.workflows[0];
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationState, "blocked");
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationEvidenceId, "s7-exposure-invalid-1");
+		assert.deepEqual(workflow.latestManagedDispatchExposureAuthorizationBlockedLabels, ["invalid_or_blocked_evidence"]);
+		assert.match(result.summaryForUser ?? "", /s7_exposure=blocked\/ref=s7-exposure-invalid-1\/blocked=invalid_or_blocked_evidence\/authority=read_only_no_dispatch/);
+		assert.equal(result.authority.providerCall, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("status live surfaces absent S7 exposure authorization as unknown without authority", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-s7-absent-"));
+	try {
+		const workflowId = "workflow-status-s7-absent";
+		writeEvidence(rootDir, workflowId, "workflow_dispatch_plan", "workflow-plan-s7-absent", {
+			schema_version: "flowdesk.workflow_dispatch_plan.v1",
+			workflow_id: workflowId,
+			plan_revision_id: "plan-revision-s7-absent",
+			requested_goal_summary: "Status projection only",
+			selected_agent_roles: [
+				{ agent_role: "verification", agent_role_ref: "agent-verifier" },
+			],
+			tasks: [
+				{
+					task_id: "task-s7-absent-status",
+					title: "Check status projection",
+					summary: "Confirm absent S7 exposure authorization status remains unknown",
+					agent_role: "verification",
+					agent_role_ref: "agent-verifier",
+				},
+			],
+			task_graph_summary: "One status projection task",
+			model_selection_diagnostics: {
+				diagnostic_refs: [],
+				diagnostic_labels: [],
+				scoring_authority_enabled: false,
+				fallback_or_reselection_allowed: false,
+			},
+			release_gate: "release1_planning_only",
+			dispatch_authority_enabled: false,
+			provider_call_made: false,
+			runtime_execution: false,
+			actual_lane_launch: false,
+			redaction_version: "v1",
+		});
+
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date(s7Now),
+		});
+
+		const workflow = result.workflows[0];
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationState, "unknown");
+		assert.equal(workflow.latestManagedDispatchExposureAuthorizationEvidenceId, undefined);
+		assert.match(workflow.latestManagedDispatchExposureAuthorizationAuthorityNote ?? "", /does not grant dispatch/);
+		assert.match(result.summaryForUser ?? "", /s7_exposure=unknown\/authority=read_only_no_dispatch/);
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.runtimeExecution, false);
+		assert.equal(result.authority.actualLaneLaunch, false);
+		assert.equal(result.authority.fallbackAuthority, false);
+		assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
+		assert.equal(result.authority.toolAuthority, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
 
 test("status live reports durable workflow dispatch planning evidence", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-plan-"));
