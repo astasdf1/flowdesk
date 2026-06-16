@@ -7223,14 +7223,23 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 				client: capturedClient,
 				parentSessionId: capturedParentSessionId,
 				now: new Date(),
-			}).then(async () => {
-				if (consumeCompletionWakeAfterCapture) await consumeCompletionWakeForMainSessionBestEffort(input);
+			}).then(async (cycleResult) => {
+				if (consumeCompletionWakeAfterCapture) {
+					await consumeCompletionWakeForMainSessionBestEffort(input);
+					return;
+				}
+				const hasTerminalWakeCandidate =
+					(cycleResult.newTerminalLaneCount ?? 0) > 0 ||
+					(cycleResult.retryableTerminalWakePendingCount ?? 0) > 0;
+				if (hasTerminalWakeCandidate) {
+					await consumeCompletionWakeForMainSessionBestEffort(input);
+				}
 			}).catch(() => {
 				// errors are swallowed — watchdog must not crash the plugin
 			});
-			// Wake prompt injection is NOT triggered from the watchdog interval. Event-driven
-			// pokes opt into post-capture wake consumption after the watchdog has had a
-			// chance to persist task_result/task_failed rows and refresh wake-ready caches.
+			// Event-driven pokes always opt into post-capture wake consumption. Interval
+			// cycles only attempt it when the cycle reports a terminal wake candidate;
+			// completion-wake-main-session handles cooldown, locking, and consumed rows.
 		};
 
 		const watchdogInterval = setInterval(runWatchdogCycle, watchdogConfig.intervalMs ?? 30_000);

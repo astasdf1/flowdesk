@@ -1385,6 +1385,10 @@ export interface FlowDeskWatchdogCycleResultV1 {
 	lanesRetried: number;
 	lanesFailed: number;
 	skippedReason?: string;
+	/** 이번 사이클에서 새로 terminal evidence/cache row가 관측된 lane 수 */
+	newTerminalLaneCount?: number;
+	/** completion-wake-ready.json 기준 아직 consumed !== true이고 age window 안에 있는 terminal wake row 수 */
+	retryableTerminalWakePendingCount?: number;
 }
 
 // Module-level flag to prevent concurrent cycles
@@ -1412,6 +1416,38 @@ function listWatchdogWorkflowIds(rootDir: string): string[] {
 		}
 	}
 	return result;
+}
+
+const FLOWDESK_WATCHDOG_TERMINAL_WAKE_KINDS = new Set(["task_result", "task_failed", "auto_next_ready"]);
+const FLOWDESK_WATCHDOG_WAKE_ROW_MAX_AGE_MS = 300_000;
+
+function countRetryableTerminalWakePendingRows(rootDir: string, now: Date): number {
+	try {
+		const wakeReadyPath = join(rootDir, ".flowdesk", "ui", "completion-wake-ready.json");
+		const wakeCache = JSON.parse(readFileSync(wakeReadyPath, "utf8")) as unknown;
+		if (
+			!isRecord(wakeCache) ||
+			wakeCache.schema_version !== "flowdesk.completion_wake_ready_cache.v1" ||
+			!Array.isArray(wakeCache.rows)
+		) {
+			return 0;
+		}
+
+		let count = 0;
+		const nowMs = now.getTime();
+		for (const row of wakeCache.rows) {
+			if (!isRecord(row) || row.consumed === true) continue;
+			const kind = typeof row.completionKind === "string" ? row.completionKind : undefined;
+			if (kind === undefined || !FLOWDESK_WATCHDOG_TERMINAL_WAKE_KINDS.has(kind)) continue;
+			const readyAtMs = typeof row.readyAt === "string" ? Date.parse(row.readyAt) : NaN;
+			if (!Number.isFinite(readyAtMs) || nowMs - readyAtMs > FLOWDESK_WATCHDOG_WAKE_ROW_MAX_AGE_MS) continue;
+			count++;
+		}
+		return count;
+	} catch {
+		// Best-effort only; wake candidate counting must not crash the watchdog.
+		return 0;
+	}
 }
 
 export async function runFlowDeskWatchdogCycleV1(input: {
@@ -1476,6 +1512,8 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 	let lanesAborted = 0;
 	let lanesRetried = 0;
 	let lanesFailed = 0;
+	let newTerminalLaneCount = 0;
+	let retryableTerminalWakePendingCount = 0;
 
 	try {
 		const workflowIds = listWatchdogWorkflowIds(input.rootDir);
@@ -1488,21 +1526,25 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 			// Monitor async-mode child sessions (nudge + abort + result collection)
 			if (input.client !== undefined) {
 				try {
-					await monitorChildSessionsV1({
+					const monitorResult = await monitorChildSessionsV1({
 						rootDir: input.rootDir,
 						workflowId,
 						client: input.client,
 						now,
 						...(nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs }),
 					});
+					newTerminalLaneCount += monitorResult.lanesCompleted;
 				} catch { /* best-effort, must not crash watchdog */ }
 			}
 
-			backfillTerminalAgentTaskFailedLanesV1({
+			const backfillResult = backfillTerminalAgentTaskFailedLanesV1({
 				rootDir: input.rootDir,
 				workflowId,
 				now,
 			});
+			if (backfillResult.status === "backfill_completed") {
+				newTerminalLaneCount += backfillResult.lanesTerminalized;
+			}
 			// Reload evidence for this workflow
 			const reloaded = reloadFlowDeskSessionEvidenceV1({
 				rootDir: input.rootDir,
@@ -1577,6 +1619,10 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 				}
 			}
 		}
+		// Terminal wake candidate aggregate for server.ts to decide whether to run the
+		// completion wake consumer. stall-recovery returns statistics only; actual
+		// wake dispatch remains owned by the server.ts layer.
+		retryableTerminalWakePendingCount = countRetryableTerminalWakePendingRows(input.rootDir, now);
 	} finally {
 		_isWatchdogCycleRunning = false;
 	}
@@ -1588,6 +1634,8 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 		lanesAborted,
 		lanesRetried,
 		lanesFailed,
+		...(newTerminalLaneCount > 0 ? { newTerminalLaneCount } : {}),
+		...(retryableTerminalWakePendingCount > 0 ? { retryableTerminalWakePendingCount } : {}),
 	};
 }
 
