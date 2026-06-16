@@ -310,6 +310,9 @@ What you should do instead:
 Use a static FlowDesk command template and pass structured input through the guarded workflow.
 ```
 
+NOTE: S7 exposure authorization은 "managed dispatch가 열렸다"는 의미가 아니며,
+dispatch approval과 무관한 준비 상태 확인(readiness prerequisite)일 뿐입니다.
+
 ### Asking the Model to Ignore Guard
 
 Abnormal request:

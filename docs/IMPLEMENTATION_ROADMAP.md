@@ -260,6 +260,8 @@ Gate resolution order:
 
 Goal: enable low-risk managed real dispatch safely.
 
+NOTE: S7 exposure authorization is a readiness prerequisite, not a dispatch approval. Production open requires: cross-subsystem integration tests passing, docs clarification, and explicit fresh provider/Guard approval. Current status: S7 complete, capture reliability improved (finalization timing gate + captureFailureDiagnostic reconciliation), integration tests and explicit approval pending.
+
 Tasks:
 
 1. Implement real `GuardApprovedDispatch` runtime path only after production non-dispatch registration, SDK adapter capability, version compatibility, durable evidence write/reload validation, and fail-closed behavior are already passing.
