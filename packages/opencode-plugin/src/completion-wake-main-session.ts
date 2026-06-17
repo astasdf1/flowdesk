@@ -236,8 +236,10 @@ function numericField(record: Record<string, unknown>, key: string): number | un
 function parentSessionIdFromRef(ref: string | undefined): string | undefined {
 	if (ref === undefined) return undefined;
 	let value = ref.trim();
+	// Strip all leading ses- prefixes (handles legacy ses-ses_... and corrected ses-...)
 	while (/^ses-/i.test(value) && value.length > 4) value = value.slice(4);
-	return /^ses_[A-Za-z0-9]/.test(value) ? value : undefined;
+	// Accept both ses_... (OpenCode session id format) and plain alphanumeric ids
+	return /^[A-Za-z0-9]/.test(value) && value.length >= 8 ? value : undefined;
 }
 
 

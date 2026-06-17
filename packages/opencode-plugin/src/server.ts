@@ -4144,7 +4144,9 @@ export function __resetCompletionWakeParentSessionRefForTest(): void {
 function isCompletionWakeCacheParentSessionRef(value: unknown): value is string {
 	if (typeof value !== "string") return false;
 	const trimmed = value.trim();
-	return trimmed !== "global" && /^ses-ses_[A-Za-z0-9_-]+$/.test(trimmed);
+	if (trimmed === "global") return false;
+	// Accept both legacy double-prefix (ses-ses_...) and corrected single-prefix (ses-...) forms.
+	return /^ses-[A-Za-z0-9_-]+$/.test(trimmed);
 }
 
 function initializeCompletionWakeParentSessionRefFromReadyCache(rootDir: string): void {
