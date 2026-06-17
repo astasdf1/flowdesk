@@ -5301,13 +5301,17 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 					? record.parentSessionId.trim()
 					: "";
 				const currentSessionId = liveSessionIdFromContext(ctx);
+				// Strip OpenCode ses_ prefix before passing to validateAgentTaskParentSessionId
+				// which adds ses- wrapper. Raw session ID e.g. "1234abc" is expected, not "ses_1234abc".
+				const stripSesPrefix = (id: string): string => id.startsWith("ses_") ? id.slice("ses_".length) : id.startsWith("ses-") ? id.slice("ses-".length) : id;
+				const currentSessionIdRaw = stripSesPrefix(currentSessionId);
 				const parentSessionId = requestedParentSessionId.length > 0
-					? requestedParentSessionId
+					? stripSesPrefix(requestedParentSessionId)
 					: input.compactArgs === true
-						? currentSessionId.length > 0
-							? currentSessionId
-							: lastCompletionWakeParentSessionId()
-						: currentSessionId;
+						? currentSessionIdRaw.length > 0
+							? currentSessionIdRaw
+							: lastCompletionWakeParentSessionId()  // already returns raw id without ses- prefix
+						: currentSessionIdRaw;
 				const nudgeQuietPeriodMs = typeof record.nudgeQuietPeriodMs === "number" && record.nudgeQuietPeriodMs > 0
 					? Math.floor(record.nudgeQuietPeriodMs) : input.defaultNudgeQuietPeriodMs;
 				const asyncMode = typeof record.asyncMode === "boolean"
