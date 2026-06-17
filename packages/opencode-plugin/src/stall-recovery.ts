@@ -107,6 +107,10 @@ const ABORT_ELIGIBLE_LANE_STATES = new Set(["created", "running"]);
 const FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS = 30_000;
 const FLOWDESK_SESSION_ERROR_RETRY_DELAY_MS = 15_000;
 const FLOWDESK_SESSION_ERROR_MAX_AUTO_RETRIES = 1;
+const FLOWDESK_REPAIR_NUDGE_TEMPLATES = {
+	turn_completed_empty_final_report: "이전 작업의 결과를 텍스트로 출력하세요. 도구 호출만 완료되고 최종 텍스트가 없는 경우 결과를 요약해 출력하세요.",
+} as const;
+const FLOWDESK_REPAIR_NUDGE_MAX_ATTEMPTS = 2;
 
 const RETRYABLE_SESSION_ERROR_CODES = new Set([
 	"UnknownError",
@@ -1971,6 +1975,72 @@ async function sendIdleContinuationPrompt(
 	}
 }
 
+async function isChildSessionClosedForRepairNudge(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+): Promise<boolean> {
+	const isClosed = client.session.isClosed;
+	if (typeof isClosed !== "function") return false;
+	try {
+		const result = await (isClosed as (o?: unknown) => unknown).call(client.session, { sessionID: childSessionId });
+		return result === true;
+	} catch {
+		return true;
+	}
+}
+
+async function sendRepairNudgePrompt(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	childSessionId: string,
+	timeoutMs = 5_000,
+): Promise<"sent" | "timeout" | "skipped" | "closed"> {
+	if (await isChildSessionClosedForRepairNudge(client, childSessionId)) return "closed";
+	const promptFn = client.session.promptAsync ?? client.session.prompt;
+	if (promptFn === undefined) return "skipped";
+	try {
+		await Promise.race([
+			(promptFn as (o: unknown) => unknown).call(client.session, {
+				sessionID: childSessionId,
+				parts: [{
+					type: "text",
+					text: FLOWDESK_REPAIR_NUDGE_TEMPLATES.turn_completed_empty_final_report,
+				}],
+			}),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("repair nudge timeout")), timeoutMs),
+			),
+		]);
+		return "sent";
+	} catch {
+		return "timeout";
+	}
+}
+
+function writeRepairAttemptEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	attemptId: string;
+	attemptSeq: number;
+	deliveryStatus: "sent" | "timeout" | "skipped" | "closed";
+	createdAt: string;
+}): boolean {
+	const token = randomBytes(4).toString("hex");
+	return writeChildSessionEvidence(input.rootDir, input.workflowId, `repair-attempt-${input.taskId}-${input.attemptSeq}-${token}`, {
+		schema_version: "flowdesk.repair_attempt.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		attempt_id: input.attemptId,
+		attempt_seq: input.attemptSeq,
+		template_kind: "turn_completed_empty_final_report",
+		delivery_status: input.deliveryStatus,
+		provider_call_made: false,
+		created_at: input.createdAt,
+	});
+}
+
 /** Abort a child session via the injected SDK client */
 async function abortChildSession(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
@@ -3043,8 +3113,10 @@ export async function monitorChildSessionsV1(input: {
 	// "lane looks alive forever" / stuck stall-detection problem.
 	const latestMeaningfulProgressByLane = new Map<string, number>();
 	const latestLifecycleStateChangeByLane = new Map<string, number>();
+	const latestAttemptIdByLane = new Map<string, string>();
 	const awaitingBodyCaptureProgressByLane = new Map<string, number[]>();
 	const turnCompletedEmptyRepairProgressByLane = new Map<string, number[]>();
+	const repairAttemptCountByLane = new Map<string, number>();
 	const sessionErrorRetryProgressByLane = new Map<string, number[]>();
 	// V11.2 Slice 1: ordered per-lane tool-state transitions (running/settled),
 	// derived from event-hook progress labels, feeding the event-based open-tool
@@ -3074,6 +3146,7 @@ export async function monitorChildSessionsV1(input: {
 			}
 		}
 		if (entry.evidenceClass === "lane_lifecycle") {
+			if (typeof rec.attempt_id === "string") latestAttemptIdByLane.set(laneIdVal, rec.attempt_id);
 			const updatedAt = typeof rec.updated_at === "string" ? Date.parse(rec.updated_at)
 				: typeof rec.created_at === "string" ? Date.parse(rec.created_at)
 				: NaN;
@@ -3083,6 +3156,9 @@ export async function monitorChildSessionsV1(input: {
 					latestLifecycleStateChangeByLane.set(laneIdVal, updatedAt);
 				}
 			}
+		}
+		if (entry.evidenceClass === "repair_attempt") {
+			repairAttemptCountByLane.set(laneIdVal, (repairAttemptCountByLane.get(laneIdVal) ?? 0) + 1);
 		}
 		if (entry.evidenceClass === "agent_task_progress") {
 			const observedAtMs = typeof rec.observed_at === "string" ? Date.parse(rec.observed_at) : NaN;
@@ -3787,6 +3863,10 @@ export async function monitorChildSessionsV1(input: {
 						continue;
 					}
 				}
+			const durableRepairAttemptCount = repairAttemptCountByLane.get(laneId) ?? 0;
+			const recordedRepairCount = typeof recordForWrites.turn_completed_empty_repair_count === "number" ? recordForWrites.turn_completed_empty_repair_count : 0;
+			const repairAttemptCount = Math.max(recordedRepairCount, durableRepairAttemptCount);
+
 				if (nextAttempts <= bodyRetryMax) {
 					// Persist the retry counter and wait for a later cycle (bounded).
 					recordForWrites = withCaptureFailureDiagnosticFields({
@@ -3812,46 +3892,58 @@ export async function monitorChildSessionsV1(input: {
 					result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
 					continue;
 				}
-				const durableRepairCount = (turnCompletedEmptyRepairProgressByLane.get(laneId) ?? []).filter((value) => Number.isFinite(value)).length;
-				const recordedRepairCount = typeof recordForWrites.turn_completed_empty_repair_count === "number" ? recordForWrites.turn_completed_empty_repair_count : 0;
-				const repairCount = Math.max(recordedRepairCount, durableRepairCount);
-				if (repairCount < 1) {
+			// Retry budget exceeded: attempt repair nudge (max 2) before keeping
+			// awaiting path. Repair nudge sends a bounded static continuation prompt
+			// to the child session asking for final text output.
+			// Authority: provider_call_made=false, no new dispatch/outer attempt.
+			if (repairAttemptCount < FLOWDESK_REPAIR_NUDGE_MAX_ATTEMPTS) {
+				const sessionClosed = await isChildSessionClosedForRepairNudge(input.client, childSessionId);
+				const promptFn = input.client.session.promptAsync ?? input.client.session.prompt;
+				if (!sessionClosed && promptFn !== undefined) {
 					const repairAt = nowIso;
-					const deliveryStatus = await sendIdleContinuationPrompt(input.client, childSessionId);
-					if (deliveryStatus === "sent") {
-						recordForWrites = withCaptureFailureDiagnosticFields({
-							...recordForWrites,
-							awaiting_body_capture_attempts: 0,
-							turn_completed_empty_repair_count: repairCount + 1,
-							turn_completed_empty_last_repair_at: repairAt,
-							turn_completed_empty_last_repair_delivery_status: deliveryStatus,
-							...(typeof recordForWrites.awaiting_body_capture_since === "string"
-								? {}
-								: { awaiting_body_capture_since: nowIso }),
-						}, captureDiagnostic, "turn_completed_empty_repair_prompt");
-						writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
-						writeAgentTaskProgressEvidence({
-							rootDir: input.rootDir,
-							workflowId: input.workflowId,
-							laneId,
-							taskId,
-							agentRef,
-							providerQualifiedModelId: modelId,
-							phase: "nudged",
-							progressSeq: 8 + nextAttempts,
-							progressLabel: "async agent task final-report repair prompt injected after empty turn completed event",
-							observedAt: repairAt,
-						});
-						result.lanesNudged++;
-						continue;
-					}
+					const nextRepairAttempt = repairAttemptCount + 1;
+					const deliveryStatus = await sendRepairNudgePrompt(input.client, childSessionId);
+					writeRepairAttemptEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						attemptId: latestAttemptIdByLane.get(laneId) ?? `attempt-${laneId}`,
+						attemptSeq: nextRepairAttempt,
+						deliveryStatus,
+						createdAt: repairAt,
+					});
+					recordForWrites = withCaptureFailureDiagnosticFields({
+						...recordForWrites,
+						awaiting_body_capture_attempts: nextAttempts,
+						turn_completed_empty_repair_count: nextRepairAttempt,
+						turn_completed_empty_last_repair_at: repairAt,
+						turn_completed_empty_last_repair_delivery_status: deliveryStatus,
+					}, captureDiagnostic, "turn_completed_empty_repair_prompt");
+					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+					writeAgentTaskProgressEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						laneId,
+						taskId,
+						agentRef,
+						providerQualifiedModelId: modelId,
+						phase: "nudged",
+						progressSeq: 8 + nextAttempts,
+						progressLabel: "async agent task final-report repair nudge delivered for turn_completed_empty_final_report after empty turn completed event",
+						observedAt: repairAt,
+					});
+					result.lanesNudged++;
+					continue;
 				}
-				// Retry budget after the explicit repair is exhausted is not, by itself,
-				// a terminal failure signal. Keep the demoted awaiting path below until an
-				// independent hard cap or failure path fires.
+			}
+			// Repair budget exhausted or session closed: keep demoted awaiting path.
 				recordForWrites = withCaptureFailureDiagnosticFields({
 					...recordForWrites,
 					awaiting_body_capture_attempts: nextAttempts,
+					...(repairAttemptCount >= FLOWDESK_REPAIR_NUDGE_MAX_ATTEMPTS
+						? { turn_completed_empty_repair_status: "repair_exhausted" }
+						: {}),
 					...(typeof recordForWrites.awaiting_body_capture_since === "string"
 						? {}
 						: { awaiting_body_capture_since: nowIso }),
@@ -3869,7 +3961,7 @@ export async function monitorChildSessionsV1(input: {
 					providerQualifiedModelId: modelId,
 					phase: "finalizing",
 					progressSeq: 8 + nextAttempts,
-					progressLabel: `async agent task awaiting session quiescence after empty turn completed event (attempt ${nextAttempts}/${bodyRetryMax})`,
+					progressLabel: `async agent task awaiting session quiescence after empty turn completed event (attempt ${nextAttempts}/${bodyRetryMax})${repairAttemptCount >= FLOWDESK_REPAIR_NUDGE_MAX_ATTEMPTS ? "; repair_exhausted" : ""}`,
 					observedAt: nowIso,
 				});
 				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;

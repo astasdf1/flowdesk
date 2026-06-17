@@ -1586,10 +1586,9 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 			},
 		} as never;
 
-		// bodyRetryMax=2: after the required 30s post-progress silence, first two
-		// eligible cycles RETRY (no completion, no failure), third eligible cycle
-		// injects a final-report repair prompt, and retry/repair budget alone still
-		// does not terminalize before the independent absolute cap.
+		// bodyRetryMax=2: after the required 30s post-progress silence, the first
+		// eligible cycle records awaiting_body_capture. Once durable awaiting capture
+		// exists, repair nudges are sent in the same child session, capped separately.
 		const c1 = await monitorChildSessionsV1({
 			rootDir, workflowId, now: new Date("2026-05-26T10:00:38.000Z"),
 			abortThresholdMs: 30_000, maxIdleContinuations: 0,
@@ -1648,13 +1647,17 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 		assert.equal(failed, undefined, "must not record turn_completed_empty task_failed before absolute cap");
 		const repairEvidence = reload.entries.find((e) =>
 			e.evidenceClass === "agent_task_child_session"
-			&& (e.record as Record<string, unknown>).turn_completed_empty_repair_count === 1,
+			&& (e.record as Record<string, unknown>).turn_completed_empty_repair_count === 2,
 		);
-		assert.ok(repairEvidence, "must record the final-report repair prompt injection");
+		assert.ok(repairEvidence, "must record the capped final-report repair prompt injections");
+		const repairAttempts = reload.entries.filter((e) => e.evidenceClass === "repair_attempt");
+		assert.equal(repairAttempts.length, 2, "must persist repair_attempt evidence for each repair nudge");
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
 });
+
+
 
 test("watchdog terminalizes awaiting_body_capture after finalizingAbsoluteMaxMs", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-awaiting-body-absolute-max-"));

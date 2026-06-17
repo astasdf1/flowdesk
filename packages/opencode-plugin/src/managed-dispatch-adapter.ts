@@ -588,6 +588,11 @@ export interface FlowDeskManagedDispatchBetaOpenCodeClientV1 {
 			path?: { id: string };
 			query?: { directory?: string };
 		}): unknown | Promise<unknown>;
+		isClosed?(options?: {
+			sessionID?: string;
+			path?: { id: string };
+			query?: { directory?: string };
+		}): unknown | Promise<unknown>;
 	};
 }
 
