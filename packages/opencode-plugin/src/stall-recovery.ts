@@ -3887,9 +3887,10 @@ export async function monitorChildSessionsV1(input: {
 				continue;
 			}
 			const observedRunningToolsCount = laneToolState.runningToolsCount + (resultObservation.hasRunningTool ? 1 : 0);
-			const terminalTextFinalizationReady = resultObservation.terminalMarkerObserved
-				&& observedRunningToolsCount === 0
-				&& silenceSinceLastProgressMs >= FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS;
+			// Terminal marker (step-finish/stop) proves the turn is complete — no silence
+		// gate needed. Silence gate applies only to the non-terminal idle-confirmed path.
+		const terminalTextFinalizationReady = resultObservation.terminalMarkerObserved
+				&& observedRunningToolsCount === 0;
 			if (!terminalTextFinalizationReady) {
 				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
 				continue;
