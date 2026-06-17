@@ -30,6 +30,7 @@ import { resolveOpenCodeRuntimeLaunchModelBindingV1 } from "./model-selection-en
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
 const FLOWDESK_TASK_DESCRIPTION_MAX_CHARS = 15_000;
+const FLOWDESK_EARLY_LAUNCH_NO_SIGNAL_THRESHOLD_MS = 30_000;
 const INVALID_PARENT_SESSION_REF = "ses-invalid-parent-session-binding" as const;
 /** unattached launches will not appear in session-scoped sidebar rows and wake notifications will not be delivered to any specific session */
 const UNATTACHED_PARENT_SESSION_REF = "ses-unattached-parent-session" as const;
@@ -1353,13 +1354,13 @@ export async function executeFlowDeskAgentTaskV1(
 				const silenceMs = nowMs - lastActivityMs;
 				const totalElapsedMs = nowMs - startMs;
 
-				// 30s diagnostic
-				if (totalElapsedMs >= 30_000 && !firstTokenSeen && !hasLogged30sDiag) {
+				// Diagnostic threshold check
+				if (totalElapsedMs >= FLOWDESK_EARLY_LAUNCH_NO_SIGNAL_THRESHOLD_MS && !firstTokenSeen && !hasLogged30sDiag) {
 					hasLogged30sDiag = true;
 					writeSessionEvidence({
 						rootDir: input.rootDir,
 						workflowId: input.workflowId,
-						evidenceId: `early-launch-diag-${input.laneId}-${token}-30s`,
+						evidenceId: `early-launch-diag-${input.laneId}-${token}-30s-session-start`,
 						record: {
 							schema_version: "flowdesk.early_launch_diagnostic.v1",
 							workflow_id: input.workflowId,
@@ -1370,15 +1371,10 @@ export async function executeFlowDeskAgentTaskV1(
 							dispatch_authority_enabled: false,
 						},
 					});
-				}
-
-				// 60s diagnostic
-				if (totalElapsedMs >= 60_000 && !firstTokenSeen && !hasLogged60sDiag) {
-					hasLogged60sDiag = true;
 					writeSessionEvidence({
 						rootDir: input.rootDir,
 						workflowId: input.workflowId,
-						evidenceId: `early-launch-diag-${input.laneId}-${token}-60s`,
+						evidenceId: `early-launch-diag-${input.laneId}-${token}-30s-no-signal`,
 						record: {
 							schema_version: "flowdesk.early_launch_diagnostic.v1",
 							workflow_id: input.workflowId,
