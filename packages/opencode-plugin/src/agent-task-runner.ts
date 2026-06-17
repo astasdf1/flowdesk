@@ -29,6 +29,7 @@ import { resolveOpenCodeRuntimeLaunchModelBindingV1 } from "./model-selection-en
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
+const FLOWDESK_TASK_DESCRIPTION_MAX_CHARS = 15_000;
 const INVALID_PARENT_SESSION_REF = "ses-invalid-parent-session-binding" as const;
 /** unattached launches will not appear in session-scoped sidebar rows and wake notifications will not be delivered to any specific session */
 const UNATTACHED_PARENT_SESSION_REF = "ses-unattached-parent-session" as const;
@@ -289,6 +290,12 @@ const AGENT_TASK_HEAVY_FIRST_TOKEN_GRACE_MS = 30_000 as const;
  * is conservative and explicitly excludes light/fast variants and the models
  * the operator does not consider heavy (gemini pro, sonnet).
  */
+/**
+ * Classify a provider-qualified model id as "heavy" (slow to first token on
+ * large prompts). Only these get the widened pre-first-token grace. The check
+ * is conservative and explicitly excludes light/fast variants and the models
+ * the operator does not consider heavy (gemini pro, sonnet).
+ */
 export function isFlowDeskHeavyFirstTokenModelV1(providerQualifiedModelId: string | undefined): boolean {
 	if (typeof providerQualifiedModelId !== "string") return false;
 	const id = providerQualifiedModelId.toLowerCase();
@@ -316,7 +323,12 @@ export function isFlowDeskHeavyFirstTokenModelV1(providerQualifiedModelId: strin
 async function extractAssistantTextFromResponse(
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	childSessionId: string,
+	token: string,
 	opts?: {
+		workflowId: string;
+		rootDir: string;
+		laneId: string;
+		taskId: string;
 		quietPeriodMs?: number;          // silence before heartbeat / nudge (default 10s)
 		maxNudges?: number;              // max nudge attempts (default 2)
 		runtimeModel?: string;           // OpenCode runtime model id for nudge prompt
@@ -332,6 +344,10 @@ async function extractAssistantTextFromResponse(
 
 	const quietPeriodMs = opts?.quietPeriodMs ?? 10_000;
 	const maxNudges = opts?.maxNudges ?? 2;
+	const workflowId = opts?.workflowId ?? "";
+	const rootDir = opts?.rootDir ?? "";
+	const laneId = opts?.laneId ?? "";
+	const taskId = opts?.taskId ?? "";
 	// Pre-first-token grace only widens the FIRST silence window (before any
 	// assistant token). Never smaller than the normal quiet period.
 	const firstTokenGraceMs = Math.max(quietPeriodMs, opts?.firstTokenGraceMs ?? quietPeriodMs);
@@ -431,6 +447,8 @@ async function extractAssistantTextFromResponse(
 	let stableText: string | undefined;
 	let stableCount = 0;
 	let firstStableMs = 0;
+	let hasLogged30sDiag = false;
+	let hasLogged60sDiag = false;
 
 	try {
 		while (true) {
@@ -495,6 +513,44 @@ async function extractAssistantTextFromResponse(
 			const silenceMs = nowMs - lastActivityMs;
 			const totalElapsedMs = nowMs - startMs;
 
+			// 30s diagnostic
+			if (totalElapsedMs >= 30_000 && !firstTokenSeen && !hasLogged30sDiag) {
+				hasLogged30sDiag = true;
+				writeSessionEvidence({
+					rootDir,
+					workflowId,
+					evidenceId: `early-launch-diag-${laneId}-${token}-30s`,
+					record: {
+						schema_version: "flowdesk.early_launch_diagnostic.v1",
+						workflow_id: workflowId,
+						lane_id: laneId,
+						task_id: taskId,
+						label: "session_may_have_failed_to_start",
+						created_at: new Date().toISOString(),
+						dispatch_authority_enabled: false,
+					},
+				});
+			}
+
+			// 60s diagnostic
+			if (totalElapsedMs >= 60_000 && !firstTokenSeen && !hasLogged60sDiag) {
+				hasLogged60sDiag = true;
+				writeSessionEvidence({
+					rootDir,
+					workflowId,
+					evidenceId: `early-launch-diag-${laneId}-${token}-60s`,
+					record: {
+						schema_version: "flowdesk.early_launch_diagnostic.v1",
+						workflow_id: workflowId,
+						lane_id: laneId,
+						task_id: taskId,
+						label: "no_first_signal",
+						created_at: new Date().toISOString(),
+						dispatch_authority_enabled: false,
+					},
+				});
+			}
+
 			// Heavy-model pre-first-token grace: while NO assistant token has
 			// appeared yet, do NOT nudge. Nudging a heavy model that is still
 			// producing its first token (a noReply prompt) only interferes with
@@ -554,6 +610,7 @@ async function extractAssistantTextFromResponse(
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
+
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
@@ -904,6 +961,41 @@ export async function executeFlowDeskAgentTaskV1(
 	const parentSessionRef = parentBinding.parentSessionRef;
 	const attemptId = `attempt-task-${token}`;
 
+	if (input.promptText.length > FLOWDESK_TASK_DESCRIPTION_MAX_CHARS) {
+		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}-limit-exceeded`;
+		writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: taskFailedEvidenceId,
+			record: {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: input.workflowId,
+				lane_id: input.laneId,
+				task_id: input.taskId,
+				agent_ref: input.agentRef,
+				provider_qualified_model_id: input.providerQualifiedModelId,
+				failure_category: "invalid_request",
+				redacted_reason: "task_description_exceeds_limit_15000_chars",
+				created_at: observedAt,
+				dispatch_authority_enabled: false,
+			} as unknown as Record<string, unknown>,
+		});
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			state: "invocation_failed",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-limit-exceeded`,
+			createdAt: observedAt,
+			updatedAt: observedAt,
+		});
+		return { status: "task_failed", failureCategory: "invalid_request", redactedReason: "task_description_exceeds_limit_15000_chars", laneId: input.laneId };
+	}
+
 	if (!parentBinding.ok) {
 		const taskFailedEvidenceId = `task-failed-${input.taskId}-${token}-invalid-parent`;
 		const redactedReason = parentBinding.redactedReason;
@@ -1015,6 +1107,299 @@ export async function executeFlowDeskAgentTaskV1(
 		return { status: "task_failed", failureCategory: "sdk_create_failed", redactedReason, laneId: input.laneId };
 	}
 	const effectiveProviderQualifiedModelId = modelBinding.effectiveProviderQualifiedModelId;
+
+	/**
+	 * Polls `session.messages` with a per-call 3-second cap so it works whether the SDK
+	 * uses snapshot (returns immediately) or long-poll (blocks until output) semantics.
+	 *
+	 * Heartbeat: fires every `quietPeriodMs` of silence — only when inactive.
+	 * Nudge:     after `quietPeriodMs` of silence, sends a bounded prompt to the child
+	 *            session asking for the final answer. Max `maxNudges` nudges total.
+	 *            After exhausting nudges with no response, returns undefined.
+	 */
+	async function extractAssistantTextFromResponse(
+		client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+		childSessionId: string,
+		opts?: {
+			workflowId: string;
+			rootDir: string;
+			laneId: string;
+			taskId: string;
+			quietPeriodMs?: number;          // silence before heartbeat / nudge (default 10s)
+			maxNudges?: number;              // max nudge attempts (default 2)
+			runtimeModel?: string;           // OpenCode runtime model id for nudge prompt
+			agentName?: string;              // agent name for nudge prompt
+			messagesTimeoutMs?: number;      // per-call cap for session.messages (default 3000ms)
+			firstTokenGraceMs?: number;      // widened silence window BEFORE first assistant token (heavy models)
+			heartbeatFn?: (elapsedMs: number) => void;
+			nudgeFn?: (nudgeCount: number, lastNudgeAt: string) => void;
+		},
+	): Promise<FlowDeskAgentTaskCaptureResultV1 | undefined> {
+		const messages = client.session.messages;
+		if (messages === undefined) return undefined;
+
+		const quietPeriodMs = opts?.quietPeriodMs ?? 10_000;
+		const maxNudges = opts?.maxNudges ?? 2;
+		// Pre-first-token grace only widens the FIRST silence window (before any
+		// assistant token). Never smaller than the normal quiet period.
+		const firstTokenGraceMs = Math.max(quietPeriodMs, opts?.firstTokenGraceMs ?? quietPeriodMs);
+		let firstTokenSeen = false;
+		const MESSAGES_TIMEOUT_MS = opts?.messagesTimeoutMs ?? 3_000; // per-call cap — handles both snapshot and long-poll
+
+		const method = messages as (options: unknown) => unknown | Promise<unknown>;
+
+		/**
+		 * SDK shape memoization: the structured `{ path: { id } }` shape fails on
+		 * OpenCode 1.15.x with a `%7Bid%7D` URL-encoding error. Retrying that shape
+		 * on every poll cycle adds ~3s of wasted error/timeout per cycle, which
+		 * shifts the quiet-period/nudge timing and can cause premature no_response.
+		 * After one structured failure, all subsequent calls use the flat
+		 * `{ sessionID }` shape only. If the structured shape succeeds on the first
+		 * call, it is kept for the rest of the capture loop.
+		 */
+		let useStructuredShape: boolean | undefined; // undefined = not yet tested
+
+		/**
+		 * Call session.messages with a ceiling timeout so we can check inactivity periodically.
+		 * This handles both snapshot APIs (return immediately) and long-poll APIs
+		 * (block until LLM produces output). With the timeout, a long-poll call that
+		 * hasn't returned after MESSAGES_TIMEOUT_MS resolves as null so we can
+		 * check the inactivity clock and possibly send a nudge.
+		 */
+		const callMessages = (): Promise<unknown | null> => {
+			const messagePromise = (async () => {
+				// First call: probe the structured shape and memoize the result.
+				if (useStructuredShape === undefined) {
+					try {
+						const structured = await method.call(client.session, { path: { id: childSessionId } });
+						if (!isSdkErrorResponse(structured)) {
+							useStructuredShape = true;
+							return structured;
+						}
+					} catch { /* structured shape unavailable */ }
+					useStructuredShape = false;
+					return method.call(client.session, { sessionID: childSessionId });
+				}
+				// Subsequent calls: use whichever shape succeeded.
+				if (useStructuredShape) {
+					try {
+						const structured = await method.call(client.session, { path: { id: childSessionId } });
+						if (!isSdkErrorResponse(structured)) return structured;
+					} catch { /* structured shape broke mid-loop; fall back permanently */ }
+					useStructuredShape = false;
+				}
+				return method.call(client.session, { sessionID: childSessionId });
+			})();
+			// Only race against timeout when the API might block (MESSAGES_TIMEOUT_MS > 0)
+			if (MESSAGES_TIMEOUT_MS <= 0) return messagePromise;
+			return Promise.race([
+				messagePromise,
+				new Promise<null>(resolve => setTimeout(() => resolve(null), MESSAGES_TIMEOUT_MS)),
+			]);
+		};
+
+		/** Send a nudge to the child session with a hard timeout to prevent blocking.
+		 * Uses noReply: true so the child does not generate a spurious second assistant turn.
+		 */
+		const sendNudge = async (): Promise<"sent" | "timeout" | "skipped"> => {
+			const promptFn = client.session.prompt ?? client.session.promptAsync;
+			if (promptFn === undefined) return "skipped";
+			const NUDGE_TIMEOUT_MS = 5_000;
+			try {
+				await Promise.race([
+					(promptFn as (o: unknown) => unknown).call(client.session, {
+						sessionID: childSessionId,
+						noReply: true,
+						...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
+						...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
+						parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
+					}),
+					new Promise<never>((_, reject) =>
+						setTimeout(() => reject(new Error("nudge timeout")), NUDGE_TIMEOUT_MS),
+					),
+				]);
+				return "sent";
+			} catch { return "timeout"; }
+		};
+
+		const observe = (response: unknown) => {
+			if (response === null) return undefined; // timed-out poll cycle
+			return observeFlowDeskAgentTaskOutputV1(response);
+		};
+
+		const startMs = Date.now();
+		let lastActivityMs = startMs;
+		let lastSignature = "";
+		let lastHeartbeatMs = startMs;
+		let nudgeCount = 0;
+		let latestCandidate: ReturnType<typeof observeFlowDeskAgentTaskOutputV1> | undefined;
+		// Stable-idle tracking: capture non-terminal text once it has settled, so a
+		// good answer is not lost just because the SDK shape never surfaced an
+		// explicit terminal/finish marker.
+		let stableText: string | undefined;
+		let stableCount = 0;
+		let firstStableMs = 0;
+		let hasLogged30sDiag = false;
+		let hasLogged60sDiag = false;
+
+		try {
+			while (true) {
+				const response = await callMessages();
+				const nowMs = Date.now();
+
+				// Build signature (null response = timeout, no change)
+				const sig = response === null ? lastSignature : (() => {
+					const data = asResponseData(response);
+					const record = asRecord(data);
+					const items = Array.isArray(data) ? data
+						: Array.isArray(record?.items) ? record.items
+						: Array.isArray(record?.messages) ? record.messages : [];
+					const observed = observe(response);
+					return `${items.length}:${observed?.latestText?.length ?? 0}:${observed?.terminalObserved === true ? "terminal" : "open"}`;
+				})();
+
+				if (sig !== lastSignature) {
+					// New activity — reset all inactivity clocks
+					lastSignature = sig;
+					lastActivityMs = nowMs;
+					lastHeartbeatMs = nowMs;
+				}
+
+				const observed = observe(response);
+				if (observed?.latestText !== undefined && observed.latestText.trim().length > 0) {
+					firstTokenSeen = true;
+					latestCandidate = observed;
+					// Track text stability for idle finalization. Active tool runs reset
+					// stability so we never finalize mid tool-call.
+					if (observed.hasRunningTool) {
+						stableText = undefined;
+						stableCount = 0;
+					} else if (observed.latestText === stableText) {
+						stableCount++;
+					} else {
+						stableText = observed.latestText;
+						stableCount = 1;
+						firstStableMs = nowMs;
+					}
+				}
+				if (observed?.terminalObserved === true && observed.latestText !== undefined && observed.latestText.trim().length > 0) {
+					return { text: observed.latestText, completionStatus: "final", outputKind: observed.outputKind, usableForSynthesis: observed.usableForSynthesis, finalizationReason: "terminal_marker", looksLikeRefusalOrError: observed.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: true };
+				}
+				if (observed?.terminalObserved === true && latestCandidate?.latestText !== undefined && latestCandidate.latestText.trim().length > 0) {
+					return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: false, finalizationReason: "terminal_marker", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError, finalBodyObserved: false, terminalMarkerObserved: true };
+				}
+				// Stable-idle: non-terminal text that has been unchanged across several
+				// poll cycles and a minimum interval is treated as captured (not a
+				// semantic success claim — completion_status stays "final" but the
+				// finalization_reason records that this was idle-based capture).
+				if (
+					latestCandidate?.latestText !== undefined &&
+					stableText !== undefined &&
+					stableText.trim().length >= STABLE_IDLE_MIN_LEN &&
+					stableCount >= STABLE_IDLE_MIN_CYCLES &&
+					nowMs - firstStableMs >= STABLE_IDLE_MIN_MS
+				) {
+					return { text: latestCandidate.latestText, completionStatus: "final", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "stable_idle", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: false };
+				}
+
+				const silenceMs = nowMs - lastActivityMs;
+				const totalElapsedMs = nowMs - startMs;
+
+				// 30s diagnostic
+				if (totalElapsedMs >= 30_000 && !firstTokenSeen && !hasLogged30sDiag) {
+					hasLogged30sDiag = true;
+					writeSessionEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						evidenceId: `early-launch-diag-${input.laneId}-${token}-30s`,
+						record: {
+							schema_version: "flowdesk.early_launch_diagnostic.v1",
+							workflow_id: input.workflowId,
+							lane_id: input.laneId,
+							task_id: input.taskId,
+							label: "session_may_have_failed_to_start",
+							created_at: new Date().toISOString(),
+							dispatch_authority_enabled: false,
+						},
+					});
+				}
+
+				// 60s diagnostic
+				if (totalElapsedMs >= 60_000 && !firstTokenSeen && !hasLogged60sDiag) {
+					hasLogged60sDiag = true;
+					writeSessionEvidence({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						evidenceId: `early-launch-diag-${input.laneId}-${token}-60s`,
+						record: {
+							schema_version: "flowdesk.early_launch_diagnostic.v1",
+							workflow_id: input.workflowId,
+							lane_id: input.laneId,
+							task_id: input.taskId,
+							label: "no_first_signal",
+							created_at: new Date().toISOString(),
+							dispatch_authority_enabled: false,
+						},
+					});
+				}
+
+				// Heavy-model pre-first-token grace: while NO assistant token has
+				// appeared yet, do NOT nudge. Nudging a heavy model that is still
+				// producing its first token (a noReply prompt) only interferes with
+				// the in-flight turn. Instead wait quietly until the first-token
+				// deadline (the widened grace), emitting heartbeats so the lane still
+				// looks alive, and only give up if no first token arrives in time.
+				if (!firstTokenSeen && firstTokenGraceMs > quietPeriodMs) {
+					const firstTokenDeadlineMs = firstTokenGraceMs * (maxNudges + 1); // e.g. 30s*3 = 90s
+					if (totalElapsedMs >= firstTokenGraceMs && nowMs - lastHeartbeatMs >= firstTokenGraceMs) {
+						lastHeartbeatMs = nowMs;
+						opts?.heartbeatFn?.(totalElapsedMs);
+					}
+					if (totalElapsedMs >= firstTokenDeadlineMs) {
+						// No first token within the heavy grace deadline — give up.
+						return undefined;
+					}
+					// Keep waiting quietly for the first token.
+					const yieldMs = Math.max(10, Math.min(1_000, Math.floor(quietPeriodMs / 10)));
+					await new Promise<void>(resolve => setTimeout(resolve, yieldMs));
+					continue;
+				}
+
+				// Normal quiet/nudge policy (light models, or after the first token).
+				if (silenceMs >= quietPeriodMs) {
+					// Emit heartbeat on first window expiry of each silence window
+					if (nowMs - lastHeartbeatMs >= quietPeriodMs) {
+						lastHeartbeatMs = nowMs;
+						opts?.heartbeatFn?.(nowMs - startMs);
+					}
+
+					// Send nudge after quiet period
+				if (nudgeCount < maxNudges) {
+					nudgeCount++;
+					await sendNudge();
+					opts?.nudgeFn?.(nudgeCount, new Date().toISOString());
+					// Reset activity clock after nudge — give a fresh quiet window
+					lastActivityMs = Date.now();
+					lastHeartbeatMs = lastActivityMs;
+				} else {
+					// Exhausted all nudges. Preserve usable candidate text as partial output.
+					if (latestCandidate?.latestText !== undefined && latestCandidate.latestText.trim().length > 0) {
+						return { text: latestCandidate.latestText, completionStatus: "partial", outputKind: latestCandidate.outputKind, usableForSynthesis: latestCandidate.usableForSynthesis, finalizationReason: "nudge_exhausted_partial", looksLikeRefusalOrError: latestCandidate.looksLikeRefusalOrError, finalBodyObserved: true, terminalMarkerObserved: false };
+					}
+					return undefined;
+				}
+			} else {
+				// No activity and not yet at quiet period — yield to event loop before next poll.
+				// Sleep for up to 1s or quietPeriodMs/10, whichever is smaller, to avoid tight loops
+				// while still being responsive when messages arrive quickly (snapshot mode).
+				const yieldMs = Math.max(10, Math.min(1_000, Math.floor(quietPeriodMs / 10)));
+				await new Promise<void>(resolve => setTimeout(resolve, yieldMs));
+			}
+		}
+		} catch {
+			return undefined;
+		}
+	}
 
 	const launchPlan = agentTaskLaunchPlan({
 		workflowId: input.workflowId,
@@ -1317,6 +1702,10 @@ export async function executeFlowDeskAgentTaskV1(
 		// keep the unchanged short policy.
 		const heavyFirstToken = isFlowDeskHeavyFirstTokenModelV1(effectiveProviderQualifiedModelId);
 		resultObservation = await extractAssistantTextFromResponse(input.client, childSessionId, {
+			workflowId: input.workflowId,
+			rootDir: input.rootDir,
+			laneId: input.laneId,
+			taskId: input.taskId,
 			quietPeriodMs: input._nudgeQuietPeriodMs ?? 10_000,  // default 10s per policy
 			maxNudges: 2,
 			...(heavyFirstToken ? { firstTokenGraceMs: input._heavyFirstTokenGraceMs ?? AGENT_TASK_HEAVY_FIRST_TOKEN_GRACE_MS } : {}),

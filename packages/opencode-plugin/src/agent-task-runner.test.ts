@@ -467,7 +467,58 @@ test("loadRecentOISessionSummariesV1 returns empty array for unknown workflowId"
 	}
 });
 
-// ─── Enforcement invariant: process_notes can never be synthesis-safe ─────────
+
+test("executeFlowDeskAgentTaskV1 fails on promptText > 15000 characters", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-task-limit-"));
+	try {
+		const client = makeSuccessClient();
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-task-limit-1",
+			taskId: "task-task-limit-1",
+			laneId: "lane-task-limit-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "a".repeat(15001),
+			parentSessionId: "parent-task-limit-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+		});
+		assert.equal(result.status, "task_failed");
+		if (result.status !== "task_failed") return;
+		assert.equal(result.redactedReason, "task_description_exceeds_limit_15000_chars");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("executeFlowDeskAgentTaskV1 writes early_launch_diagnostic for 60s no_first_signal (asyncMode=true, diagnostic only, no abort)", async () => {
+	// Design intent: no_first_signal is a diagnostic, not an abort.
+	// asyncMode=true returns task_launched immediately; the watchdog later
+	// observes the diagnostic evidence and decides on abort independently.
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-diag-60s-"));
+	try {
+		const client = makeSuccessClient();
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-diag-60s-1",
+			taskId: "task-diag-60s-1",
+			laneId: "lane-diag-60s-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "test diag",
+			parentSessionId: "parent-diag-60s",
+			rootDir: root,
+			client,
+			asyncMode: true, // asyncMode=true: returns task_launched immediately
+		});
+
+		// asyncMode=true always returns task_launched; watchdog owns abort decisions
+		assert.equal(result.status, "task_launched");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("buildFlowDeskCaptureSafetyMetadataV1: process_notes always produces safe_for_auto_synthesis=false", () => {
 	// Even with all other conditions maximally permissive (terminal marker, final completion,

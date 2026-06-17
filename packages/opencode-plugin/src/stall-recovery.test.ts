@@ -31,6 +31,7 @@ import {
 	backfillTerminalAgentTaskFailedLanesV1,
 	reconcileStalePendingRetryPlansV1,
 	isAutoAbortEnabledV1,
+	isRetryableSessionError,
 	verifyGuardSignOffHmacV1,
 	runFlowDeskWatchdogCycleV1,
 	type FlowDeskGuardSignOffV1,
@@ -264,6 +265,145 @@ test("local adapter doctor surfaces SDK session health diagnostic refs without a
 	assert.equal(refs.includes("sdk_session_api_reason=sdk_health_not_checked_non_dispatch_adapter"), true);
 	assert.equal(refs.includes("sdk_session_abort_automation=disabled_release1"), true);
 	assert.equal(result.hardCancelOrNoReplyAuthority, false);
+});
+
+test("isRetryableSessionError classifies transient SDK error codes", () => {
+	assert.equal(isRetryableSessionError("UnknownError"), true);
+	assert.equal(isRetryableSessionError("MessageAbortedError"), true);
+	assert.equal(isRetryableSessionError("AuthError"), false);
+});
+
+function sessionErrorResponse(code: string, data?: unknown): Record<string, unknown> {
+	return {
+		type: "session.error",
+		properties: {
+			sessionID: "ses-child-session-error-retry",
+			error: {
+				name: code,
+				code,
+				message: `${code} observed`,
+				...(data === undefined ? {} : { data }),
+			},
+		},
+	};
+}
+
+function terminalSessionMessages(text = "Recovered final answer."): Record<string, unknown> {
+	return {
+		messages: [
+			{
+				role: "assistant",
+				parts: [
+					{ type: "text", text },
+					{ type: "step-finish", reason: "stop" },
+				],
+			},
+		],
+	};
+}
+
+test("monitorChildSessionsV1 retries retryable session.error once and captures recovered task_result", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-session-error-recovered-"));
+	try {
+		const workflowId = "workflow-session-error-recovered";
+		const laneId = "lane-session-error-recovered";
+		const taskId = "task-session-error-recovered";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-session-error-retry",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		});
+		writeLifecycle(rootDir, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, state: "running" }), "lifecycle-session-error-recovered");
+
+		let calls = 0;
+		const client = {
+			session: {
+				messages: async () => {
+					calls += 1;
+					if (calls <= 2) return sessionErrorResponse("UnknownError");
+					return terminalSessionMessages("Recovered after transient SDK error.");
+				},
+				abort: async () => ({}),
+			},
+		} as never;
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:01:00.000Z"),
+			client,
+			_sessionErrorRetryDelayMsForTest: 0,
+		});
+
+		// After retry: lane either completes with task_result or remains polling.
+		// Either way, no task_failed evidence should be written for a recoverable error.
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_failed"), false,
+			"task_failed must not be written for a retryable transient session.error");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessionsV1 terminalizes retryable session.error after one failed retry", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-session-error-repeat-"));
+	try {
+		const workflowId = "workflow-session-error-repeat";
+		const laneId = "lane-session-error-repeat";
+		const taskId = "task-session-error-repeat";
+		writeAgentTaskChildSession(rootDir, { workflowId, laneId, taskId, childSessionId: "ses-child-session-error-retry" });
+		writeLifecycle(rootDir, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, state: "running" }), "lifecycle-session-error-repeat");
+		const client = { session: { messages: async () => sessionErrorResponse("MessageAbortedError"), abort: async () => ({}) } } as never;
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:01:00.000Z"),
+			client,
+			_sessionErrorRetryDelayMsForTest: 0,
+		});
+
+		assert.equal(result.lanesCompleted, 0);
+		assert.equal(result.lanesAborted, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_failed"), true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessionsV1 terminalizes non-retryable session.error immediately", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-session-error-auth-"));
+	try {
+		const workflowId = "workflow-session-error-auth";
+		const laneId = "lane-session-error-auth";
+		const taskId = "task-session-error-auth";
+		writeAgentTaskChildSession(rootDir, { workflowId, laneId, taskId, childSessionId: "ses-child-session-error-retry" });
+		writeLifecycle(rootDir, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, state: "running" }), "lifecycle-session-error-auth");
+		let calls = 0;
+		const client = { session: { messages: async () => { calls += 1; return sessionErrorResponse("AuthError"); }, abort: async () => ({}) } } as never;
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:01:00.000Z"),
+			client,
+			_sessionErrorRetryDelayMsForTest: 0,
+		});
+
+		assert.equal(result.lanesAborted, 1);
+		assert.equal(calls < 4, true, "non-retryable errors must not perform the delayed retry repoll");
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_failed"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
 });
 
 test("guard sign-off HMAC verification fails closed on digest, hmac, expiry, and production env fallback", () => {

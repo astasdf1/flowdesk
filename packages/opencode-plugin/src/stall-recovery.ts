@@ -21,7 +21,7 @@ import {
 	validateTopTierReviewVerdictV1,
 } from "@flowdesk/core";
 import { createHmac, createHash, timingSafeEqual, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	FlowDeskManagedDispatchBetaOpenCodeClientV1,
@@ -105,6 +105,22 @@ const TERMINAL_LANE_STATES = new Set([
 
 const ABORT_ELIGIBLE_LANE_STATES = new Set(["created", "running"]);
 const FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS = 30_000;
+const FLOWDESK_SESSION_ERROR_RETRY_DELAY_MS = 15_000;
+const FLOWDESK_SESSION_ERROR_MAX_AUTO_RETRIES = 1;
+
+const RETRYABLE_SESSION_ERROR_CODES = new Set([
+	"UnknownError",
+	"MessageAbortedError",
+	"NetworkError",
+	"TimeoutError",
+]);
+
+const NON_RETRYABLE_SESSION_ERROR_CODES = new Set([
+	"AuthError",
+	"QuotaExceeded",
+	"InvalidRequest",
+	"ModelNotFound",
+]);
 
 type FinalizationObservation = {
 	isStepFinished: boolean;
@@ -117,6 +133,30 @@ export type FlowDeskLaneAbortHelperResultV1 =
 	| { status: "aborted"; lane_id: string; lifecycle_evidence_id: string; reason: string }
 	| { status: "blocked"; reason: string; current_state?: string }
 	| { status: "write_failed"; reason: string };
+
+export function writeEarlyLaunchDiagnosticEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	label: string;
+}): void {
+	const evidenceId = `early-launch-diag-${input.laneId}-${Date.now()}`;
+	writeEvidence({
+		rootDir: input.rootDir,
+		workflowId: input.workflowId,
+		evidenceId,
+		record: {
+			schema_version: "flowdesk.early_launch_diagnostic.v1",
+			workflow_id: input.workflowId,
+			lane_id: input.laneId,
+			task_id: input.taskId,
+			label: input.label,
+			created_at: new Date().toISOString(),
+			dispatch_authority_enabled: false,
+		},
+	});
+}
 
 export interface FlowDeskGuardSignOffV1 {
 	schema_version: "flowdesk.guard_sign_off.v1";
@@ -155,6 +195,34 @@ export type FlowDeskGuardedAutoAbortResultV1 =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isRetryableSessionError(code: string): boolean {
+	if (NON_RETRYABLE_SESSION_ERROR_CODES.has(code)) return false;
+	return RETRYABLE_SESSION_ERROR_CODES.has(code);
+}
+
+function sessionErrorDataLooksQuotaLimited(data: unknown): boolean {
+	let text = "";
+	if (typeof data === "string") text = data;
+	else if (data !== undefined) {
+		try {
+			text = JSON.stringify(data);
+		} catch {
+			text = String(data);
+		}
+	}
+	const normalized = text.toLowerCase();
+	return normalized.includes("quota") || normalized.includes("rate_limit") || normalized.includes("rate limit");
+}
+
+function isRetryableSessionErrorObservation(error: FlowDeskSessionErrorObservationV1): boolean {
+	if (error.code === "UnknownError" && sessionErrorDataLooksQuotaLimited(error.data)) return false;
+	return isRetryableSessionError(error.code);
+}
+
+function setTimeoutAsync(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isLaneLifecycleRecord(value: unknown): value is FlowDeskLaneLifecycleRecordV1 {
@@ -1703,6 +1771,42 @@ function monitorResponseData(value: unknown): unknown {
 	return record !== undefined && "data" in record ? record.data : value;
 }
 
+type FlowDeskSessionErrorObservationV1 = {
+	code: string;
+	data?: unknown;
+	message?: string;
+};
+
+function firstSessionErrorRecord(value: unknown, depth = 0): Record<string, unknown> | undefined {
+	if (depth > 5) return undefined;
+	const record = monitorRecord(value);
+	if (record === undefined) return undefined;
+	const directError = monitorRecord(record.error);
+	if (directError !== undefined) return directError;
+	if (record.type === "session.error") return record;
+	const properties = monitorRecord(record.properties);
+	const propertyError = monitorRecord(properties?.error);
+	if (propertyError !== undefined) return propertyError;
+	const dataError = firstSessionErrorRecord(record.data, depth + 1);
+	if (dataError !== undefined) return dataError;
+	return firstSessionErrorRecord(properties, depth + 1);
+}
+
+function extractSessionErrorObservation(value: unknown): FlowDeskSessionErrorObservationV1 | undefined {
+	const error = firstSessionErrorRecord(value);
+	if (error === undefined) return undefined;
+	const code = typeof error.code === "string" ? error.code
+		: typeof error.name === "string" ? error.name
+		: typeof error.type === "string" && error.type !== "session.error" ? error.type
+		: undefined;
+	if (code === undefined || code.length === 0) return undefined;
+	return {
+		code,
+		...(error.data === undefined ? {} : { data: error.data }),
+		...(typeof error.message === "string" ? { message: error.message } : {}),
+	};
+}
+
 function monitorSdkErrorResponse(value: unknown): boolean {
 	const record = monitorRecord(value);
 	const data = monitorRecord(monitorResponseData(value));
@@ -1891,6 +1995,95 @@ function writeChildSessionEvidence(
 	if (!prepared.ok || prepared.writeIntent === undefined) return false;
 	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent]);
 	return applied.ok && applied.writtenPaths.length > 0;
+}
+
+function writeSessionErrorRetryDiagnosticEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	childSessionId: string;
+	errorCode: string;
+	retryCount: number;
+	observedAt: string;
+}): void {
+	const token = randomBytes(4).toString("hex");
+	const evidenceId = `retry-diagnostic-evidence-${safeToken(input.taskId)}-${safeToken(input.laneId)}-${input.retryCount}-${token}`;
+	const dir = join(input.rootDir, ".flowdesk", "sessions", input.workflowId, "evidence", "retry-diagnostic-evidence");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, `${evidenceId}.json`), `${JSON.stringify({
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		child_session_id: input.childSessionId,
+		retry_count: input.retryCount,
+		redacted_error_code_ref: `sdk-error-code-${safeToken(input.errorCode)}`,
+		observed_at: input.observedAt,
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	}, null, 2)}\n`, "utf8");
+}
+
+function writeSessionErrorTerminalEvidence(input: {
+	rootDir: string;
+	workflowId: string;
+	laneId: string;
+	taskId: string;
+	attemptId: string;
+	parentSessionRef: string;
+	childSessionId: string;
+	agentRef: string;
+	providerQualifiedModelId: string;
+	errorCode: string;
+	observedAt: string;
+	retryCount: number;
+}): boolean {
+	const token = randomBytes(4).toString("hex");
+	const redactedReason = `OpenCode session.error observed after ${input.retryCount} retry attempt(s): code_ref=sdk-error-code-${safeToken(input.errorCode)}`;
+	const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+		outputKind: "empty",
+		finalBodyObserved: false,
+		terminalMarkerObserved: false,
+	});
+	const taskFailedWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${input.taskId}-session-error-${token}`, {
+		schema_version: "flowdesk.task_failed.v1",
+		workflow_id: input.workflowId,
+		lane_id: input.laneId,
+		task_id: input.taskId,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		failure_category: "unknown",
+		redacted_reason: redactedReason,
+		...noOutputCaptureMetadata,
+		created_at: input.observedAt,
+		dispatch_authority_enabled: false,
+	});
+	if (!taskFailedWritten) return false;
+	writeChildSessionEvidence(input.rootDir, input.workflowId, `lifecycle-agent-task-session-error-${input.laneId}-${token}`, {
+		schema_version: "flowdesk.lane_lifecycle_record.v1",
+		lane_id: input.laneId,
+		workflow_id: input.workflowId,
+		attempt_id: input.attemptId,
+		parent_session_ref: input.parentSessionRef,
+		child_session_ref: input.childSessionId.startsWith("ses-") ? input.childSessionId : `ses-${input.childSessionId}`,
+		agent_ref: input.agentRef,
+		provider_qualified_model_id: input.providerQualifiedModelId,
+		state: "invocation_failed",
+		timeout_ms: 60_000,
+		orphan_max_age_ms: 600_000,
+		retry_count: input.retryCount,
+		created_at: input.observedAt,
+		updated_at: input.observedAt,
+		spawned_by: "flowdesk",
+		durability: "best_effort_no_dir_fsync",
+		dispatch_authority_enabled: false,
+		providerCall: false,
+		actualLaneLaunch: false,
+		runtimeExecution: false,
+	});
+	return true;
 }
 
 function stableSessionFinalizationTextRef(text: string | undefined): { observedTextRef?: string; observedTextCharCount?: number } {
@@ -2783,6 +2976,7 @@ export async function monitorChildSessionsV1(input: {
 	 */
 	coordinatorAttentionMs?: number; // default abortThresholdMs
 	_forceTaskResultWriteFailureForTest?: boolean;
+	_sessionErrorRetryDelayMsForTest?: number;
 }): Promise<FlowDeskChildSessionMonitorResultV1> {
 	const nowMs = (input.now ?? new Date()).getTime();
 	const nudgeQuietPeriodMs = typeof input.nudgeQuietPeriodMs === "number" && input.nudgeQuietPeriodMs > 0
@@ -2851,6 +3045,7 @@ export async function monitorChildSessionsV1(input: {
 	const latestLifecycleStateChangeByLane = new Map<string, number>();
 	const awaitingBodyCaptureProgressByLane = new Map<string, number[]>();
 	const turnCompletedEmptyRepairProgressByLane = new Map<string, number[]>();
+	const sessionErrorRetryProgressByLane = new Map<string, number[]>();
 	// V11.2 Slice 1: ordered per-lane tool-state transitions (running/settled),
 	// derived from event-hook progress labels, feeding the event-based open-tool
 	// set. Sorted by observedAtMs before use.
@@ -2894,6 +3089,11 @@ export async function monitorChildSessionsV1(input: {
 			const phase = typeof rec.phase === "string" ? rec.phase : undefined;
 			const progressLabel = typeof rec.progress_label === "string" ? rec.progress_label : undefined;
 			const diagnosticProgressLabel = typeof progressLabel === "string" ? progressLabel.toLowerCase() : "";
+			if (Number.isFinite(observedAtMs) && diagnosticProgressLabel.includes("transient session.error retry deferred")) {
+				const list = sessionErrorRetryProgressByLane.get(laneIdVal) ?? [];
+				list.push(observedAtMs);
+				sessionErrorRetryProgressByLane.set(laneIdVal, list);
+			}
 			if (Number.isFinite(observedAtMs) && diagnosticProgressLabel.includes("awaiting body capture after turn completed event")) {
 				const list = awaitingBodyCaptureProgressByLane.get(laneIdVal) ?? [];
 				list.push(observedAtMs);
@@ -2997,6 +3197,91 @@ export async function monitorChildSessionsV1(input: {
 			.find(e => e.evidenceClass === "agent_task_child_session" && (e.record as Record<string, unknown>).lane_id === laneId)
 			?.evidenceId ?? `agent-task-child-session-${laneId}-watchdog`;
 		let recordForWrites = record;
+		const taskIdForSessionError = typeof record.task_id === "string" ? record.task_id : laneId;
+		const agentRefForSessionError = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+		const modelIdForSessionError = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+		const sessionErrorRaw = await readAsyncMonitorChildSessionMessages(input.client, childSessionId, 3_000);
+		const sessionError = sessionErrorRaw === null ? undefined : extractSessionErrorObservation(sessionErrorRaw);
+		if (sessionError !== undefined && !laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+			const recordedSessionErrorRetryCount = typeof recordForWrites.session_error_retry_count === "number" ? recordForWrites.session_error_retry_count : 0;
+			const durableSessionErrorRetryCount = (sessionErrorRetryProgressByLane.get(laneId) ?? []).filter((value) => Number.isFinite(value)).length;
+			const retryCount = Math.max(recordedSessionErrorRetryCount, durableSessionErrorRetryCount);
+			const retryable = isRetryableSessionErrorObservation(sessionError);
+			const observedAt = new Date(nowMs).toISOString();
+			if (retryable && retryCount < FLOWDESK_SESSION_ERROR_MAX_AUTO_RETRIES) {
+				const nextRetryCount = retryCount + 1;
+				recordForWrites = {
+					...recordForWrites,
+					session_error_retry_count: nextRetryCount,
+					session_error_last_retry_at: observedAt,
+					session_error_last_code_ref: `sdk-error-code-${safeToken(sessionError.code)}`,
+				};
+				writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+				writeSessionErrorRetryDiagnosticEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId: taskIdForSessionError,
+					childSessionId,
+					errorCode: sessionError.code,
+					retryCount: nextRetryCount,
+					observedAt,
+				});
+				writeAgentTaskProgressEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId: taskIdForSessionError,
+					agentRef: agentRefForSessionError,
+					providerQualifiedModelId: modelIdForSessionError,
+					phase: "retrying",
+					progressSeq: 40 + nextRetryCount,
+					progressLabel: "async agent task transient session.error retry deferred",
+					observedAt,
+				});
+				await setTimeoutAsync(input._sessionErrorRetryDelayMsForTest ?? FLOWDESK_SESSION_ERROR_RETRY_DELAY_MS);
+				const retriedRaw = await readAsyncMonitorChildSessionMessages(input.client, childSessionId, 3_000);
+				const retriedError = retriedRaw === null ? undefined : extractSessionErrorObservation(retriedRaw);
+				if (retriedError === undefined) {
+					// Continue this watchdog cycle on the same lane/session. Subsequent capture
+					// branches will poll the same child session normally and may write task_result.
+				} else if (writeSessionErrorTerminalEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId: taskIdForSessionError,
+					attemptId: `attempt-${laneId}`,
+					parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+					childSessionId,
+					agentRef: agentRefForSessionError,
+					providerQualifiedModelId: modelIdForSessionError,
+					errorCode: retriedError.code,
+					observedAt: new Date(nowMs).toISOString(),
+					retryCount: nextRetryCount,
+				})) {
+					result.lanesAborted++;
+					refreshFlowDeskCompletionUiCachesV1({ rootDir: input.rootDir, workflowId: input.workflowId, observedAt });
+					continue;
+				}
+			} else if (writeSessionErrorTerminalEvidence({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				laneId,
+				taskId: taskIdForSessionError,
+				attemptId: `attempt-${laneId}`,
+				parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+				childSessionId,
+				agentRef: agentRefForSessionError,
+				providerQualifiedModelId: modelIdForSessionError,
+				errorCode: sessionError.code,
+				observedAt,
+				retryCount,
+			})) {
+				result.lanesAborted++;
+				refreshFlowDeskCompletionUiCachesV1({ rootDir: input.rootDir, workflowId: input.workflowId, observedAt });
+				continue;
+			}
+		}
 		let toolTransitions = (toolTransitionsByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
 		const openToolCallIdsBeforeSnapshot = deriveOpenChildToolCallIdsV1(toolTransitions);
 		if (openToolCallIdsBeforeSnapshot.size > 0) {
