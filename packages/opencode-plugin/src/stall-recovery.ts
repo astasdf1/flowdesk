@@ -4331,6 +4331,79 @@ export async function monitorChildSessionsV1(input: {
 			}
 		}
 
+		// A1/A2: If a prior cycle already placed the lane in awaiting_body_capture
+		// but no TURN_COMPLETED event exists for this lane, give the child one bounded
+		// final-report repair nudge after the finalization silence threshold. This
+		// covers step-finish-only/session.diff-only transcripts where the V11.2
+		// TURN_COMPLETED repair branch cannot run. Closed child sessions are recorded
+		// diagnostically and left on the awaiting path; they are not aborted here.
+		const promptFnForAwaitingBodyRepair = input.client.session.promptAsync ?? input.client.session.prompt;
+		const durableAwaitingBodyRepairAttemptCount = repairAttemptCountByLane.get(laneId) ?? 0;
+		const recordedAwaitingBodyRepairCount = typeof recordForWrites.turn_completed_empty_repair_count === "number" ? recordForWrites.turn_completed_empty_repair_count : 0;
+		const awaitingBodyRepairAttemptCount = Math.max(recordedAwaitingBodyRepairCount, durableAwaitingBodyRepairAttemptCount);
+		if (hasDurableAwaitingBodyCapture
+			&& expectedTurnCompleted === undefined
+			&& silenceSinceLastProgressMs >= FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS
+			&& finalizationObservation.runningToolsCount === 0
+			&& awaitingBodyRepairAttemptCount < FLOWDESK_REPAIR_NUDGE_MAX_ATTEMPTS) {
+			const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
+			const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
+			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
+			const repairAt = new Date(nowMs).toISOString();
+			const isChildSessionClosed = await isChildSessionClosedForRepairNudge(input.client, childSessionId);
+			if (isChildSessionClosed) {
+				writeAgentTaskProgressEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
+					agentRef,
+					providerQualifiedModelId: modelId,
+					phase: "finalizing",
+					progressSeq: 60 + awaitingBodyRepairAttemptCount,
+					progressLabel: "async agent task repair nudge skipped: child session is closed",
+					observedAt: repairAt,
+				});
+				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
+				continue;
+			}
+			if (promptFnForAwaitingBodyRepair !== undefined) {
+				const nextRepairAttempt = awaitingBodyRepairAttemptCount + 1;
+				const deliveryStatus = await sendRepairNudgePrompt(input.client, childSessionId);
+				writeRepairAttemptEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
+					attemptId: latestAttemptIdByLane.get(laneId) ?? `attempt-${laneId}`,
+					attemptSeq: nextRepairAttempt,
+					deliveryStatus,
+					createdAt: repairAt,
+				});
+				recordForWrites = {
+					...recordForWrites,
+					turn_completed_empty_repair_count: nextRepairAttempt,
+					turn_completed_empty_last_repair_at: repairAt,
+					turn_completed_empty_last_repair_delivery_status: deliveryStatus,
+				};
+				writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+				writeAgentTaskProgressEvidence({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					laneId,
+					taskId,
+					agentRef,
+					providerQualifiedModelId: modelId,
+					phase: "nudged",
+					progressSeq: 60 + nextRepairAttempt,
+					progressLabel: "async agent task final-report repair nudge delivered for turn_completed_empty_final_report without turn completed event",
+					observedAt: repairAt,
+				});
+				result.lanesNudged++;
+				continue;
+			}
+		}
+
 		// 2. Abort threshold exceeded.
 		// V11.4: the silence-based nudge branch was removed (it was a default-noop,
 		// silence-heuristic predecessor of the event-based idle continuation). Abort

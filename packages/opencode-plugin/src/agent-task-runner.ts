@@ -34,6 +34,20 @@ const INVALID_PARENT_SESSION_REF = "ses-invalid-parent-session-binding" as const
 /** unattached launches will not appear in session-scoped sidebar rows and wake notifications will not be delivered to any specific session */
 const UNATTACHED_PARENT_SESSION_REF = "ses-unattached-parent-session" as const;
 
+const FLOWDESK_KNOWN_INVALID_MODEL_IDS = new Set([
+	"google/gemini-3-pro-preview",
+	"google/gemini-3-flash-preview",
+	"google/gemini-3-flash-lite-preview",
+	"anthropic/claude-not-opencode-supported",
+]);
+
+function isFlowDeskInvalidModelId(modelId: string): boolean {
+	if (FLOWDESK_KNOWN_INVALID_MODEL_IDS.has(modelId)) return true;
+	if (modelId.startsWith("google/gemini-3-")) return true;
+	if (modelId.startsWith("anthropic/claude-not-")) return true;
+	return false;
+}
+
 export interface FlowDeskAgentTaskFallbackBindingV1 {
 	agentRef: string;
 	providerQualifiedModelId: string;
@@ -994,6 +1008,40 @@ export async function executeFlowDeskAgentTaskV1(
 			updatedAt: observedAt,
 		});
 		return { status: "task_failed", failureCategory: "invalid_request", redactedReason: "task_description_exceeds_limit_15000_chars", laneId: input.laneId };
+	}
+
+	if (isFlowDeskInvalidModelId(input.providerQualifiedModelId)) {
+		writeSessionEvidence({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			evidenceId: `task-failed-${input.taskId}-${token}-invalid-model`,
+			record: {
+				schema_version: "flowdesk.task_failed.v1",
+				workflow_id: input.workflowId,
+				lane_id: input.laneId,
+				task_id: input.taskId,
+				agent_ref: input.agentRef,
+				provider_qualified_model_id: input.providerQualifiedModelId,
+				failure_category: "sdk_create_failed",
+				redacted_reason: "provider_qualified_model_id_not_supported_in_current_runtime",
+				created_at: observedAt,
+				dispatch_authority_enabled: false,
+			} as unknown as Record<string, unknown>,
+		});
+		writeAgentTaskTerminalLifecycle({
+			rootDir: input.rootDir,
+			workflowId: input.workflowId,
+			laneId: input.laneId,
+			attemptId,
+			parentSessionRef,
+			agentRef: input.agentRef,
+			providerQualifiedModelId: input.providerQualifiedModelId,
+			state: "invocation_failed",
+			evidenceId: `lifecycle-task-terminal-${input.laneId}-${token}-invalid-model`,
+			createdAt: observedAt,
+			updatedAt: observedAt,
+		});
+		return { status: "task_failed", failureCategory: "sdk_create_failed", redactedReason: "provider_qualified_model_id_not_supported_in_current_runtime", laneId: input.laneId };
 	}
 
 	if (!parentBinding.ok) {

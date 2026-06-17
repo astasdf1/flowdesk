@@ -275,6 +275,139 @@ test("OI summary with oiEnabled=false has advisory_health_label disabled_by_conf
 	}
 });
 
+
+// ─── Model ID Validation Tests ────────────────────────────────────────────────
+
+test("invalid model ID validation: known invalid", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-invalid-model-1-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-should-not-be-created" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-invalid-1",
+			taskId: "task-invalid-1",
+			laneId: "lane-invalid-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "google/gemini-3-pro-preview",
+			promptText: "test invalid model",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+		});
+
+		assert.equal(result.status, "task_failed");
+		assert.equal(createCalls, 0, "provider call should not be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("invalid model ID validation: gemini-3- prefix", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-invalid-model-2-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-should-not-be-created" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-invalid-2",
+			taskId: "task-invalid-2",
+			laneId: "lane-invalid-2",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "google/gemini-3-arbitrary",
+			promptText: "test invalid prefix",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+		});
+
+		assert.equal(result.status, "task_failed");
+		assert.equal(createCalls, 0, "provider call should not be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("valid model: gemini-3.1-flash-lite-preview", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-valid-model-1-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-valid-1" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-valid-1",
+			taskId: "task-valid-1",
+			laneId: "lane-valid-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "google/gemini-3.1-flash-lite-preview",
+			promptText: "test valid gemini 3.1",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed");
+		assert.equal(createCalls, 1, "provider call should be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("valid model: openai/gpt-5.5", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-valid-model-2-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-valid-2" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-valid-2",
+			taskId: "task-valid-2",
+			laneId: "lane-valid-2",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "test valid gpt",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed");
+		assert.equal(createCalls, 1, "provider call should be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 // ─── Test 6: parentSessionProviderQualifiedModelId is recorded ────────────────
 
 test("parentSessionProviderQualifiedModelId is recorded in agent_task_context", async () => {
@@ -315,6 +448,138 @@ test("parentSessionProviderQualifiedModelId is recorded in agent_task_context", 
 		const contextRecord = contextEntries[0]!.record as Record<string, unknown>;
 		assert.equal(contextRecord.recorded_parent_provider_qualified_model_id, parentModel);
 		assert.equal(contextRecord.parent_wake_provider_qualified_model_id, parentModel);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// ─── Model ID Validation Tests ────────────────────────────────────────────────
+
+test("invalid model ID validation: known invalid", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-invalid-model-1-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-should-not-be-created" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-invalid-1",
+			taskId: "task-invalid-1",
+			laneId: "lane-invalid-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "google/gemini-3-pro-preview",
+			promptText: "test invalid model",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+		});
+
+		assert.equal(result.status, "task_failed");
+		assert.equal(createCalls, 0, "provider call should not be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("invalid model ID validation: gemini-3- prefix", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-invalid-model-2-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-should-not-be-created" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-invalid-2",
+			taskId: "task-invalid-2",
+			laneId: "lane-invalid-2",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "google/gemini-3-arbitrary",
+			promptText: "test invalid prefix",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+		});
+
+		assert.equal(result.status, "task_failed");
+		assert.equal(createCalls, 0, "provider call should not be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("valid model: gemini-3.1-flash-lite-preview", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-valid-model-1-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-valid-1" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-valid-1",
+			taskId: "task-valid-1",
+			laneId: "lane-valid-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "google/gemini-3.1-flash-lite-preview",
+			promptText: "test valid gemini 3.1",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed");
+		assert.equal(createCalls, 1, "provider call should be made");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("valid model: openai/gpt-5.5", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-valid-model-2-"));
+	try {
+		let createCalls = 0;
+		const client = makeSuccessClient({
+			create: async () => {
+				createCalls++;
+				return { id: "ses-valid-2" };
+			},
+		});
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-valid-2",
+			taskId: "task-valid-2",
+			laneId: "lane-valid-2",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "test valid gpt",
+			parentSessionId: "parent-test",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_launchTimeoutMs: 5_000,
+			_nudgeQuietPeriodMs: 50,
+			_messagesTimeoutMs: 50,
+		});
+
+		assert.equal(result.status, "task_completed");
+		assert.equal(createCalls, 1, "provider call should be made");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
