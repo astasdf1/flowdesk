@@ -3273,7 +3273,7 @@ test("executeFlowDeskAgentTaskV1 writes early_launch_diagnostic for 30s", async 
 			workflowId,
 		});
 		assert.ok(reloaded.ok);
-		const diags = reloaded.entries.filter((e) => (e.record as any).schema_version === "flowdesk.early_launch_diagnostic.v1");
+		const diags = reloaded.entries.filter((e) => e.evidenceClass === "agent_task_progress" && (e.record as any).progress_label?.includes("early_launch_diagnostic"));
 		assert.equal(diags.length, 2, "Should have 2 diagnostic records (session_may_have_failed_to_start and no_first_signal)");
 	} finally {
 		rmSync(root, { recursive: true, force: true });

@@ -1354,36 +1354,32 @@ export async function executeFlowDeskAgentTaskV1(
 				const silenceMs = nowMs - lastActivityMs;
 				const totalElapsedMs = nowMs - startMs;
 
-				// Diagnostic threshold check
+																// Diagnostic threshold check
 				if (totalElapsedMs >= FLOWDESK_EARLY_LAUNCH_NO_SIGNAL_THRESHOLD_MS && !firstTokenSeen && !hasLogged30sDiag) {
 					hasLogged30sDiag = true;
-					writeSessionEvidence({
+					writeAgentTaskProgress({
 						rootDir: input.rootDir,
 						workflowId: input.workflowId,
-						evidenceId: `early-launch-diag-${input.laneId}-${token}-30s-session-start`,
-						record: {
-							schema_version: "flowdesk.early_launch_diagnostic.v1",
-							workflow_id: input.workflowId,
-							lane_id: input.laneId,
-							task_id: input.taskId,
-							label: "session_may_have_failed_to_start",
-							created_at: new Date().toISOString(),
-							dispatch_authority_enabled: false,
-						},
+						laneId: input.laneId,
+						taskId: input.taskId,
+						agentRef: input.agentRef,
+						providerQualifiedModelId: effectiveProviderQualifiedModelId,
+						phase: "waiting",
+						progressSeq: 100, // Using a unique sequence for diagnostics
+						progressLabel: "early_launch_diagnostic: session_may_have_failed_to_start",
+						observedAt: new Date().toISOString(),
 					});
-					writeSessionEvidence({
+					writeAgentTaskProgress({
 						rootDir: input.rootDir,
 						workflowId: input.workflowId,
-						evidenceId: `early-launch-diag-${input.laneId}-${token}-30s-no-signal`,
-						record: {
-							schema_version: "flowdesk.early_launch_diagnostic.v1",
-							workflow_id: input.workflowId,
-							lane_id: input.laneId,
-							task_id: input.taskId,
-							label: "no_first_signal",
-							created_at: new Date().toISOString(),
-							dispatch_authority_enabled: false,
-						},
+						laneId: input.laneId,
+						taskId: input.taskId,
+						agentRef: input.agentRef,
+						providerQualifiedModelId: effectiveProviderQualifiedModelId,
+						phase: "waiting",
+						progressSeq: 101, // Using a unique sequence for diagnostics
+						progressLabel: "early_launch_diagnostic: no_first_signal",
+						observedAt: new Date().toISOString(),
 					});
 				}
 
