@@ -18,6 +18,7 @@ import {
 	type FlowDeskRetryExecutedV1,
 	type FlowDeskRetryFailedV1,
 } from "@flowdesk/core";
+import { executeFlowDeskAgentTaskV1 } from "./agent-task-runner.js";
 import { createFlowDeskLocalNonDispatchAdapterSession } from "./local-adapter.js";
 import { validateAndAbortFlowDeskLaneEvidenceV1 } from "./stall-recovery.js";
 import {
@@ -1657,6 +1658,137 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 	}
 });
 
+test("awaiting_body_capture without TURN_COMPLETED sends repair nudge then captures recovered body text", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-awaiting-body-no-tc-repair-"));
+	try {
+		const workflowId = "workflow-awaiting-body-no-tc-repair";
+		const laneId = "lane-awaiting-body-no-tc-repair";
+		const taskId = "task-awaiting-body-no-tc-repair";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-awaiting-body-no-tc-repair",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 1,
+			awaitingBodyCaptureSince: "2026-05-26T10:00:08.000Z",
+		}, "agent-task-child-session-awaiting-body-no-tc-repair");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId,
+			lane_id: laneId,
+			state: "running",
+			created_at: "2026-05-26T10:00:00.000Z",
+			updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-awaiting-body-no-tc-repair-running");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session.diff event observed",
+		}, "agent-task-progress-awaiting-body-no-tc-diff");
+
+		let promptCalls = 0;
+		let messagesCalls = 0;
+		const client = {
+			session: {
+				messages: async () => {
+					messagesCalls += 1;
+					if (promptCalls === 0) return { messages: [] };
+					return { messages: [{ role: "assistant", parts: [{ type: "text", text: "Recovered final report after repair nudge." }, { type: "step-finish", reason: "stop" }] }] };
+				},
+				prompt: async () => { promptCalls += 1; return {}; },
+				abort: async () => ({}),
+			},
+		} as never;
+
+		const nudged = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:38.000Z"),
+			abortThresholdMs: 120_000,
+			maxIdleContinuations: 0,
+			client,
+		});
+		assert.equal(nudged.lanesNudged, 1, "awaiting_body_capture without TURN_COMPLETED should send repair nudge after 30s silence");
+		assert.equal(promptCalls, 1);
+
+		const captured = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:01:08.000Z"),
+			abortThresholdMs: 120_000,
+			maxIdleContinuations: 0,
+			client,
+		});
+		assert.equal(captured.lanesCompleted, 1, "body text arriving after repair nudge should be captured as task_result");
+		assert.equal(messagesCalls > 0, true);
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		const taskResult = reload.entries.find((entry) => entry.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.ok(taskResult, "expected recovered task_result");
+		assert.equal(String(taskResult.result_text).includes("Recovered final report"), true);
+		assert.equal(reload.entries.filter((entry) => entry.evidenceClass === "repair_attempt").length, 1);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("awaiting_body_capture repair nudge is skipped with diagnostic progress when child session is closed", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-awaiting-body-closed-repair-"));
+	try {
+		const workflowId = "workflow-awaiting-body-closed-repair";
+		const laneId = "lane-awaiting-body-closed-repair";
+		const taskId = "task-awaiting-body-closed-repair";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-awaiting-body-closed-repair",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 1,
+			awaitingBodyCaptureSince: "2026-05-26T10:00:08.000Z",
+		}, "agent-task-child-session-awaiting-body-closed-repair");
+		writeLifecycle(rootDir, lifecycleRecord({
+			workflow_id: workflowId,
+			lane_id: laneId,
+			state: "running",
+			created_at: "2026-05-26T10:00:00.000Z",
+			updated_at: "2026-05-26T10:00:00.000Z",
+		}), "lifecycle-awaiting-body-closed-repair-running");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session.diff event observed",
+		}, "agent-task-progress-awaiting-body-closed-diff");
+
+		let promptCalls = 0;
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:38.000Z"),
+			abortThresholdMs: 120_000,
+			maxIdleContinuations: 0,
+			client: {
+				session: {
+					messages: async () => ({ messages: [] }),
+					isClosed: async () => true,
+					prompt: async () => { promptCalls += 1; return {}; },
+					abort: async () => ({}),
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesNudged, 0);
+		assert.equal(result.lanesAborted, 0, "closed-session repair skip must keep awaiting path, not abort");
+		assert.equal(result.lanesAwaitingCapture, 1);
+		assert.equal(promptCalls, 0);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_failed"), false);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "repair_attempt"), false);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "agent_task_progress"
+			&& (entry.record as Record<string, unknown>).phase === "finalizing"
+			&& (entry.record as Record<string, unknown>).progress_label === "async agent task repair nudge skipped: child session is closed"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 
 
 test("watchdog terminalizes awaiting_body_capture after finalizingAbsoluteMaxMs", async () => {
@@ -3106,10 +3238,48 @@ test("guarded auto-retry blocked when lane not in aborted state", async () => {
 		// assert.equal(result.status, "auto_retry_disabled");
 		// assert.equal((result as any).reason, "lane_not_in_aborted_state");
 	} finally {
-
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("executeFlowDeskAgentTaskV1 writes early_launch_diagnostic for 30s", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-diag-30s-"));
+	try {
+		const client = {
+			session: {
+				create: async () => ({ id: "ses-test" }),
+				messages: async () => ({ messages: [] }),
+				promptAsync: async () => ({}),
+			},
+		} as any;
+
+		const workflowId = "workflow-diag-30s-1";
+		await executeFlowDeskAgentTaskV1({
+			workflowId,
+			taskId: "task-diag-30s-1",
+			laneId: "lane-diag-30s-1",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "test diag",
+			parentSessionId: "parent-diag-30s",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			_messagesTimeoutMs: 31_000, // Make it block for > 30s
+		});
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			rootDir: root,
+			workflowId,
+		});
+		assert.ok(reloaded.ok);
+		const diags = reloaded.entries.filter((e) => (e.record as any).schema_version === "flowdesk.early_launch_diagnostic.v1");
+		assert.equal(diags.length, 2, "Should have 2 diagnostic records (session_may_have_failed_to_start and no_first_signal)");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 
 test("monitorChildSessionsV1 automatically terminalizes inconsistent finalizing lanes after 1h (orphaned)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-stall-inconsistent-orphan-"));
