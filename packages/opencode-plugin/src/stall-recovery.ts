@@ -1482,6 +1482,7 @@ export interface FlowDeskWatchdogCycleResultV1 {
 let _isWatchdogCycleRunning = false;
 
 const FLOWDESK_SESSION_EVIDENCE_ROOT = ".flowdesk/sessions";
+const FLOWDESK_WATCHDOG_MAX_WORKFLOWS = 500;
 
 function listWatchdogWorkflowIds(rootDir: string): string[] {
 	const sessionsDir = join(rootDir, FLOWDESK_SESSION_EVIDENCE_ROOT);
@@ -1497,7 +1498,10 @@ function listWatchdogWorkflowIds(rootDir: string): string[] {
 		const candidatePath = join(sessionsDir, name);
 		try {
 			const stat = statSync(candidatePath);
-			if (stat.isDirectory()) result.push(name);
+			if (stat.isDirectory()) {
+				result.push(name);
+				if (result.length >= FLOWDESK_WATCHDOG_MAX_WORKFLOWS) break;
+			}
 		} catch {
 			// skip unreadable entries
 		}
@@ -1617,6 +1621,7 @@ export async function runFlowDeskWatchdogCycleV1(input: {
 						rootDir: input.rootDir,
 						workflowId,
 						client: input.client,
+						parentSessionId: input.parentSessionId,
 						now,
 						...(nudgeQuietPeriodMs === undefined ? {} : { nudgeQuietPeriodMs }),
 					});
@@ -1845,6 +1850,45 @@ async function readAsyncMonitorChildSessionMessages(
 	return Promise.race([
 		readMessages,
 		new Promise<null>(resolve => setTimeout(() => resolve(null), messagesTimeoutMs)),
+	]);
+}
+
+function responseContainsSessionId(value: unknown, sessionId: string, depth = 0): boolean {
+	if (depth > 6) return false;
+	if (Array.isArray(value)) return value.some((entry) => responseContainsSessionId(entry, sessionId, depth + 1));
+	const record = monitorRecord(value);
+	if (record === undefined) return false;
+	if (record.id === sessionId || record.sessionID === sessionId || record.session_id === sessionId) return true;
+	const data = monitorResponseData(value);
+	if (data !== value && responseContainsSessionId(data, sessionId, depth + 1)) return true;
+	return [record.sessions, record.items, record.children, record.data].some((entry) => responseContainsSessionId(entry, sessionId, depth + 1));
+}
+
+async function isChildSessionReachableFromParentSession(input: {
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	parentSessionId: string;
+	childSessionId: string;
+	childrenTimeoutMs?: number;
+}): Promise<boolean> {
+	const children = input.client.session.children;
+	if (typeof children !== "function") return false;
+	const readChildren = async (): Promise<boolean> => {
+		for (const options of [
+			{ sessionID: input.parentSessionId },
+			{ path: { id: input.parentSessionId } },
+		]) {
+			try {
+				const response = await (children as (o: unknown) => unknown | Promise<unknown>).call(input.client.session, options);
+				if (responseContainsSessionId(response, input.childSessionId)) return true;
+			} catch { /* try legacy/alternate shape */ }
+		}
+		return false;
+	};
+	const childrenTimeoutMs = input.childrenTimeoutMs ?? 3_000;
+	if (childrenTimeoutMs <= 0) return readChildren();
+	return Promise.race([
+		readChildren(),
+		new Promise<boolean>(resolve => setTimeout(() => resolve(false), childrenTimeoutMs)),
 	]);
 }
 
@@ -3042,6 +3086,8 @@ export async function monitorChildSessionsV1(input: {
 	rootDir: string;
 	workflowId: string;
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	/** Current watchdog/parent session id. Used to detect cross-session child-session ownership. */
+	parentSessionId?: string;
 	now?: Date;
 	nudgeQuietPeriodMs?: number;  // default 10_000
 	maxNudges?: number;            // default 2
@@ -4599,6 +4645,132 @@ export async function monitorChildSessionsV1(input: {
 			const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 			const livenessAt = new Date(nowMs).toISOString();
 			const liveness = await pollChildSessionLiveness(input.client, childSessionId);
+			const recordedParentSessionRef = typeof record.parent_session_ref === "string" ? record.parent_session_ref : undefined;
+			const currentWatchdogSessionId = typeof input.parentSessionId === "string" && input.parentSessionId.trim().length > 0 ? input.parentSessionId.trim() : undefined;
+			const currentWatchdogSessionRef = currentWatchdogSessionId === undefined
+				? undefined
+				: currentWatchdogSessionId.startsWith("ses-") ? currentWatchdogSessionId : `ses-${currentWatchdogSessionId}`;
+			const isCrossSessionChild = currentWatchdogSessionId !== undefined
+				&& recordedParentSessionRef !== undefined
+				&& currentWatchdogSessionRef !== undefined
+				&& recordedParentSessionRef !== currentWatchdogSessionRef;
+			const livenessReadEmptyOrUnavailable = liveness === null || (
+				(liveness.text === undefined || liveness.text.trim().length === 0)
+				&& liveness.hasRunningTool === false
+				&& liveness.stepFinishObserved === false
+				&& liveness.terminalMarkerObserved === false
+				&& liveness.sessionIdleObserved === false
+			);
+			if (isCrossSessionChild && livenessReadEmptyOrUnavailable) {
+				const childReachable = await isChildSessionReachableFromParentSession({
+					client: input.client,
+					parentSessionId: currentWatchdogSessionId,
+					childSessionId,
+				});
+				if (!childReachable) {
+					const priorCrossSessionMissCount = typeof recordForWrites.cross_session_liveness_miss_count === "number"
+						? recordForWrites.cross_session_liveness_miss_count
+						: (typeof recordForWrites.liveness_miss_count === "number" ? recordForWrites.liveness_miss_count : 0);
+					const nextCrossSessionMissCount = priorCrossSessionMissCount + 1;
+					const diagnostic: FlowDeskCaptureFailureDiagnosticV1 = {
+						observedAt: livenessAt,
+						childSessionId,
+						finalTextPresent: false,
+						stepFinishPresent: false,
+						terminalMarkerPresent: false,
+						recommendedNextAction: "/flowdesk-export-debug",
+					};
+					recordForWrites = withCaptureFailureDiagnosticFields({
+						...recordForWrites,
+						liveness_last_check_at: livenessAt,
+						liveness_last_state: "cross_session_child_unreachable",
+						liveness_miss_count: nextCrossSessionMissCount,
+						liveness_check_interval_ms: livenessCheckIntervalMs,
+						liveness_max_misses: livenessMaxMisses,
+						cross_session_watchdog_parent_session_id: currentWatchdogSessionId,
+						cross_session_watchdog_parent_session_ref: currentWatchdogSessionRef,
+						cross_session_recorded_parent_session_ref: recordedParentSessionRef,
+						cross_session_child_reachable: false,
+						cross_session_liveness_miss_count: nextCrossSessionMissCount,
+						cross_session_last_miss_at: livenessAt,
+					}, diagnostic, "cross_session_child_unreachable");
+					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+					if (nextCrossSessionMissCount < livenessMaxMisses) {
+						result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
+						continue;
+					}
+					if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+						continue;
+					}
+					const token = randomBytes(4).toString("hex");
+					const noOutputCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+						outputKind: "empty",
+						finalBodyObserved: false,
+						terminalMarkerObserved: false,
+					});
+					const taskFailedWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, `task-failed-${taskId}-watchdog-cross-session-orphan-${token}`, {
+						schema_version: "flowdesk.task_failed.v1",
+						workflow_id: input.workflowId,
+						lane_id: laneId,
+						task_id: taskId,
+						agent_ref: agentRef,
+						provider_qualified_model_id: modelId,
+						failure_category: "orphaned",
+						redacted_reason: "cross_session_child_unreachable",
+						...noOutputCaptureMetadata,
+						created_at: livenessAt,
+						dispatch_authority_enabled: false,
+					});
+					const lifecycleWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, `lifecycle-agent-task-cross-session-orphan-${laneId}-${token}`, {
+						schema_version: "flowdesk.lane_lifecycle_record.v1",
+						lane_id: laneId,
+						workflow_id: input.workflowId,
+						attempt_id: latestAttemptIdByLane.get(laneId) ?? `attempt-${laneId}`,
+						parent_session_ref: recordedParentSessionRef,
+						child_session_ref: childSessionId.startsWith("ses-") ? childSessionId : `ses-${childSessionId}`,
+						agent_ref: agentRef,
+						provider_qualified_model_id: modelId,
+						state: "orphaned",
+						timeout_ms: 0,
+						orphan_max_age_ms: 0,
+						retry_count: 0,
+						created_at: livenessAt,
+						updated_at: livenessAt,
+						dispatch_authority_enabled: false,
+						providerCall: false,
+						actualLaneLaunch: false,
+						runtimeExecution: false,
+					});
+					if (taskFailedWritten || lifecycleWritten) {
+						writeAgentTaskProgressEvidence({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							laneId,
+							taskId,
+							agentRef,
+							providerQualifiedModelId: modelId,
+							phase: "failed",
+							progressSeq: 70 + nextCrossSessionMissCount,
+							progressLabel: "async agent task orphaned: cross_session_child_unreachable",
+							observedAt: livenessAt,
+						});
+						refreshFlowDeskCompletionUiCachesV1({ rootDir: input.rootDir, workflowId: input.workflowId, observedAt: livenessAt });
+						result.lanesAborted++;
+						continue;
+					}
+				} else {
+					recordForWrites = {
+						...recordForWrites,
+						cross_session_watchdog_parent_session_id: currentWatchdogSessionId,
+						cross_session_watchdog_parent_session_ref: currentWatchdogSessionRef,
+						cross_session_recorded_parent_session_ref: recordedParentSessionRef,
+						cross_session_child_reachable: true,
+						cross_session_liveness_miss_count: 0,
+						cross_session_last_reachable_at: livenessAt,
+					};
+					writeChildSessionEvidence(input.rootDir, input.workflowId, childSessionEvidenceId, recordForWrites);
+				}
+			}
 			if (liveness !== null && typeof liveness.text === "string" && liveness.text.trim().length > 0) {
 				if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 					continue;

@@ -284,6 +284,18 @@ function validateAgentTaskParentSessionId(parentSessionId: string): { ok: true; 
 	return { ok: true, parentSessionRef: `ses-${value}`, unattached: false };
 }
 
+function safeRecordAgentTaskHeartbeatV1(
+	input: Parameters<typeof recordFlowDeskLaneHeartbeatV1>[0],
+): void {
+	try {
+		recordFlowDeskLaneHeartbeatV1(input);
+	} catch {
+		// Heartbeats are diagnostic evidence only. A malformed stale parent/session
+		// ref must never abort task failure materialization or leak a raw SDK/route
+		// stack into the main OpenCode TUI.
+	}
+}
+
 /** Bounded nudge text — versioned constant, never echoes user input */
 const AGENT_TASK_NUDGE_TEXT = "Please provide your final answer now. If you have completed your analysis, output your complete response." as const;
 
@@ -631,14 +643,19 @@ function writeSessionEvidence(input: {
 	evidenceId: string;
 	record: Record<string, unknown>;
 }): boolean {
-	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
-		workflowId: input.workflowId,
-		evidenceId: input.evidenceId,
-		record: input.record,
-	});
-	if (prepared.ok && prepared.writeIntent !== undefined) {
-		const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
-		return applied.ok && applied.writtenPaths.length > 0;
+	try {
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId: input.workflowId,
+			evidenceId: input.evidenceId,
+			record: input.record,
+		});
+		if (prepared.ok && prepared.writeIntent !== undefined) {
+			const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.rootDir, [prepared.writeIntent]);
+			return applied.ok && applied.writtenPaths.length > 0;
+		}
+	} catch {
+		// Session evidence writes are diagnostic/capture bookkeeping. Invalid stale
+		// refs or filesystem races must not leak raw stacks into the parent TUI.
 	}
 	return false;
 }
@@ -1506,7 +1523,7 @@ export async function executeFlowDeskAgentTaskV1(
 
 	if (launchResult.status !== "lane_launch_started") {
 		// Record heartbeat for failed launch
-		recordFlowDeskLaneHeartbeatV1({
+		safeRecordAgentTaskHeartbeatV1({
 			rootDir: input.rootDir,
 			workflowId: input.workflowId,
 			attemptId,
@@ -1588,7 +1605,7 @@ export async function executeFlowDeskAgentTaskV1(
 	}
 
 	// Lane launched successfully - record heartbeat
-	recordFlowDeskLaneHeartbeatV1({
+	safeRecordAgentTaskHeartbeatV1({
 		rootDir: input.rootDir,
 		workflowId: input.workflowId,
 		attemptId,
@@ -1717,7 +1734,7 @@ export async function executeFlowDeskAgentTaskV1(
 				});
 			},
 			heartbeatFn: (elapsedMs) => {
-				recordFlowDeskLaneHeartbeatV1({
+				safeRecordAgentTaskHeartbeatV1({
 					rootDir: input.rootDir,
 					workflowId: input.workflowId,
 					attemptId,

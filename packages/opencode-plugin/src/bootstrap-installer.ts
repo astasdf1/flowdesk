@@ -1054,7 +1054,7 @@ function flowDeskPluginDefaultOptions(durableStateRootDir: string): Record<strin
 	];
 	return {
 		durableStateRoot: durableStateRootDir,
-		statusLive: { enabled: true, maxWorkflows: 10 },
+		statusLive: { enabled: true, maxWorkflows: 500 },
 		providerUsageLive: {
 			enabled: true,
 			providers: ["claude", "openai", "gemini"],

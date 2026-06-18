@@ -3762,3 +3762,79 @@ test("watchdog cycle: task_failed wake row counted as terminal wake candidate", 
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("monitorChildSessionsV1 force-terminates cross-session unreachable lane after livenessMaxMisses", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-cross-session-"));
+	try {
+		const workflowId = "workflow-cross-session-test";
+		const laneId = "lane-cross-session-test";
+		const taskId = "task-cross-session-test";
+		const childSessionId = "ses-child-cross-session";
+		// Lane parent session is "ses-other-session", watchdog parent is "ses-current-session"
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId,
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-cross-session");
+		// Manually override parent_session_ref to simulate cross-session
+		const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-child-session-cross-session",
+			record: {
+				schema_version: "flowdesk.agent_task_child_session.v1",
+				workflow_id: workflowId, lane_id: laneId, task_id: taskId,
+				child_session_id: childSessionId,
+				child_session_ref: `ses-${childSessionId}`,
+				parent_session_ref: "ses-ses-other-session", // different from watchdog
+				provider_qualified_model_id: "openai/gpt-5.5",
+				agent_ref: "agent-test",
+				nudge_count: 0, last_nudge_at: null, nudge_quiet_period_ms: 10000,
+				last_activity_at: "2026-05-26T10:00:00.000Z",
+				created_at: "2026-05-26T10:00:00.000Z",
+				dispatch_authority_enabled: false,
+			},
+		});
+		applyFlowDeskSessionEvidenceWriteIntentsV1(rootDir, [prepared.writeIntent!]);
+
+		let childrenCalls = 0;
+		const client = {
+			session: {
+				messages: async () => ({ messages: [] }), // empty — no text
+				abort: async () => ({}),
+				children: async () => { childrenCalls++; return { sessions: [] }; }, // child not found
+			},
+		} as never;
+
+		// Run enough cycles to exhaust livenessMaxMisses=3.
+		// Advance now by 1s each cycle so livenessCheckIntervalMs (1000ms) is
+		// satisfied on each subsequent cycle and miss count increments each time.
+		for (let i = 0; i < 5; i++) {
+			await monitorChildSessionsV1({
+				rootDir, workflowId, client,
+				parentSessionId: "ses-current-session", // different from parent_session_ref
+				now: new Date(Date.parse("2026-05-26T10:00:35.000Z") + i * 1500),
+				abortThresholdMs: 600_000, // large — don't fire normal abort
+				livenessCheckIntervalMs: 1_000,
+				livenessMaxMisses: 3,
+			});
+		}
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		// Cross-session termination writes lane_lifecycle state="orphaned" + progress label
+		const orphanedLifecycle = reload.entries.find(
+			(e) => e.evidenceClass === "lane_lifecycle" &&
+				(e.record as Record<string, unknown>).state === "orphaned",
+		);
+		assert.ok(orphanedLifecycle, "cross-session unreachable lane must be marked orphaned in lane_lifecycle");
+		const orphanProgress = reload.entries.find(
+			(e) => e.evidenceClass === "agent_task_progress" &&
+				typeof (e.record as Record<string, unknown>).progress_label === "string" &&
+				((e.record as Record<string, unknown>).progress_label as string).includes("cross_session_child_unreachable"),
+		);
+		assert.ok(orphanProgress, "cross-session orphan progress evidence must be written");
+		assert.ok(childrenCalls > 0, "session.children() must have been called to check reachability");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});

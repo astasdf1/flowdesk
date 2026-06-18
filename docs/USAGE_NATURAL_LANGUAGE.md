@@ -150,7 +150,7 @@ English: `status`, `what happened`, `recent activity`, `progress`, `where are we
       {
         "statusLive": {
           "enabled": true,
-          "maxWorkflows": 5,
+          "maxWorkflows": 500,
           "maxRecentEvidencePerClass": 3
         },
         "durableStateRoot": "/Users/<you>/.flowdesk"
@@ -320,7 +320,7 @@ Set `chatMessageStallAlert.includeProgressingLate=true` if you also want a softe
         },
         "statusLive": {
           "enabled": true,
-          "maxWorkflows": 5,
+          "maxWorkflows": 500,
           "maxRecentEvidencePerClass": 3
         },
         "quickFallbackRun": {

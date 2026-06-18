@@ -386,7 +386,7 @@ test("Release 1 bootstrap installer materializes commands and redacted bootstrap
 		const flowdeskPlugin = findFlowDeskPluginEntry(opencodeConfig);
 		assert.equal(flowdeskPlugin[0], `file://${join(profileRoot, "node_modules", "@flowdesk", "opencode-plugin", "dist", "server.js")}`);
 		assert.equal(flowdeskPlugin[1].durableStateRoot, durableRoot);
-		assert.deepEqual(flowdeskPlugin[1].statusLive, { enabled: true, maxWorkflows: 10 });
+		assert.deepEqual(flowdeskPlugin[1].statusLive, { enabled: true, maxWorkflows: 500 });
 		assert.deepEqual(flowdeskPlugin[1].providerUsageLive, {
 			enabled: true,
 			providers: ["claude", "openai", "gemini"],
@@ -543,7 +543,7 @@ test("Release 1 bootstrap installer preserves existing plugin entries and fills 
 		const flowdeskPlugin = plugins[1] as [string, Record<string, unknown>];
 		assert.equal(flowdeskPlugin[0], existingFlowDeskPlugin[0]);
 		assert.equal(flowdeskPlugin[1].durableStateRoot, "/custom/durable/root");
-		assert.deepEqual(flowdeskPlugin[1].statusLive, { enabled: false, maxWorkflows: 10 });
+		assert.deepEqual(flowdeskPlugin[1].statusLive, { enabled: false, maxWorkflows: 500 });
 		assert.deepEqual(flowdeskPlugin[1].providerUsageLive, {
 			providers: ["openai"],
 			enabled: true,

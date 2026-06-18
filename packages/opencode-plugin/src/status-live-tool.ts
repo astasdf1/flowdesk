@@ -1586,7 +1586,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 	const observedAt = (input.now ? input.now() : new Date()).toISOString();
 	const rootDir = input.config.rootDir;
 	const requestedWorkflowId = input.request?.workflowId?.trim();
-	const maxWorkflows = Math.max(input.config.maxWorkflows ?? 5, 1);
+	const maxWorkflows = Math.max(input.config.maxWorkflows ?? 500, 1);
 	const maxRecentEvidencePerClass = Math.max(
 		input.config.maxRecentEvidencePerClass ?? 3,
 		1,
