@@ -138,6 +138,10 @@ const disabledAuthority = {
   hardCancelOrNoReplyAuthority: false
 } as const;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function result(mode: FlowDeskCommandBackedHandlerModeV1, toolName: FlowDeskRelease1MinimumToolName, requestResult: ValidationResult, responseResult: ValidationResult, response: unknown, coreEvaluationOk: boolean): FlowDeskCommandBackedHandlerResultV1 {
   const errors = [...requestResult.errors, ...responseResult.errors];
   const validation = errors.length === 0 ? valid() : invalid(...errors);
@@ -293,6 +297,38 @@ function productionEnablementRefs(context: FlowDeskCommandBackedHandlerContextV1
     ...evaluation.blocker_labels.map((label) => `production_blocker=${label}`),
     ...evaluation.uncertainty_labels.map((label) => `production_uncertainty=${label}`)
   ];
+}
+
+function productionEnablementPresentationSummary(context: FlowDeskCommandBackedHandlerContextV1): string {
+  const evaluation = context.diagnostic?.productionEnablement;
+  if (evaluation === undefined) return "Production enablement is disabled; managed-dispatch readiness basis is unavailable.";
+  const skipped = evaluation.skipped_platform_dependent_labels ?? [];
+  const skippedText = skipped.length === 0 ? "none" : skipped.join(", ");
+  return `Managed-dispatch readiness basis: ${evaluation.managed_dispatch_ready_basis}; Plugin-satisfiable gate passed: ${evaluation.plugin_satisfiable_gate_passed ?? false}; Skipped platform-dependent labels: ${skippedText}; Dispatch authority enabled: ${evaluation.dispatch_authority_enabled}.`;
+}
+
+function enrichStatusPresentation(response: unknown, context: FlowDeskCommandBackedHandlerContextV1): unknown {
+  const evaluation = context.diagnostic?.productionEnablement;
+  if (evaluation === undefined || !isRecord(response)) return response;
+  const skipped = evaluation.skipped_platform_dependent_labels ?? [];
+  const refs = productionEnablementRefs(context);
+  const existingMessage = typeof response.user_message === "string" ? response.user_message : "FlowDesk status collected.";
+  return {
+    ...response,
+    user_message: `${existingMessage} ${productionEnablementPresentationSummary(context)} Read-only status presentation; no dispatch authority changed.`,
+    managed_dispatch_readiness_basis: evaluation.managed_dispatch_ready_basis,
+    managed_dispatch_plugin_satisfiable_gate_passed: evaluation.plugin_satisfiable_gate_passed ?? false,
+    skipped_platform_dependent_labels: [...skipped],
+    managed_dispatch_readiness_refs: refs,
+    managed_dispatch_readiness_authority: {
+      realOpenCodeDispatch: false,
+      providerCall: false,
+      runtimeExecution: false,
+      actualLaneLaunch: false,
+      fallbackAuthority: false,
+      hardCancelOrNoReplyAuthority: false
+    }
+  };
 }
 
 function defaultManagedDispatchPromotionRefs(context: FlowDeskCommandBackedHandlerContextV1): string[] {
@@ -521,7 +557,7 @@ function doctorSectionsFor(request: FlowDeskDoctorRequestV1, context: FlowDeskCo
   const compactionRefs = evidenceCompactionRefs(context);
   const allSections = [
     doctorSectionFor("migration_cleanup", "informational", request, "FlowDesk bootstrap evidence is redacted and diagnostic-only; installer authority does not approve dispatch.", ["doctor-migration-cleanup-ref"]),
-    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; S7 managed-dispatch exposure authorization is diagnostic/readiness-only and does not open production dispatch. Use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...bundleRefs, ...exposureAuthorizationRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
+    doctorSectionFor("opencode_plugin_compatibility", "informational", request, `FlowDesk Release 1 default production dispatch promotion is separate from explicit dev/beta agent-task lanes. Command registration is ready with ${productionReadiness.passedChecks} readiness checks passed; ${productionEnablementPresentationSummary(context)} S7 managed-dispatch exposure authorization is diagnostic/readiness-only and does not open production dispatch. Use the dev_beta_agent_task_run refs to judge whether real subtask launch is available in this runtime.`, ["doctor-opencode-compatibility-ref", `production-readiness-passed-${productionReadiness.passedChecks}`, FLOWDESK_PLANNED_TOP_TIER_MULTI_PERSPECTIVE_REVIEW_MODE_FIELD_REF, ...enablementRefs, ...promotionRefs, ...bundleRefs, ...exposureAuthorizationRefs, ...exactModelCacheRefs, ...fanoutRefs, ...fallbackRefs, ...sdkHealthRefs, ...agentTaskRunRefs]),
     doctorSectionFor("provider_usage_readiness", "degraded_mode_warning", request, "FlowDesk reports provider usage and health as diagnostic-only unless auth readiness and fresh real usage/quota/reset evidence are available for the exact provider, model, account, and auth scope. Models are excluded when evidence is absent.", ["doctor-provider-usage-ref", "usage-health-diagnostic-only", "all-model-auth-usage-required"]),
     doctorSectionFor("policy_project_safety", "informational", request, "FlowDesk policy checks preserve Release 1 safe command-backed behavior; Release 2 dispatch requires durable evidence, configured verification, sanitized auth capture, external auth/provider policy, explicit approval, and doctor-visible enablement state.", ["doctor-policy-project-ref", "production_approval_state_machine=fail_closed", "configured_verification_gate=required", "sanitized_auth_capture_gate=required", "external_auth_provider_policy_gate=required"]),
     doctorSectionFor("evidence_compaction", "informational", request, "Evidence Compaction reports native agent-task-progress cleanup health, archive counts, and merkle-root integrity without granting dispatch, fallback, or write authority outside the configured state root.", ["doctor-evidence-compaction-ref", ...compactionRefs]),
@@ -746,7 +782,8 @@ export function evaluateFlowDeskCommandBackedHandlerV1(toolName: FlowDeskRelease
   if (toolName === "flowdesk_status") {
     if (context.status === undefined) return result("missing_evaluator_input", toolName, requestResult, invalid("status evaluator input is required"), undefined, false);
     const evaluation = evaluateFlowDeskStatusCommandV1({ ...context.status, request: request as FlowDeskStatusCommandInputV1["request"] });
-    return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, evaluation.response), evaluation.response, evaluation.ok);
+    const response = enrichStatusPresentation(evaluation.response, context);
+    return result("command_backed_core_evaluator", toolName, requestResult, responseSchemaResult(toolName, response), response, evaluation.ok);
   }
 
   if (toolName === "flowdesk_retry") {

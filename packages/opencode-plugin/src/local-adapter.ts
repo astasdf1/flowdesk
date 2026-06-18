@@ -1167,14 +1167,35 @@ function recordRunState(
 function debugSectionSummaryLabels(
 	section: string,
 	state: LocalAdapterState,
+	request: Record<string, unknown>,
 	extraSummaryLabels: readonly string[] = [],
 ): string[] {
 	const labels: string[] = [`flowdesk debug section ${section}`];
+	const productionEvaluation = productionEnablementContext(state, request);
+	const skippedPlatformDependentLabels =
+		productionEvaluation?.skipped_platform_dependent_labels ?? [];
+	const productionLabels = productionEvaluation === undefined
+		? [
+				"production_enablement: disabled",
+				"managed_dispatch_ready_basis: unavailable",
+				"skipped_platform_dependent_labels: none",
+			]
+		: [
+				`production_enablement: ${productionEvaluation.state}`,
+				`managed_dispatch_ready: ${productionEvaluation.managed_dispatch_ready}`,
+				`managed_dispatch_ready_basis: ${productionEvaluation.managed_dispatch_ready_basis}`,
+				`plugin_satisfiable_gate_passed: ${productionEvaluation.plugin_satisfiable_gate_passed ?? false}`,
+				`skipped_platform_dependent_labels: ${skippedPlatformDependentLabels.length === 0 ? "none" : skippedPlatformDependentLabels.join(",")}`,
+				...skippedPlatformDependentLabels.map(
+					(label) => `skipped_platform_dependent_label: ${label}`,
+				),
+				"managed_dispatch_authority: unchanged_false",
+			];
 	switch (section) {
 		case "doctor":
 			labels.push(
 				"disabled_modes: real_dispatch managed_fallback lane_launch hard_chat_blocking",
-				"production_enablement: disabled",
+				...productionLabels,
 				"command_backed_runs: ready",
 			);
 			break;
@@ -1183,6 +1204,7 @@ function debugSectionSummaryLabels(
 				"plugin_package: @flowdesk/opencode-plugin",
 				"release_mode: release1",
 				"dispatch_mode: command-steering",
+				...productionLabels,
 			);
 			break;
 		case "workflow_state": {
@@ -1316,6 +1338,7 @@ function recordDebugExportManifestState(
 			summary_labels: debugSectionSummaryLabels(
 				sectionName,
 				state,
+				request,
 				s7ExposureAuthorizationRefs,
 			),
 			audit_refs: ["audit-local"],

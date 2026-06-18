@@ -1470,7 +1470,7 @@ export function evaluateFlowDeskProductionEnablementV1(
 	const approval = input.approvalDecision;
 	let validApprovalDecision: FlowDeskProductionApprovalDecisionV1 | undefined;
 	if (approval === undefined) {
-		if (blockerLabels.length === 0) blockerLabels.push("approval_missing");
+		blockerLabels.push("approval_missing");
 	} else {
 		const approvalResult = validateFlowDeskProductionApprovalDecisionV1(
 			approval,
@@ -1498,8 +1498,12 @@ export function evaluateFlowDeskProductionEnablementV1(
 	const skippedPlatformDependentLabels = uniqueBlockers.filter(
 		isPlatformDependentProductionBlocker,
 	);
+	const humanApprovalSatisfied =
+		validApprovalDecision !== undefined && validApprovalDecision.decision === "approve";
 	const pluginSatisfiableGatePassed =
-		errors.length === 0 && pluginFatalBlockers.length === 0;
+		errors.length === 0 &&
+		pluginFatalBlockers.length === 0 &&
+		humanApprovalSatisfied;
 	const hasOnlyApprovalBlocker =
 		uniqueBlockers.length === 1 && uniqueBlockers[0] === "approval_missing";
 	const state: FlowDeskProductionEnablementStateV1 =

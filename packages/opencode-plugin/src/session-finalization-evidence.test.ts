@@ -51,7 +51,7 @@ describe("evaluateFlowDeskSessionFinalizationEvidence", () => {
 		);
 	});
 
-	test("empty step-finish remains awaiting_body_capture with blocked_text_absent and never captures", () => {
+	test("empty step-finish blocks with blocked_text_absent and never captures", () => {
 		const observation = buildFlowDeskSessionFinalizationObservation({
 			stepFinishObserved: true,
 			sessionIdleState: "confirmed_idle",
@@ -61,7 +61,7 @@ describe("evaluateFlowDeskSessionFinalizationEvidence", () => {
 
 		const result = evaluateFlowDeskSessionFinalizationEvidence(observation);
 
-		assert.equal(result.decision, "awaiting_body_capture");
+		assert.equal(result.decision, "blocked_text_absent");
 		assert.equal(result.block_reason, "blocked_text_absent");
 		assert.equal(result.observed_text_ref, undefined);
 		assert.equal(result.observed_text_char_count, undefined);
@@ -190,7 +190,7 @@ describe("evaluateFlowDeskSessionFinalizationEvidence", () => {
 			assert.equal(result.observed_text_ref, undefined, kind);
 			assert.equal(result.observed_text_char_count, undefined, kind);
 			if (kind === "empty") {
-				assert.equal(result.decision, "awaiting_body_capture");
+				assert.equal(result.decision, "blocked_text_absent");
 				assert.equal(result.block_reason, "blocked_text_absent");
 			} else {
 				assert.equal(result.decision, "requires_review");

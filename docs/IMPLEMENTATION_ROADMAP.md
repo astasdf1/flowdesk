@@ -125,6 +125,8 @@ Tasks:
 13. Define the Delegation Runtime Contract with policy-controlled lane limits, main-agent minimal routing, timeouts, verification, lane status summaries, invocation failure classes, reference-kind separation, bounded retry disposition, incomplete-result handling, and best-effort cancellation records.
 14. Define a lane heartbeat and stall detection contract for FlowDesk-owned lanes (reviewer lanes, runtime lane launches, provider acquisition lanes, managed-dispatch attempts, fallback regate plans). Heartbeats must produce a durable typed record at most every 2 minutes for active lanes, the stall projection must classify lanes as `progressing_normal`, `progressing_late`, or `stalled` based on `seconds_since_last_signal` over a 5-minute threshold, and stall projection results must be surfaced through `flowdesk_status_live`, doctor, and debug exports without claiming auto-retry, auto-abort, auto-fallback, or hard chat cancel authority.
 
+**Note on Lane Termination Redesign**: Step-finish events must not be treated as terminal signals. The redesigned termination strategy uses `session.idle` combined with output validation as the primary signal, periodic liveness polling as a secondary check, and an absolute hard cap as the final safety net. Refer to `docs/LANE_TERMINATION_REDESIGN.md` for the detailed termination specification.
+
 Exit criteria:
 
 1. Contract validators reject malformed ids, unqualified model ids, missing provider family, missing usage snapshot, missing provider health snapshot, and missing transaction boundary.

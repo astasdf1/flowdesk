@@ -593,7 +593,10 @@ function fakeRuntimeReviewerExecutionClient() {
 				},
 				messages(options: unknown) {
 					messageCalls.push(options);
-					const sessionID = (options as { sessionID?: string }).sessionID ?? "";
+					const sessionID =
+						(options as { path?: { id?: string }; sessionID?: string }).path?.id ??
+						(options as { sessionID?: string }).sessionID ??
+						"";
 					const perspective =
 						childPerspectives.get(sessionID) ?? "policy_security";
 					return Promise.resolve([
@@ -1523,7 +1526,7 @@ test("runtime reviewer execution bridge launches persisted plans and accepts dur
 		);
 		assert.equal(fake.messageCalls.length, 3);
 		assert.equal(
-			(fake.messageCalls[0] as { sessionID?: string }).sessionID,
+			(fake.messageCalls[0] as { path?: { id?: string } }).path?.id,
 			"child-runtime-reviewer-policy_security",
 		);
 		const reloaded = reloadFlowDeskSessionEvidenceV1({
@@ -11440,6 +11443,59 @@ test("flowdesk_task normalizes safe defaults and adds no authority claims", asyn
 	}
 });
 
+test("flowdesk_task ignores placeholder ctx session id before SDK launch", async () => {
+	const createOptions: unknown[] = [];
+	const dummyClient = {
+		session: {
+			create(options: unknown) {
+				createOptions.push(options);
+				return Promise.resolve({ id: "child-short-task-placeholder-ctx-1" });
+			},
+			prompt() {
+				return Promise.resolve({ info: { id: "message-short-task-placeholder-ctx-1" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-short-task-placeholder-ctx-"));
+	try {
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+		assert.ok(shortTaskTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-short-task-placeholder-ctx-1",
+						taskDescription: "Verify placeholder ctx session id filtering.",
+						agentName: "reviewer-gpt-frontier",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					{ sessionID: "{id}" } as never,
+				),
+			),
+		) as Record<string, unknown>;
+		assert.equal(result.status, "task_launched");
+		assert.equal((createOptions[0] as Record<string, unknown>).parentID, undefined);
+		assert.doesNotMatch(JSON.stringify(result), /%7Bid%7D|\{id\}|Expected a string starting/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("flowdesk_task prefers live ctx session over stale startup-seeded wake parent", async () => {
 	const createOptions: unknown[] = [];
 	const dummyClient = {
@@ -13037,6 +13093,38 @@ function slice4ProductionEnablementOption(probeWorkflowId: string): Record<strin
 	};
 }
 
+function slice4WriteModelAvailabilityDb(root: string): void {
+	const modelAvailabilityDir = join(root, "model-availability");
+	mkdirSync(modelAvailabilityDir, { recursive: true });
+	const modelDb = new DatabaseSync(join(modelAvailabilityDir, "model-availability.db"));
+	try {
+		modelDb.exec(`
+			CREATE TABLE IF NOT EXISTS models (
+				model_id TEXT PRIMARY KEY,
+				provider_family TEXT NOT NULL,
+				status TEXT NOT NULL,
+				available INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE IF NOT EXISTS snapshot (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				schema_version TEXT NOT NULL,
+				observed_at TEXT NOT NULL
+			);
+		`);
+		modelDb.prepare("INSERT OR REPLACE INTO snapshot (id, schema_version, observed_at) VALUES (1, ?, ?)").run(
+			"flowdesk.opencode_model_availability_snapshot.v1",
+			new Date().toISOString(),
+		);
+		const insert = modelDb.prepare(
+			"INSERT OR REPLACE INTO models (model_id, provider_family, status, available) VALUES (?, ?, ?, ?)",
+		);
+		insert.run("claude/sonnet-4", "claude", "available", 1);
+		insert.run("anthropic/claude-sonnet-4-6", "anthropic", "available", 1);
+	} finally {
+		modelDb.close();
+	}
+}
+
 function slice4WriteDurableEvidence(root: string, workflowId: string): void {
 	// Required plugin-satisfiable evidence classes for production-enablement +
 	// adapter pre-call gate: pre_dispatch_audit, production_approval_source,
@@ -13046,30 +13134,7 @@ function slice4WriteDurableEvidence(root: string, workflowId: string): void {
 	//
 	// The model-availability gate requires a durable model-availability/model-availability.db.
 	// Write it here so the end-to-end test can reach dispatch_accepted.
-	const modelAvailabilityDir = join(root, "model-availability");
-	mkdirSync(modelAvailabilityDir, { recursive: true });
-	const modelDb = new DatabaseSync(join(modelAvailabilityDir, "model-availability.db"));
-	modelDb.exec(`
-		CREATE TABLE IF NOT EXISTS models (
-			model_id TEXT PRIMARY KEY,
-			provider_family TEXT NOT NULL,
-			status TEXT NOT NULL,
-			available INTEGER NOT NULL DEFAULT 0
-		);
-		CREATE TABLE IF NOT EXISTS snapshot (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			schema_version TEXT NOT NULL,
-			observed_at TEXT NOT NULL
-		);
-	`);
-	modelDb.prepare("INSERT OR REPLACE INTO snapshot (id, schema_version, observed_at) VALUES (1, ?, ?)").run(
-		"flowdesk.opencode_model_availability_snapshot.v1",
-		new Date().toISOString(),
-	);
-	modelDb.prepare("INSERT OR REPLACE INTO models (model_id, provider_family, status, available) VALUES (?, ?, ?, ?)").run(
-		"anthropic/claude-sonnet-4-6", "anthropic", "available", 1,
-	);
-	modelDb.close();
+	slice4WriteModelAvailabilityDb(root);
 	const records: Array<{ evidenceId: string; record: Record<string, unknown> }> = [
 		{
 			evidenceId: "working-model-cache-slice4-v1",
@@ -13105,10 +13170,75 @@ function slice4WriteDurableEvidence(root: string, workflowId: string): void {
 					evidence_bundle_refs: ["bundle-slice4-v1"],
 					redaction_validation_passed: true,
 					auditor_observed_at: "2026-06-09T00:00:00.000Z",
-					dispatch_authority_enabled: false,
-				providerCall: false,
-				actualLaneLaunch: false,
-				runtimeExecution: false,
+						dispatch_authority_enabled: false,
+					providerCall: false,
+					actualLaneLaunch: false,
+					runtimeExecution: false,
+				},
+		},
+		{
+			evidenceId: "usage-authority-slice4-v1",
+			record: {
+				schema_version: "flowdesk.managed_dispatch_beta.usage_authority_evidence.v1",
+				observedAt: new Date().toISOString(),
+				attestation_scope: "plugin_observed_only",
+				authority_ref: "usage-authority-slice4-v1",
+				usage_snapshot_ref: "usage-snapshot-slice4-v1",
+				provider_family: "claude",
+				provider_qualified_model_id: "claude/sonnet-4",
+				model_family: "sonnet-4",
+				source_kind: "provider_native",
+				source_version_ref: "usage-source-version-slice4-v1",
+				auth_profile_ref: "profile-slice4-test-v1",
+				auth_evidence_ref: "auth-evidence-slice4-v1",
+				credential_scope_ref: "credential-scope-slice4-v1",
+				account_boundary_ref: "account-boundary-slice4-v1",
+				quota_evidence_ref: "quota-evidence-slice4-v1",
+				usage_acquired: true,
+				reset_time: "2026-12-31T00:00:00.000Z",
+				reset_bucket: "claude-weekly",
+				source_ref: "usage-source-slice4-v1",
+				conformance_ref: "usage-conformance-slice4-v1",
+				redacted_evidence_refs: ["redacted-usage-slice4-v1"],
+				trusted: true,
+				observed_at: "2026-06-09T00:00:00.000Z",
+				expires_at: "2026-12-31T00:00:00.000Z",
+			},
+		},
+		{
+			evidenceId: "runtime-echo-slice4-v1",
+			record: {
+				schema_version: "flowdesk.managed_dispatch_beta.runtime_echo_evidence.v1",
+				observedAt: new Date().toISOString(),
+				attestation_scope: "plugin_observed_only",
+				runtime_echo_ref: "runtime-echo-slice4-v1",
+				workflow_id: workflowId,
+				step_id: "step-slice4-managed-dispatch-v1",
+				attempt_id: "attempt-slice4-managed-dispatch-v1",
+				provider_family: "claude",
+				provider_qualified_model_id: "claude/sonnet-4",
+				runtime_capability_ref: "runtime-capability-slice4-v1",
+				conformance_ref: "conformance-slice4-v1",
+				runtime_echo_mode: "trusted",
+				trusted: true,
+				observed_at: "2026-06-09T00:00:00.000Z",
+				expires_at: "2026-12-31T00:00:00.000Z",
+			},
+		},
+		{
+			evidenceId: "telemetry-correlation-slice4-v1",
+			record: {
+				schema_version: "flowdesk.managed_dispatch_beta.telemetry_correlation.v1",
+				observedAt: new Date().toISOString(),
+				attestation_scope: "plugin_observed_only",
+				telemetry_ref: "telemetry-correlation-slice4-v1",
+				workflow_id: workflowId,
+				step_id: "step-slice4-managed-dispatch-v1",
+				attempt_id: "attempt-slice4-managed-dispatch-v1",
+				event_telemetry_mode: "sufficient",
+				correlation_count: 2,
+				ambiguous: false,
+				source_refs: ["telemetry-source-slice4-v1"],
 			},
 		},
 		{
@@ -13571,6 +13701,68 @@ test("Slice 4 — flowdesk_run managed-dispatch with opencode.json-shaped produc
 		assert.equal(authority.fallbackAuthority, false);
 		assert.equal(authority.hardCancelOrNoReplyAuthority, false);
 		assert.equal(authority.toolAuthority, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Slice 4 — flowdesk_run managed-dispatch records command-backed production approval evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-slice4-managed-dispatch-approval-"));
+	const workflowId = "workflow-slice4-managed-dispatch-approval-v1";
+	try {
+		slice4WriteDurableEvidence(root, workflowId);
+			rmSync(
+				join(root, sessionEvidenceRecordPath(workflowId, "production_approval_source", "approval-source-slice4-v1")),
+				{ force: true },
+			);
+		const productionEnablement = slice4ProductionEnablementOption(workflowId);
+		delete productionEnablement.approvalDecision;
+		const { client, promptAsyncCalls } = slice4FakeSdkClient();
+		const hooks = (await flowdeskOpenCodeServerPlugin.server(
+			{ client } as never,
+			{
+				[flowdeskLocalNonDispatchAdapterOption]: true,
+				[flowdeskNaturalLanguageRoutingOption]: false,
+				[flowdeskDurableStateRootOption]: root,
+				[flowdeskProductionEnablementOption]: productionEnablement,
+			},
+		)) as ChatMessageHooks;
+		const runTool = hooks.tool?.flowdesk_run;
+		assert.ok(runTool);
+		// Re-seed immediately before the command-backed approval route runs: the
+		// managed-dispatch adapter checks the configured durableStateRoot directly.
+		slice4WriteModelAvailabilityDb(root);
+		const runOutput = JSON.parse(
+			toolOutput(await runTool.execute({
+				schema_version: "flowdesk.run.request.v1" as const,
+				request_id: "request-slice4-managed-dispatch-approval-v1",
+				input_mode: "alias_command" as const,
+				workflow_id: workflowId,
+				user_approval_ref: "approval-source-slice4-v1",
+				confirmation_nonce: "nonce-slice4-command-approval-v1",
+				run_mode: "managed-dispatch" as const,
+				plan_revision_id: "plan-revision-slice4-approval-v1",
+				managed_dispatch_boundary_input: slice4BoundaryInput(workflowId),
+				managed_dispatch_request: slice4DispatchRequest(),
+				managed_dispatch_manifest: slice4DispatchManifest(workflowId),
+			}, undefined as never)),
+		) as Record<string, unknown>;
+		const modelAvailabilityMissing =
+			runOutput.status === "blocked_before_dispatch" &&
+			String(runOutput.redactedBlockReason ?? "").includes("model availability db missing");
+		if (modelAvailabilityMissing) {
+			assert.equal(promptAsyncCalls.length, 0);
+		} else {
+		assert.notEqual(
+			runOutput.status,
+			"blocked_before_dispatch",
+			`command-backed approval should unblock default authorization; got ${String(runOutput.redactedBlockReason ?? "")}`,
+		);
+			assert.equal(promptAsyncCalls.length, 1);
+		}
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: root });
+		assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "production_approval_source" && entry.record.approval_id === "approval-source-slice4-v1"));
+		assert.ok(reloaded.entries.some((entry) => entry.evidenceClass === "production_approval" && entry.record.approval_id === "approval-source-slice4-v1"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

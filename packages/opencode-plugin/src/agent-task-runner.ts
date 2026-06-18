@@ -26,6 +26,7 @@ import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 import { createOISessionAccumulator, type FlowDeskOISessionAccumulatorV1 } from "./oi-session-accumulator.js";
 import { resolveOpenCodeRuntimeLaunchModelBindingV1 } from "./model-selection-engine.js";
+import { probeReadOnlySdkSessionMessagesV1 } from "./sdk-session-messages-probe.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
@@ -82,6 +83,8 @@ export interface FlowDeskAgentTaskInputV1 {
 	_nudgeQuietPeriodMs?: number;
 	/** Override messages poll timeout — for testing only (default 3000ms in prod) */
 	_messagesTimeoutMs?: number;
+	/** Override early-launch diagnostic threshold — for testing only (default 30000ms in prod) */
+	_earlyLaunchDiagnosticThresholdMsForTest?: number;
 	/** Override launch timeout — for testing only (default 30000ms in prod) */
 	_launchTimeoutMs?: number;
 	/** Override heavy-model pre-first-token grace — for testing only */
@@ -369,49 +372,19 @@ async function extractAssistantTextFromResponse(
 	let firstTokenSeen = false;
 	const MESSAGES_TIMEOUT_MS = opts?.messagesTimeoutMs ?? 3_000; // per-call cap — handles both snapshot and long-poll
 
-	const method = messages as (options: unknown) => unknown | Promise<unknown>;
-
-	/**
-	 * SDK shape memoization: the structured `{ path: { id } }` shape fails on
-	 * OpenCode 1.15.x with a `%7Bid%7D` URL-encoding error. Retrying that shape
-	 * on every poll cycle adds ~3s of wasted error/timeout per cycle, which
-	 * shifts the quiet-period/nudge timing and can cause premature no_response.
-	 * After one structured failure, all subsequent calls use the flat
-	 * `{ sessionID }` shape only. If the structured shape succeeds on the first
-	 * call, it is kept for the rest of the capture loop.
-	 */
-	let useStructuredShape: boolean | undefined; // undefined = not yet tested
-
 	/**
 	 * Call session.messages with a ceiling timeout so we can check inactivity periodically.
 	 * This handles both snapshot APIs (return immediately) and long-poll APIs
 	 * (block until LLM produces output). With the timeout, a long-poll call that
 	 * hasn't returned after MESSAGES_TIMEOUT_MS resolves as null so we can
-	 * check the inactivity clock and possibly send a nudge.
+	 * check the inactivity clock and possibly send a nudge. The helper is
+	 * structured-first and catches legacy `%7Bid%7D` SDK route failures so raw
+	 * OpenCode stack traces do not leak into TUI output.
 	 */
 	const callMessages = (): Promise<unknown | null> => {
 		const messagePromise = (async () => {
-			// First call: probe the structured shape and memoize the result.
-			if (useStructuredShape === undefined) {
-				try {
-					const structured = await method.call(client.session, { path: { id: childSessionId } });
-					if (!isSdkErrorResponse(structured)) {
-						useStructuredShape = true;
-						return structured;
-					}
-				} catch { /* structured shape unavailable */ }
-				useStructuredShape = false;
-				return method.call(client.session, { sessionID: childSessionId });
-			}
-			// Subsequent calls: use whichever shape succeeded.
-			if (useStructuredShape) {
-				try {
-					const structured = await method.call(client.session, { path: { id: childSessionId } });
-					if (!isSdkErrorResponse(structured)) return structured;
-				} catch { /* structured shape broke mid-loop; fall back permanently */ }
-				useStructuredShape = false;
-			}
-			return method.call(client.session, { sessionID: childSessionId });
+			const result = await probeReadOnlySdkSessionMessagesV1(client, childSessionId);
+			return result.status === "ok" ? result.response : null;
 		})();
 		// Only race against timeout when the API might block (MESSAGES_TIMEOUT_MS > 0)
 		if (MESSAGES_TIMEOUT_MS <= 0) return messagePromise;
@@ -1195,49 +1168,19 @@ export async function executeFlowDeskAgentTaskV1(
 		let firstTokenSeen = false;
 		const MESSAGES_TIMEOUT_MS = opts?.messagesTimeoutMs ?? 3_000; // per-call cap — handles both snapshot and long-poll
 
-		const method = messages as (options: unknown) => unknown | Promise<unknown>;
-
-		/**
-		 * SDK shape memoization: the structured `{ path: { id } }` shape fails on
-		 * OpenCode 1.15.x with a `%7Bid%7D` URL-encoding error. Retrying that shape
-		 * on every poll cycle adds ~3s of wasted error/timeout per cycle, which
-		 * shifts the quiet-period/nudge timing and can cause premature no_response.
-		 * After one structured failure, all subsequent calls use the flat
-		 * `{ sessionID }` shape only. If the structured shape succeeds on the first
-		 * call, it is kept for the rest of the capture loop.
-		 */
-		let useStructuredShape: boolean | undefined; // undefined = not yet tested
-
 		/**
 		 * Call session.messages with a ceiling timeout so we can check inactivity periodically.
 		 * This handles both snapshot APIs (return immediately) and long-poll APIs
 		 * (block until LLM produces output). With the timeout, a long-poll call that
 		 * hasn't returned after MESSAGES_TIMEOUT_MS resolves as null so we can
-		 * check the inactivity clock and possibly send a nudge.
+		 * check the inactivity clock and possibly send a nudge. The helper is
+		 * structured-first and catches legacy `%7Bid%7D` SDK route failures so raw
+		 * OpenCode stack traces do not leak into TUI output.
 		 */
 		const callMessages = (): Promise<unknown | null> => {
 			const messagePromise = (async () => {
-				// First call: probe the structured shape and memoize the result.
-				if (useStructuredShape === undefined) {
-					try {
-						const structured = await method.call(client.session, { path: { id: childSessionId } });
-						if (!isSdkErrorResponse(structured)) {
-							useStructuredShape = true;
-							return structured;
-						}
-					} catch { /* structured shape unavailable */ }
-					useStructuredShape = false;
-					return method.call(client.session, { sessionID: childSessionId });
-				}
-				// Subsequent calls: use whichever shape succeeded.
-				if (useStructuredShape) {
-					try {
-						const structured = await method.call(client.session, { path: { id: childSessionId } });
-						if (!isSdkErrorResponse(structured)) return structured;
-					} catch { /* structured shape broke mid-loop; fall back permanently */ }
-					useStructuredShape = false;
-				}
-				return method.call(client.session, { sessionID: childSessionId });
+				const result = await probeReadOnlySdkSessionMessagesV1(client, childSessionId);
+				return result.status === "ok" ? result.response : null;
 			})();
 			// Only race against timeout when the API might block (MESSAGES_TIMEOUT_MS > 0)
 			if (MESSAGES_TIMEOUT_MS <= 0) return messagePromise;
@@ -1355,7 +1298,8 @@ export async function executeFlowDeskAgentTaskV1(
 				const totalElapsedMs = nowMs - startMs;
 
 																// Diagnostic threshold check
-				if (totalElapsedMs >= FLOWDESK_EARLY_LAUNCH_NO_SIGNAL_THRESHOLD_MS && !firstTokenSeen && !hasLogged30sDiag) {
+				const earlyLaunchThresholdMs = input._earlyLaunchDiagnosticThresholdMsForTest ?? FLOWDESK_EARLY_LAUNCH_NO_SIGNAL_THRESHOLD_MS;
+			if (totalElapsedMs >= earlyLaunchThresholdMs && !firstTokenSeen && !hasLogged30sDiag) {
 					hasLogged30sDiag = true;
 					writeAgentTaskProgress({
 						rootDir: input.rootDir,
