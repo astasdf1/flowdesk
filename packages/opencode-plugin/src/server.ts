@@ -5,7 +5,9 @@ import { join, resolve, sep } from "node:path";
 import {
 	applyFlowDeskSessionEvidenceWriteIntentsV1,
 	authorizeFlowDeskDefaultManagedDispatchV1,
+	consumeFlowDeskProductionApprovalSourceV1,
 	createFlowDeskChatHookAuthorityProbeV1,
+	createFlowDeskProductionApprovalDecisionV1,
 	evaluateFlowDeskDefaultManagedDispatchPromotionReadinessV1,
 	evaluateFlowDeskChatIntakeV1,
 	evaluateFlowDeskProductionEnablementV1,
@@ -29,6 +31,7 @@ import {
 	type FlowDeskToolRequestEnvelopeV1,
 	getFlowDeskPortableCommandToolName,
 	getRelease1SchemaArtifact,
+	issueFlowDeskProductionApprovalSourceV1,
 	type ManagedDispatchBetaBoundaryInputV1,
 	materializeFlowDeskExactModelCacheEvidenceFromProviderAcquisitionEvidenceV1,
 	materializeFlowDeskRuntimeLaneLaunchPlansFromReviewerFanoutEvidenceV1,
@@ -39,6 +42,7 @@ import {
 	type UsageAwareModelResolverResultV1,
 	type SafeNextAction,
 	validateFlowDeskDefaultManagedDispatchAuthorizationV1,
+	validateFlowDeskProductionApprovalDecisionV1,
 	validateConformanceRuntimeMetadataV1,
 	validateFlowDeskGitHubDryRunPublicationResultV1,
 	validateProjectConfigV1,
@@ -2225,6 +2229,139 @@ function blockedManagedDispatchRunRoute(
 	};
 }
 
+function productionApprovalDecisionFromReloadedEvidence(
+	evidenceReload: FlowDeskSessionEvidenceReloadResultV1,
+	workflowId: string,
+): FlowDeskProductionApprovalDecisionV1 | undefined {
+	for (const entry of [...evidenceReload.entries].reverse()) {
+		if (entry.evidenceClass !== "production_approval") continue;
+		const decision = entry.record as unknown as FlowDeskProductionApprovalDecisionV1;
+		const validation = validateFlowDeskProductionApprovalDecisionV1(decision, workflowId);
+		if (validation.ok) return decision;
+	}
+	return undefined;
+}
+
+function textField(record: Record<string, unknown>, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function persistProductionApprovalFromManagedDispatchRunRequest(input: {
+	request: Record<string, unknown>;
+	options: FlowDeskManagedDispatchRunRouteOptionsV1;
+	now?: Date;
+}): { persisted: boolean; errors: string[]; evidenceIds: string[] } {
+	if (input.options.durableStateRootDir === undefined) return { persisted: false, errors: [], evidenceIds: [] };
+	const confirmation = textField(input.request, "user_approval_ref");
+	if (confirmation === undefined) return { persisted: false, errors: [], evidenceIds: [] };
+	if (!isRecord(input.request.managed_dispatch_manifest)) return { persisted: false, errors: [], evidenceIds: [] };
+	const manifest = input.request.managed_dispatch_manifest;
+	const workflowId = textField(manifest, "workflow_id") ?? textField(input.request, "workflow_id");
+	const attemptId = textField(manifest, "attempt_id");
+	const approvalRef = textField(manifest, "approval_ref") ?? confirmation;
+	const consumedApprovalRef = textField(manifest, "consumed_approval_ref") ?? approvalRef;
+	const actorRef = textField(manifest, "actor_ref");
+	const profileRef = textField(manifest, "profile_ref");
+	const providerQualifiedModelId = textField(manifest, "provider_qualified_model_id");
+	const providerBindingHash = textField(manifest, "provider_binding_hash");
+	const evidenceBundleHash = textField(manifest, "evidence_bundle_hash");
+	const guardDecisionRef = textField(manifest, "guard_decision_ref");
+	const preDispatchAuditRef = textField(manifest, "pre_dispatch_audit_ref");
+	const idempotencyKey = textField(manifest, "idempotency_key");
+	if (
+		workflowId === undefined ||
+		attemptId === undefined ||
+		approvalRef === undefined ||
+		actorRef === undefined ||
+		profileRef === undefined ||
+		providerQualifiedModelId === undefined ||
+		providerBindingHash === undefined ||
+		evidenceBundleHash === undefined ||
+		guardDecisionRef === undefined ||
+		preDispatchAuditRef === undefined ||
+		idempotencyKey === undefined
+	) return { persisted: false, errors: [], evidenceIds: [] };
+
+	const existingReload = reloadFlowDeskSessionEvidenceV1({ workflowId, rootDir: input.options.durableStateRootDir });
+	const hasApprovalSource = existingReload.entries.some(
+		(entry) => entry.evidenceClass === "production_approval_source" && entry.record.approval_id === approvalRef,
+	);
+	const hasApprovalDecision = existingReload.entries.some(
+		(entry) => entry.evidenceClass === "production_approval" && entry.record.approval_id === approvalRef,
+	);
+	if (hasApprovalSource && hasApprovalDecision) return { persisted: false, errors: [], evidenceIds: [] };
+
+	const now = input.now ?? new Date();
+	const issuedAt = now.toISOString();
+	const consumedAt = new Date(now.getTime() + 1).toISOString();
+	const nonceRef = textField(input.request, "confirmation_nonce") ?? safeToken(`nonce-${approvalRef}`, "nonce-managed-dispatch-approval");
+	const issue = issueFlowDeskProductionApprovalSourceV1({
+		workflowId,
+		attemptId,
+		actionType: "managed_dispatch_beta",
+		actorRef,
+		profileRef,
+		providerQualifiedModelId,
+		evidenceEntries: existingReload.entries
+			.filter((entry) => entry.evidenceClass !== "production_approval" && entry.evidenceClass !== "production_approval_source")
+			.map((entry) => ({
+				evidenceClass: entry.evidenceClass,
+				evidenceId: entry.evidenceId,
+				path: entry.path,
+				record: entry.record,
+			})),
+		requiredEvidenceClasses: ["pre_dispatch_audit", "dispatch_idempotency", "usage_authority", "runtime_echo", "telemetry_correlation"],
+		confirmation: {
+			method: "typed_phrase",
+			issuerBoundary: "external_user_confirmation",
+			expectedPhrase: confirmation,
+			providedPhrase: confirmation,
+		},
+		guardDecisionRef,
+		issuanceAuditRef: safeToken(`issuance-${approvalRef}`, "issuance-managed-dispatch-approval"),
+		nonceRef,
+		issuedAt,
+		ttlMs: 30 * 60_000,
+		now: issuedAt,
+	});
+	if (!issue.ok || issue.approval === undefined || issue.evidence_bundle_hash === undefined || issue.provider_binding_hash === undefined)
+		return { persisted: false, errors: issue.errors, evidenceIds: [] };
+	const approval = { ...issue.approval, approval_id: approvalRef, provider_binding_hash: providerBindingHash, evidence_bundle_hash: evidenceBundleHash };
+	const consumed = consumeFlowDeskProductionApprovalSourceV1({
+		approval,
+		workflowId,
+		attemptId,
+		actionType: "managed_dispatch_beta",
+		actorRef,
+		profileRef,
+		providerQualifiedModelId,
+		providerBindingHash,
+		evidenceBundleHash,
+		guardDecisionRef,
+		consumptionAuditRef: safeToken(`approval-consumption-${approvalRef}`, "approval-consumption"),
+		consumedAt,
+	});
+	if (!consumed.ok || consumed.consumed_approval === undefined) return { persisted: false, errors: consumed.errors, evidenceIds: [] };
+	const decision = createFlowDeskProductionApprovalDecisionV1({
+		approvalId: approvalRef,
+		workflowId,
+		decision: "approve",
+		createdAt: consumedAt,
+		requiredEvidenceRefs: [preDispatchAuditRef, approvalRef],
+	});
+	const records = [
+		...(hasApprovalSource ? [] : [{ evidenceId: consumedApprovalRef, record: consumed.consumed_approval as unknown as Record<string, unknown> }]),
+		...(hasApprovalDecision ? [] : [{ evidenceId: safeToken(`${approvalRef}-decision`, "approval-decision"), record: decision as unknown as Record<string, unknown> }]),
+	];
+	const intents = records.map(({ evidenceId, record }) => prepareFlowDeskSessionEvidenceWriteIntentV1({ workflowId, evidenceId, record }));
+	const errors = intents.flatMap((prepared) => prepared.errors);
+	const writeIntents = intents.flatMap((prepared) => prepared.writeIntent === undefined ? [] : [prepared.writeIntent]);
+	if (errors.length > 0 || writeIntents.length !== records.length) return { persisted: false, errors, evidenceIds: [] };
+	const applied = applyFlowDeskSessionEvidenceWriteIntentsV1(input.options.durableStateRootDir, writeIntents);
+	return { persisted: applied.ok, errors: applied.errors, evidenceIds: records.map((record) => record.evidenceId) };
+}
+
 async function evaluateFlowDeskManagedDispatchRunRoute(
 	request: Record<string, unknown>,
 	options: FlowDeskManagedDispatchRunRouteOptionsV1 = {},
@@ -2233,6 +2370,13 @@ async function evaluateFlowDeskManagedDispatchRunRoute(
 	if (!requestValidation.ok) {
 		return blockedManagedDispatchRunRoute(
 			"/flowdesk-run managed-dispatch requires a valid flowdesk.run.request.v1 envelope before dispatch routing.",
+			options.defaultAuthorization,
+		);
+	}
+	const persistedApproval = persistProductionApprovalFromManagedDispatchRunRequest({ request, options });
+	if (persistedApproval.errors.length > 0) {
+		return blockedManagedDispatchRunRoute(
+			`/flowdesk-run managed-dispatch could not persist user production approval evidence: ${persistedApproval.errors.join("; ")}`,
 			options.defaultAuthorization,
 		);
 	}
@@ -3945,7 +4089,8 @@ function lastCompletionWakeParentSessionId(): string {
 	const parentSessionId = parentSessionRef.startsWith("ses-")
 		? parentSessionRef.slice("ses-".length)
 		: parentSessionRef;
-	return parentSessionId.trim();
+	const trimmed = parentSessionId.trim();
+	return isPlaceholderSessionId(trimmed) ? "" : trimmed;
 }
 
 function parentSessionIdWithCompletionWakeFallback(parentSessionId: string | undefined): string | undefined {
@@ -4011,9 +4156,14 @@ function liveSessionIdFromContext(ctx: unknown): string {
 	for (const candidate of candidates) {
 		if (typeof candidate !== "string") continue;
 		const trimmed = candidate.trim();
-		if (trimmed.length > 0) return trimmed;
+		if (trimmed.length > 0 && !isPlaceholderSessionId(trimmed)) return trimmed;
 	}
 	return "";
+}
+
+function isPlaceholderSessionId(value: string): boolean {
+	const trimmed = value.trim();
+	return trimmed === "{id}" || /%7bid%7d/i.test(trimmed) || /[{}]/.test(trimmed);
 }
 
 function providerQualifiedModelIdFromString(value: unknown): string | undefined {
@@ -4241,7 +4391,9 @@ function deriveDefaultManagedDispatchAuthorizationFromProductionEnablement(
 			productionOptions.externalAuthProviderPolicyResult,
 		laneConformanceRefs: productionOptions.laneConformanceRefs,
 		allowIncompleteConformance: productionOptions.allowIncompleteConformance,
-		approvalDecision: productionOptions.approvalDecision,
+		approvalDecision:
+			productionOptions.approvalDecision ??
+			productionApprovalDecisionFromReloadedEvidence(evidenceReload, workflowId),
 	});
 	if (productionEnablement.plugin_satisfiable_gate_passed !== true)
 		return undefined;
@@ -4340,7 +4492,9 @@ function deriveDefaultManagedDispatchAuthorizationForDoctorV1(input: {
 			productionOptions.externalAuthProviderPolicyResult,
 		laneConformanceRefs: productionOptions.laneConformanceRefs,
 		allowIncompleteConformance: productionOptions.allowIncompleteConformance,
-		approvalDecision: productionOptions.approvalDecision,
+		approvalDecision:
+			productionOptions.approvalDecision ??
+			productionApprovalDecisionFromReloadedEvidence(evidenceReload, workflowId),
 	});
 	if (productionEnablement.plugin_satisfiable_gate_passed !== true)
 		return undefined;
@@ -4947,27 +5101,63 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 				// (no dispatch/fallback/Guard authority; not managed fallback/reselection).
 				const resolved = resolveUsageAwareModelForServer(rootDir, providerQualifiedModelId);
 				const effectiveModelId = resolved.resolvedModelId;
-				const result = await executeFlowDeskAgentTaskV1({
-					workflowId,
-					taskId,
-					laneId,
-					agentRef: `agent-${agentName}`,
-					providerQualifiedModelId: effectiveModelId,
-					promptText: taskDescription,
-					parentSessionId,
-					parentSessionProviderQualifiedModelId,
-					rootDir,
-					client,
-					asyncMode,
-					_nudgeQuietPeriodMs: nudgeQuietPeriodMs,
-					...(resolved.overrideApplied && resolved.overrideReason ? {
-						usageAwareOverride: {
-							originalModelId: providerQualifiedModelId,
-							overrideReason: resolved.overrideReason,
-							allowCrossFamily: true,
-						},
-					} : {}),
-				});
+				let result: FlowDeskAgentTaskResultV1;
+				try {
+					result = await executeFlowDeskAgentTaskV1({
+						workflowId,
+						taskId,
+						laneId,
+						agentRef: `agent-${agentName}`,
+						providerQualifiedModelId: effectiveModelId,
+						promptText: taskDescription,
+						parentSessionId,
+						parentSessionProviderQualifiedModelId,
+						rootDir,
+						client,
+						asyncMode,
+						_nudgeQuietPeriodMs: nudgeQuietPeriodMs,
+						...(resolved.overrideApplied && resolved.overrideReason ? {
+							usageAwareOverride: {
+								originalModelId: providerQualifiedModelId,
+								overrideReason: resolved.overrideReason,
+								allowCrossFamily: true,
+							},
+						} : {}),
+					});
+				} catch {
+					const failureCategory = "sdk_runtime_exception";
+					const redactedReason = "agent_task_execute_failed_redacted";
+					return JSON.stringify({
+						workflowId,
+						laneId,
+						taskId,
+						status: "task_failed",
+						taskPreview: promptPreview(taskDescription),
+						agentName,
+						providerQualifiedModelId: effectiveModelId,
+						requestedModel: providerQualifiedModelId,
+						effectiveModel: effectiveModelId,
+						modelOverrideApplied: resolved.overrideApplied,
+						providerBindingChangedBeforeLaunch: resolved.providerBindingChangedBeforeLaunch,
+						preLaunchModelSubstitution: resolved.preLaunchModelSubstitution,
+						modelSubstitutionKind: resolved.modelSubstitutionKind,
+						...(resolved.overrideReason === undefined ? {} : { modelOverrideReason: resolved.overrideReason }),
+						failureCategory,
+						redactedReason,
+						safeNextActions: ["/flowdesk-status", "/flowdesk-doctor"],
+						summaryForUser: taskSummaryForUser({
+							status: "task_failed",
+							workflowId,
+							laneId,
+							taskId,
+							agentName,
+							providerQualifiedModelId: effectiveModelId,
+							promptText: taskDescription,
+							failureCategory,
+							redactedReason,
+						}),
+					});
+				}
 				const failureCategory = result.status === "task_failed" ? result.failureCategory : undefined;
 				const redactedReason = result.status === "task_failed" ? result.redactedReason : undefined;
 				return JSON.stringify({
@@ -7442,7 +7632,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 		"chat.message": createFlowDeskNaturalLanguageChatMessageHook(
 			() => new Date(),
 			localSession,
-			stallAlertOption,
+			undefined, // stall alert removed: full-scan on every chat message caused latency
 			durableStateRootFromOptions(options),
 			providerUsageLiveConfig,
 			chatIntakeModeGate,
