@@ -127,11 +127,11 @@ function runtimeReviewerExecutionExpectation() {
 	};
 }
 
-function writeLaunchPlan(root: string) {
+function writeLaunchPlan(root: string, overrides: Record<string, unknown> = {}) {
 	const prepared = prepareFlowDeskSessionEvidenceWriteIntentV1({
 		workflowId,
 		evidenceId: "launch-plan-runtime-reviewer-bridge-focused",
-		record: runtimeLaneLaunchPlanRecord(),
+		record: runtimeLaneLaunchPlanRecord(overrides),
 	});
 	assert.equal(prepared.ok, true, prepared.errors.join("; "));
 	assert.ok(prepared.writeIntent);
@@ -280,6 +280,38 @@ test("runtime reviewer execution bridge classifies completion read failure as in
 		assert.equal(lane.completeLifecycle, "invocation_failed");
 		assertNoExecutionAuthority(result);
 		assertNoEvidenceAuthority(root);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("runtime reviewer execution bridge blocks placeholder parent session before SDK calls", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-runtime-reviewer-bridge-placeholder-parent-"));
+	try {
+		writeLaunchPlan(root, { parent_session_ref: "ses--7Bid-7D" });
+		const fake = fakeReviewerExecutionClient("pass");
+		const result = await executeFlowDeskRuntimeReviewerExecutionBridgeV1({
+			client: fake.client as never,
+			rootDir: root,
+			request: {
+				workflowId,
+				attemptId,
+				parentSessionId: "%7Bid%7D",
+				allowActualLaneLaunch: true,
+				observedAt,
+				consumedReviewerFanoutApproval: consumedReviewerFanoutApprovalRecord(),
+				verdictExpectations: [runtimeReviewerExecutionExpectation()],
+				completionWait: { pollIntervalMs: 25, maxWaitMs: 75, quietPeriodMs: 0, stableSampleCount: 2 },
+			},
+		});
+		assert.equal(result.status, "runtime_reviewer_execution_incomplete");
+		assert.equal(fake.createCalls.length, 0);
+		assert.equal(fake.promptCalls.length, 0);
+		assert.equal(fake.messageCalls.length, 0);
+		const lane = (result.lanes as Array<Record<string, unknown>>)[0];
+		assert.equal(lane.launchStatus, "blocked_before_lane_launch");
+		assert.doesNotMatch(JSON.stringify(result), /%7Bid%7D|Expected a string starting|Error:/);
+		assertNoExecutionAuthority(result);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

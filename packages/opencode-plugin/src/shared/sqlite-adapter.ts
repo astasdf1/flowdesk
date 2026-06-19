@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+
 /**
  * SQLite runtime adapter for FlowDesk plugin.
  *
@@ -36,10 +38,12 @@ function isBunRuntime(): boolean {
  * Dispatches to bun:sqlite in the Bun plugin runtime,
  * or node:sqlite in the Node.js test runner.
  */
+const flowdeskSqliteRequire = createRequire(import.meta.url);
+
 export function openReadonlyDb(filePath: string): DatabaseAdapter {
 	if (isBunRuntime()) {
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const { Database } = require("bun:sqlite") as {
+		const { Database } = flowdeskSqliteRequire("bun:sqlite") as {
 			Database: new (path: string, opts?: { readonly?: boolean }) => {
 				prepare<T>(sql: string): { all(...p: unknown[]): T[] };
 				close(): void;
@@ -49,7 +53,7 @@ export function openReadonlyDb(filePath: string): DatabaseAdapter {
 	} else {
 		// Node.js 22+ built-in
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const { DatabaseSync } = require("node:sqlite") as {
+		const { DatabaseSync } = flowdeskSqliteRequire("node:sqlite") as {
 			DatabaseSync: new (path: string, opts?: { open?: boolean }) => {
 				prepare<T>(sql: string): { all(...p: unknown[]): T[] };
 				close(): void;

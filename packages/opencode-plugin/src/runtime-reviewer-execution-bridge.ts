@@ -22,6 +22,7 @@ import {
 	prepareFlowDeskDurableReviewerVerdictLinkageAdapterV1,
 	prepareFlowDeskReviewerTypedVerdictAcceptanceAdapterV1,
 } from "./managed-dispatch-adapter.js";
+import { probeReadOnlySdkSessionMessagesV1 } from "./sdk-session-messages-probe.js";
 
 export interface FlowDeskRuntimeReviewerExecutionExpectationV1 {
 	launchPlanEvidenceId: string;
@@ -159,8 +160,9 @@ async function callMessagesWithFallback(input: {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	childSessionId: string;
 }): Promise<unknown> {
-	const method = input.client.session.messages as (options: unknown) => unknown | Promise<unknown>;
-	return method.call(input.client.session, { sessionID: input.childSessionId });
+	const result = await probeReadOnlySdkSessionMessagesV1(input.client, input.childSessionId, { fallbackOnEmptyMessages: true });
+	if (result.status === "ok") return result.response;
+	throw new Error(result.reason);
 }
 
 function normalizedCompletionWaitOptions(

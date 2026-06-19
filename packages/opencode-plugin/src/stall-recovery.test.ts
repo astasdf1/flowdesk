@@ -727,6 +727,66 @@ test("watchdog captures idle-confirmed final text when no terminal marker is pre
 	}
 });
 
+test("watchdog does not idle-capture process-note text", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-idle-process-note-"));
+	try {
+		const workflowId = "workflow-watchdog-idle-process-note";
+		const laneId = "lane-watchdog-idle-process-note";
+		const taskId = "task-watchdog-idle-process-note";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-idle-process-note",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			nudgeCount: 0,
+			lastNudgeAt: null,
+		});
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-05-26T10:00:00.000Z",
+				updated_at: "2026-05-26T10:00:00.000Z",
+			}),
+			"lifecycle-idle-process-note-running",
+		);
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:14.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session idle event observed",
+		}, "agent-task-progress-idle-process-note-idle-signal");
+
+		const result = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:15.000Z"),
+			nudgeQuietPeriodMs: 10_000, abortThresholdMs: 30_000, maxIdleContinuations: 0,
+			client: {
+				session: {
+					messages: async () => ({ messages: [{ role: "assistant", parts: [{ type: "text", text: "I'll analyze this systematically before reporting back." }] }] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => ({}),
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesCompleted, 0, "process-note text must not become terminal task_result");
+		assert.equal(result.lanesAwaitingCapture, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+		const finalization = reload.entries.find((entry) => entry.evidenceClass === "session_finalization_evidence")?.record as Record<string, unknown> | undefined;
+		assert.equal(finalization?.decision, "requires_review");
+		assert.equal(finalization?.block_reason, "unsupported_final_text_kind");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
 test("watchdog does not idle-capture while a tool is still running", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-watchdog-idle-tool-running-"));
 	try {
@@ -1274,7 +1334,7 @@ test("coordinator attention timer records review-requested diagnostic without ab
 	}
 });
 
-test("V11.2 Slice 2: TURN_COMPLETED event for this attempt captures body as final (turn-completed authority)", async () => {
+test("V11.2 correction: TURN_COMPLETED event with body waits for session idle before capture", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-v112-turncompleted-capture-"));
 	try {
 		const workflowId = "workflow-v112-turncompleted";
@@ -1312,13 +1372,13 @@ test("V11.2 Slice 2: TURN_COMPLETED event for this attempt captures body as fina
 			} as never,
 		});
 
-		assert.equal(result.lanesCompleted, 1, "turn-completed event with body must capture");
+		assert.equal(result.lanesCompleted, 0, "turn-completed event alone must not capture");
+		assert.equal(result.lanesAwaitingCapture, 1);
 		assert.equal(abortCalls, 0);
-		const sidebar = JSON.parse(readFileSync(join(rootDir, ".flowdesk", "ui", "subtask-activity-sidebar.json"), "utf8")) as Record<string, unknown>;
-		const rows = sidebar.rows as Array<Record<string, unknown>>;
-		const row = rows.find((r) => r.laneId === laneId);
-		assert.equal(row?.state, "task_result");
-		assert.equal(row?.completionStatus, "final");
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "agent_task_progress" && String((entry.record as Record<string, unknown>).progress_label).includes("awaiting session idle before capture")), true);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -1477,7 +1537,7 @@ test("finalization timing: step_finish waits for 30s silence before evaluating",
 	}
 });
 
-test("finalization timing: step_finish, no running tools, and 30s silence starts evaluation", async () => {
+test("finalization timing: step_finish, no running tools, and 30s silence still waits for session idle", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-finalization-silence-ready-"));
 	try {
 		const workflowId = "workflow-finalization-silence-ready";
@@ -1500,10 +1560,11 @@ test("finalization timing: step_finish, no running tools, and 30s silence starts
 			client: { session: { messages: async () => ({ messages: [{ role: "assistant", finish_reason: "stop", parts: [{ type: "text", text: "Final answer ready." }] }] }), prompt: async () => ({}), promptAsync: async () => ({}), abort: async () => ({}) } } as never,
 		});
 
-		assert.equal(result.lanesCompleted, 1);
+		assert.equal(result.lanesCompleted, 0);
+		assert.equal(result.lanesAwaitingCapture, 1);
 		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
 		assert.equal(reload.ok, true);
-		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
 		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "session_finalization_evidence"), true);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
@@ -1993,17 +2054,17 @@ test("watchdog terminalizes empty actual terminal marker after finalizing hard c
 	}
 });
 
-test("monitorChildSessionsV1 liveness poll captures text from silent child session", async () => {
-	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-liveness-captures-text-"));
+test("monitorChildSessionsV1 liveness poll observes text but waits without terminal marker or session idle", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-liveness-observes-text-"));
 	try {
-		const workflowId = "workflow-liveness-captures-text";
-		const laneId = "lane-liveness-captures-text";
-		const taskId = "task-liveness-captures-text";
+		const workflowId = "workflow-liveness-observes-text";
+		const laneId = "lane-liveness-observes-text";
+		const taskId = "task-liveness-observes-text";
 		writeAgentTaskChildSession(rootDir, {
 			workflowId, laneId, taskId,
-			childSessionId: "ses-child-liveness-captures-text",
+			childSessionId: "ses-child-liveness-observes-text",
 			createdAt: "2026-05-26T10:00:00.000Z",
-		}, "agent-task-child-session-liveness-captures-text");
+		}, "agent-task-child-session-liveness-observes-text");
 
 		const result = await monitorChildSessionsV1({
 			rootDir,
@@ -2019,12 +2080,12 @@ test("monitorChildSessionsV1 liveness poll captures text from silent child sessi
 			} as never,
 		});
 
-		assert.equal(result.lanesCompleted, 1);
+		assert.equal(result.lanesCompleted, 0);
+		assert.equal(result.lanesAwaitingCapture, 1);
 		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
 		assert.equal(reload.ok, true);
-		const taskResult = reload.entries.find((entry) => entry.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
-		assert.equal(taskResult?.result_text, "Liveness final report.");
-		assert.equal(taskResult?.finalization_reason, "timeout_partial");
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "agent_task_progress" && String((entry.record as Record<string, unknown>).progress_label).includes("awaiting terminal marker or session idle before capture")), true);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -2233,14 +2294,16 @@ test("single session.idle event injects one capped idle continuation prompt when
 
 		let promptAsyncCalls = 0;
 		let promptAsyncText: string | undefined;
+		let promptAsyncPathId: string | undefined;
 		let abortCalls = 0;
 		const client = {
 			session: {
 				// Idle: no assistant text at all.
 				messages: async () => ({ messages: [] }),
-				promptAsync: async (o: { parts?: Array<{ text?: string }> }) => {
+				promptAsync: async (o: { path?: { id?: string }; body?: { parts?: Array<{ text?: string }> } }) => {
 					promptAsyncCalls += 1;
-					promptAsyncText = o?.parts?.[0]?.text;
+					promptAsyncPathId = o?.path?.id;
+					promptAsyncText = o?.body?.parts?.[0]?.text;
 					return {};
 				},
 				abort: async () => { abortCalls += 1; return {}; },
@@ -2265,6 +2328,7 @@ test("single session.idle event injects one capped idle continuation prompt when
 		assert.equal(first.lanesNudged, 1);
 		assert.equal(first.lanesAborted, 0);
 		assert.equal(promptAsyncCalls, 1, "exactly one continuation prompt injected");
+		assert.equal(promptAsyncPathId, "ses-child-idle-continuation");
 		assert.equal(abortCalls, 0);
 		assert.equal(typeof promptAsyncText === "string" && promptAsyncText.toLowerCase().includes("final answer"), true);
 
@@ -3509,16 +3573,6 @@ test("guarded auto-retry blocked when lane not in aborted state", async () => {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
-
-// This test requires a successful lane launch (sync path) to exercise early_launch_diagnostic.
-// The sync capture path is only reachable after a successful session.prompt, which requires
-// the runtime SDK + provider catalog to be fully available. In the isolated test environment
-// the launch fails early (provider catalog lookup succeeds but runtime dispatch is unavailable),
-// so the sync poll loop is never entered and the diagnostic is never written.
-// Tracked: add a _skipRuntimeLaunch test fixture to executeFlowDeskAgentTaskV1 that stubs
-// the launch result so the sync poll path can be tested in isolation.
-test.todo("executeFlowDeskAgentTaskV1 writes early_launch_diagnostic for 30s");
-
 
 test("monitorChildSessionsV1 automatically terminalizes inconsistent finalizing lanes after 1h (orphaned)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-stall-inconsistent-orphan-"));

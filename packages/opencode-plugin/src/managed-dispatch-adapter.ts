@@ -10,6 +10,12 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { openReadonlyDb } from "./shared/sqlite-adapter.js";
+import { probeReadOnlySdkSessionMessagesV1 } from "./sdk-session-messages-probe.js";
+import {
+	callFlowDeskSdkWithLegacyFallbackV1,
+	flowDeskSdkSessionLegacyOptionsV1,
+	flowDeskSdkSessionPathOptionsV1,
+} from "./sdk-session-call.js";
 import type {
 	FlowDeskControlledConformanceDocWriteRecordV1,
 	FlowDeskControlledExternalWriteRequestV1,
@@ -908,17 +914,15 @@ function providerAcquisitionPromptOptions(input: {
 	directory?: string;
 }): FlowDeskManagedDispatchBetaPromptOptionsV1 {
 	const sessionId = input.sessionId?.trim() || input.request.live_test_run_ref;
-	return {
-		sessionID: sessionId,
-		...(input.directory === undefined
-			? {}
-			: { query: { directory: input.directory } }),
+	return flowDeskSdkSessionPathOptionsV1({
+		sessionId,
+		...(input.directory === undefined ? {} : { directory: input.directory }),
 		body: {
 			model: input.model,
 			agent: input.agent?.trim() || "general",
 			parts: [{ type: "text", text: flowdeskExactModelProviderAcquisitionSentinelPromptV1 }],
 		},
-	};
+	}) as FlowDeskManagedDispatchBetaPromptOptionsV1;
 }
 
 function providerAcquisitionDuplicateLabels(input: {
@@ -1132,13 +1136,14 @@ export function createFlowDeskOpenCodePromptBackedProviderAcquisitionClientV1(
 				...(typeof options.agent === "string" ? { agent: options.agent } : {}),
 				...(typeof options.directory === "string" ? { directory: options.directory } : {}),
 			});
-			const { sessionID: promptSessionID, ...legacyPromptOptionsBase } = promptOptions;
-			const legacyPromptOptions = {
-				...legacyPromptOptionsBase,
-				path: { id: promptSessionID ?? request.live_test_run_ref },
-			};
+			const promptSessionId = promptOptions.path?.id ?? request.live_test_run_ref;
+			const legacyPromptOptions = flowDeskSdkSessionLegacyOptionsV1({
+				sessionId: promptSessionId,
+				...(typeof options.directory === "string" ? { directory: options.directory } : {}),
+				body: promptOptions.body,
+			});
 			try {
-				await callSdkWithLegacyFallback(
+				await callFlowDeskSdkWithLegacyFallbackV1(
 					prompt as (options: unknown) => unknown | Promise<unknown>,
 					client.session,
 					promptOptions,
@@ -1511,22 +1516,26 @@ export async function abortFlowDeskSessionWithDecisionV1(input: {
 			authority: sessionAbortControlAuthority(false),
 		};
 	}
-	const response = await callSdkWithLegacyFallback(
-		abort as (options: unknown) => unknown | Promise<unknown>,
-		input.client.session,
-		{
-			sessionID: input.decision.session_ref,
-			...(input.directory === undefined
-				? {}
-				: { query: { directory: input.directory } }),
-		},
-		{
-			path: { id: input.decision.session_ref },
-			...(input.directory === undefined
-				? {}
-				: { query: { directory: input.directory } }),
-		},
-	);
+	let response: unknown;
+	try {
+		response = await callFlowDeskSdkWithLegacyFallbackV1(
+			abort as (options: unknown) => unknown | Promise<unknown>,
+			input.client.session,
+			flowDeskSdkSessionPathOptionsV1({ sessionId: input.decision.session_ref, ...(input.directory === undefined ? {} : { directory: input.directory }) }),
+			flowDeskSdkSessionLegacyOptionsV1({ sessionId: input.decision.session_ref, ...(input.directory === undefined ? {} : { directory: input.directory }) }),
+		);
+	} catch {
+		return {
+			adapterProfile: "session_abort_control_adapter",
+			status: "blocked_before_session_abort",
+			abortAttempted: true,
+			workflowId: input.decision.workflow_id,
+			attemptId: input.decision.attempt_id,
+			sessionRef: input.decision.session_ref,
+			redactedBlockReason: "Injected OpenCode session.abort failed before acknowledging the abort request.",
+			authority: sessionAbortControlAuthority(false),
+		};
+	}
 	return {
 		adapterProfile: "session_abort_control_adapter",
 		status: "session_abort_sent",
@@ -3376,6 +3385,11 @@ function refFrom(label: string, value: string): string {
 	return `${label}-${safe.length > 0 ? safe : "unknown"}`;
 }
 
+function isPlaceholderRuntimeParentSessionId(value: string): boolean {
+	const trimmed = value.trim();
+	return trimmed === "{id}" || /%7bid%7d/i.test(trimmed) || /[{}]/.test(trimmed);
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? (value as Record<string, unknown>)
@@ -3393,15 +3407,16 @@ function isSdkErrorResponse(value: unknown): boolean {
 	return record?.error !== undefined || data?.error !== undefined;
 }
 
-async function callSdkWithLegacyFallback(
-	method: (options: unknown) => unknown | Promise<unknown>,
-	thisArg: unknown,
-	currentOptions: unknown,
-	legacyOptions: unknown,
-): Promise<unknown> {
-	const current = await method.call(thisArg, currentOptions);
-	if (!isSdkErrorResponse(current)) return current;
-	return method.call(thisArg, legacyOptions);
+async function readSdkSessionMessagesFailClosed(
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+	sessionId: string,
+	directory?: string,
+): Promise<unknown | undefined> {
+	const result = await probeReadOnlySdkSessionMessagesV1(client, sessionId, {
+		...(directory === undefined ? {} : { query: { directory } }),
+		fallbackOnEmptyMessages: true,
+	});
+	return result.status === "ok" ? result.response : undefined;
 }
 
 function arrayData(value: unknown): unknown[] {
@@ -3599,22 +3614,7 @@ export async function observeInjectedSdkReviewerVerdictV1(input: {
 		};
 	}
 	try {
-		const messagesResponse = input.request.messagesResponse ?? await callSdkWithLegacyFallback(
-			messages as (options: unknown) => unknown | Promise<unknown>,
-			input.client.session,
-			{
-				sessionID: input.request.sessionId,
-				...(input.request.directory === undefined
-					? {}
-					: { query: { directory: input.request.directory } }),
-			},
-			{
-				path: { id: input.request.sessionId },
-				...(input.request.directory === undefined
-					? {}
-					: { query: { directory: input.request.directory } }),
-			},
-		);
+		const messagesResponse = input.request.messagesResponse ?? await readSdkSessionMessagesFailClosed(input.client, input.request.sessionId, input.request.directory);
 		const errors: string[] = [];
 		for (const candidate of topTierVerdictCandidates(messagesResponse)) {
 			const validation = validateTopTierReviewVerdictV1(candidate);
@@ -3678,21 +3678,11 @@ export async function observeInjectedSdkLaneV1(input: {
 		};
 	}
 	try {
-		const childrenResponse = await callSdkWithLegacyFallback(
+		const childrenResponse = await callFlowDeskSdkWithLegacyFallbackV1(
 			children as (options: unknown) => unknown | Promise<unknown>,
 			input.client.session,
-			{
-				sessionID: input.request.parentSessionId,
-				...(input.request.directory === undefined
-					? {}
-					: { query: { directory: input.request.directory } }),
-			},
-			{
-				path: { id: input.request.parentSessionId },
-				...(input.request.directory === undefined
-					? {}
-					: { query: { directory: input.request.directory } }),
-			},
+			flowDeskSdkSessionPathOptionsV1({ sessionId: input.request.parentSessionId, ...(input.request.directory === undefined ? {} : { directory: input.request.directory }) }),
+			flowDeskSdkSessionLegacyOptionsV1({ sessionId: input.request.parentSessionId, ...(input.request.directory === undefined ? {} : { directory: input.request.directory }) }),
 		);
 		const childRecord = arrayData(childrenResponse)
 			.map(asRecord)
@@ -3715,22 +3705,7 @@ export async function observeInjectedSdkLaneV1(input: {
 			childSessionId !== undefined &&
 			input.client.session.messages !== undefined
 		) {
-			const messagesResponse = await callSdkWithLegacyFallback(
-				input.client.session.messages as (options: unknown) => unknown | Promise<unknown>,
-				input.client.session,
-				{
-					sessionID: childSessionId,
-					...(input.request.directory === undefined
-						? {}
-						: { query: { directory: input.request.directory } }),
-				},
-				{
-					path: { id: childSessionId },
-					...(input.request.directory === undefined
-						? {}
-						: { query: { directory: input.request.directory } }),
-				},
-			);
+			const messagesResponse = await readSdkSessionMessagesFailClosed(input.client, childSessionId, input.request.directory);
 			messageRef = firstMessageRef(messagesResponse);
 		}
 		const missingLabels = [
@@ -3784,6 +3759,11 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 	// Empty parentSessionId is an unattached launch; the plan carries a fixed
 	// unattached sentinel ref. Otherwise the request ref must match the plan.
 	// unattached launches will not appear in session-scoped sidebar rows and wake notifications will not be delivered to any specific session
+	if (input.request.parentSessionId.length > 0 && isPlaceholderRuntimeParentSessionId(input.request.parentSessionId))
+		return blockedRuntimeLaneLaunch(
+			"Runtime lane launch parent session binding is a placeholder and was rejected before SDK dispatch.",
+			plan,
+		);
 	const parentSessionRef = input.request.parentSessionId.length === 0
 		? "ses-unattached-parent-session"
 		: refFrom("ses", input.request.parentSessionId);
@@ -3832,7 +3812,7 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 		: input.request.parentSessionId;
 	try {
 		childSessionId = sessionIdFromResponse(
-			await callSdkWithLegacyFallback(
+			await callFlowDeskSdkWithLegacyFallbackV1(
 				create as (options: unknown) => unknown | Promise<unknown>,
 				input.client.session,
 				{
@@ -3904,11 +3884,11 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 				parts: [{ type: "text", text }],
 			},
 		};
-		response = await callSdkWithLegacyFallback(
+		response = await callFlowDeskSdkWithLegacyFallbackV1(
 			dispatch as (options: unknown) => unknown | Promise<unknown>,
 			input.client.session,
-			flatPromptOptions,
 			structuredPromptOptions,
+			flatPromptOptions,
 		);
 		if (isSdkErrorResponse(response)) throw new Error("sdk prompt failed");
 	} catch (error) {
@@ -4407,15 +4387,19 @@ export async function observeAndFinalizeManagedDispatchLaneV1(input: {
 	const parentSessionRef = input.parentSessionRef ?? "ses-managed-dispatch";
 	const taskId = managedDispatchTerminalTaskId(input.laneId);
 
-	// Read the child session once (no nudge/abort). Use the sessionID shape that
-	// OpenCode 1.15.x accepts; the path fallback can surface literal {id} route
-	// errors in live sessions.
+	// Read the child session once (no nudge/abort). OpenCode 1.17.x expects
+	// structured path ids; legacy sessionID remains a bounded fallback only.
 	let raw: unknown = null;
 	let messagesReadFailed = false;
 	const messages = input.client.session.messages;
 	if (typeof messages === "function") {
 		try {
-			const readMessages = async (): Promise<unknown> => (messages as (o: unknown) => Promise<unknown>).call(input.client.session, { sessionID: input.childSessionId });
+			const readMessages = async (): Promise<unknown> => callFlowDeskSdkWithLegacyFallbackV1(
+				messages as (o: unknown) => Promise<unknown>,
+				input.client.session,
+				flowDeskSdkSessionPathOptionsV1({ sessionId: input.childSessionId }),
+				flowDeskSdkSessionLegacyOptionsV1({ sessionId: input.childSessionId }),
+			);
 			raw = await Promise.race([
 				readMessages(),
 				new Promise<null>((resolve) => setTimeout(() => resolve(null), messagesTimeoutMs)),
@@ -4963,17 +4947,15 @@ function dispatchOptions(
 	model: { providerID: string; modelID: string },
 	text: string,
 ): FlowDeskManagedDispatchBetaPromptOptionsV1 {
-	return {
-		sessionID: request.sessionId,
-		...(request.directory === undefined
-			? {}
-			: { query: { directory: request.directory } }),
+	return flowDeskSdkSessionPathOptionsV1({
+		sessionId: request.sessionId,
+		...(request.directory === undefined ? {} : { directory: request.directory }),
 		body: {
 			model,
 			agent: request.agent,
 			parts: [{ type: "text", text }],
 		},
-	};
+	}) as FlowDeskManagedDispatchBetaPromptOptionsV1;
 }
 
 function managedDispatchLaneLaunchPlan(input: {

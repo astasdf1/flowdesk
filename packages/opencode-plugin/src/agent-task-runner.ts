@@ -27,6 +27,11 @@ import { recordFlowDeskLaneHeartbeatV1 } from "./lane-heartbeat-writer.js";
 import { createOISessionAccumulator, type FlowDeskOISessionAccumulatorV1 } from "./oi-session-accumulator.js";
 import { resolveOpenCodeRuntimeLaunchModelBindingV1 } from "./model-selection-engine.js";
 import { probeReadOnlySdkSessionMessagesV1 } from "./sdk-session-messages-probe.js";
+import {
+	callFlowDeskSdkWithLegacyFallbackV1,
+	flowDeskSdkSessionLegacyOptionsV1,
+	flowDeskSdkSessionPathOptionsV1,
+} from "./sdk-session-call.js";
 
 const TASK_RESULT_MAX_TEXT = 32_768;
 const AGENT_TASK_CONTEXT_MAX_PROMPT_TEXT = 32_768;
@@ -413,15 +418,20 @@ async function extractAssistantTextFromResponse(
 		const promptFn = client.session.prompt ?? client.session.promptAsync;
 		if (promptFn === undefined) return "skipped";
 		const NUDGE_TIMEOUT_MS = 5_000;
+		const body = {
+			...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
+			...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
+			noReply: true,
+			parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
+		};
 		try {
 			await Promise.race([
-				(promptFn as (o: unknown) => unknown).call(client.session, {
-					sessionID: childSessionId,
-					noReply: true,
-					...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
-					...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
-					parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
-				}),
+				callFlowDeskSdkWithLegacyFallbackV1(
+					promptFn as (options: unknown) => unknown | Promise<unknown>,
+					client.session,
+					flowDeskSdkSessionPathOptionsV1({ sessionId: childSessionId, body }),
+					flowDeskSdkSessionLegacyOptionsV1({ sessionId: childSessionId, body }),
+				),
 				new Promise<never>((_, reject) =>
 					setTimeout(() => reject(new Error("nudge timeout")), NUDGE_TIMEOUT_MS),
 				),
@@ -1214,15 +1224,20 @@ export async function executeFlowDeskAgentTaskV1(
 			const promptFn = client.session.prompt ?? client.session.promptAsync;
 			if (promptFn === undefined) return "skipped";
 			const NUDGE_TIMEOUT_MS = 5_000;
+			const body = {
+				...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
+				...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
+				noReply: true,
+				parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
+			};
 			try {
 				await Promise.race([
-					(promptFn as (o: unknown) => unknown).call(client.session, {
-						sessionID: childSessionId,
-						noReply: true,
-						...(opts?.runtimeModel !== undefined ? { model: opts.runtimeModel } : {}),
-						...(opts?.agentName !== undefined ? { agent: opts.agentName } : {}),
-						parts: [{ type: "text", text: AGENT_TASK_NUDGE_TEXT }],
-					}),
+					callFlowDeskSdkWithLegacyFallbackV1(
+						promptFn as (options: unknown) => unknown | Promise<unknown>,
+						client.session,
+						flowDeskSdkSessionPathOptionsV1({ sessionId: childSessionId, body }),
+						flowDeskSdkSessionLegacyOptionsV1({ sessionId: childSessionId, body }),
+					),
 					new Promise<never>((_, reject) =>
 						setTimeout(() => reject(new Error("nudge timeout")), NUDGE_TIMEOUT_MS),
 					),

@@ -18,6 +18,7 @@ import {
 	createFlowDeskExternalAuthProviderPolicyResultV1,
 	createFlowDeskProductionApprovalDecisionV1,
 	createFlowDeskSanitizedAuthCaptureResultV1,
+	FLOWDESK_S7_REQUIRED_S6_TUPLE,
 	FLOWDESK_RELEASE_1_COMMAND_MANIFEST,
 	type FlowDeskConformanceRuntimeMetadataV1,
 	type FlowDeskControlledExternalWriteRequestV1,
@@ -36,6 +37,7 @@ import {
 	type FlowDeskRuntimeLaneLaunchPlanV1,
 	type FlowDeskSessionAbortDecisionV1,
 	type FlowDeskSessionEvidenceReloadResultV1,
+	type FlowDeskTaskResultV1,
 	type FlowDeskTopTierReviewVerdictV1,
 	type FlowDeskUsageSnapshotV1,
 	type GuardApprovedDispatchV1,
@@ -658,7 +660,36 @@ function managedDispatchInput(
 		fallbackOrReselectionAllowed: false,
 		hardChatAuthorityAllowed: false,
 		ambiguityQuarantined: true,
+		exposureAuthorizationTaskResultEvidence: s7ExposureTaskResult(),
+		exposureAuthorizationTaskResultEvidenceId:
+			FLOWDESK_S7_REQUIRED_S6_TUPLE.result_evidence_id,
+		exposureAuthorizationProgressSnapshotWorkflowId:
+			FLOWDESK_S7_REQUIRED_S6_TUPLE.progress_snapshot_workflow_id,
 		now: Date.parse(now),
+		...overrides,
+	};
+}
+
+function s7ExposureTaskResult(
+	overrides: Partial<FlowDeskTaskResultV1> = {},
+): FlowDeskTaskResultV1 {
+	const resultText = `Managed dispatch exposure live smoke completed: ${FLOWDESK_S7_REQUIRED_S6_TUPLE.sentinel}`;
+	return {
+		schema_version: "flowdesk.task_result.v1",
+		workflow_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.workflow_id,
+		lane_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.lane_id,
+		task_id: FLOWDESK_S7_REQUIRED_S6_TUPLE.task_id,
+		agent_ref: "agent-s6-live-smoke",
+		provider_qualified_model_id: "claude/sonnet-4",
+		task_prompt_sha256: createHash("sha256").update("s6-live-smoke", "utf8").digest("hex"),
+		result_text: resultText,
+		result_text_truncated: false,
+		result_text_sha256: createHash("sha256").update(resultText, "utf8").digest("hex"),
+		completion_status: "final",
+		output_kind: "final_answer",
+		usable_for_synthesis: true,
+		created_at: now,
+		dispatch_authority_enabled: false,
 		...overrides,
 	};
 }
@@ -1109,6 +1140,44 @@ function promptNoReplyDecision(
 	};
 }
 
+test("session abort uses structured path id first and fails closed on SDK rejection", async () => {
+	const abortCalls: unknown[] = [];
+	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
+		session: {
+			abort(options) {
+				abortCalls.push(options);
+				return Promise.resolve({ ok: true });
+			},
+		},
+	};
+	const sent = await abortFlowDeskSessionWithDecisionV1({
+		client,
+		decision: sessionAbortDecision(),
+	});
+	assert.equal(sent.status, "session_abort_sent");
+	assert.deepEqual(abortCalls, [{ path: { id: "session-123" } }]);
+
+	const failingCalls: unknown[] = [];
+	const failingClient: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
+		session: {
+			abort(options) {
+				failingCalls.push(options);
+				return Promise.reject(new Error("raw abort failure"));
+			},
+		},
+	};
+	const failed = await abortFlowDeskSessionWithDecisionV1({
+		client: failingClient,
+		decision: sessionAbortDecision(),
+	});
+	assert.equal(failed.status, "blocked_before_session_abort");
+	assert.equal(failed.abortAttempted, true);
+	assert.equal(failingCalls.length, 2);
+	assert.deepEqual(failingCalls[0], { path: { id: "session-123" } });
+	assert.deepEqual(failingCalls[1], { sessionID: "session-123" });
+	assert.doesNotMatch(JSON.stringify(failed), /raw abort failure|stack|cause/);
+});
+
 function failingPromptAsyncClient() {
 	const promptAsyncCalls: FlowDeskManagedDispatchBetaPromptOptionsV1[] = [];
 	const client: FlowDeskManagedDispatchBetaOpenCodeClientV1 = {
@@ -1252,12 +1321,12 @@ test("injected sdk lane observation reads child session refs without dispatch au
 	assert.equal(result.authority.actualLaneLaunch, false);
 	assert.equal(childrenCalls.length, 1);
 	assert.deepEqual(childrenCalls[0], {
-		sessionID: "session-123",
+		path: { id: "session-123" },
 		query: { directory: "/tmp/flowdesk-project" },
 	});
 	assert.equal(messageCalls.length, 1);
 	assert.deepEqual(messageCalls[0], {
-		sessionID: "child-session-123",
+		path: { id: "child-session-123" },
 		query: { directory: "/tmp/flowdesk-project" },
 	});
 });
@@ -1324,7 +1393,7 @@ test("injected sdk runtime lane launch creates child session and prompts exact r
 	assert.equal(promptAsyncCalls.length, 0);
 	assert.deepEqual(promptCalls, [
 		{
-			sessionID: "child-123",
+			path: { id: "child-123" },
 			body: {
 				model: { providerID: "anthropic", modelID: "sonnet-4" },
 				agent: "reviewer",
@@ -1334,7 +1403,7 @@ test("injected sdk runtime lane launch creates child session and prompts exact r
 	]);
 });
 
-test("injected sdk runtime lane launch uses flat sessionID promptAsync options first", async () => {
+test("injected sdk runtime lane launch uses structured path promptAsync options first", async () => {
 	const { client, promptCalls, promptAsyncCalls } = fakeRuntimeLaneClient();
 	const result = await launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1({
 		client,
@@ -1351,7 +1420,7 @@ test("injected sdk runtime lane launch uses flat sessionID promptAsync options f
 	assert.equal(promptCalls.length, 0);
 	assert.deepEqual(promptAsyncCalls, [
 		{
-			sessionID: "child-123",
+			path: { id: "child-123" },
 			body: {
 				model: { providerID: "anthropic", modelID: "sonnet-4" },
 				agent: "reviewer",
@@ -1454,7 +1523,7 @@ test("injected sdk runtime lane launch reports sanitized runtime and provider fa
 	assert.equal(failed.childSessionRef, "ses-child-failed");
 	assert.equal(failed.redactedErrorCategory, "provider_api");
 	assert.equal(failed.authority.actualLaneLaunch, false);
-	assert.equal(promptAsyncCalls.length, 1);
+	assert.equal(promptAsyncCalls.length, 2);
 });
 
 test("runtime lane launch lifecycle materializer records reloadable running lifecycle evidence", async () => {

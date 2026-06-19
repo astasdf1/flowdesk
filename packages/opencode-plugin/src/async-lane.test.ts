@@ -1999,7 +1999,7 @@ test("monitorChildSessions aborts a stuck lane once silence exceeds the abort th
 
 		assert.equal(monResult.lanesAborted, 1);
 		assert.ok(aborted.length > 0, "session.abort should have been called");
-		assert.deepEqual(aborted[0], { sessionID: "ses-child-test-01" });
+		assert.deepEqual(aborted[0], { path: { id: "ses-child-test-01" } });
 
 		// task_failed evidence should be written
 		const reloaded2 = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-abort-1" });
@@ -2321,7 +2321,7 @@ test("abortFlowDeskAgentTaskV1 calls session.abort and writes task_failed + term
 
 		assert.equal(abortResult.status, "aborted");
 		assert.equal(abortCalls, 1, "session.abort must have been called once");
-		assert.deepEqual(abortOptions, { sessionID: childSessionId }, "task abort must route to the canonical typed session abort adapter payload");
+		assert.deepEqual(abortOptions, { path: { id: childSessionId } }, "task abort must route to the structured typed session abort adapter payload");
 
 		// Verify task_failed evidence written
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId: "workflow-abort-test-1" });

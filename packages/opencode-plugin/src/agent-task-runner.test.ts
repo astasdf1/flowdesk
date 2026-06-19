@@ -785,6 +785,67 @@ test("executeFlowDeskAgentTaskV1 writes early_launch_diagnostic for 60s no_first
 	}
 });
 
+test("executeFlowDeskAgentTaskV1 records early_launch_diagnostic when sync lane has no first signal", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-sync-early-launch-diag-"));
+	try {
+		let messagesCalls = 0;
+		let promptAsyncCalls = 0;
+		const client = makeSuccessClient({
+			messages: async () => {
+				messagesCalls += 1;
+				return [];
+			},
+		});
+		client.session.promptAsync = async () => {
+			promptAsyncCalls += 1;
+			return {};
+		};
+
+		const result = await executeFlowDeskAgentTaskV1({
+			workflowId: "workflow-sync-early-launch-diag",
+			taskId: "task-sync-early-launch-diag",
+			laneId: "lane-sync-early-launch-diag",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+			promptText: "test no first signal diagnostic",
+			parentSessionId: "parent-sync-early-launch-diag",
+			rootDir: root,
+			client,
+			asyncMode: false,
+			oiEnabled: false,
+			_messagesTimeoutMs: 20,
+			_nudgeQuietPeriodMs: 20,
+			_earlyLaunchDiagnosticThresholdMsForTest: 20,
+			_heavyFirstTokenGraceMs: 20,
+		});
+
+		assert.equal(result.status, "task_launched", "sync no-signal lane should hand off to watchdog after bounded capture");
+		assert.ok(messagesCalls >= 1, "sync poll loop should read child messages");
+		assert.ok(promptAsyncCalls >= 1, "sync no-signal lane should attempt bounded nudges before failure");
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({
+			rootDir: root,
+			workflowId: "workflow-sync-early-launch-diag",
+		});
+		assert.ok(reloaded.ok, reloaded.blocked.map((entry) => entry.reason).join("; "));
+		const progressLabels = reloaded.entries
+			.filter((entry) => entry.evidenceClass === "agent_task_progress")
+			.map((entry) => String((entry.record as Record<string, unknown>).progress_label));
+		assert.equal(
+			progressLabels.some((label) => label === "early_launch_diagnostic: session_may_have_failed_to_start"),
+			true,
+			"should record session_may_have_failed_to_start diagnostic progress",
+		);
+		assert.equal(
+			progressLabels.some((label) => label === "early_launch_diagnostic: no_first_signal"),
+			true,
+			"should record no_first_signal diagnostic progress",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("buildFlowDeskCaptureSafetyMetadataV1: process_notes always produces safe_for_auto_synthesis=false", () => {
 	// Even with all other conditions maximally permissive (terminal marker, final completion,
 	// final body observed), process_notes MUST produce safe_for_auto_synthesis=false.

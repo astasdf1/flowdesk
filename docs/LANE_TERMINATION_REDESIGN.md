@@ -13,6 +13,51 @@ Key implementation components:
 - `session-idle-event-handler.ts`: Logic to determine completion: `idle + validateSessionHasOutput + checkSessionTodos` → `complete`.
 - `task-poller.ts`: Manages the stale timeout cascade to ensure lanes don't hang indefinitely.
 
+### 2.1 OMO Completion Gate Details (captured 2026-06-19)
+
+Use this section as the local reference instead of re-searching OMO when touching
+FlowDesk capture/finalization logic.
+
+Reference repository and paths:
+- Repository: `https://github.com/code-yeongyu/oh-my-openagent`, branch `dev`.
+- `packages/omo-opencode/src/features/background-agent/session-idle-event-handler.ts`
+- `packages/omo-opencode/src/features/background-agent/session-status-classifier.ts`
+- `packages/omo-opencode/src/features/background-agent/task-poller.ts`
+- `packages/omo-opencode/src/features/background-agent/manager.ts`
+- `packages/omo-opencode/src/features/background-agent/constants.ts`
+
+Observed OMO semantics:
+- `turncompleted`, `step-finish`, and message-update events are **activity/output
+  signals**, not subtask completion signals.
+- Background task completion is driven by `session.idle` or polling that observes
+  the session is idle/gone/terminal, never by a single assistant turn completing.
+- Early idle is deferred: `MIN_IDLE_TIME_MS = 5000`; idle observed before this
+  minimum is re-emitted later instead of completing the task immediately.
+- Active statuses are `busy`, `retry`, and `running`; if polling sees one of
+  these, OMO explicitly skips completion.
+- Known terminal statuses are `idle` and `interrupted`, but `idle` is not treated
+  as a hard terminal by itself; it enters the completion validation path.
+- Before completion, OMO validates that the session has real assistant/tool
+  output. It checks for assistant/tool messages and content-bearing parts such as
+  `text`, `reasoning`, `tool`, and non-empty `tool_result`.
+- Before completion, OMO checks session todos; any todo not `completed` or
+  `cancelled` blocks completion.
+- After async validation/todo checks, OMO re-checks that the task is still
+  `running` before completing, preventing races with other terminal paths.
+- Team/member sessions skip background auto-complete on idle.
+- Stale timeout and session-gone handling are safety nets, not the normal result
+  capture path.
+
+FlowDesk implication:
+- `turncompleted` must be downgraded to “body/readiness candidate” evidence.
+- A FlowDesk lane must not write `task_result` or terminal lifecycle evidence
+  until a session-idle/quiescence gate passes, there are no running/unknown tools,
+  the captured output is not `process_notes`/`tool_trace_only`/`empty`, no newer
+  lane activity invalidates the observed turn-completed candidate, and any
+  tracked same-lane work/todos are complete or absent.
+- If a `turncompleted` candidate is followed by later assistant/tool/progress
+  activity, that candidate is stale and cannot justify capture.
+
 ## 3. Redesigned Termination Signal Hierarchy
 The new signal hierarchy for FlowDesk termination (prioritized):
 
