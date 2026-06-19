@@ -9,7 +9,7 @@ export type FlowDeskSessionFinalTextKind =
 	| "tool_trace_only"
 	| "empty";
 
-export type FlowDeskSessionIdleState = "confirmed_idle" | "not_idle" | "unknown";
+export type FlowDeskSessionIdleState = "confirmed_idle" | "bounded_quiescence_confirmed" | "not_idle" | "unknown";
 export type FlowDeskSessionRunningToolsState =
 	| "none_running_confirmed"
 	| "running_confirmed"
@@ -154,7 +154,7 @@ export function evaluateFlowDeskSessionFinalizationEvidence(
 	} else if (observation.session_idle_state === "unknown") {
 		decision = "requires_review";
 		blockReason = "idle_state_unknown";
-	} else if (observation.session_idle_state !== "confirmed_idle") {
+	} else if (observation.session_idle_state !== "confirmed_idle" && observation.session_idle_state !== "bounded_quiescence_confirmed") {
 		decision = "blocked_session_not_idle";
 		blockReason = "session_not_idle";
 } else if (observation.running_tools_state === "unknown") {

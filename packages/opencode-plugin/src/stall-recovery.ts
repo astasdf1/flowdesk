@@ -47,6 +47,7 @@ import {
 	buildFlowDeskSessionFinalizationObservation,
 	evaluateFlowDeskSessionFinalizationEvidence,
 	type FlowDeskSessionFinalizationDecision,
+	type FlowDeskSessionIdleState,
 	type FlowDeskSessionRunningToolsState,
 } from "./session-finalization-evidence.js";
 
@@ -2315,7 +2316,7 @@ function evaluateSessionFinalizationForObservedText(input: {
 	text?: string;
 	outputKind?: FlowDeskAgentTaskOutputKindV1 | string;
 	stepFinishObserved: boolean;
-	sessionIdleState: "confirmed_idle" | "not_idle" | "unknown";
+	sessionIdleState: FlowDeskSessionIdleState;
 	runningToolsState: FlowDeskSessionRunningToolsState;
 	confidence: "high" | "medium" | "low";
 }) {
@@ -2345,6 +2346,10 @@ function canPersistTerminalTaskResultFromOutputKind(outputKind: string | undefin
 	return outputKind !== "process_notes" && outputKind !== "tool_trace_only" && outputKind !== "empty";
 }
 
+function canAutoCaptureBoundedQuiescenceOutputKind(outputKind: string | undefined): boolean {
+	return outputKind === "final_answer";
+}
+
 function writeSessionFinalizationEvidenceIfMeaningful(input: {
 	rootDir: string;
 	workflowId: string;
@@ -2357,7 +2362,7 @@ function writeSessionFinalizationEvidenceIfMeaningful(input: {
 	text?: string;
 	outputKind?: FlowDeskAgentTaskOutputKindV1 | string;
 	stepFinishObserved: boolean;
-	sessionIdleState: "confirmed_idle" | "not_idle" | "unknown";
+	sessionIdleState: FlowDeskSessionIdleState;
 	runningToolsState: FlowDeskSessionRunningToolsState;
 	confidence: "high" | "medium" | "low";
 }): { written: boolean; evaluated: ReturnType<typeof evaluateFlowDeskSessionFinalizationEvidence> } {
@@ -3742,10 +3747,11 @@ export async function monitorChildSessionsV1(input: {
 		// settled, text delta, etc.) occurred after a completed turn, that turn was an
 		// intermediate candidate and must not drive body-capture/empty terminalization.
 		const turnCompletedTransitions = (turnCompletedByLane.get(laneId) ?? []).slice().sort((a, b) => a.observedAtMs - b.observedAtMs);
+		const latestProgressForTurnBindingMs = latestMeaningfulProgressByLane.get(laneId) ?? latestProgressByLane.get(laneId)?.observedAtMs;
 		const expectedTurnCompleted = resolveFlowDeskExpectedTurnCompletedV1({
 			transitions: turnCompletedTransitions,
 			laneEpochMs: createdAtMs,
-			minObservedAtMs: Math.max(createdAtMs, latestProgressAtMs ?? createdAtMs),
+			minObservedAtMs: Math.max(createdAtMs, latestProgressForTurnBindingMs ?? createdAtMs),
 		});
 		const observedStepFinish = expectedTurnCompleted ?? resolveFlowDeskExpectedTurnCompletedV1({
 			transitions: turnCompletedTransitions,
@@ -3811,7 +3817,6 @@ export async function monitorChildSessionsV1(input: {
 			}
 			const idleObservation = await pollChildSessionIdleConfirmedOutput(input.client, childSessionId);
 			if (idleObservation !== null
-				&& idleObservation.terminalMarkerObserved === true
 				&& idleObservation.text !== undefined
 				&& idleObservation.text.trim().length > 0
 				&& silenceSinceLastProgressMs < FLOWDESK_FINALIZATION_SILENCE_THRESHOLD_MS) {
@@ -3824,6 +3829,108 @@ export async function monitorChildSessionsV1(input: {
 				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 				const observedAt = new Date(nowMs).toISOString();
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(idleObservation.text);
+				const boundedQuiescenceHash = createHash("sha256").update(sanitizedResult.text).digest("hex");
+				const priorBoundedQuiescenceCandidates = reloaded.entries
+					.map((entry) => entry.record as Record<string, unknown>)
+					.filter((candidate) => candidate.schema_version === "flowdesk.session_finalization_evidence.v1"
+						&& candidate.lane_id === laneId
+						&& candidate.decision === "requires_review"
+						&& candidate.block_reason === "idle_state_unknown"
+						&& candidate.observed_text_ref === `observed-text-sha256-${boundedQuiescenceHash}`);
+				const priorBoundedQuiescenceFirstObservedMs = priorBoundedQuiescenceCandidates.reduce((min, candidate) => {
+					const parsed = typeof candidate.observed_at === "string" ? Date.parse(candidate.observed_at) : Number.NaN;
+					return Number.isFinite(parsed) ? Math.min(min, parsed) : min;
+				}, Number.POSITIVE_INFINITY);
+				const boundedQuiescenceSilenceMs = Number.isFinite(priorBoundedQuiescenceFirstObservedMs) ? nowMs - priorBoundedQuiescenceFirstObservedMs : silenceSinceLastProgressMs;
+				const priorBoundedQuiescenceCount = priorBoundedQuiescenceCandidates.length;
+				const boundedQuiescenceCount = priorBoundedQuiescenceCount + 1;
+				const boundedQuiescenceReady = canAutoCaptureBoundedQuiescenceOutputKind(idleObservation.outputKind)
+					&& boundedQuiescenceCount >= 2
+					&& (boundedQuiescenceSilenceMs >= 0 || priorBoundedQuiescenceCount > 0);
+				if (boundedQuiescenceReady) {
+					if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+						continue;
+					}
+					const finalizationGate = writeSessionFinalizationEvidenceIfMeaningful({
+						rootDir: input.rootDir,
+						workflowId: input.workflowId,
+						reloadedEntries: reloaded.entries,
+						laneId,
+						taskId,
+						childSessionId,
+						observedAt,
+						decisionContext: "turn_completed_text",
+						text: sanitizedResult.text,
+						outputKind: idleObservation.outputKind,
+						stepFinishObserved: idleObservation.terminalMarkerObserved || expectedTurnCompleted !== undefined,
+						sessionIdleState: "bounded_quiescence_confirmed",
+						runningToolsState: "none_running_confirmed",
+						confidence: "medium",
+					});
+					if (finalizationGate.evaluated.safe_capture_ready === true) {
+						const token = randomBytes(4).toString("hex");
+						const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+							text: sanitizedResult.text,
+							completionStatus: "final",
+							outputKind: idleObservation.outputKind,
+							finalizationReason: "stable_idle",
+							finalBodyObserved: true,
+							terminalMarkerObserved: idleObservation.terminalMarkerObserved || expectedTurnCompleted !== undefined,
+						});
+						const taskResultEvidenceId = `task-result-${taskId}-watchdog-bounded-quiescence-${token}`;
+						const taskResultWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskResultEvidenceId, {
+							schema_version: "flowdesk.task_result.v1",
+							workflow_id: input.workflowId,
+							lane_id: laneId,
+							task_id: taskId,
+							agent_ref: agentRef,
+							provider_qualified_model_id: modelId,
+							task_prompt_sha256: createHash("sha256").update("watchdog-collected").digest("hex"),
+							result_text: sanitizedResult.text,
+							result_text_truncated: sanitizedResult.truncated,
+							result_text_sha256: createHash("sha256").update(idleObservation.text).digest("hex"),
+							completion_status: "final",
+							output_kind: idleObservation.outputKind,
+							usable_for_synthesis: captureSafetyMetadata.safe_for_auto_synthesis,
+							missing_contract: false,
+							finalization_reason: "stable_idle",
+							looks_like_refusal_or_error: idleObservation.looksLikeRefusalOrError,
+							bounded_quiescence_candidate_count: boundedQuiescenceCount,
+							...captureSafetyMetadata,
+							created_at: observedAt,
+							dispatch_authority_enabled: false,
+						});
+						if (taskResultWritten) {
+							writeAgentTaskTerminalLifecycleForTaskResult({
+								rootDir: input.rootDir,
+								workflowId: input.workflowId,
+								laneId,
+								attemptId: latestAttemptIdByLane.get(laneId) ?? `attempt-${laneId}`,
+								parentSessionRef: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+								childSessionId,
+								taskResultEvidenceId,
+								agentRef,
+								providerQualifiedModelId: modelId,
+								observedAt,
+							});
+							writeAgentTaskProgressEvidence({
+								rootDir: input.rootDir,
+								workflowId: input.workflowId,
+								laneId,
+								taskId,
+								agentRef,
+								providerQualifiedModelId: modelId,
+								phase: "finalizing",
+								progressSeq: 10 + nudgeCount,
+								progressLabel: "async agent task result captured after bounded quiescence without session idle",
+								observedAt,
+							});
+							refreshFlowDeskCompletionUiCachesV1({ rootDir: input.rootDir, workflowId: input.workflowId, observedAt });
+							result.lanesCompleted++;
+							continue;
+						}
+					}
+				}
 				writeSessionFinalizationEvidenceIfMeaningful({
 					rootDir: input.rootDir,
 					workflowId: input.workflowId,
@@ -3849,7 +3956,9 @@ export async function monitorChildSessionsV1(input: {
 					providerQualifiedModelId: modelId,
 					phase: "finalizing",
 					progressSeq: 9 + nudgeCount,
-					progressLabel: "async agent task turn completed text observed; awaiting session idle before capture",
+					progressLabel: canAutoCaptureBoundedQuiescenceOutputKind(idleObservation.outputKind)
+						? `async agent task turn completed final text observed; awaiting bounded quiescence before capture (${boundedQuiescenceCount}/2)`
+						: `async agent task turn completed text classified as ${idleObservation.outputKind}; awaiting final answer`,
 					observedAt,
 				});
 				result.lanesAwaitingCapture = (result.lanesAwaitingCapture ?? 0) + 1;
