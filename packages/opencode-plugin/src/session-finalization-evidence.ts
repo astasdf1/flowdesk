@@ -17,6 +17,7 @@ export type FlowDeskSessionRunningToolsState =
 	| "tools_running"
 	| "unknown";
 export type FlowDeskSessionFinalizationConfidence = "high" | "medium" | "low";
+export type FlowDeskSessionFinalizationBodyCaptureState = "not_requested" | "awaiting_body_capture";
 
 export type FlowDeskSessionFinalizationDecision =
 	| "safe_capture_ready"
@@ -57,6 +58,7 @@ export interface FlowDeskSessionFinalizationObservationProjection
 	running_tools_state: FlowDeskSessionRunningToolsState;
 	confidence: FlowDeskSessionFinalizationConfidence;
 	step_finish_observed: boolean;
+	body_capture_state?: FlowDeskSessionFinalizationBodyCaptureState | undefined;
 	opencode_internal_validation_performed: false;
 	redaction_version: "v1";
 }
@@ -86,6 +88,7 @@ export interface BuildFlowDeskSessionFinalizationObservationInput {
 	runningToolsState?: FlowDeskSessionRunningToolsState;
 	confidence?: FlowDeskSessionFinalizationConfidence;
 	stepFinishObserved?: boolean;
+	bodyCaptureState?: FlowDeskSessionFinalizationBodyCaptureState | undefined;
 }
 
 const FLOWDESK_SESSION_FINALIZATION_SAFE_AUTHORITY: FlowDeskSessionFinalizationAuthorityFlags = {
@@ -132,6 +135,7 @@ export function buildFlowDeskSessionFinalizationObservation(
 		running_tools_state: input.runningToolsState ?? "unknown",
 		confidence: input.confidence ?? "low",
 		step_finish_observed: input.stepFinishObserved ?? false,
+		body_capture_state: input.bodyCaptureState,
 		opencode_internal_validation_performed: false,
 		redaction_version: "v1",
 		...FLOWDESK_SESSION_FINALIZATION_SAFE_AUTHORITY,
@@ -146,7 +150,7 @@ export function evaluateFlowDeskSessionFinalizationEvidence(
 	let blockReason: FlowDeskSessionFinalizationBlockReason;
 
 	if (!textPresent) {
-		decision = observation.step_finish_observed ? "awaiting_body_capture" : "blocked_text_absent";
+		decision = observation.body_capture_state === "awaiting_body_capture" ? "awaiting_body_capture" : "blocked_text_absent";
 		blockReason = "blocked_text_absent";
 	} else if (observation.final_text_kind !== "assistant_final_text") {
 		decision = "requires_review";

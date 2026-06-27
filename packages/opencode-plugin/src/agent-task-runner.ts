@@ -176,6 +176,7 @@ export function buildFlowDeskCaptureSafetyMetadataV1(input: {
 		: textPresent ? "partial_findings" : "empty";
 	const finalBodyObserved = input.finalBodyObserved ?? textPresent;
 	const terminalMarkerObserved = input.terminalMarkerObserved ?? (input.finalizationReason === "terminal_marker" || input.finalizationReason === "finish_reason");
+	const stableIdleFinalizationObserved = input.finalizationReason === "stable_idle";
 	// Enforcement invariant: process_notes (and tool_trace_only/empty) MUST NEVER be
 	// safe for auto-synthesis, regardless of completionStatus, finalBodyObserved, or
 	// terminalMarkerObserved. Only "final_answer" is synthesis-eligible. This guard
@@ -184,7 +185,7 @@ export function buildFlowDeskCaptureSafetyMetadataV1(input: {
 	const safeForAutoSynthesis = synthesisEligibleKind &&
 		textPresent &&
 		finalBodyObserved &&
-		terminalMarkerObserved &&
+		(terminalMarkerObserved || stableIdleFinalizationObserved) &&
 		input.completionStatus !== "partial";
 	if (!textPresent) {
 		return {

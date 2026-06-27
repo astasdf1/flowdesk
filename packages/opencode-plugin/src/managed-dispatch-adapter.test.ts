@@ -56,6 +56,8 @@ import {
 	type FlowDeskManagedDispatchBetaOpenCodeClientV1,
 	type FlowDeskManagedDispatchBetaPromptOptionsV1,
 	type FlowDeskManagedDispatchBetaReservationStoreV1,
+	FLOWDESK_RUNTIME_CHILD_LANE_TOOL_BOUNDARY_TEXT_V1,
+	flowDeskRuntimeChildLanePromptTextV1,
 	launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1,
 	materializeFlowDeskControlledConformanceDocLocalWriteV1,
 	materializeFlowDeskControlledRedactedAuditExportLocalWriteV1,
@@ -1391,16 +1393,19 @@ test("injected sdk runtime lane launch creates child session and prompts exact r
 		{ parentID: "parent-123", title: "FlowDesk reviewer lane" },
 	]);
 	assert.equal(promptAsyncCalls.length, 0);
-	assert.deepEqual(promptCalls, [
-		{
-			path: { id: "child-123" },
-			body: {
-				model: { providerID: "anthropic", modelID: "sonnet-4" },
-				agent: "reviewer",
-				parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
-			},
-		},
-	]);
+	assert.equal(promptCalls.length, 1);
+	const promptCall = promptCalls[0] as { path?: unknown; body?: { model?: unknown; agent?: unknown; parts?: { text?: string }[] } } | undefined;
+	assert.deepEqual(promptCall?.path, { id: "child-123" });
+	assert.deepEqual(promptCall?.body?.model, { providerID: "anthropic", modelID: "sonnet-4" });
+	assert.equal(promptCall?.body?.agent, "reviewer");
+	assert.equal(
+		promptCall?.body?.parts?.[0]?.text,
+		flowDeskRuntimeChildLanePromptTextV1("Return a typed FlowDesk reviewer verdict."),
+	);
+	assert.match(
+		promptCall?.body?.parts?.[0]?.text ?? "",
+		/Do not call FlowDesk launch, orchestration, fallback, write\/apply, abort, continue, quota, status, or reviewer fan-out tools/,
+	);
 });
 
 test("injected sdk runtime lane launch uses structured path promptAsync options first", async () => {
@@ -1418,16 +1423,23 @@ test("injected sdk runtime lane launch uses structured path promptAsync options 
 
 	assert.equal(result.status, "lane_launch_started");
 	assert.equal(promptCalls.length, 0);
-	assert.deepEqual(promptAsyncCalls, [
-		{
-			path: { id: "child-123" },
-			body: {
-				model: { providerID: "anthropic", modelID: "sonnet-4" },
-				agent: "reviewer",
-				parts: [{ type: "text", text: "Return a typed FlowDesk reviewer verdict." }],
-			},
-		},
-	]);
+	assert.equal(promptAsyncCalls.length, 1);
+	const promptAsyncCall = promptAsyncCalls[0] as { path?: unknown; body?: { model?: unknown; agent?: unknown; parts?: { text?: string }[] } } | undefined;
+	assert.deepEqual(promptAsyncCall?.path, { id: "child-123" });
+	assert.deepEqual(promptAsyncCall?.body?.model, { providerID: "anthropic", modelID: "sonnet-4" });
+	assert.equal(promptAsyncCall?.body?.agent, "reviewer");
+	assert.equal(
+		promptAsyncCall?.body?.parts?.[0]?.text,
+		flowDeskRuntimeChildLanePromptTextV1("Return a typed FlowDesk reviewer verdict."),
+	);
+});
+
+test("runtime child lane prompt injects FlowDesk tool boundary without dropping assigned task", () => {
+	const prompt = flowDeskRuntimeChildLanePromptTextV1("Return only DONE.");
+	assert.ok(prompt.startsWith(FLOWDESK_RUNTIME_CHILD_LANE_TOOL_BOUNDARY_TEXT_V1));
+	assert.match(prompt, /Do not call FlowDesk launch/);
+	assert.match(prompt, /Do not delegate further FlowDesk work/);
+	assert.match(prompt, /Assigned task:\nReturn only DONE\./);
 });
 
 test("injected sdk runtime lane launch blocks before SDK calls without opt-in or plan binding", async () => {

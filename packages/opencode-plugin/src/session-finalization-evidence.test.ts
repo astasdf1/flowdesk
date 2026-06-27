@@ -69,6 +69,25 @@ describe("evaluateFlowDeskSessionFinalizationEvidence", () => {
 		assert.equal(result.usable_for_synthesis, false);
 	});
 
+	test("explicit body capture state preserves awaiting_body_capture for empty observations", () => {
+		const observation = buildFlowDeskSessionFinalizationObservation({
+			stepFinishObserved: true,
+			bodyCaptureState: "awaiting_body_capture",
+			sessionIdleState: "confirmed_idle",
+			runningToolsState: "none_running_confirmed",
+			confidence: "high",
+		});
+
+		const result = evaluateFlowDeskSessionFinalizationEvidence(observation);
+
+		assert.equal(result.decision, "awaiting_body_capture");
+		assert.equal(result.block_reason, "blocked_text_absent");
+		assert.equal(result.observed_text_ref, undefined);
+		assert.equal(result.observed_text_char_count, undefined);
+		assert.equal(result.safe_capture_ready, false);
+		assert.equal(result.usable_for_synthesis, false);
+	});
+
 	test("idle without text never captures", () => {
 		const observation = buildFlowDeskSessionFinalizationObservation({
 			sessionIdleState: "confirmed_idle",

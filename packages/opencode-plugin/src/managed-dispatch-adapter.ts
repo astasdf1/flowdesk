@@ -3734,6 +3734,18 @@ export async function observeInjectedSdkLaneV1(input: {
 	}
 }
 
+export const FLOWDESK_RUNTIME_CHILD_LANE_TOOL_BOUNDARY_TEXT_V1 = [
+	"FlowDesk child-lane boundary:",
+	"- Do not call FlowDesk launch, orchestration, fallback, write/apply, abort, continue, quota, status, or reviewer fan-out tools from this child lane.",
+	"- Do not delegate further FlowDesk work or start nested FlowDesk lanes.",
+	"- Complete only the single assigned deliverable in this session and return the final answer text.",
+].join("\n");
+
+export function flowDeskRuntimeChildLanePromptTextV1(promptText: string): string {
+	const text = promptText.trim();
+	return `${FLOWDESK_RUNTIME_CHILD_LANE_TOOL_BOUNDARY_TEXT_V1}\n\nAssigned task:\n${text}`;
+}
+
 export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
 	launchPlan: FlowDeskRuntimeLaneLaunchPlanV1;
@@ -3785,7 +3797,8 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			"Runtime lane launch is missing an agent, runtime model, or bounded prompt text.",
 			plan,
 		);
-	if (text.length > 20_000)
+	const lanePromptText = flowDeskRuntimeChildLanePromptTextV1(text);
+	if (lanePromptText.length > 20_000)
 		return blockedRuntimeLaneLaunch(
 			"Runtime lane launch prompt text exceeds the bounded prompt limit.",
 			plan,
@@ -3870,7 +3883,7 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			body: {
 				model: runtimeModel,
 				agent,
-				parts: [{ type: "text", text }],
+				parts: [{ type: "text", text: lanePromptText }],
 			},
 		};
 		const structuredPromptOptions = {
@@ -3881,7 +3894,7 @@ export async function launchFlowDeskInjectedSdkRuntimeLaneFromPlanV1(input: {
 			body: {
 				model: runtimeModel,
 				agent,
-				parts: [{ type: "text", text }],
+				parts: [{ type: "text", text: lanePromptText }],
 			},
 		};
 		response = await callFlowDeskSdkWithLegacyFallbackV1(

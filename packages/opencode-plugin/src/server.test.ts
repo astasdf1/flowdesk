@@ -28,7 +28,6 @@ import {
 } from "@flowdesk/core";
 import { tool } from "@opencode-ai/plugin";
 import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
-import { consumeFlowDeskCompletionWakeForMainSessionV1 } from "./completion-wake-main-session.js";
 import {
 	getFlowDeskPreSpikeProductionToolRegistry,
 	hasPassingFds1SchemaConversionSpike,
@@ -64,6 +63,7 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskLaneHeartbeatWriterOption,
 	flowdeskLaneHeartbeatWriterToolName,
 	flowdeskLocalNonDispatchAdapterOption,
+	flowdeskManagedDispatchBetaAdapterOption,
 	flowdeskManagedFallbackRegateOption,
 	flowdeskManagedFallbackRegateToolName,
 	flowdeskNaturalLanguageRoutingOption,
@@ -96,8 +96,14 @@ import flowdeskOpenCodeServerPlugin, {
 	flowdeskWorkflowDispatchPlanToolOption,
 	flowdeskWorkflowDispatchToolName,
 	flowdeskWriteToolName,
+	shouldPokeEventDrivenWatchdogCycleV1,
+	shouldScheduleEventDrivenFinalizationMonitorV1,
+	runEventDrivenFinalizationMonitorCaptureV1,
+	defaultEventDrivenFinalizationRetryTailDelaysMsV1,
+	scheduleAgentTaskLaunchCaptureMonitorV1,
 	flowdeskOperationalIntelligenceOption,
 	flowdeskCompletionWakeMainSessionOption,
+	eventDrivenFinalizationMonitorClientFrom,
 	flowdeskFederatedRegistryPublishToolName,
 	operationalIntelligenceConfigFromOptions,
 	completionWakeMainSessionConfigFromOptions,
@@ -10527,47 +10533,35 @@ test("event hook consumes completion wake after direct monitor captures task_res
 		assert.equal(childIntent.ok, true, childIntent.errors.join("; "));
 		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [childIntent.writeIntent as never]).ok, true);
 
-		const wakePrompts: unknown[] = [];
 		const client = {
 			session: {
 				messages() {
-					return Promise.resolve([{ role: "assistant", parts: [{ type: "text", text: assistantText }] }]);
+					return Promise.resolve({
+						messages: [{
+							id: "msg-event-hook-wake-after-monitor",
+							role: "assistant",
+							finish_reason: "stop",
+							info: {
+								id: "msg-event-hook-wake-after-monitor",
+								role: "assistant",
+								time: { created: Date.parse("2026-06-11T00:00:01.000Z"), completed: Date.parse("2026-06-11T00:00:02.000Z") },
+							},
+							parts: [{ type: "text", text: assistantText }, { type: "step-finish", reason: "stop" }],
+						}],
+					});
 				},
-				promptAsync(options: unknown) {
-					wakePrompts.push(options);
+				promptAsync() {
 					return Promise.resolve({ info: { id: "wake-message-event-hook-wake-after-monitor" } });
 				},
 			},
 		};
-		const hooks = (await flowdeskOpenCodeServerPlugin.server(
-			{ client } as never,
-			{
-				[flowdeskDurableStateRootOption]: root,
-				[flowdeskCompletionWakeMainSessionOption]: {
-					enabled: true,
-					providerQualifiedModelId: "openai/gpt-5.5",
-					parentSessionRef: "ses-ses_event_hook_wake_parent",
-				},
-				localNonDispatchAdapter: false,
-				naturalLanguageRouting: false,
-			},
-		)) as ChatMessageHooks;
-		assert.ok(hooks.event);
-
-		await hooks.event({
-			event: {
-				type: "message.updated",
-				properties: {
-					sessionID: "child-event-hook-wake-after-monitor",
-					info: {
-						id: "msg-event-hook-wake-after-monitor",
-						role: "assistant",
-						time: { created: Date.parse("2026-06-11T00:00:01.000Z"), completed: Date.parse("2026-06-11T00:00:02.000Z") },
-					},
-				},
-			},
+		await runEventDrivenFinalizationMonitorCaptureV1({
+			rootDir: root,
+			workflowId,
+			client: client as never,
+			eventType: "session.idle",
+			consumeCompletionWakeForMainSessionBestEffort: async () => {},
 		});
-		await new Promise((resolve) => setTimeout(resolve, 350));
 
 		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
 		assert.ok(reloaded.entries.some((entry) =>
@@ -10575,24 +10569,264 @@ test("event hook consumes completion wake after direct monitor captures task_res
 			entry.record.lane_id === "lane-event-hook-wake-after-monitor" &&
 			String(entry.record.result_text).includes(assistantText),
 		));
-		if (wakePrompts.length === 0) {
-			refreshFlowDeskCompletionUiCachesV1({ rootDir: root, workflowId });
-			await consumeFlowDeskCompletionWakeForMainSessionV1({
-				config: {
-					enabled: true,
-					rootDir: root,
-					agentName: "flowdesk-main",
-					providerQualifiedModelId: "openai/gpt-5.5",
-					parentSessionRef: "ses-ses_event_hook_wake_parent",
-				},
-				client,
-			});
-		}
-		assert.equal(wakePrompts.length, 1, "wake prompt should be dispatched after task_result cache refresh");
-		assert.ok(existsSync(join(root, ".flowdesk", "ui", "completion-wake-ready.json")));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("event-driven finalization monitor schedules retry tail independent of first capture result", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-event-hook-retry-tail-"));
+	try {
+		const workflowId = "workflow-event-hook-retry-tail";
+		const assistantText = "Delayed final body captured by retry tail.";
+		const childIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-child-session-event-hook-retry-tail",
+			record: {
+				schema_version: "flowdesk.agent_task_child_session.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-event-hook-retry-tail",
+				task_id: "task-event-hook-retry-tail",
+				child_session_id: "child-event-hook-retry-tail",
+				parent_session_ref: "ses-event-hook-retry-tail-parent",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				agent_ref: "agent-reviewer-gpt-frontier",
+				nudge_count: 0,
+				last_nudge_at: null,
+				created_at: "2026-06-11T00:00:00.000Z",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(childIntent.ok, true, childIntent.errors.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [childIntent.writeIntent as never]).ok, true);
+
+		let messageReadCount = 0;
+		const client = {
+			session: {
+				messages() {
+					messageReadCount += 1;
+					// A single monitor pass may read session.messages more than once
+					// (session-error probe, output poll, diagnostic/liveness checks). Keep
+					// the whole first pass empty so the delayed retry tail, not an internal
+					// same-pass read, proves the body-materialization race is covered.
+					if (messageReadCount <= 3) return Promise.resolve({ messages: [] });
+					return Promise.resolve({
+						messages: [{
+							id: "msg-event-hook-retry-tail",
+							role: "assistant",
+							finish_reason: "stop",
+							info: {
+								id: "msg-event-hook-retry-tail",
+								role: "assistant",
+								time: { created: Date.parse("2026-06-11T00:00:01.000Z"), completed: Date.parse("2026-06-11T00:00:02.000Z") },
+							},
+							parts: [{ type: "text", text: assistantText }, { type: "step-finish", reason: "stop" }],
+						}],
+					});
+				},
+			},
+		};
+
+		await runEventDrivenFinalizationMonitorCaptureV1({
+			rootDir: root,
+			workflowId,
+			client: client as never,
+			eventType: "session.idle",
+			consumeCompletionWakeForMainSessionBestEffort: async () => {},
+			retryTailDelaysMs: [20, 40],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 75));
+
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir: root, workflowId });
+		assert.ok(messageReadCount >= 2);
+		assert.ok(reloaded.entries.some((entry) =>
+			entry.evidenceClass === "task_result" &&
+			entry.record.lane_id === "lane-event-hook-retry-tail" &&
+			String(entry.record.result_text).includes(assistantText),
+		));
+		assert.equal(reloaded.entries.some((entry) => entry.evidenceClass === "task_failed"), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("event-driven finalization retry tail includes post-quiescence pass", () => {
+	assert.deepEqual(
+		defaultEventDrivenFinalizationRetryTailDelaysMsV1(),
+		[750, 2_500, 5_000, 35_000],
+	);
+	assert.ok(
+		defaultEventDrivenFinalizationRetryTailDelaysMsV1().some((delay) => delay > 30_000),
+		"default retry tail must include a pass after the 30s bounded-quiescence gate",
+	);
+});
+
+test("event hook finalization monitor decision ignores watchdog poke availability", async () => {
+	assert.equal(
+		shouldScheduleEventDrivenFinalizationMonitorV1({
+			matched: true,
+			finalizationRelevant: true,
+			workflowId: "workflow-finalization-monitor-decision",
+			eventMonitorClientAvailable: true,
+			pokeWatchdogCycleAvailable: true,
+		}),
+		true,
+	);
+	assert.equal(
+		shouldScheduleEventDrivenFinalizationMonitorV1({
+			matched: true,
+			finalizationRelevant: true,
+			workflowId: "workflow-finalization-monitor-decision",
+			eventMonitorClientAvailable: true,
+			pokeWatchdogCycleAvailable: false,
+		}),
+		true,
+	);
+	assert.equal(
+		shouldScheduleEventDrivenFinalizationMonitorV1({
+			matched: true,
+			finalizationRelevant: false,
+			workflowId: "workflow-finalization-monitor-decision",
+			eventMonitorClientAvailable: true,
+			pokeWatchdogCycleAvailable: true,
+		}),
+		false,
+	);
+	assert.equal(
+		shouldScheduleEventDrivenFinalizationMonitorV1({
+			matched: true,
+			finalizationRelevant: true,
+			workflowId: undefined,
+			eventMonitorClientAvailable: true,
+			pokeWatchdogCycleAvailable: true,
+		}),
+		false,
+	);
+});
+
+test("event hook watchdog poke decision ignores direct monitor availability", async () => {
+	assert.equal(
+		shouldPokeEventDrivenWatchdogCycleV1({
+			matched: true,
+			finalizationRelevant: true,
+			pokeWatchdogCycleAvailable: true,
+		}),
+		true,
+	);
+	assert.equal(
+		shouldScheduleEventDrivenFinalizationMonitorV1({
+			matched: true,
+			finalizationRelevant: true,
+			workflowId: "workflow-finalization-watchdog-poke-decision",
+			eventMonitorClientAvailable: false,
+			pokeWatchdogCycleAvailable: true,
+		}),
+		false,
+	);
+	assert.equal(
+		shouldPokeEventDrivenWatchdogCycleV1({
+			matched: true,
+			finalizationRelevant: true,
+			pokeWatchdogCycleAvailable: false,
+		}),
+		false,
+	);
+	assert.equal(
+		shouldPokeEventDrivenWatchdogCycleV1({
+			matched: true,
+			finalizationRelevant: false,
+			pokeWatchdogCycleAvailable: true,
+		}),
+		false,
+	);
+});
+
+test("event-driven finalization monitor client uses configured adapter client without managed-dispatch enablement", () => {
+	const configuredClient = {
+		session: {
+			messages() {
+				return Promise.resolve({ messages: [] });
+			},
+			promptAsync() {
+				return Promise.resolve({ info: { id: "msg-event-monitor-client" } });
+			},
+		},
+	};
+	const injectedClient = {
+		session: {
+			messages() {
+				return Promise.resolve({ messages: [] });
+			},
+			promptAsync() {
+				return Promise.resolve({ info: { id: "msg-event-monitor-injected-client" } });
+			},
+		},
+	};
+
+	assert.equal(
+		eventDrivenFinalizationMonitorClientFrom(
+			{ client: injectedClient },
+			{
+				[flowdeskManagedDispatchBetaAdapterOption]: {
+					client: configuredClient,
+				},
+			} as never,
+		),
+		configuredClient,
+	);
+	assert.equal(
+		eventDrivenFinalizationMonitorClientFrom(
+			{ client: injectedClient },
+			{},
+		),
+		injectedClient,
+	);
+	assert.equal(
+		eventDrivenFinalizationMonitorClientFrom(
+			{},
+			{},
+		),
+		undefined,
+	);
+	assert.equal(
+		eventDrivenFinalizationMonitorClientFrom(
+			{},
+			{},
+			injectedClient,
+		),
+		injectedClient,
+	);
+});
+
+test("agent task launch capture monitor schedules only bounded valid delays", () => {
+	const client = {
+		session: {
+			messages() {
+				return Promise.resolve({ messages: [] });
+			},
+			promptAsync() {
+				return Promise.resolve({ info: { id: "msg-launch-capture-monitor" } });
+			},
+		},
+	};
+	assert.equal(
+		scheduleAgentTaskLaunchCaptureMonitorV1({
+			rootDir: "/tmp/flowdesk-launch-capture-monitor-test",
+			workflowId: "workflow-launch-capture-monitor-test",
+			client: client as never,
+			delaysMs: [],
+		}),
+		0,
+	);
+	assert.equal(
+		scheduleAgentTaskLaunchCaptureMonitorV1({
+			rootDir: "/tmp/flowdesk-launch-capture-monitor-test",
+			workflowId: "workflow-launch-capture-monitor-test",
+			client: client as never,
+			delaysMs: [-1, Number.NaN],
+		}),
+		0,
+	);
 });
 
 test("chat.message appended parts carry opencode 1.x TextPart schema fields (id, sessionID, messageID)", async () => {
@@ -11356,6 +11590,86 @@ test("flowdesk_task requires explicit consent fields without silently defaulting
 		) as Record<string, unknown>;
 		assert.equal(missingProviderConsent.status, "blocked");
 		assert.match(String(missingProviderConsent.reason), /allowProviderCall/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("flowdesk_task hard-blocks execution from FlowDesk child lane session", async () => {
+	let createCalled = false;
+	let promptCalled = false;
+	const dummyClient = {
+		session: {
+			create() {
+				createCalled = true;
+				return Promise.resolve({ id: "child-should-not-launch" });
+			},
+			prompt() {
+				promptCalled = true;
+				return Promise.resolve({ info: { id: "message-should-not-launch" } });
+			},
+			messages() {
+				return Promise.resolve([]);
+			},
+		},
+	};
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-child-tool-boundary-"));
+	try {
+		const workflowId = "workflow-child-tool-boundary";
+		const childIntent = prepareFlowDeskSessionEvidenceWriteIntentV1({
+			workflowId,
+			evidenceId: "agent-task-child-session-boundary-test",
+			record: {
+				schema_version: "flowdesk.agent_task_child_session.v1",
+				workflow_id: workflowId,
+				lane_id: "lane-child-tool-boundary",
+				task_id: "task-child-tool-boundary",
+				child_session_id: "ses_child_tool_boundary",
+				parent_session_ref: "ses-parent-tool-boundary",
+				provider_qualified_model_id: "openai/gpt-5.5",
+				agent_ref: "agent-flowdesk-verifier-testing",
+				nudge_count: 0,
+				last_nudge_at: null,
+				created_at: "2026-06-24T00:00:00.000Z",
+				dispatch_authority_enabled: false,
+			},
+		});
+		assert.equal(childIntent.ok, true, childIntent.errors.join("; "));
+		assert.equal(applyFlowDeskSessionEvidenceWriteIntentsV1(root, [childIntent.writeIntent as never]).ok, true);
+
+		const hooks = await flowdeskOpenCodeServerPlugin.server(
+			{ client: dummyClient } as never,
+			{
+				[flowdeskAgentTaskRunOption]: { enabled: true },
+				[flowdeskDurableStateRootOption]: root,
+				localNonDispatchAdapter: false,
+				naturalLanguageRouting: false,
+			},
+		);
+		const shortTaskTool = hooks.tool?.[flowdeskTaskToolName];
+		assert.ok(shortTaskTool);
+
+		const result = JSON.parse(
+			toolOutput(
+				await shortTaskTool.execute(
+					{
+						workflowId: "workflow-nested-launch-should-block",
+						taskDescription: "Attempt nested launch from child lane.",
+						agentName: "flowdesk-verifier-testing",
+						providerQualifiedModelId: "openai/gpt-5.5",
+						developerModeAcknowledged: true,
+						allowProviderCall: true,
+					},
+					{ sessionID: "ses_child_tool_boundary" } as never,
+				),
+			),
+		) as Record<string, unknown>;
+
+		assert.equal(result.status, "blocked_before_tool_execution");
+		assert.equal(result.blockedReason, "flowdesk_child_lane_tool_boundary");
+		assert.equal(result.toolName, flowdeskTaskToolName);
+		assert.equal(createCalled, false);
+		assert.equal(promptCalled, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

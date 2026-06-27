@@ -316,6 +316,37 @@ export interface FlowDeskStatusLiveSubtaskActivityRowV1 {
 	debugCommandRef: "/flowdesk-export-debug";
 }
 
+/** Read-only projection of a single wake inbox notice for status display. */
+export interface FlowDeskStatusLiveWakeNoticeV1 {
+	/** Stable notice id derived from consumptionKey. */
+	noticeId: string;
+	/** ISO timestamp when the notice was first created. */
+	createdAt: string;
+	/** Workflow that generated the notice. */
+	workflowId: string;
+	/** Completion kind. */
+	completionKind: "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
+	/** Human-readable label (bounded). */
+	notificationLabel: string;
+	/**
+	 * Number of prompt dispatch attempts.  A non-zero value means at least one
+	 * prompt was attempted, but does NOT mean the user saw or acknowledged it.
+	 */
+	promptAttemptCount: number;
+	/**
+	 * Whether the user has explicitly acknowledged this notice.  False means the
+	 * notice may still be pending user attention even if a prompt was dispatched.
+	 */
+	userAcknowledged: boolean;
+	/**
+	 * Read-only delivery classification.  `attempted_unverified` is fail-closed:
+	 * a prompt was dispatched/resolved, but FlowDesk has no user-visible proof.
+	 */
+	deliveryStatus: "not_attempted" | "attempted_unverified" | "acknowledged";
+	/** Bounded user-facing hint when the notice still needs attention. */
+	deliveryIssue?: "user_visible_delivery_unconfirmed";
+}
+
 export interface FlowDeskStatusLiveResultV1 {
 	status: "status_live_collected" | "blocked_before_status_live";
 	observedAt: string;
@@ -329,6 +360,13 @@ export interface FlowDeskStatusLiveResultV1 {
 	totalInconsistentFinalizingWithoutTerminalLaneCount?: number;
 	redactedBlockReason?: string;
 	summaryForUser?: string;
+	/**
+	 * Read-only snapshot of recent wake notices from the persisted inbox.
+	 * This field is populated without mutating/consuming any notices.
+	 * A notice appearing here does NOT mean the user saw it; check
+	 * `userAcknowledged` and `promptAttemptCount` for delivery context.
+	 */
+	recentWakeNotices?: readonly FlowDeskStatusLiveWakeNoticeV1[];
 	safeNextActions: readonly (
 		| "/flowdesk-status"
 		| "/flowdesk-doctor"
@@ -1578,6 +1616,88 @@ function summarizeLatestProviderUsageSnapshot(
 	};
 }
 
+const WAKE_NOTICE_INBOX_READ_MAX = 10;
+
+/**
+ * Load recent wake notices from the persisted inbox file.
+ *
+ * Read-only: never writes, mutates, or consumes any notice.
+ * Returns an empty array on any error or when the file is absent.
+ * The returned entries carry `promptAttemptCount` and `userAcknowledged`
+ * from the stored schema; callers MUST NOT infer user visibility from
+ * `consumed` alone.
+ */
+function loadRecentWakeNoticesReadOnly(rootDir: string): readonly FlowDeskStatusLiveWakeNoticeV1[] {
+	try {
+		const inboxPath = join(rootDir, ".flowdesk", "ui", "main-session-wake-notifications.json");
+		if (!existsSync(inboxPath)) return [];
+		const parsed = JSON.parse(readFileSync(inboxPath, "utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+		const record = parsed as Record<string, unknown>;
+		if (record.schema_version !== "flowdesk.main_session_wake_notifications.v1") return [];
+		if (!Array.isArray(record.notices)) return [];
+		const notices: FlowDeskStatusLiveWakeNoticeV1[] = [];
+		for (const raw of record.notices.slice(0, WAKE_NOTICE_INBOX_READ_MAX)) {
+			if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+			const entry = raw as Record<string, unknown>;
+			// Backcompat: older live writers stored raw WakeRow-shaped notices with
+			// `consumptionKey`/`readyAt`/`consumedAt` but without the additive inbox
+			// fields. Normalize those rows for read-only status display without
+			// mutating the persisted file. This keeps status-visible fallback working
+			// even while an installed OpenCode process is still writing legacy shape.
+			const noticeId = typeof entry.notice_id === "string" && entry.notice_id.length > 0
+				? entry.notice_id
+				: typeof entry.consumptionKey === "string" && entry.consumptionKey.length > 0
+					? entry.consumptionKey
+					: undefined;
+			const createdAt = typeof entry.created_at === "string" && entry.created_at.length > 0
+				? entry.created_at
+				: typeof entry.consumedAt === "string" && entry.consumedAt.length > 0
+					? entry.consumedAt
+					: typeof entry.readyAt === "string" && entry.readyAt.length > 0
+						? entry.readyAt
+						: undefined;
+			const workflowId = typeof entry.workflowId === "string" && entry.workflowId.length > 0 ? entry.workflowId : undefined;
+			const completionKind = entry.completionKind;
+			if (
+				noticeId === undefined || createdAt === undefined || workflowId === undefined
+				|| completionKind !== "task_result" && completionKind !== "task_failed"
+				&& completionKind !== "auto_next_ready" && completionKind !== "awaiting_permission"
+				&& completionKind !== "diagnostic_attention"
+			) continue;
+			const notificationLabel = typeof entry.notificationLabel === "string"
+				? entry.notificationLabel.slice(0, 80)
+				: "FlowDesk wake notice";
+			const promptAttemptCount = typeof entry.prompt_attempt_count === "number"
+				&& Number.isFinite(entry.prompt_attempt_count) && entry.prompt_attempt_count >= 0
+				? Math.floor(entry.prompt_attempt_count)
+				: entry.consumed === true || typeof entry.consumedAt === "string" ? 1 : 0;
+			const userAcknowledged = entry.user_acknowledged === true;
+			const deliveryStatus = userAcknowledged
+				? "acknowledged"
+				: promptAttemptCount > 0
+					? "attempted_unverified"
+					: "not_attempted";
+			notices.push({
+				noticeId,
+				createdAt,
+				workflowId,
+				completionKind,
+				notificationLabel,
+				promptAttemptCount,
+				userAcknowledged,
+				deliveryStatus,
+				...(deliveryStatus === "attempted_unverified"
+					? { deliveryIssue: "user_visible_delivery_unconfirmed" as const }
+					: {}),
+			});
+		}
+		return notices;
+	} catch {
+		return [];
+	}
+}
+
 export async function executeFlowDeskStatusLiveV1(input: {
 	config: FlowDeskStatusLiveConfigV1;
 	request?: FlowDeskStatusLiveRequestV1;
@@ -1776,6 +1896,10 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		requestedWorkflowId,
 	});
 
+	// Load recent wake notices read-only: no writes, no consumption, no mutation.
+	// A notice appearing here does NOT imply the user saw it.
+	const recentWakeNotices = loadRecentWakeNoticesReadOnly(rootDir);
+
 	return {
 		status: "status_live_collected",
 		observedAt,
@@ -1788,6 +1912,7 @@ export async function executeFlowDeskStatusLiveV1(input: {
 		totalProgressingLateLaneCount: totalLate,
 		totalInconsistentFinalizingWithoutTerminalLaneCount: totalInconsistent,
 		summaryForUser,
+		...(recentWakeNotices.length > 0 ? { recentWakeNotices } : {}),
 		safeNextActions: safeNextActions(),
 		authorityCapabilitySummary: authorityCapabilitySummary(),
 		authority: {

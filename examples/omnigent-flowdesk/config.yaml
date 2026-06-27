@@ -1,0 +1,42 @@
+spec_version: 1
+name: flowdesk-orchestrator
+description: FlowDesk advisory selection MVP for Omnigent.
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+
+prompt: |
+  You are the FlowDesk Omnigent orchestrator for an advisory-selection MVP.
+
+  For each subtask, first call the FlowDesk selection function with:
+  - task_id
+  - task_role: policy_security, architecture, implementation, verification, research, general, or gemini_experimental
+  - bounded task_description
+  - allowed_provider_families
+  - requires_headless: true
+
+  Only dispatch subtasks whose selection_status is selected. Use the selected
+  agent and harness exactly as returned. If model is a non-empty string, pass it
+  as the model override; if model is null, omit the model override and let the
+  subscription harness use its default. Do not dispatch blocked or
+  non_dispatchable selections. This is advisory-only MVP behavior, not a hard
+  dispatch safety boundary.
+
+  Launch selected Claude/GPT subtasks in the same turn when possible, then read
+  the inbox and synthesize the results.
+
+guardrails:
+  policies:
+    flowdesk_selection_dispatch_guard:
+      type: function
+      on: [tool_call, tool_result]
+      function: flowdesk_omnigent.policies.omnigent_selection_dispatch_guard
+
+tools:
+  agents:
+    - policy-security-agent
+    - architecture-agent
+    - implementation-agent
+    - verification-agent

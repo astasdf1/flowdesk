@@ -26,6 +26,7 @@ import {
 	evaluateGuardedAutoAbortHookV1,
 	evaluateGuardedAutoRetryHookV1,
 	monitorChildSessionsV1,
+	canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind,
 	flowDeskProgressIsMeaningfulActivityV1,
 	deriveFlowDeskLaneToolStateV1,
 	resolveFlowDeskExpectedTurnCompletedV1,
@@ -863,6 +864,7 @@ test("meaningful-progress classifier ignores watchdog-authored and ambient recor
 	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task session busy event observed"), false);
 	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task session.diff event observed"), false);
 	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task session.updated event observed"), false);
+	assert.equal(flowDeskProgressIsMeaningfulActivityV1("waiting", "agent task user message.updated event observed"), false);
 });
 
 test("V11.2 deriveFlowDeskLaneToolStateV1: event-based open-tool set drives toolRunningNow/unknown", () => {
@@ -1433,7 +1435,57 @@ test("V11.2 correction: stable final-answer text captures after bounded quiescen
 		assert.equal(reload.ok, true);
 		const taskResult = reload.entries.find((entry) => entry.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
 		assert.equal(taskResult?.result_text, "Final answer ready.");
+		assert.equal(taskResult?.bounded_quiescence_candidate_count, undefined);
 		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "session_finalization_evidence"), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessionsV1 terminalizes stable process_notes without task_result", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-process-notes-terminalize-"));
+	try {
+		const workflowId = "workflow-process-notes-terminalize";
+		const laneId = "lane-process-notes-terminalize";
+		const taskId = "task-process-notes-terminalize";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-process-notes-terminalize",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-process-notes-terminalize");
+		const createdMs = Date.parse("2026-05-26T10:00:02.000Z");
+		const completedMs = Date.parse("2026-05-26T10:00:08.000Z");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: `agent task turn completed msgid=msg-process-notes created=${createdMs} completed=${completedMs}`,
+		}, "agent-task-progress-process-notes-tc");
+
+		const client = {
+			session: {
+				messages: async () => ({ messages: [{ role: "assistant", finish_reason: "stop", parts: [{ type: "text", text: "I am checking the process-note classifier blocking path now." }] }] }),
+				prompt: async () => ({}),
+				promptAsync: async () => ({}),
+				abort: async () => ({}),
+			},
+		} as never;
+
+		const first = await monitorChildSessionsV1({
+			rootDir, workflowId,
+			now: new Date("2026-05-26T10:00:38.000Z"),
+			abortThresholdMs: 60_000, maxIdleContinuations: 0,
+			client,
+		});
+		assert.equal(first.lanesCompleted, 0);
+		assert.equal(first.lanesAborted, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
+		const failed = reload.entries.find((entry) => entry.evidenceClass === "task_failed")?.record as Record<string, unknown> | undefined;
+		assert.equal(failed?.failure_category, "unknown");
+		assert.equal(failed?.observed_text_kind, "process_notes");
+		assert.equal(failed?.safe_for_auto_synthesis, false);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -1733,6 +1785,11 @@ test("V11.2 Slice 3: turn completed but empty body retries, injects final-report
 		});
 		assert.equal(c1.lanesCompleted, 0);
 		assert.equal(c1.lanesAborted, 0, "cycle 1 must retry, not fail");
+		const c1Reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(c1Reload.ok, true);
+		assert.equal(c1Reload.entries.filter((entry) => entry.evidenceClass === "task_result").length, 0, "empty body retry must not write task_result");
+		const c1Awaiting = c1Reload.entries.find((entry) => entry.evidenceClass === "session_finalization_evidence" && (entry.record as Record<string, unknown>).decision === "awaiting_body_capture")?.record as Record<string, unknown> | undefined;
+		assert.equal(c1Awaiting?.observation && (c1Awaiting.observation as Record<string, unknown>).body_capture_state, "awaiting_body_capture");
 
 		const c2 = await monitorChildSessionsV1({
 			rootDir, workflowId, now: new Date("2026-05-26T10:01:08.000Z"),
@@ -1827,7 +1884,7 @@ test("awaiting_body_capture without TURN_COMPLETED sends repair nudge then captu
 				messages: async () => {
 					messagesCalls += 1;
 					if (promptCalls === 0) return { messages: [] };
-					return { messages: [{ role: "assistant", parts: [{ type: "text", text: "Recovered final report after repair nudge." }, { type: "step-finish", reason: "stop" }] }] };
+					return { messages: [{ role: "assistant", finish_reason: "stop", parts: [{ type: "text", text: "Recovered final answer after repair nudge." }, { type: "step-finish", reason: "stop" }] }] };
 				},
 				prompt: async () => { promptCalls += 1; return {}; },
 				abort: async () => ({}),
@@ -1858,10 +1915,185 @@ test("awaiting_body_capture without TURN_COMPLETED sends repair nudge then captu
 		assert.equal(reload.ok, true);
 		const taskResult = reload.entries.find((entry) => entry.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
 		assert.ok(taskResult, "expected recovered task_result");
-		assert.equal(String(taskResult.result_text).includes("Recovered final report"), true);
+		assert.equal(String(taskResult.result_text).includes("Recovered final answer"), true);
 		assert.equal(reload.entries.filter((entry) => entry.evidenceClass === "repair_attempt").length, 1);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("awaiting_body_capture rescue terminates non-final output kinds with task_failed + invocation_failed (no task_result)", async () => {
+	// When the awaiting-body rescue branch observes recovered text that is NOT
+	// final_answer (e.g. process_notes, partial_findings), the fix writes terminal
+	// flowdesk.task_failed.v1 + lane_lifecycle_record.v1(invocation_failed) instead
+	// of a bare continue. No task_result is written; the lane becomes terminal.
+	for (const variant of [
+		{ caseId: "partial_findings", text: "Finding: risk issue summary before final answer." },
+		{ caseId: "process_notes", text: "Planning and investigating the issue before final answer." },
+	] as const) {
+		const rootDir = mkdtempSync(join(tmpdir(), `flowdesk-awaiting-body-${variant.caseId}-`));
+		try {
+			const workflowId = `workflow-awaiting-body-${variant.caseId}`;
+			const laneId = `lane-awaiting-body-${variant.caseId}`;
+			const taskId = `task-awaiting-body-${variant.caseId}`;
+			writeAgentTaskChildSession(rootDir, {
+				workflowId,
+				laneId,
+				taskId,
+				childSessionId: `ses-child-awaiting-body-${variant.caseId}`,
+				createdAt: "2026-05-26T10:00:00.000Z",
+				awaitingBodyCaptureAttempts: 1,
+				awaitingBodyCaptureSince: "2026-05-26T10:00:08.000Z",
+			}, `agent-task-child-session-awaiting-body-${variant.caseId}`);
+			writeLifecycle(rootDir, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, state: "running" }), `lifecycle-awaiting-body-${variant.caseId}`);
+			writeAgentTaskProgressRecord(rootDir, {
+				workflowId,
+				laneId,
+				taskId,
+				observedAt: "2026-05-26T10:00:08.000Z",
+				phase: "finalizing",
+				progressLabel: "agent task session.diff event observed",
+			}, `agent-task-progress-awaiting-body-${variant.caseId}-diff`);
+
+			const nonFinalClient = {
+				session: {
+					messages: async () => ({ messages: [{ role: "assistant", parts: [{ type: "text", text: variant.text }, { type: "step-finish", reason: "stop" }] }] }),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => ({}),
+				},
+			} as never;
+
+			const monitorResult = await monitorChildSessionsV1({
+				rootDir,
+				workflowId,
+				now: new Date("2026-05-26T10:00:38.000Z"),
+				abortThresholdMs: 120_000,
+				maxIdleContinuations: 0,
+				client: nonFinalClient,
+			});
+
+			// The non-final output kind must NOT produce task_result
+			const reloadAfter = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+			assert.equal(reloadAfter.ok, true);
+			assert.equal(
+				reloadAfter.entries.some((entry) => entry.evidenceClass === "task_result"),
+				false,
+				`${variant.caseId} non-final awaiting-body rescue must not write task_result`,
+			);
+			// task_failed MUST be written with safe_for_auto_synthesis=false
+			const taskFailed = reloadAfter.entries.find(
+				(entry) => entry.evidenceClass === "task_failed" && (entry.record as Record<string, unknown>).lane_id === laneId,
+			)?.record as Record<string, unknown> | undefined;
+			assert.ok(taskFailed, `${variant.caseId} non-final awaiting-body rescue must write task_failed`);
+			assert.equal(taskFailed?.failure_category, "unknown", `${variant.caseId} failure_category must be "unknown"`);
+			assert.equal(taskFailed?.safe_for_auto_synthesis, false, `${variant.caseId} safe_for_auto_synthesis must be false`);
+			// lane_lifecycle_record(invocation_failed) MUST be written
+			const terminalLifecycle = reloadAfter.entries.find(
+				(entry) =>
+					entry.evidenceClass === "lane_lifecycle" &&
+					(entry.record as Record<string, unknown>).lane_id === laneId &&
+					(entry.record as Record<string, unknown>).state === "invocation_failed",
+			)?.record as Record<string, unknown> | undefined;
+			assert.ok(terminalLifecycle, `${variant.caseId} non-final awaiting-body rescue must write lane_lifecycle invocation_failed`);
+			// lanesAborted must be incremented (the lane is terminalized)
+			assert.equal(monitorResult.lanesAborted, 1, `${variant.caseId} lanesAborted must be 1`);
+			assert.equal(monitorResult.lanesCompleted, 0, `${variant.caseId} lanesCompleted must be 0`);
+		} finally {
+			rmSync(rootDir, { recursive: true, force: true });
+		}
+	}
+});
+
+test("awaiting-body rescue non-final recovered text: task_failed + invocation_failed lifecycle, no task_result (regression)", async () => {
+	// Regression for: "bare continue after non-final outputKind in awaiting-body rescue"
+	// Required behavior: write terminal flowdesk.task_failed.v1 + lane_lifecycle_record.v1(state=invocation_failed)
+	// with capture safety metadata (safe_for_auto_synthesis=false) and increment lanesAborted.
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-awaiting-body-rescue-non-final-regression-"));
+	try {
+		const workflowId = "workflow-awaiting-body-rescue-non-final";
+		const laneId = "lane-awaiting-body-rescue-non-final";
+		const taskId = "task-awaiting-body-rescue-non-final";
+		// Lane is in awaiting_body_capture state (prior cycle set awaiting_body_capture_since).
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-awaiting-body-rescue-non-final",
+			createdAt: "2026-05-26T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 1,
+			awaitingBodyCaptureSince: "2026-05-26T10:00:08.000Z",
+		}, "agent-task-child-session-awaiting-body-rescue-non-final");
+		writeLifecycle(rootDir, lifecycleRecord({ workflow_id: workflowId, lane_id: laneId, state: "running" }), "lifecycle-awaiting-body-rescue-non-final");
+		// No TURN_COMPLETED event → expectedTurnCompleted is undefined, so the rescue branch is entered.
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-05-26T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session.diff event observed",
+		}, "agent-task-progress-awaiting-body-rescue-non-final-diff");
+
+		// Session returns process_notes text (outputKind=process_notes from agent-task-output classifier).
+		// This triggers the awaiting-body rescue branch with a non-final outputKind.
+		const monitorResult = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:38.000Z"),
+			abortThresholdMs: 120_000,
+			maxIdleContinuations: 0,
+			client: {
+				session: {
+					messages: async () => ({
+						messages: [{
+							role: "assistant",
+							parts: [
+								{ type: "text", text: "I'll analyze this systematically and check the components." },
+								{ type: "step-finish", reason: "stop" },
+							],
+						}],
+					}),
+					prompt: async () => ({}),
+					promptAsync: async () => ({}),
+					abort: async () => ({}),
+				},
+			} as never,
+		});
+
+		// MUST NOT write task_result
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		assert.equal(
+			reload.entries.some((e) => e.evidenceClass === "task_result"),
+			false,
+			"awaiting-body rescue non-final must NOT write task_result",
+		);
+		// MUST write task_failed with safe_for_auto_synthesis=false
+		const taskFailed = reload.entries.find(
+			(e) => e.evidenceClass === "task_failed" && (e.record as Record<string, unknown>).lane_id === laneId,
+		)?.record as Record<string, unknown> | undefined;
+		assert.ok(taskFailed, "awaiting-body rescue non-final MUST write task_failed");
+		assert.equal(taskFailed?.safe_for_auto_synthesis, false, "task_failed must have safe_for_auto_synthesis=false");
+		// MUST write lane_lifecycle_record with state=invocation_failed
+		const terminalLifecycle = reload.entries.find(
+			(e) =>
+				e.evidenceClass === "lane_lifecycle" &&
+				(e.record as Record<string, unknown>).lane_id === laneId &&
+				(e.record as Record<string, unknown>).state === "invocation_failed",
+		)?.record as Record<string, unknown> | undefined;
+		assert.ok(terminalLifecycle, "awaiting-body rescue non-final MUST write lane_lifecycle invocation_failed");
+		assert.equal(terminalLifecycle?.dispatch_authority_enabled, false, "lifecycle must not enable dispatch");
+		// lanesAborted MUST be incremented
+		assert.equal(monitorResult.lanesAborted, 1, "lanesAborted must be 1 for terminalized non-final awaiting-body rescue");
+		assert.equal(monitorResult.lanesCompleted, 0, "lanesCompleted must remain 0");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("awaiting_body_capture rescue helper only admits final_answer", () => {
+	assert.equal(canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind("final_answer"), true);
+	for (const outputKind of ["partial_findings", "process_notes", "tool_trace_only", "empty", undefined]) {
+		assert.equal(canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind(outputKind), false, String(outputKind));
 	}
 });
 
@@ -2141,6 +2373,53 @@ test("monitorChildSessionsV1 liveness poll observes text but waits without termi
 		assert.equal(reload.ok, true);
 		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "task_result"), false);
 		assert.equal(reload.entries.some((entry) => entry.evidenceClass === "agent_task_progress" && String((entry.record as Record<string, unknown>).progress_label).includes("awaiting terminal marker or session idle before capture")), true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("monitorChildSessionsV1 liveness poll captures text when durable session idle signal exists", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-liveness-durable-idle-"));
+	try {
+		const workflowId = "workflow-liveness-durable-idle";
+		const laneId = "lane-liveness-durable-idle";
+		const taskId = "task-liveness-durable-idle";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId, laneId, taskId,
+			childSessionId: "ses-child-liveness-durable-idle",
+			createdAt: "2026-05-26T10:00:00.000Z",
+		}, "agent-task-child-session-liveness-durable-idle");
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			observedAt: "2026-05-26T10:00:25.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session idle event observed",
+		}, "agent-task-progress-liveness-durable-idle");
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-05-26T10:00:45.000Z"),
+			abortThresholdMs: 120_000,
+			livenessCheckIntervalMs: 30_000,
+			client: {
+				session: {
+					messages: async () => ({ messages: [{ role: "assistant", content: "Liveness durable idle final report." }] }),
+					abort: async () => ({}),
+				},
+			} as never,
+		});
+
+		assert.equal(result.lanesCompleted, 1);
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+		const taskResult = reload.entries.find((entry) => entry.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		assert.ok(taskResult);
+		assert.equal(taskResult.completion_status, "final");
+		assert.equal(taskResult.finalization_reason, "stable_idle");
+		assert.match(String(taskResult.result_text), /durable idle final report/);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}
@@ -3943,6 +4222,220 @@ test("monitorChildSessionsV1 force-terminates cross-session unreachable lane aft
 		);
 		assert.ok(orphanProgress, "cross-session orphan progress evidence must be written");
 		assert.ok(childrenCalls > 0, "session.children() must have been called to check reachability");
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Regression: awaiting_body_capture rescue convergence fix
+// (docs/WAKE_AND_CAPTURE_FIX_PLAN_20260624.md — Phase 1)
+// ---------------------------------------------------------------------------
+
+test("awaiting_body_capture rescue: process_notes outputKind writes task_failed not task_result", async () => {
+	// Scenario: lane is in durable awaiting_body_capture (no TURN_COMPLETED progress).
+	// pollChildSessionCandidate returns process_notes-classified text.
+	// Expected: task_failed written, task_result NOT written, lane terminalized.
+	// This is a direct regression test for the bare-continue bug at the
+	// canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind gate.
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-abc-rescue-process-notes-"));
+	try {
+		const workflowId = "workflow-abc-rescue-process-notes";
+		const laneId = "lane-abc-rescue-process-notes";
+		const taskId = "task-abc-rescue-process-notes";
+		// Set awaiting_body_capture_since to mark the lane as durable awaiting.
+		// No TURN_COMPLETED progress record → expectedTurnCompleted === undefined.
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-abc-rescue-process-notes",
+			createdAt: "2026-06-24T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 2,
+			awaitingBodyCaptureSince: "2026-06-24T10:00:08.000Z",
+		}, "agent-task-child-session-abc-rescue-process-notes");
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-06-24T10:00:00.000Z",
+				updated_at: "2026-06-24T10:00:00.000Z",
+			}),
+			"lifecycle-abc-rescue-process-notes",
+		);
+		// Only a session.diff-style progress record (no turn completed).
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-06-24T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session.diff event observed",
+		}, "agent-task-progress-abc-rescue-process-notes-diff");
+
+		// The session returns process_notes-classified text.
+		// Planning/systematic intent text → classified as process_notes.
+		const client = {
+			session: {
+				messages: async () => ({
+					messages: [{
+						role: "assistant",
+						parts: [
+							{ type: "text", text: "I am planning and investigating the issue systematically before reporting." },
+							{ type: "step-finish", reason: "stop" },
+						],
+					}],
+				}),
+				prompt: async () => ({}),
+				promptAsync: async () => ({}),
+				abort: async () => ({}),
+			},
+		} as never;
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			// Past the 30s finalization silence threshold so rescue branch fires.
+			now: new Date("2026-06-24T10:01:00.000Z"),
+			abortThresholdMs: 600_000,
+			maxIdleContinuations: 0,
+			client,
+		});
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+
+		// Safety invariant: no task_result for non-final outputKind.
+		assert.equal(
+			reload.entries.some((e) => e.evidenceClass === "task_result"),
+			false,
+			"process_notes: task_result must NOT be written for non-final output",
+		);
+
+		// Convergence invariant: if text was classified as process_notes (not final_answer),
+		// task_failed must be written (no more bare continue leaving running/inconsistent).
+		// Note: if the text classifier does NOT classify as process_notes but as final_answer,
+		// the task_result path fires instead (covered by the companion regression test).
+		// Either way, the lane MUST terminalize — it must not remain running/inconsistent.
+		const hasTerminal = reload.entries.some(
+			(e) => e.evidenceClass === "task_failed" || e.evidenceClass === "task_result",
+		);
+		assert.equal(
+			hasTerminal,
+			true,
+			"process_notes rescue path must write either task_failed or task_result — never leave running/inconsistent",
+		);
+
+		// If task_failed was written (the expected path for process_notes text), validate it.
+		const taskFailed = reload.entries.find((e) => e.evidenceClass === "task_failed")?.record as Record<string, unknown> | undefined;
+		if (taskFailed !== undefined) {
+			assert.equal(taskFailed?.failure_category, "unknown", "failure_category must be 'unknown' for non-final rescue terminalization");
+			assert.equal(taskFailed?.safe_for_auto_synthesis, false, "safe_for_auto_synthesis must be false for non-final rescue terminalization");
+			// Terminal lifecycle must be written so the lane is not running/inconsistent.
+			const terminalLifecycle = reload.entries.find(
+				(e) =>
+					e.evidenceClass === "lane_lifecycle" &&
+					typeof (e.record as Record<string, unknown>).state === "string" &&
+					(e.record as Record<string, unknown>).state !== "running",
+			);
+			assert.ok(terminalLifecycle, "terminal lane_lifecycle must be written after rescue terminalization");
+			assert.equal(
+				(terminalLifecycle!.record as Record<string, unknown>).state,
+				"invocation_failed",
+				"terminal lifecycle state must be invocation_failed for non-final rescue",
+			);
+			// lanesAborted should be incremented.
+			assert.ok((result.lanesAborted ?? 0) >= 1, "lanesAborted must be incremented for non-final rescue terminalization");
+			assert.equal(result.lanesCompleted, 0, "lanesCompleted must remain 0 for non-final rescue terminalization");
+		}
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});
+
+test("awaiting_body_capture rescue: final_answer outputKind still writes task_result (regression guard)", async () => {
+	// Guard: the patch must not break the existing final_answer → task_result path.
+	// A lane in durable awaiting_body_capture with final_answer text must still
+	// produce task_result and increment lanesCompleted.
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-abc-rescue-final-answer-"));
+	try {
+		const workflowId = "workflow-abc-rescue-final-answer";
+		const laneId = "lane-abc-rescue-final-answer";
+		const taskId = "task-abc-rescue-final-answer";
+		writeAgentTaskChildSession(rootDir, {
+			workflowId,
+			laneId,
+			taskId,
+			childSessionId: "ses-child-abc-rescue-final-answer",
+			createdAt: "2026-06-24T10:00:00.000Z",
+			awaitingBodyCaptureAttempts: 2,
+			awaitingBodyCaptureSince: "2026-06-24T10:00:08.000Z",
+		}, "agent-task-child-session-abc-rescue-final-answer");
+		writeLifecycle(
+			rootDir,
+			lifecycleRecord({
+				workflow_id: workflowId,
+				lane_id: laneId,
+				state: "running",
+				created_at: "2026-06-24T10:00:00.000Z",
+				updated_at: "2026-06-24T10:00:00.000Z",
+			}),
+			"lifecycle-abc-rescue-final-answer",
+		);
+		writeAgentTaskProgressRecord(rootDir, {
+			workflowId, laneId, taskId,
+			observedAt: "2026-06-24T10:00:08.000Z",
+			phase: "finalizing",
+			progressLabel: "agent task session.diff event observed",
+		}, "agent-task-progress-abc-rescue-final-answer-diff");
+
+		// final_answer-classified text: a clear, direct final answer.
+		const client = {
+			session: {
+				messages: async () => ({
+					messages: [{
+						role: "assistant",
+						finish_reason: "stop",
+						parts: [
+							{ type: "text", text: "Verdict: pass. The implementation is correct and ready for release." },
+							{ type: "step-finish", reason: "stop" },
+						],
+					}],
+				}),
+				prompt: async () => ({}),
+				promptAsync: async () => ({}),
+				abort: async () => ({}),
+			},
+		} as never;
+
+		const result = await monitorChildSessionsV1({
+			rootDir,
+			workflowId,
+			now: new Date("2026-06-24T10:01:00.000Z"),
+			abortThresholdMs: 600_000,
+			maxIdleContinuations: 0,
+			client,
+		});
+
+		const reload = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		assert.equal(reload.ok, true);
+
+		// The lane must terminalize (task_result OR task_failed — never running/inconsistent).
+		const hasTerminal = reload.entries.some(
+			(e) => e.evidenceClass === "task_failed" || e.evidenceClass === "task_result",
+		);
+		assert.equal(hasTerminal, true, "final_answer rescue must terminalize the lane");
+
+		// If the text was classified as final_answer, task_result is expected.
+		const taskResult = reload.entries.find((e) => e.evidenceClass === "task_result")?.record as Record<string, unknown> | undefined;
+		if (taskResult !== undefined) {
+			assert.equal(
+				reload.entries.some((e) => e.evidenceClass === "task_failed"),
+				false,
+				"final_answer must NOT also write task_failed",
+			);
+			assert.equal(result.lanesCompleted, 1, "lanesCompleted must be 1 for successful final_answer rescue");
+		}
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 	}

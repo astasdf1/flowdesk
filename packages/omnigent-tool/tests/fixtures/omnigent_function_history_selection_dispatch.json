@@ -1,0 +1,54 @@
+[
+  {
+    "id": "item-select-architecture",
+    "type": "function_call",
+    "name": "flowdesk_select_agent_model",
+    "arguments": "{\"task_id\":\"task-fixture-architecture\",\"task_role\":\"architecture\",\"allowed_provider_families\":[\"openai\"],\"requires_headless\":true}",
+    "call_id": "call-select-architecture"
+  },
+  {
+    "id": "item-select-architecture-output",
+    "type": "function_call_output",
+    "call_id": "call-select-architecture",
+    "output": "{\"schema_version\":\"flowdesk.omnigent_selection.v1\",\"selection_id\":\"selection-fixture-architecture\",\"task_id\":\"task-fixture-architecture\",\"task_role\":\"architecture\",\"selection_status\":\"selected\",\"agent\":\"architecture-agent\",\"harness\":\"codex\",\"model\":null,\"provider_family\":\"openai\",\"confidence\":\"high\",\"reason_codes\":[\"role_architecture_prefers_frontier_reasoning\",\"headless_subscription_verified\",\"quota_unknown_used_as_non_blocking_mvp_default\",\"subscription_harness_default_model\"],\"blocked_labels\":[],\"authority\":\"advisory_selection_only\",\"created_at\":\"2026-06-27T00:00:00Z\",\"expires_at\":\"2026-06-27T00:10:00Z\"}"
+  },
+  {
+    "id": "item-select-policy",
+    "type": "function_call",
+    "name": "flowdesk_select_agent_model",
+    "arguments": {
+      "task_id": "task-fixture-policy",
+      "task_role": "policy_security",
+      "allowed_provider_families": ["claude"],
+      "requires_headless": true
+    },
+    "call_id": "call-select-policy"
+  },
+  {
+    "id": "item-select-policy-output",
+    "type": "function_call_output",
+    "call_id": "call-select-policy",
+    "output": "{\"schema_version\":\"flowdesk.omnigent_selection.v1\",\"selection_id\":\"selection-fixture-policy\",\"task_id\":\"task-fixture-policy\",\"task_role\":\"policy_security\",\"selection_status\":\"selected\",\"agent\":\"policy-security-agent\",\"harness\":\"claude-sdk\",\"model\":\"claude-opus-4-8\",\"provider_family\":\"claude\",\"confidence\":\"high\",\"reason_codes\":[\"role_policy_security_prefers_deep_reasoning\",\"headless_subscription_verified\",\"quota_unknown_used_as_non_blocking_mvp_default\",\"model_family_compatible\"],\"blocked_labels\":[],\"authority\":\"advisory_selection_only\",\"created_at\":\"2026-06-27T00:00:00Z\",\"expires_at\":\"2026-06-27T00:10:00Z\"}"
+  },
+  {
+    "id": "item-dispatch-architecture",
+    "type": "function_call",
+    "name": "sys_session_send",
+    "arguments": "{\"agent\":\"architecture-agent\",\"title\":\"task-fixture-architecture\",\"args\":{\"input\":\"redacted fixture task\"}}",
+    "call_id": "call-dispatch-architecture"
+  },
+  {
+    "id": "item-dispatch-policy",
+    "type": "function_call",
+    "name": "sys_session_send",
+    "arguments": {
+      "agent": "policy-security-agent",
+      "title": "task-fixture-policy",
+      "args": {
+        "input": "redacted fixture task",
+        "model": "claude-opus-4-8"
+      }
+    },
+    "call_id": "call-dispatch-policy"
+  }
+]

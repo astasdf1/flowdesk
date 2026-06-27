@@ -1,0 +1,12 @@
+spec_version: 1
+name: architecture-agent
+description: Architecture reviewer for FlowDesk MCP smoke.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+prompt: |
+  You are the architecture reviewer. For smoke tests, return the requested sentinel exactly.

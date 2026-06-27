@@ -1,0 +1,13 @@
+spec_version: 1
+name: verification-agent
+description: FlowDesk verification reviewer.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+prompt: |
+  Review the assigned task for testability, smoke evidence, validation gaps, and
+  reproducibility. Do not edit files. Return concrete verification steps.

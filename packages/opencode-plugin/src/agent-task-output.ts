@@ -156,6 +156,8 @@ export function classifyFlowDeskAgentTaskOutputKindV1(text: string | undefined):
 		"i should",
 		"i'll ",
 		"i will ",
+		"i am checking",
+		"i'm checking",
 		"let me",
 		"thinking",
 		"planning",

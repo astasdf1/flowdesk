@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
@@ -668,6 +668,109 @@ function isManagedDispatchBetaClient(
 		typeof value.session.prompt === "function" ||
 		typeof value.session.promptAsync === "function"
 	);
+}
+
+export function shouldScheduleEventDrivenFinalizationMonitorV1(input: {
+	matched: boolean;
+	finalizationRelevant: boolean;
+	workflowId?: string;
+	eventMonitorClientAvailable: boolean;
+	pokeWatchdogCycleAvailable: boolean;
+}): boolean {
+	void input.pokeWatchdogCycleAvailable;
+	return input.matched === true && input.finalizationRelevant === true && input.workflowId !== undefined && input.eventMonitorClientAvailable === true;
+}
+
+export function shouldPokeEventDrivenWatchdogCycleV1(input: {
+	matched: boolean;
+	finalizationRelevant: boolean;
+	pokeWatchdogCycleAvailable: boolean;
+}): boolean {
+	return input.matched === true && input.finalizationRelevant === true && input.pokeWatchdogCycleAvailable === true;
+}
+
+export async function runEventDrivenFinalizationMonitorCaptureV1(input: {
+	rootDir: string;
+	workflowId: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	eventType?: string;
+	consumeCompletionWakeForMainSessionBestEffort: (ctx?: unknown) => Promise<void>;
+	retryTailDelaysMs?: readonly number[];
+}): Promise<void> {
+	const runMonitorCapturePass = async (): Promise<void> => {
+		try {
+			const monResult = await monitorChildSessionsV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				client: input.client,
+				now: new Date(),
+				abortThresholdMs: 10 * 60_000,
+				absoluteLaneAgeMs: 60 * 60_000,
+			});
+			if (
+				monResult.lanesCompleted > 0 ||
+				monResult.lanesAborted > 0 ||
+				input.eventType === "session.error"
+			) {
+				refreshFlowDeskCompletionUiCachesV1({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+				});
+				await input.consumeCompletionWakeForMainSessionBestEffort();
+			}
+		} catch {
+			// best-effort; event hook must not crash the plugin
+		}
+	};
+	await runMonitorCapturePass();
+	// Always schedule the bounded retry tail unconditionally, regardless of whether
+	// the first monitor pass reports lanesAwaitingCapture.
+	// The session.messages body from the OpenCode SDK may not be materialized yet
+	// at the moment the finalization-relevant event fires; a short retry window
+	// ensures we capture the result text once the body is available.
+	const retryTailDelaysMs = input.retryTailDelaysMs ?? defaultEventDrivenFinalizationRetryTailDelaysMsV1();
+	for (const delay of retryTailDelaysMs) {
+		if (!Number.isFinite(delay) || delay < 0) continue;
+		const retryTimer = setTimeout(
+			() => void runMonitorCapturePass(),
+			Math.floor(delay),
+		);
+		retryTimer.unref?.();
+	}
+}
+
+export function defaultEventDrivenFinalizationRetryTailDelaysMsV1(): readonly number[] {
+	// The stall-recovery bounded-quiescence gate requires a 30s post-progress
+	// silence window before promoting final text observed through a turn-completed
+	// event into terminal task_result evidence. Short SDK body-materialization
+	// retries cover the immediate race; the 35s tail covers the quiescence gate
+	// when no later OpenCode event arrives to trigger another monitor pass.
+	return [750, 2_500, 5_000, 35_000];
+}
+
+export function scheduleAgentTaskLaunchCaptureMonitorV1(input: {
+	rootDir: string;
+	workflowId: string;
+	client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+	delaysMs?: readonly number[];
+}): number {
+	const delays = input.delaysMs ?? [15_000, 45_000, 90_000];
+	let scheduled = 0;
+	for (const delay of delays) {
+		if (!Number.isFinite(delay) || delay < 0) continue;
+		const timer = setTimeout(() => {
+			void runEventDrivenFinalizationMonitorCaptureV1({
+				rootDir: input.rootDir,
+				workflowId: input.workflowId,
+				client: input.client,
+				eventType: "agent_task_launch_capture_monitor",
+				consumeCompletionWakeForMainSessionBestEffort: async () => {},
+			});
+		}, Math.floor(delay));
+		timer.unref?.();
+		scheduled += 1;
+	}
+	return scheduled;
 }
 
 function isManagedDispatchBetaReservationStore(
@@ -4161,6 +4264,108 @@ function liveSessionIdFromContext(ctx: unknown): string {
 	return "";
 }
 
+function normalizeFlowDeskSessionIdForGuard(value: string | undefined): string | undefined {
+	if (typeof value !== "string") return undefined;
+	let normalized = value.trim();
+	while (normalized.startsWith("ses-")) normalized = normalized.slice("ses-".length);
+	return normalized.length > 0 ? normalized : undefined;
+}
+
+function listFlowDeskWorkflowIdsForChildLaneGuard(rootDir: string, max: number): string[] {
+	try {
+		const sessionsDir = join(rootDir, ".flowdesk", "sessions");
+		if (!existsSync(sessionsDir)) return [];
+		return readdirSync(sessionsDir, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.filter((name) => name.length > 0)
+			.sort()
+			.slice(0, Math.max(1, max));
+	} catch {
+		return [];
+	}
+}
+
+export function isFlowDeskChildLaneSessionV1(input: {
+	rootDir: string | undefined;
+	sessionId: string | undefined;
+}): boolean {
+	const rootDir = input.rootDir;
+	const sessionId = normalizeFlowDeskSessionIdForGuard(input.sessionId);
+	if (rootDir === undefined || sessionId === undefined) return false;
+	for (const workflowId of listFlowDeskWorkflowIdsForChildLaneGuard(rootDir, 500)) {
+		const reloaded = reloadFlowDeskSessionEvidenceV1({ rootDir, workflowId });
+		if (!reloaded.ok) continue;
+		for (const entry of reloaded.entries) {
+			if (entry.evidenceClass !== "agent_task_child_session" || !isRecord(entry.record)) continue;
+			const childSessionId = normalizeFlowDeskSessionIdForGuard(
+				typeof entry.record.child_session_id === "string" ? entry.record.child_session_id : undefined,
+			);
+			if (childSessionId === sessionId) return true;
+		}
+	}
+	return false;
+}
+
+const flowDeskChildLaneBlockedToolNames = new Set<string>([
+	flowdeskAgentTaskRunToolName,
+	flowdeskTaskToolName,
+	flowdeskTaskAbortToolName,
+	flowdeskManagedDispatchBetaToolName,
+	flowdeskManagedDispatchLaneFinalizeToolName,
+	flowdeskRuntimeReviewerExecutionToolName,
+	flowdeskManagedFallbackRegateToolName,
+	flowdeskQuickReviewerRunToolName,
+	flowdeskQuickFallbackRunToolName,
+	flowdeskRebindToolName,
+	flowdeskWorkflowDispatchToolName,
+	flowdeskControlledWriteApplyToolName,
+	flowdeskWriteToolName,
+	flowdeskAutoContinueExecutionToolName,
+	flowdeskContinueToolName,
+	"flowdesk_orchestrate",
+]);
+
+function childLaneToolBlockedResponse(toolName: string, sessionId: string | undefined): string {
+	return JSON.stringify({
+		status: "blocked_before_tool_execution",
+		blockedReason: "flowdesk_child_lane_tool_boundary",
+		redactedBlockReason: "FlowDesk child/subtask lanes cannot execute FlowDesk launch, orchestration, fallback, write/apply, abort, continue, or reviewer fan-out tools. Return the assigned deliverable instead.",
+		toolName,
+		...(sessionId === undefined ? {} : { sessionRef: `ses-${sessionId}` }),
+		safeNextActions: ["/flowdesk-status", "/flowdesk-doctor"],
+		authority: {
+			realOpenCodeDispatch: false,
+			providerCall: false,
+			runtimeExecution: false,
+			actualLaneLaunch: false,
+			fallbackAuthority: false,
+			writeAuthority: false,
+			hardCancelOrNoReplyAuthority: false,
+			toolAuthority: false,
+		},
+	});
+}
+
+export function applyFlowDeskChildLaneToolExecutionGuardV1(input: {
+	tools: Record<string, FlowDeskOpenCodeTool>;
+	rootDir: string | undefined;
+}): void {
+	for (const [toolName, candidate] of Object.entries(input.tools)) {
+		if (!flowDeskChildLaneBlockedToolNames.has(toolName)) continue;
+		const toolRecord = candidate as unknown as { execute?: (args: unknown, ctx?: unknown) => unknown | Promise<unknown> };
+		if (typeof toolRecord.execute !== "function") continue;
+		const originalExecute = toolRecord.execute.bind(toolRecord);
+		toolRecord.execute = (async (args: unknown, ctx?: unknown) => {
+			const sessionId = liveSessionIdFromContext(ctx);
+			if (isFlowDeskChildLaneSessionV1({ rootDir: input.rootDir, sessionId })) {
+				return childLaneToolBlockedResponse(toolName, normalizeFlowDeskSessionIdForGuard(sessionId));
+			}
+			return originalExecute(args, ctx);
+		}) as (args: unknown, ctx?: unknown) => unknown | Promise<unknown>;
+	}
+}
+
 function isPlaceholderSessionId(value: string): boolean {
 	const trimmed = value.trim();
 	return trimmed === "{id}" || /%7bid%7d/i.test(trimmed) || /[{}]/.test(trimmed);
@@ -4582,6 +4787,19 @@ function managedDispatchBetaClientFrom(
 	return isRecord(input) && isManagedDispatchBetaClient(input.client)
 		? input.client
 		: undefined;
+}
+
+export function eventDrivenFinalizationMonitorClientFrom(
+	input: unknown,
+	options?: PluginOptions,
+	fallbackClient?: FlowDeskManagedDispatchBetaOpenCodeClientV1,
+): FlowDeskManagedDispatchBetaOpenCodeClientV1 | undefined {
+	// Capture-only finalization monitoring needs an SDK session reader, but it must
+	// not inherit managed-dispatch enablement semantics. A configured adapter client
+	// or injected OpenCode SDK client is sufficient to read child sessions and persist
+	// terminal evidence; this does not authorize dispatch, fallback, write/apply,
+	// hard-chat cancellation, or noReply behavior.
+	return managedDispatchBetaClientFrom(input, options) ?? fallbackClient;
 }
 
 function managedDispatchBetaReservationStoreFrom(
@@ -5156,6 +5374,13 @@ export function createFlowDeskAgentTaskRunOptInTools(input: {
 							failureCategory,
 							redactedReason,
 						}),
+					});
+				}
+				if (asyncMode === true && result.status === "task_launched") {
+					scheduleAgentTaskLaunchCaptureMonitorV1({
+						rootDir,
+						workflowId,
+						client,
 					});
 				}
 				const failureCategory = result.status === "task_failed" ? result.failureCategory : undefined;
@@ -7210,8 +7435,8 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 			),
 		);
 	const agentTaskRunEnabled = isAgentTaskRunEnabled(options);
+	const agentTaskRunClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
 	if (agentTaskRunEnabled) {
-		const agentTaskRunClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
 		const agentTaskRunRoot = durableStateRootFromOptions(options);
 		Object.assign(tools, createFlowDeskAgentTaskRunOptInTools({
 			client: agentTaskRunClient,
@@ -7401,6 +7626,23 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	// entry point); the event hook only schedules it. Remains undefined unless
 	// the setInterval watchdog is enabled, so the event hook degrades gracefully.
 	let pokeWatchdogCycle: (() => void) | undefined;
+	const eventDrivenFinalizationMonitorDebounceMs = 250;
+	const eventDrivenFinalizationMonitorTimersByWorkflowId = new Map<string, ReturnType<typeof setTimeout>>();
+	const scheduleEventDrivenFinalizationMonitor = (input: {
+		workflowId: string;
+		eventType?: string;
+		rootDir: string;
+		client: FlowDeskManagedDispatchBetaOpenCodeClientV1;
+		consumeCompletionWakeForMainSessionBestEffort: (ctx?: unknown) => Promise<void>;
+	}) => {
+		if (eventDrivenFinalizationMonitorTimersByWorkflowId.has(input.workflowId)) return;
+		const timer = setTimeout(() => {
+			eventDrivenFinalizationMonitorTimersByWorkflowId.delete(input.workflowId);
+			void runEventDrivenFinalizationMonitorCaptureV1(input);
+		}, eventDrivenFinalizationMonitorDebounceMs);
+		eventDrivenFinalizationMonitorTimersByWorkflowId.set(input.workflowId, timer);
+		timer.unref?.();
+	};
 	if (watchdogConfig?.enabled === true && guardedAutoAbortForWatchdog !== undefined && durableStateRoot !== undefined) {
 		const capturedClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
 		const capturedParentSessionId = "";
@@ -7514,7 +7756,7 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 	}
 
 	const eventRootDir = durableStateRootFromOptions(options);
-	const eventMonitorClient = isRecord(input) && isManagedDispatchBetaClient(input.client) ? input.client : undefined;
+	const eventMonitorClient = eventDrivenFinalizationMonitorClientFrom(input, options, agentTaskRunClient);
 	const eventHook = eventRootDir === undefined && !uiProbeEnabled
 		? undefined
 		: async (input: { event: unknown }) => {
@@ -7528,55 +7770,39 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					const observed = await observeFlowDeskOpenCodeEventV1({ rootDir: eventRootDir, event: input.event });
 					// V11.3: if this was a matched, finalization-relevant child-session
 					// event, poke the watchdog so it captures/terminalizes immediately
-					// instead of waiting up to a full setInterval period. The watchdog
-					// (single capture owner) still does the actual work.
-					if (observed.matched && observed.finalizationRelevant === true) {
-						if (pokeWatchdogCycle !== undefined) {
-							pokeWatchdogCycle();
-						} else if (eventMonitorClient !== undefined && observed.workflowId !== undefined) {
+					// instead of waiting up to a full setInterval period. Keep the legacy
+					// watchdog poke decision independent from direct monitor scheduling so
+					// missing eventMonitorClient/workflow metadata cannot suppress the poke.
+					if (shouldPokeEventDrivenWatchdogCycleV1({
+						matched: observed.matched,
+						finalizationRelevant: observed.finalizationRelevant === true,
+						pokeWatchdogCycleAvailable: pokeWatchdogCycle !== undefined,
+					})) {
+						pokeWatchdogCycle?.();
+					}
+					// If a workflow-scoped event monitor client is available, separately
+					// schedule the direct bounded capture monitor so capture is not
+					// suppressed when the watchdog poke path is absent or not capture-capable.
+					if (shouldScheduleEventDrivenFinalizationMonitorV1({
+						matched: observed.matched,
+						finalizationRelevant: observed.finalizationRelevant === true,
+						workflowId: observed.workflowId,
+						eventMonitorClientAvailable: eventMonitorClient !== undefined,
+						pokeWatchdogCycleAvailable: pokeWatchdogCycle !== undefined,
+					})) {
+						if (eventMonitorClient !== undefined && observed.workflowId !== undefined) {
 							// Agent-task async capture must not depend on the guarded auto-abort
-							// watchdog being enabled. When guardedAutoAbort is not configured, run a
-							// bounded capture-oriented monitor pass for the affected workflow only.
+							// watchdog being enabled. Run a bounded capture-oriented monitor pass for
+							// the affected workflow even when the watchdog poke path is also active.
 							// Use wide termination clocks so this event-poked path captures completed
 							// child output but does not act as a hidden auto-abort loop.
-							//
-							// Body capture retry: if the first pass finds lanes still awaiting body
-							// capture (turn completed but SDK buffer not yet readable), reschedule up
-							// to 3 times at 5-second intervals — without relying on another user event.
-							const capturedWorkflowId = observed.workflowId;
-							const runMonitorWithBodyCaptureRetry = async (retriesLeft: number): Promise<void> => {
-								try {
-									const monResult = await monitorChildSessionsV1({
-										rootDir: eventRootDir,
-										workflowId: capturedWorkflowId,
-										client: eventMonitorClient,
-										now: new Date(),
-										abortThresholdMs: 10 * 60_000,
-										absoluteLaneAgeMs: 60 * 60_000,
-									});
-									if (
-										monResult.lanesCompleted > 0 ||
-										monResult.lanesAborted > 0 ||
-										observed.eventType === "session.error"
-									) {
-										refreshFlowDeskCompletionUiCachesV1({
-											rootDir: eventRootDir,
-											workflowId: capturedWorkflowId,
-										});
-										await consumeCompletionWakeForMainSessionBestEffort(input);
-									}
-									if ((monResult.lanesAwaitingCapture ?? 0) > 0 && retriesLeft > 0) {
-										const retryTimer = setTimeout(
-											() => runMonitorWithBodyCaptureRetry(retriesLeft - 1),
-											5_000,
-										);
-										retryTimer.unref?.();
-									}
-								} catch {
-									// best-effort; event hook must not crash the plugin
-								}
-							};
-							await runMonitorWithBodyCaptureRetry(3);
+							scheduleEventDrivenFinalizationMonitor({
+								workflowId: observed.workflowId,
+								eventType: observed.eventType,
+								rootDir: eventRootDir,
+								client: eventMonitorClient,
+								consumeCompletionWakeForMainSessionBestEffort: () => consumeCompletionWakeForMainSessionBestEffort(input),
+							});
 						}
 					}
 					const permissionCompletionWakeMainSessionConfig = completionWakeMainSessionConfigFor(input);
@@ -7592,6 +7818,11 @@ const flowdeskServerPlugin: Plugin = async (input, options) => {
 					}
 				}
 			};
+
+	applyFlowDeskChildLaneToolExecutionGuardV1({
+		tools,
+		rootDir: durableStateRootFromOptions(options),
+	});
 
 	if (!naturalLanguageRoutingEnabled) return eventHook === undefined ? { tool: tools } : { tool: tools, event: eventHook };
 	const stallAlertOption = chatMessageStallAlertOptionsFrom(

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flowdesk-omnigent-tool"
+version = "0.1.0"
+description = "FlowDesk advisory selection tool for Omnigent."
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "FlowDesk" }
+]
+
+[project.scripts]
+flowdesk-omnigent-mcp = "flowdesk_omnigent.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flowdesk_omnigent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

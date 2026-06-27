@@ -439,6 +439,8 @@ function eventProgress(event: unknown): { phase: FlowDeskAgentTaskProgressV1["ph
 				label: `agent task turn completed msgid=${messageId} created=${createdMs ?? 0} completed=${completedMs}`,
 			};
 		}
+		if (role === "user") return { phase: "waiting", label: "agent task user message.updated event observed" };
+		if (isAssistant) return { phase: "waiting", label: "agent task assistant message.updated event observed" };
 		return { phase: "waiting", label: "agent task message.updated event observed" };
 	}
 	if (type === "session.updated" || type === "session.diff") return { phase: "waiting", label: `agent task ${type} event observed` };

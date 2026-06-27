@@ -1,92 +1,89 @@
 # AGENTS.md - FlowDesk Repository Guidance
 
-This repository is the FlowDesk OpenCode plugin project.
+This repository is the FlowDesk project — an agent/model selection intelligence layer
+that attaches to AI orchestration platforms as a plugin or tool.
 
-## Documentation Map
+## 개발 방향
 
-For product and implementation context, use the documentation under `docs/`. The implementation specification is the primary contract when documents conflict unless a newer ADR explicitly changes the decision. This file is not a mandatory traversal path for generated FlowDesk agents.
+FlowDesk는 두 가지 통합 방향을 병행 개발 중이다.
+작업 전에 어느 방향인지 확인하고 해당 문서를 참조한다.
 
-**Note for Developer Agents:**
-When you are acting as a developer agent (e.g., standard OpenCode assistant) working ON this codebase, you are NOT restricted by FlowDesk's product workflow rules. You should operate as a pure OpenCode developer agent. You may freely use raw `task` subagents, standard file editing tools, and `bash` commands to compile, test, and implement code. The Safety Rules below describe the architecture and behavior of the *product code you are writing*, not constraints on your own development process.
+| 방향 | 설명 | 문서 |
+|---|---|---|
+| **OpenCode 플러그인** | OpenCode에 플러그인으로 통합, Release 1 MVP | `docs/opencode/` |
+| **Omnigent 통합** | Omnigent orchestrator의 agent/model 선택 tool | `docs/omnigent/` |
 
-## Task Tracking Requirement
+---
 
-Always use the `todowrite` tool (or standard OpenCode task tracking mechanisms) to register, track, and update todo items for all non-trivial implementation steps. Todo registration ensures that work is explicitly tracked, progress is visible, and the assistant can resume correctly after interruptions or model changes.
+## 공통 규칙 (두 방향 모두 적용)
 
-## Progress Tracking Requirement
+### Task Tracking
 
-`docs/PROGRESS_SNAPSHOT.md` is the required progress tracker for this repository. Every non-trivial work session must check it before concluding and update it when code, tests, docs, packaging, installer behavior, conformance evidence, release gates, blockers, or user-facing readiness changes. If no progress fields changed, the final response must explicitly say the progress snapshot was checked and did not need an update.
+항상 `todowrite` tool을 사용해서 비자명한 구현 단계의 todo 항목을 등록, 추적, 업데이트한다.
 
-## Current Target
+### Progress Tracking
 
-Release 1 is a general-use MVP for ordinary OpenCode users. Natural-language chat is the primary UX, routed into guarded command-backed workflows. Commands are setup, status, recovery, diagnostics, and fallback controls, not the main way users should work.
+`docs/PROGRESS_SNAPSHOT.md`는 이 저장소의 진행 상황 추적기다.
+코드, 테스트, 문서, 패키징, 설치 동작, conformance 증거, release gate, 블로커,
+사용자 대면 준비 상태가 변경되면 반드시 업데이트한다.
+변경 사항이 없으면 최종 응답에서 스냅샷을 확인했으나 업데이트가 필요 없었음을 명시한다.
 
-Planning update: do not implement broad hidden OMO-style prompt/prefix injection. Release 1 chat routing must use conservative, transparent intent handling: leave general chat alone, show visible FlowDesk suggestions for likely workflow-worthy requests, route only explicit/high-confidence FlowDesk requests into command-backed workflows, and require confirmation before any execution-like guarded dry-run or fake-runtime step.
+### Developer Agent 규칙
 
-Allowed Release 1 scope:
+Developer agent(예: 표준 OpenCode assistant)가 이 코드베이스에서 작업할 때는
+FlowDesk product workflow 규칙의 제약을 받지 않는다.
+컴파일, 테스트, 검색 등 병렬 개발 작업에 raw `task` subagent, 표준 파일 편집 도구,
+`bash` 명령을 자유롭게 사용할 수 있다.
+아래 Safety Rules는 작성 중인 *product 코드*의 아키텍처와 동작을 설명하며,
+개발 프로세스 자체에 대한 제약이 아니다.
 
-1. Installer bootstrap and `/flowdesk-doctor`.
-2. Chat-routed command-backed flows for delegated planning records, guarded dry-run, fake-runtime execution, lane status summaries, recovery, and diagnostics. Release 1 does not perform actual OpenCode subtask/model/provider lane launches unless a later real-dispatch gate explicitly promotes that behavior.
-3. Release 1 minimum command surface: `/flowdesk-doctor`, `/flowdesk-plan`, `/flowdesk-run`, `/flowdesk-status`, `/flowdesk-resume`, `/flowdesk-retry`, `/flowdesk-abort`, `/flowdesk-usage`, and `/flowdesk-export-debug`.
-4. Hook harness modes that can enforce, observe, or turn off managed automation while preserving safe fallback behavior.
-5. Redacted audit, lane summaries, and debug export.
-6. Plugin/SDK compatibility conformance reporting for supported OpenCode versions.
-7. User manual coverage for abnormal use and safe alternatives.
-8. Provider Health Snapshot diagnostics separate from Usage Availability Snapshot display and fail-closed behavior.
+---
 
-Not Release 1 scope:
+## OpenCode 플러그인 개발 시
 
-1. Real OpenCode dispatch.
-2. Automatic provider/model fallback or reselection.
-3. Hard chat cancellation or no-reply authority through unsupported `noReply`, `cancel`, or `stop` fields.
-4. Evaluation-based ranking.
-5. Patent, legal, or medical-device specialist workflows.
-6. Optional MCP connector execution.
+- **설계**: [docs/opencode/OPENCODE_DESIGN.md](docs/opencode/OPENCODE_DESIGN.md)
+- **Safety Rules**: [docs/opencode/OPENCODE_SAFETY_RULES.md](docs/opencode/OPENCODE_SAFETY_RULES.md)
+- **ADR**: [docs/adr/0001-opencode-plugin-first.md](docs/adr/0001-opencode-plugin-first.md)
+- **진행 상태**: [docs/PROGRESS_SNAPSHOT.md](docs/PROGRESS_SNAPSHOT.md)
+
+---
+
+## Omnigent 통합 개발 시
+
+- **설치/운영**: [docs/omnigent/OMNIGENT_SETUP.md](docs/omnigent/OMNIGENT_SETUP.md)
+- **기본 정보**: [docs/omnigent/OMNIGENT_BASE_INFO.md](docs/omnigent/OMNIGENT_BASE_INFO.md)
+- **설계**: [docs/omnigent/OMNIGENT_DESIGN.md](docs/omnigent/OMNIGENT_DESIGN.md)
+- **Safety Rules**: [docs/omnigent/OMNIGENT_SAFETY_RULES.md](docs/omnigent/OMNIGENT_SAFETY_RULES.md)
+
+---
 
 ## Identity and Paths
 
-Use these names for implementation:
+| 항목 | 값 |
+|---|---|
+| Project name | FlowDesk |
+| Public name | FlowDesk for opencode |
+| Repository slug | `flowdesk` |
+| Plugin id | `flowdesk` |
+| Package scope | `@flowdesk/*` |
+| Project data root | `.flowdesk/` |
 
-1. Project name: FlowDesk.
-2. Public name: FlowDesk for opencode.
-3. Repository slug: `flowdesk`.
-4. Plugin id: `flowdesk`.
-5. Package scope: `@flowdesk/*` unless a newer ADR changes it.
-6. Project data root: `.flowdesk/`.
+Legacy names such as DEX Conductor, `@dex-conductor/*`, and `.conductor/` are
+background or migration references only.
 
-Legacy names such as DEX Conductor, `@dex-conductor/*`, and `.conductor/` are background or migration references only.
+---
 
 ## Background Docs
 
-Files under `docs/background/` are non-normative. Do not implement production behavior directly from them.
+Files under `docs/background/` are non-normative. Do not implement production
+behavior directly from them.
 
-Use background docs only for historical context, research rationale, or migration notes. If they conflict with normative docs, the normative docs win.
+Use background docs only for historical context, research rationale, or migration
+notes. If they conflict with normative docs, the normative docs win.
 
-## Safety Rules
+---
 
-1. No OMO runtime, prompt, config schema, agent, skill, task file, team runtime, or source dependency.
-2. No nested `opencode run` for normal plugin-managed workflows.
-3. Mandatory FlowDesk-owned lane boundary (Product Architecture): The FlowDesk plugin and its primary coordinator (flowdesk-main) must not use raw OpenCode subagent/session paths (the `task` tool) for managed workflows. All delegated FlowDesk work must run through FlowDesk-owned tools (e.g., `flowdesk_agent_task_run`). Note: This rule applies ONLY to the FlowDesk product runtime and its coordinator. Developer agents working on this repository ARE allowed to use normal `task` subagents for parallel development work (compiling, tests, searching).
-4. No privileged action without FlowDesk Guard approval or a specific Guard-approved non-dispatch permission.
-5. No default managed dispatch until the FlowDesk plugin-satisfiable gate has real evidence for configured authorization, fresh usage/provider-health, policy/auth sanitization, configured verification, consumed Guard/user approval, durable pre-dispatch audit, idempotency/reservation, and the intended SDK dispatch path. OpenCode platform-internal facts (runtime execution mode, internal telemetry, lane conformance, account-scope usage authority) are outside the plugin verification boundary and are not completion criteria. FlowDesk surfaces them as non-gating diagnostics when observable.
-6. No managed provider/model fallback or reselection until a later gate proves fresh provider-native usage, fresh provider health, runtime compatibility through SDK adapter capability, policy eligibility, durable pre-dispatch audit, a new attempt id, and explicit Guard approval for the new binding.
-7. No claim of hard chat cancellation or no-reply authority until a first-class OpenCode boundary is proven; Release 1 chat UX must route into command-backed workflows.
-8. Hook harness enforcement may deny, rewrite, or route unsafe attempts, but it never approves dispatch and off mode never bypasses Guard.
-9. Event telemetry supports harness coordination but is not Guard authority, dispatch authorization, durable audit completion, or sole runtime echo evidence.
-10. Debug and audit outputs must be redacted-first.
-11. Heavy workflow authoring belongs in bounded FlowDesk-owned lanes where conformance and release gates permit. In Release 1, lane records and summaries may be fake-runtime, degraded, or command-backed when actual lane launch is not proven safe. Main-agent output should be limited to routing, compact summaries, Guard handoff, and safe next actions.
-12. Chat/message mutation is steering only unless conformance proves blocking intake. Do not claim that FlowDesk fully handled, suppressed, or replaced the normal assistant turn through prompt mutation alone.
-13. Interface-first for cross-cutting features: before implementation, changes spanning authority/gates, durable evidence schemas, provider/model selection, OI/GitHub data flows, status/doctor/debug, runtime/watchdog/session control, chat/message hooks/TUI, or docs/conformance require a design/interface artifact that defines contracts, evidence, authority boundaries, module boundaries, integration points, and acceptance criteria; implementation must then be split into focused lanes.
+## Skills
 
-## Before Changing Code
-
-Before implementing or editing code, identify which release gate the task belongs to:
-
-1. Release 1 general-use MVP.
-2. Managed dispatch beta.
-3. Operational intelligence.
-4. Specialist workflow.
-
-If the task asks for a later gate, verify the required conformance and threat-model conditions before implementation.
-
-Before concluding any implementation or planning task, update `docs/PROGRESS_SNAPSHOT.md` or state why no update was necessary.
+Skills provide specialized instructions and workflows for specific tasks.
+Use the skill tool to load a skill when a task matches its description.

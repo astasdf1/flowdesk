@@ -173,7 +173,9 @@ const requiredFields: Record<string, readonly string[]> = {
   "flowdesk.multi_variant_aggregation.v1": ["schema_version", "aggregation_id", "source_variant_result_refs", "per_variant_scores", "best_variant_label", "best_variant_normalized_score", "mean_normalized_score", "score_spread", "aggregation_strategy", "model_profile_ref", "aggregated_at", "advisory_only", "non_authorizing", "dispatch_authority_enabled"],
   "flowdesk.multi_variant_test_result.v1": ["schema_version", "execution_id", "variant_results", "reconciliations", "aggregation", "lifecycle_event", "signature_index_update", "errors", "advisory_only"],
   "flowdesk.multi_model_aggregation.v1": ["schema_version", "aggregation_id", "best_model_ref", "best_provider_qualified_model_id", "best_composite_score", "model_results", "scored_model_count", "skipped_model_count", "score_delta", "election_confidence", "tie_break_applied", "aggregated_at", "advisory_only", "non_authorizing", "dispatch_authority_enabled"],
-  "flowdesk.multi_model_fanout_result_envelope.v1": ["schema_version", "execution_id", "execution_mode", "admission_ref", "reservation_ref", "workflow_signature", "variant_used", "aggregation", "reservation_consumed", "execution_status", "evaluated_at", "advisory_only"]
+  "flowdesk.multi_model_fanout_result_envelope.v1": ["schema_version", "execution_id", "execution_mode", "admission_ref", "reservation_ref", "workflow_signature", "variant_used", "aggregation", "reservation_consumed", "execution_status", "evaluated_at", "advisory_only"],
+  "flowdesk.omnigent_selection.v1": ["schema_version", "selection_id", "task_id", "task_role", "selection_status", "confidence", "reason_codes", "blocked_labels", "authority", "created_at", "expires_at"],
+  "flowdesk.omnigent_trace_verification.v1": ["schema_version", "status", "selection_count", "dispatch_count", "error_count", "warning_count", "issues", "authority"]
 } satisfies Record<string, readonly string[]>;
 
 const optionalFields: Record<string, readonly string[]> = {
@@ -280,7 +282,9 @@ const optionalFields: Record<string, readonly string[]> = {
   "flowdesk.multi_variant_aggregation.v1": [],
   "flowdesk.multi_variant_test_result.v1": [],
   "flowdesk.multi_model_aggregation.v1": ["tie_break_reason"],
-  "flowdesk.multi_model_fanout_result_envelope.v1": ["failure_reason"]
+  "flowdesk.multi_model_fanout_result_envelope.v1": ["failure_reason"],
+  "flowdesk.omnigent_selection.v1": ["agent", "harness", "model", "provider_family"],
+  "flowdesk.omnigent_trace_verification.v1": []
 } satisfies Record<string, readonly string[]>;
 
 function propertyType(fieldName: string): Release1JsonSchemaPropertyType {

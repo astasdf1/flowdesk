@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -121,6 +121,46 @@ test("event hook fallback scan populates the binding index for sibling child ses
 		assert.equal(second.matched, true);
 		assert.equal(second.laneId, "lane-b");
 		assert.equal(second.finalizationRelevant, true);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+		resetFlowDeskEventHookBindingIndexForTests();
+	}
+});
+
+test("event hook labels message.updated by role so post-terminal user metadata updates stay distinguishable", async () => {
+	resetFlowDeskEventHookBindingIndexForTests();
+	const rootDir = tempRoot();
+	try {
+		primeFlowDeskEventHookBindingIndexForTests(rootDir, {
+			workflowId: "workflow-role-labels",
+			laneId: "lane-role-labels",
+			taskId: "task-role-labels",
+			childSessionId: "child-role-labels",
+			parentSessionRef: "ses-parent",
+			agentRef: "agent-test",
+			providerQualifiedModelId: "openai/gpt-5.5",
+		});
+
+		const user = await observeFlowDeskOpenCodeEventV1({
+			rootDir,
+			event: { type: "message.updated", properties: { sessionID: "child-role-labels", info: { id: "msg-user", role: "user", time: { created: 1 } } } },
+		});
+		assert.equal(user.matched, true);
+		assert.equal(user.finalizationRelevant, false);
+
+		const assistant = await observeFlowDeskOpenCodeEventV1({
+			rootDir,
+			event: { type: "message.updated", properties: { sessionID: "child-role-labels", info: { id: "msg-assistant", role: "assistant", time: { created: 2 } } } },
+		});
+		assert.equal(assistant.matched, true);
+		assert.equal(assistant.finalizationRelevant, false);
+
+		const progressDir = join(rootDir, ".flowdesk", "sessions", "workflow-role-labels", "evidence", "agent-task-progress");
+		const labels = readdirSync(progressDir)
+			.map((name) => JSON.parse(readFileSync(join(progressDir, name), "utf8")) as Record<string, unknown>)
+			.map((record) => String(record.progress_label));
+		assert.equal(labels.includes("agent task user message.updated event observed"), true);
+		assert.equal(labels.includes("agent task assistant message.updated event observed"), true);
 	} finally {
 		rmSync(rootDir, { recursive: true, force: true });
 		resetFlowDeskEventHookBindingIndexForTests();

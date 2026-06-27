@@ -36,6 +36,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./omnigent-selection-cli": {
+      "types": "./dist/omnigent-selection-cli.d.ts",
+      "default": "./dist/omnigent-selection-cli.js"
     }
   },
   "scripts": {

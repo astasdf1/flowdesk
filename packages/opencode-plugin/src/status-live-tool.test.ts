@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1800,3 +1800,122 @@ function finalizingProgress(workflowId: string, laneId: string, taskId: string, 
 		dispatch_authority_enabled: false,
 	};
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1: wake notice inbox read-only test
+//
+// Verifies that executeFlowDeskStatusLiveV1 (status_live) surfaces wake
+// notices from the persisted inbox WITHOUT mutating/consuming them.
+// After calling status_live, the inbox file must be byte-for-byte identical
+// to its pre-call state.
+// ---------------------------------------------------------------------------
+
+test("wake notice inbox: status_live read path does not mutate or consume wake notices", async () => {
+	const rootDir = mkdtempSync(join(tmpdir(), "flowdesk-status-wake-readonly-"));
+	try {
+		// Create a minimal workflow directory (status_live requires at least one workflow).
+		const workflowId = "workflow-wake-readonly-test";
+		const sessionEvidenceDir = join(rootDir, ".flowdesk", "sessions", workflowId, "evidence", "lane_lifecycle");
+		mkdirSync(sessionEvidenceDir, { recursive: true });
+		writeFileSync(join(sessionEvidenceDir, "lifecycle-1.json"), JSON.stringify({
+			schema_version: "flowdesk.lane_lifecycle.v1",
+			workflow_id: workflowId,
+			lane_id: "lane-readonly-test",
+			attempt_id: "attempt-1",
+			state: "complete",
+			created_at: "2026-06-24T09:00:00.000Z",
+			updated_at: "2026-06-24T09:05:00.000Z",
+		}), "utf8");
+
+		// Write a pre-existing wake notice inbox with TWO entries.
+		const uiDir = join(rootDir, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		const inboxPath = join(uiDir, "main-session-wake-notifications.json");
+		const originalInboxContent = JSON.stringify({
+			schema_version: "flowdesk.main_session_wake_notifications.v1",
+			observed_at: "2026-06-24T09:10:00.000Z",
+			expires_at: "2026-06-24T09:12:00.000Z",
+				notices: [
+				{
+					notice_id: "ses-ses_p1:workflow-A:lane-A:2026-06-24T09:00:00.000Z:task-A:task_result",
+					created_at: "2026-06-24T09:05:00.000Z",
+					workflowId: "workflow-A",
+					completionKind: "task_result",
+					notificationLabel: "Task A done",
+					consumed: true,
+					consumedAt: "2026-06-24T09:05:00.000Z",
+					prompt_attempt_count: 1,
+					user_acknowledged: false,
+				},
+				{
+					// Legacy live writer shape: no notice_id/created_at/prompt_attempt_count.
+					// status_live must normalize it read-only from consumptionKey/consumedAt.
+					workflowId: "workflow-legacy",
+					completionKind: "task_failed",
+					consumptionKey: "ses-ses_p1:workflow-legacy:lane-L:2026-06-24T09:02:00.000Z:task-L:task_failed",
+					readyAt: "2026-06-24T09:02:00.000Z",
+					consumedAt: "2026-06-24T09:07:00.000Z",
+					notificationLabel: "Legacy task failed",
+				},
+				{
+					notice_id: "ses-ses_p1:workflow-B:lane-B:2026-06-24T09:01:00.000Z:task-B:task_failed",
+					created_at: "2026-06-24T09:06:00.000Z",
+					workflowId: "workflow-B",
+					completionKind: "task_failed",
+					notificationLabel: "Task B failed",
+					consumed: true,
+					consumedAt: "2026-06-24T09:06:00.000Z",
+					prompt_attempt_count: 1,
+					user_acknowledged: false,
+				},
+			],
+			authority: { displayOnly: true, mainSessionPromptAttempted: true, userAcknowledgementNotGrantedByPrompt: true },
+		}, null, 2);
+		writeFileSync(inboxPath, `${originalInboxContent}\n`, "utf8");
+
+		// Call status_live.
+		const result = await executeFlowDeskStatusLiveV1({
+			config: { rootDir },
+			request: { workflowId },
+			now: () => new Date("2026-06-24T09:15:00.000Z"),
+		});
+
+		// Status live must surface the notices as a read-only projection.
+		assert.ok(result.recentWakeNotices !== undefined, "status_live must surface recentWakeNotices when inbox has entries");
+		assert.ok(result.recentWakeNotices!.length >= 2, `status_live must surface all inbox entries; got ${result.recentWakeNotices!.length}`);
+
+		const noticeIds = result.recentWakeNotices!.map((n) => n.noticeId);
+		assert.ok(noticeIds.some((id) => id.includes("workflow-A")), "workflow-A notice must appear in recentWakeNotices");
+		assert.ok(noticeIds.some((id) => id.includes("workflow-B")), "workflow-B notice must appear in recentWakeNotices");
+		assert.ok(noticeIds.some((id) => id.includes("workflow-legacy")), "legacy wake notice must appear in recentWakeNotices");
+		const legacyNotice = result.recentWakeNotices!.find((notice) => notice.workflowId === "workflow-legacy");
+		assert.equal(legacyNotice?.createdAt, "2026-06-24T09:07:00.000Z");
+		assert.equal(legacyNotice?.promptAttemptCount, 1);
+		assert.equal(legacyNotice?.userAcknowledged, false);
+		assert.equal(legacyNotice?.deliveryStatus, "attempted_unverified");
+		assert.equal(legacyNotice?.deliveryIssue, "user_visible_delivery_unconfirmed");
+
+		// All notices must have user_acknowledged=false (we never set it to true).
+		for (const notice of result.recentWakeNotices!) {
+			assert.equal(notice.userAcknowledged, false, `userAcknowledged must be false for notice ${notice.noticeId}`);
+			assert.equal(notice.deliveryStatus, "attempted_unverified", `deliveryStatus must fail closed for notice ${notice.noticeId}`);
+			assert.equal(notice.deliveryIssue, "user_visible_delivery_unconfirmed", `deliveryIssue must surface unconfirmed visibility for notice ${notice.noticeId}`);
+		}
+
+		// CRITICAL: The inbox file must NOT have been modified by status_live.
+		// Read the file back and compare bytes.
+		const inboxAfter = readFileSync(inboxPath, "utf8");
+		assert.equal(
+			inboxAfter,
+			`${originalInboxContent}\n`,
+			"status_live must not mutate the wake notice inbox file",
+		);
+
+		// Authority flags must remain false (status_live is read-only).
+		assert.equal(result.authority.realOpenCodeDispatch, false);
+		assert.equal(result.authority.providerCall, false);
+		assert.equal(result.authority.hardCancelOrNoReplyAuthority, false);
+	} finally {
+		rmSync(rootDir, { recursive: true, force: true });
+	}
+});

@@ -46,6 +46,7 @@ import { refreshFlowDeskCompletionUiCachesV1 } from "./completion-ui-cache.js";
 import {
 	buildFlowDeskSessionFinalizationObservation,
 	evaluateFlowDeskSessionFinalizationEvidence,
+	type FlowDeskSessionFinalizationBodyCaptureState,
 	type FlowDeskSessionFinalizationDecision,
 	type FlowDeskSessionIdleState,
 	type FlowDeskSessionRunningToolsState,
@@ -1773,6 +1774,7 @@ export function flowDeskProgressIsMeaningfulActivityV1(phase: string, progressLa
 	if (phase === "nudged" || phase === "failed" || phase === "finalizing") return false;
 	const label = (progressLabel ?? "").toLowerCase();
 	if (label.includes("tool_run_overdue_observed") || label.includes("tool_execution_aborted_observed") || label.includes("coordinator_attention_observed")) return false;
+	if (label.includes("user message.updated event observed")) return false;
 	// Ambient session-status / diff churn is not, by itself, model progress.
 	if (label.includes("session busy") || label.includes("session.diff") || label.includes("session.updated")) return false;
 	if (label.includes("waiting for async child result")) return false;
@@ -2297,6 +2299,7 @@ function sessionFinalizationTransitionKey(record: Record<string, unknown>): stri
 		running_tools_state: observation.running_tools_state,
 		confidence: observation.confidence,
 		step_finish_observed: observation.step_finish_observed,
+		body_capture_state: observation.body_capture_state,
 	});
 }
 
@@ -2319,6 +2322,7 @@ function evaluateSessionFinalizationForObservedText(input: {
 	sessionIdleState: FlowDeskSessionIdleState;
 	runningToolsState: FlowDeskSessionRunningToolsState;
 	confidence: "high" | "medium" | "low";
+	bodyCaptureState?: FlowDeskSessionFinalizationBodyCaptureState;
 }) {
 	const textRef = stableSessionFinalizationTextRef(input.text);
 	const finalTextKind = finalTextKindFromAgentTaskOutputKind(input.outputKind, textRef.observedTextRef !== undefined || textRef.observedTextCharCount !== undefined);
@@ -2331,6 +2335,7 @@ function evaluateSessionFinalizationForObservedText(input: {
 		runningToolsState: input.runningToolsState,
 		confidence: input.confidence,
 		stepFinishObserved: input.stepFinishObserved,
+		bodyCaptureState: input.bodyCaptureState,
 	});
 	return evaluateFlowDeskSessionFinalizationEvidence(observation);
 }
@@ -2344,6 +2349,12 @@ function finalTextKindFromAgentTaskOutputKind(outputKind: FlowDeskAgentTaskOutpu
 
 function canPersistTerminalTaskResultFromOutputKind(outputKind: string | undefined): boolean {
 	return outputKind !== "process_notes" && outputKind !== "tool_trace_only" && outputKind !== "empty";
+}
+
+export function canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind(outputKind: string | undefined): boolean {
+	// Awaiting-body rescue is stricter than the general terminal-task path.
+	// Only a real final answer may be promoted into terminal task_result evidence.
+	return outputKind === "final_answer";
 }
 
 function canAutoCaptureBoundedQuiescenceOutputKind(outputKind: string | undefined): boolean {
@@ -2365,6 +2376,7 @@ function writeSessionFinalizationEvidenceIfMeaningful(input: {
 	sessionIdleState: FlowDeskSessionIdleState;
 	runningToolsState: FlowDeskSessionRunningToolsState;
 	confidence: "high" | "medium" | "low";
+	bodyCaptureState?: FlowDeskSessionFinalizationBodyCaptureState;
 }): { written: boolean; evaluated: ReturnType<typeof evaluateFlowDeskSessionFinalizationEvidence> } {
 	const evaluated = evaluateSessionFinalizationForObservedText(input);
 	const record: Record<string, unknown> = {
@@ -3836,7 +3848,16 @@ export async function monitorChildSessionsV1(input: {
 						&& candidate.lane_id === laneId
 						&& candidate.decision === "requires_review"
 						&& candidate.block_reason === "idle_state_unknown"
-						&& candidate.observed_text_ref === `observed-text-sha256-${boundedQuiescenceHash}`);
+						&& (candidate.observed_text_ref === `observed-text-sha256-${boundedQuiescenceHash}`
+							|| (monitorRecord(candidate.observation)?.observed_text_ref === `observed-text-sha256-${boundedQuiescenceHash}`)));
+				const priorNonFinalTextCandidates = reloaded.entries
+					.map((entry) => entry.record as Record<string, unknown>)
+					.filter((candidate) => candidate.schema_version === "flowdesk.session_finalization_evidence.v1"
+						&& candidate.lane_id === laneId
+						&& candidate.decision === "requires_review"
+						&& candidate.block_reason === "unsupported_final_text_kind"
+						&& (candidate.observed_text_ref === `observed-text-sha256-${boundedQuiescenceHash}`
+							|| (monitorRecord(candidate.observation)?.observed_text_ref === `observed-text-sha256-${boundedQuiescenceHash}`)));
 				const priorBoundedQuiescenceFirstObservedMs = priorBoundedQuiescenceCandidates.reduce((min, candidate) => {
 					const parsed = typeof candidate.observed_at === "string" ? Date.parse(candidate.observed_at) : Number.NaN;
 					return Number.isFinite(parsed) ? Math.min(min, parsed) : min;
@@ -3895,7 +3916,6 @@ export async function monitorChildSessionsV1(input: {
 							missing_contract: false,
 							finalization_reason: "stable_idle",
 							looks_like_refusal_or_error: idleObservation.looksLikeRefusalOrError,
-							bounded_quiescence_candidate_count: boundedQuiescenceCount,
 							...captureSafetyMetadata,
 							created_at: observedAt,
 							dispatch_authority_enabled: false,
@@ -3929,6 +3949,71 @@ export async function monitorChildSessionsV1(input: {
 							result.lanesCompleted++;
 							continue;
 						}
+					}
+				}
+				if (idleObservation.outputKind === "process_notes" || idleObservation.outputKind === "tool_trace_only") {
+					if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
+						continue;
+					}
+					const token = randomBytes(4).toString("hex");
+					const nonFinalCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+						text: sanitizedResult.text,
+						completionStatus: "final",
+						outputKind: idleObservation.outputKind,
+						finalizationReason: "stable_idle",
+						finalBodyObserved: true,
+						terminalMarkerObserved: idleObservation.terminalMarkerObserved || expectedTurnCompleted !== undefined,
+					});
+					const taskFailedEvidenceId = `task-failed-${taskId}-watchdog-non-final-text-${token}`;
+					const taskFailedWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskFailedEvidenceId, {
+						schema_version: "flowdesk.task_failed.v1",
+						workflow_id: input.workflowId,
+						lane_id: laneId,
+						task_id: taskId,
+						agent_ref: agentRef,
+						provider_qualified_model_id: modelId,
+						failure_category: "unknown",
+						redacted_reason: `non_final_${idleObservation.outputKind}_observed_without_final_answer`,
+						...nonFinalCaptureMetadata,
+						created_at: observedAt,
+						dispatch_authority_enabled: false,
+					});
+					if (taskFailedWritten) {
+						writeChildSessionEvidence(input.rootDir, input.workflowId, `lifecycle-agent-task-non-final-text-${laneId}-${token}`, {
+							schema_version: "flowdesk.lane_lifecycle_record.v1",
+							lane_id: laneId,
+							workflow_id: input.workflowId,
+							attempt_id: latestAttemptIdByLane.get(laneId) ?? `attempt-${laneId}`,
+							parent_session_ref: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+							child_session_ref: childSessionId.startsWith("ses-") ? childSessionId : `ses-${childSessionId}`,
+							agent_ref: agentRef,
+							provider_qualified_model_id: modelId,
+							state: "invocation_failed",
+							timeout_ms: 0,
+							orphan_max_age_ms: 0,
+							retry_count: 0,
+							created_at: observedAt,
+							updated_at: observedAt,
+							dispatch_authority_enabled: false,
+							providerCall: false,
+							actualLaneLaunch: false,
+							runtimeExecution: false,
+						});
+						writeAgentTaskProgressEvidence({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							laneId,
+							taskId,
+							agentRef,
+							providerQualifiedModelId: modelId,
+							phase: "failed",
+							progressSeq: 10 + nudgeCount,
+							progressLabel: `async agent task terminalized non-final ${idleObservation.outputKind} without task_result`,
+							observedAt,
+						});
+						refreshFlowDeskCompletionUiCachesV1({ rootDir: input.rootDir, workflowId: input.workflowId, observedAt });
+						result.lanesAborted++;
+						continue;
 					}
 				}
 				writeSessionFinalizationEvidenceIfMeaningful({
@@ -4001,6 +4086,7 @@ export async function monitorChildSessionsV1(input: {
 					sessionIdleState: "confirmed_idle",
 					runningToolsState: "none_running_confirmed",
 					confidence: "medium",
+					bodyCaptureState: "awaiting_body_capture",
 				});
 				if (captureDiagnostic.finalTextPresent === true) {
 					try {
@@ -4009,7 +4095,7 @@ export async function monitorChildSessionsV1(input: {
 							const rescueObserved = observeFlowDeskAgentTaskOutputV1(rescueRaw);
 							const rescueTerminalMarkerObserved = actualTerminalMarkerObservedForSessionFinalization(rescueRaw);
 							const latestText = rescueObserved.latestText;
-							if (typeof latestText === "string" && latestText.trim().length > 0 && canPersistTerminalTaskResultFromOutputKind(rescueObserved.outputKind)) {
+						if (typeof latestText === "string" && latestText.trim().length > 0 && canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind(rescueObserved.outputKind)) {
 								if (!laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 									const token = randomBytes(4).toString("hex");
 									const captureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
@@ -4592,15 +4678,99 @@ export async function monitorChildSessionsV1(input: {
 		// diagnostically and left on the awaiting path; they are not aborted here.
 		if (hasDurableAwaitingBodyCapture && expectedTurnCompleted === undefined) {
 			const recoveredObservation = await pollChildSessionCandidate(input.client, childSessionId);
-			if (recoveredObservation !== null && recoveredObservation.text.trim().length > 0 && canPersistTerminalTaskResultFromOutputKind(recoveredObservation.outputKind)) {
+			if (recoveredObservation !== null && recoveredObservation.text.trim().length > 0) {
 				const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 				const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 				const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
 				if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 					continue;
 				}
-				const token = randomBytes(4).toString("hex");
 				const recoveredAt = new Date(nowMs).toISOString();
+				writeSessionFinalizationEvidenceIfMeaningful({
+					rootDir: input.rootDir,
+					workflowId: input.workflowId,
+					reloadedEntries: reloaded.entries,
+					laneId,
+					taskId,
+					childSessionId,
+					observedAt: recoveredAt,
+					decisionContext: "idle_confirmed_text",
+					text: recoveredObservation.text,
+					outputKind: recoveredObservation.outputKind,
+					stepFinishObserved: recoveredObservation.terminalMarkerObserved,
+					sessionIdleState: "confirmed_idle",
+					runningToolsState: "none_running_confirmed",
+					confidence: "medium",
+					bodyCaptureState: "awaiting_body_capture",
+				});
+			if (!canPersistAwaitingBodyCaptureRescueTerminalTaskResultFromOutputKind(recoveredObservation.outputKind)) {
+					// Non-final outputKind (process_notes, tool_trace_only, empty, etc.)
+					// Safe-capture-ready finalization evidence was already written above.
+					// A bare continue here would leave the lane in running/inconsistent
+					// state with no terminal evidence. Instead, conservatively terminalize
+					// as task_failed/invocation_failed so the lane does not remain
+					// inconsistent_finalizing_without_terminal indefinitely.
+					const token = randomBytes(4).toString("hex");
+					const nonFinalCaptureMetadata = buildFlowDeskCaptureSafetyMetadataV1({
+						outputKind: recoveredObservation.outputKind,
+						finalBodyObserved: recoveredObservation.finalBodyObserved,
+						terminalMarkerObserved: recoveredObservation.terminalMarkerObserved,
+					});
+					const taskFailedEvidenceId = `task-failed-${taskId}-awaiting-body-rescue-non-final-${token}`;
+					const taskFailedWritten = writeChildSessionEvidence(input.rootDir, input.workflowId, taskFailedEvidenceId, {
+						schema_version: "flowdesk.task_failed.v1",
+						workflow_id: input.workflowId,
+						lane_id: laneId,
+						task_id: taskId,
+						agent_ref: agentRef,
+						provider_qualified_model_id: modelId,
+						failure_category: "unknown",
+						redacted_reason: `awaiting_body_capture_rescue_non_final_output_kind_${recoveredObservation.outputKind ?? "unknown"}`,
+						...nonFinalCaptureMetadata,
+						created_at: recoveredAt,
+						dispatch_authority_enabled: false,
+					});
+					if (taskFailedWritten) {
+						writeChildSessionEvidence(input.rootDir, input.workflowId, `lifecycle-agent-task-non-final-awaiting-body-${laneId}-${token}`, {
+							schema_version: "flowdesk.lane_lifecycle_record.v1",
+							lane_id: laneId,
+							workflow_id: input.workflowId,
+							attempt_id: latestAttemptIdByLane.get(laneId) ?? `attempt-${laneId}`,
+							parent_session_ref: typeof record.parent_session_ref === "string" ? record.parent_session_ref : "ses-agent-task-parent",
+							child_session_ref: childSessionId.startsWith("ses-") ? childSessionId : `ses-${childSessionId}`,
+							agent_ref: agentRef,
+							provider_qualified_model_id: modelId,
+							state: "invocation_failed",
+							timeout_ms: 0,
+							orphan_max_age_ms: 0,
+							retry_count: 0,
+							created_at: recoveredAt,
+							updated_at: recoveredAt,
+							spawned_by: "flowdesk",
+							durability: "best_effort_no_dir_fsync",
+							dispatch_authority_enabled: false,
+							providerCall: false,
+							actualLaneLaunch: false,
+							runtimeExecution: false,
+						});
+						writeAgentTaskProgressEvidence({
+							rootDir: input.rootDir,
+							workflowId: input.workflowId,
+							laneId,
+							taskId,
+							agentRef,
+							providerQualifiedModelId: modelId,
+							phase: "failed",
+							progressSeq: 62 + nudgeCount,
+							progressLabel: `async agent task awaiting-body rescue terminalized non-final ${recoveredObservation.outputKind ?? "unknown"} without task_result`,
+							observedAt: recoveredAt,
+						});
+						refreshFlowDeskCompletionUiCachesV1({ rootDir: input.rootDir, workflowId: input.workflowId, observedAt: recoveredAt });
+						result.lanesAborted++;
+					}
+					continue;
+				}
+				const token = randomBytes(4).toString("hex");
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(recoveredObservation.text);
 				const captureSafetyMetadata = buildFlowDeskCaptureSafetyMetadataV1({
 					text: sanitizedResult.text,
@@ -4876,7 +5046,8 @@ export async function monitorChildSessionsV1(input: {
 				if (laneAlreadyHasTerminalTaskEvidence({ rootDir: input.rootDir, workflowId: input.workflowId, laneId })) {
 					continue;
 				}
-				if (!liveness.terminalMarkerObserved && !liveness.sessionIdleObserved) {
+				const livenessSessionIdleObserved = liveness.sessionIdleObserved || hasFreshSessionIdleSignal;
+				if (!liveness.terminalMarkerObserved && !livenessSessionIdleObserved) {
 					const taskId = typeof record.task_id === "string" ? record.task_id : laneId;
 					const agentRef = typeof record.agent_ref === "string" ? record.agent_ref : "agent-unknown";
 					const modelId = typeof record.provider_qualified_model_id === "string" ? record.provider_qualified_model_id : "unknown/unknown";
@@ -4918,7 +5089,7 @@ export async function monitorChildSessionsV1(input: {
 				}
 				const token = randomBytes(4).toString("hex");
 				const sanitizedResult = sanitizeFlowDeskTaskResultTextV1(liveness.text);
-				const livenessCompletionStatus: FlowDeskAgentTaskCompletionStatusV1 = liveness.terminalMarkerObserved || (liveness.sessionIdleObserved && !liveness.hasRunningTool && !toolRunningNow)
+				const livenessCompletionStatus: FlowDeskAgentTaskCompletionStatusV1 = liveness.terminalMarkerObserved || (livenessSessionIdleObserved && !liveness.hasRunningTool && !toolRunningNow)
 					? "final"
 					: "partial";
 				const finalizationReason = liveness.terminalMarkerObserved
@@ -5210,6 +5381,7 @@ export async function monitorChildSessionsV1(input: {
 					sessionIdleState: "confirmed_idle",
 					runningToolsState: "none_running_confirmed",
 					confidence: "medium",
+					bodyCaptureState: "awaiting_body_capture",
 				});
 				recordForWrites = withCaptureFailureDiagnosticFields({
 					...recordForWrites,

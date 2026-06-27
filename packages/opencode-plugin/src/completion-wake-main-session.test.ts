@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { consumeFlowDeskCompletionWakeForMainSessionV1 } from "./completion-wake-main-session.js";
+import { consumeFlowDeskCompletionWakeForMainSessionV1, type WakeNoticeInboxEntry } from "./completion-wake-main-session.js";
 
 test("completion wake main-session consumer uses primary path prompt shape and marks consumed", async () => {
 	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-"));
@@ -349,7 +349,61 @@ test("completion wake main-session consumer omits noReply while preserving burst
 		assert.equal(prompts.length, 1);
 		const body = (prompts[0] as { body: Record<string, unknown> }).body;
 		assert.equal("noReply" in body, false);
-		assert.equal((body.parts as Array<{ text: string }>)[0]?.text, "[FlowDesk:attention] workflow-main-wake-diagnostic. Check /flowdesk-status.");
+		assert.equal((body.parts as Array<{ text: string }>)[0]?.text, "[FlowDesk:done] workflow-main-wake-result. Check /flowdesk-status.");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("completion wake main-session consumer prefers the oldest unresolved ready row", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-main-wake-oldest-first-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-04T00:00:00.000Z",
+			expires_at: "2026-06-04T00:02:00.000Z",
+			rows: [
+				{
+					workflowId: "workflow-old-success",
+					parentSessionRef: "ses-ses_parent123",
+					completionKind: "task_result",
+					readyAt: "2026-06-04T00:00:30.000Z",
+					dedupeKey: "ses-ses_parent123\u0000workflow-old-success",
+					consumptionKey: "ses-ses_parent123:workflow-old-success:2026-06-04T00:00:30.000Z:1:0",
+					consumed: false,
+					taskSummaries: [],
+					notificationLabel: "Old success ready",
+				},
+				{
+					workflowId: "workflow-new-failure",
+					parentSessionRef: "ses-ses_parent123",
+					completionKind: "task_failed",
+					readyAt: "2026-06-04T00:00:40.000Z",
+					dedupeKey: "ses-ses_parent123\u0000workflow-new-failure",
+					consumptionKey: "ses-ses_parent123:workflow-new-failure:2026-06-04T00:00:40.000Z:1:0",
+					consumed: false,
+					taskSummaries: [],
+					notificationLabel: "New failure ready",
+				},
+			],
+		}, null, 2)}\n`, "utf8");
+		const prompts: unknown[] = [];
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async (options: unknown) => { prompts.push(options); return {}; } } },
+			now: new Date("2026-06-04T00:01:00.000Z"),
+		});
+		assert.equal(result.status, "main_session_wake_completed");
+		assert.equal(result.wakeSucceeded, 1);
+		assert.equal(prompts.length, 1);
+		assert.equal((prompts[0] as { body: { parts: Array<{ text: string }> } }).body.parts[0]?.text, "[FlowDesk:done] workflow-old-success. Check /flowdesk-status.");
+		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ workflowId: string; consumed?: boolean }> };
+		const oldRow = ready.rows.find((row) => row.workflowId === "workflow-old-success");
+		const newRow = ready.rows.find((row) => row.workflowId === "workflow-new-failure");
+		assert.equal(oldRow?.consumed, true);
+		assert.equal(newRow?.consumed, false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -389,6 +443,65 @@ test("completion wake main-session consumer stops retrying at retry cap", async 
 		const ready = JSON.parse(readFileSync(join(uiDir, "completion-wake-ready.json"), "utf8")) as { rows: Array<{ consumed?: boolean; consumedBy?: string }> };
 		assert.equal(ready.rows[0]?.consumed, true);
 		assert.equal(ready.rows[0]?.consumedBy, "main_session_prompt_retry_cap");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("wake notice inbox increments prompt attempts on repeated prompt resolve", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-inbox-attempts-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+		const noticeId = "ses-ses_parent888:workflow-ack-test:lane-ack:2026-06-24T11:00:30.000Z:task-ack:task_result";
+		writeFileSync(join(uiDir, "main-session-wake-notifications.json"), `${JSON.stringify({
+			schema_version: "flowdesk.main_session_wake_notifications.v1",
+			observed_at: "2026-06-24T11:00:30.000Z",
+			expires_at: "2026-06-24T11:02:30.000Z",
+			notices: [{
+				notice_id: noticeId,
+				created_at: "2026-06-24T11:00:30.000Z",
+				workflowId: "workflow-ack-test",
+				completionKind: "task_result",
+				notificationLabel: "Ack test notice",
+				consumed: true,
+				consumedAt: "2026-06-24T11:00:30.000Z",
+				prompt_attempt_count: 2,
+				user_acknowledged: false,
+			}],
+		}, null, 2)}\n`, "utf8");
+
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-24T11:00:00.000Z",
+			expires_at: "2026-06-24T11:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-ack-test",
+				parentSessionRef: "ses-ses_parent888",
+				completionKind: "task_result",
+				readyAt: "2026-06-24T11:00:30.000Z",
+				dedupeKey: "ses-ses_parent888\u0000workflow-ack-test\u0000lane-ack",
+				consumptionKey: noticeId,
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "Ack test notice",
+			}],
+		}, null, 2)}\n`, "utf8");
+
+		const result = await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async () => ({}) } },
+			now: new Date("2026-06-24T11:01:00.000Z"),
+		});
+		assert.equal(result.wakeSucceeded, 1);
+
+		const inbox = JSON.parse(readFileSync(join(uiDir, "main-session-wake-notifications.json"), "utf8")) as { notices: WakeNoticeInboxEntry[] };
+		assert.equal(inbox.notices.length, 1);
+		const notice = inbox.notices[0];
+		assert.ok(notice);
+		assert.equal(notice?.prompt_attempt_count, 3);
+		assert.equal(notice?.user_acknowledged, false);
+		assert.equal(notice?.consumed, true);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -688,6 +801,90 @@ test("completion wake precedence: config model used when row recorded model is a
 		assert.equal(prompts.length, 1);
 		const body = (prompts[0] as { body: Record<string, unknown> }).body;
 		assert.deepEqual(body.model, { providerID: "openai", modelID: "gpt-5.4-mini-fast" });
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 wake-notification reliability tests
+// ---------------------------------------------------------------------------
+//
+// Test 1: Later wake notice does NOT erase a prior notice.
+//         Confirms that additive merge preserves both entries.
+//
+// Test 2: Prompt resolve records a prompt attempt but does NOT set
+//         user_acknowledged — proof that consumed=true ≠ user saw it.
+//
+// Test 3: status_live read path does not mutate/consume notices (covered in
+//         status-live-tool.test.ts; see "wake notice inbox read-only").
+// ---------------------------------------------------------------------------
+
+test("wake notice inbox: later wake notice does not erase prior notice", async () => {
+	const root = mkdtempSync(join(tmpdir(), "flowdesk-wake-inbox-merge-"));
+	try {
+		const uiDir = join(root, ".flowdesk", "ui");
+		mkdirSync(uiDir, { recursive: true });
+
+		// First wake notice: workflow A, lane result.
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-24T10:00:00.000Z",
+			expires_at: "2026-06-24T10:02:00.000Z",
+			rows: [{
+				workflowId: "workflow-notice-A",
+				parentSessionRef: "ses-ses_parent999",
+				completionKind: "task_result",
+				readyAt: "2026-06-24T10:00:30.000Z",
+				dedupeKey: "ses-ses_parent999\u0000workflow-notice-A\u0000lane-A",
+				consumptionKey: "ses-ses_parent999:workflow-notice-A:lane-A:2026-06-24T10:00:30.000Z:task-A:task_result",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "Task A completed",
+			}],
+		}, null, 2)}\n`, "utf8");
+
+		await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async () => ({}) } },
+			now: new Date("2026-06-24T10:01:00.000Z"),
+		});
+
+		// Verify first notice was written.
+		const inbox1 = JSON.parse(readFileSync(join(uiDir, "main-session-wake-notifications.json"), "utf8")) as { notices: WakeNoticeInboxEntry[] };
+		assert.equal(inbox1.notices.length, 1);
+		assert.equal(inbox1.notices[0]?.workflowId, "workflow-notice-A");
+
+		// Second wake notice: workflow B, different consumptionKey.
+		// Reset the ready cache to contain only the second notice (simulates new event arriving).
+		writeFileSync(join(uiDir, "completion-wake-ready.json"), `${JSON.stringify({
+			schema_version: "flowdesk.completion_wake_ready_cache.v1",
+			observed_at: "2026-06-24T10:05:00.000Z",
+			expires_at: "2026-06-24T10:07:00.000Z",
+			rows: [{
+				workflowId: "workflow-notice-B",
+				parentSessionRef: "ses-ses_parent999",
+				completionKind: "task_failed",
+				readyAt: "2026-06-24T10:05:00.000Z",
+				dedupeKey: "ses-ses_parent999\u0000workflow-notice-B\u0000lane-B",
+				consumptionKey: "ses-ses_parent999:workflow-notice-B:lane-B:2026-06-24T10:05:00.000Z:task-B:task_failed",
+				consumed: false,
+				taskSummaries: [],
+				notificationLabel: "Task B failed",
+			}],
+		}, null, 2)}\n`, "utf8");
+
+		await consumeFlowDeskCompletionWakeForMainSessionV1({
+			config: { enabled: true, rootDir: root, agentName: "flowdesk-main", providerQualifiedModelId: "openai/gpt-5.5" },
+			client: { session: { promptAsync: async () => ({}) } },
+			now: new Date("2026-06-24T10:06:00.000Z"),
+		});
+
+		// Both notices must be present: prior notice was NOT erased.
+		const inbox2 = JSON.parse(readFileSync(join(uiDir, "main-session-wake-notifications.json"), "utf8")) as { notices: WakeNoticeInboxEntry[] };
+		assert.equal(inbox2.notices.length, 2, "Both wake notices must be present in the inbox after additive merge");
+		const workflowIds = inbox2.notices.map((n) => n.workflowId).sort();
+		assert.deepEqual(workflowIds, ["workflow-notice-A", "workflow-notice-B"], "Both workflow notices must survive merge");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

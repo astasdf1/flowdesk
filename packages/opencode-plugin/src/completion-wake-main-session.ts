@@ -2,6 +2,120 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+// ---------------------------------------------------------------------------
+// Wake notice inbox schema (additive, Phase 1)
+// ---------------------------------------------------------------------------
+//
+// `WakeNoticeInboxEntry` is the canonical durable record for a single wake
+// notification.  It is intentionally additive over the pre-existing `WakeRow`
+// schema:
+//
+//   - `consumed` (legacy) – kept for backward compat; means "prompt dispatch
+//     was attempted", NOT that the user saw/acknowledged the notice.
+//   - `user_acknowledged` (new) – explicit user-side acknowledgement; set only
+//     when the user acts via a future explicit flow (not by SDK prompt alone).
+//   - `prompt_attempt_count` (new) – incremented each time a prompt dispatch is
+//     attempted.  A resolved prompt increments this counter but does NOT flip
+//     `user_acknowledged`.
+//
+// The inbox file (`main-session-wake-notifications.json`) is always merged, never
+// overwritten entirely.  Each new notice is added by `notice_id`; the file
+// retains up to WAKE_NOTICE_INBOX_MAX_ENTRIES entries sorted newest-first.
+// ---------------------------------------------------------------------------
+
+export interface WakeNoticeInboxEntry {
+	/** Stable unique id for this notice; derived from consumptionKey. */
+	notice_id: string;
+	/** ISO timestamp when the notice was first created. */
+	created_at: string;
+	/** workflowId that triggered the notice. */
+	workflowId: string;
+	/** Completion kind (mirrors WakeRow.completionKind). */
+	completionKind: "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
+	/** Human-readable label (bounded, redacted). */
+	notificationLabel: string;
+	/**
+	 * Legacy compat: true when a prompt dispatch attempt resolved (not when user
+	 * saw/acknowledged the notice).  DO NOT reinterpret as user acknowledgement.
+	 * @deprecated Use `prompt_attempt_count` and `user_acknowledged` instead.
+	 */
+	consumed: boolean;
+	/** ISO timestamp of the last prompt dispatch attempt, if any. */
+	consumedAt?: string;
+	/** Number of times a prompt dispatch was attempted for this notice. */
+	prompt_attempt_count: number;
+	/**
+	 * Explicit user acknowledgement.  Only set when the user explicitly interacts
+	 * with this notice via a future acknowledged-action flow.  A prompt resolve
+	 * DOES NOT set this field.
+	 */
+	user_acknowledged: boolean;
+}
+
+const WAKE_NOTICE_INBOX_MAX_ENTRIES = 20;
+
+/**
+ * Merge a new WakeNoticeInboxEntry into the existing inbox array.
+ *
+ * Invariants:
+ *   1. Each notice_id appears at most once.  A second entry with the same
+ *      notice_id merges prompt_attempt_count and preserves user_acknowledged.
+ *   2. The inbox is capped at WAKE_NOTICE_INBOX_MAX_ENTRIES entries newest-first.
+ *   3. This function never mutates its inputs.
+ */
+function mergeWakeNoticeInbox(
+	existing: WakeNoticeInboxEntry[],
+	incoming: WakeNoticeInboxEntry,
+): WakeNoticeInboxEntry[] {
+	const byId = new Map<string, WakeNoticeInboxEntry>(existing.map((entry) => [entry.notice_id, entry]));
+	const previous = byId.get(incoming.notice_id);
+ if (previous !== undefined) {
+		byId.set(incoming.notice_id, {
+			...previous,
+			// Merge prompt attempt count additively so each dispatch attempt is
+			// preserved on the durable notice record.
+			prompt_attempt_count: previous.prompt_attempt_count + incoming.prompt_attempt_count,
+			// Only update consumed/consumedAt if the new entry has a newer attempt.
+			consumed: previous.consumed || incoming.consumed,
+			...(incoming.consumedAt !== undefined ? { consumedAt: incoming.consumedAt } : {}),
+			// user_acknowledged is monotonic: once true, stays true.
+			user_acknowledged: previous.user_acknowledged || incoming.user_acknowledged,
+		});
+	} else {
+		byId.set(incoming.notice_id, incoming);
+	}
+	// Sort newest-first by created_at, cap to max.
+	return [...byId.values()]
+		.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+		.slice(0, WAKE_NOTICE_INBOX_MAX_ENTRIES);
+}
+
+/**
+ * Read the current inbox from disk.  Returns an empty array on any error.
+ * Read-only: never mutates any file.
+ */
+function readWakeNoticeInbox(inboxPath: string): WakeNoticeInboxEntry[] {
+	try {
+		if (!existsSync(inboxPath)) return [];
+		const parsed = JSON.parse(readFileSync(inboxPath, "utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+		const record = parsed as Record<string, unknown>;
+		if (record.schema_version !== "flowdesk.main_session_wake_notifications.v1") return [];
+		if (!Array.isArray(record.notices)) return [];
+		return record.notices
+			.filter((entry): entry is WakeNoticeInboxEntry => {
+				if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+				const e = entry as Record<string, unknown>;
+				return typeof e.notice_id === "string" && e.notice_id.length > 0
+					&& typeof e.created_at === "string"
+					&& typeof e.workflowId === "string";
+			})
+			.slice(0, WAKE_NOTICE_INBOX_MAX_ENTRIES);
+	} catch {
+		return [];
+	}
+}
+
 type CompletionKind = "task_result" | "task_failed" | "auto_next_ready" | "awaiting_permission" | "diagnostic_attention";
 
 export interface FlowDeskCompletionWakeMainSessionConfigV1 {
@@ -403,7 +517,9 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 			const readyAtMs = Date.parse(row.readyAt);
 			return Number.isFinite(readyAtMs) && nowMs - readyAtMs <= WAKE_ROW_MAX_AGE_MS;
 		})
-		.sort((left, right) => Date.parse(right.readyAt) - Date.parse(left.readyAt))
+		// Oldest-first delivery keeps earlier success notices from being starved by
+		// newer failures and preserves queue order across cycles.
+		.sort((left, right) => Date.parse(left.readyAt) - Date.parse(right.readyAt))
 		.slice(0, 1);
 	if (rows.length === 0) { diag("SKIP no_unconsumed_parent_scoped_rows"); return { status: "main_session_wake_skipped", wakeAttempted: 0, wakeSucceeded: 0, retryScheduled: 0, skippedReason: "no_unconsumed_parent_scoped_rows" }; }
 	diag(`PROCEED to dispatch with ${rows.length} row(s)`);
@@ -464,12 +580,39 @@ export async function consumeFlowDeskCompletionWakeForMainSessionV1(input: {
 		});
 		writeFileSync(readyPath, `${JSON.stringify({ ...parsed, observed_at: observedAt, rows: updatedRows }, null, 2)}\n`, "utf8");
 		if (consumedKeys.size > 0) {
-			writeFileSync(join(uiDir, "main-session-wake-notifications.json"), `${JSON.stringify({
+			// Phase 1 additive inbox: read existing notices and merge rather than
+			// overwriting the entire file.  Each prompt dispatch attempt increments
+			// `prompt_attempt_count` but does NOT set `user_acknowledged` — that
+			// remains false until an explicit user action acknowledges the notice.
+			// This ensures prior notices are never silently erased by a later one.
+			const inboxPath = join(uiDir, "main-session-wake-notifications.json");
+			let inboxEntries = readWakeNoticeInbox(inboxPath);
+			for (const row of rows.filter((r) => consumedKeys.has(r.consumptionKey))) {
+				// Derive a stable notice_id from the consumptionKey so retries for
+				// the same logical notice merge into the same inbox slot.
+				const noticeId = row.consumptionKey.slice(0, 128);
+				const incoming: WakeNoticeInboxEntry = {
+					notice_id: noticeId,
+					created_at: observedAt,
+					workflowId: row.workflowId,
+					completionKind: row.completionKind,
+					notificationLabel: row.notificationLabel.slice(0, 80),
+					// Legacy compat: consumed=true means "prompt dispatch attempted".
+					// NOT "user acknowledged".  See schema comment above.
+					consumed: true,
+					consumedAt: observedAt,
+					// Each successful prompt resolve increments the attempt count.
+					prompt_attempt_count: 1,
+					user_acknowledged: false,
+				};
+				inboxEntries = mergeWakeNoticeInbox(inboxEntries, incoming);
+			}
+			writeFileSync(inboxPath, `${JSON.stringify({
 				schema_version: "flowdesk.main_session_wake_notifications.v1",
 				observed_at: observedAt,
 				expires_at: new Date(Date.parse(observedAt) + 120_000).toISOString(),
-				notices: rows.filter((row) => consumedKeys.has(row.consumptionKey)).map((row) => ({ ...row, consumedAt: observedAt, consumedBy: "main_session_prompt" })),
-				authority: { displayOnly: true, mainSessionPromptAttempted: true, parentPromptInjection: true, providerCall: true, runtimeExecution: true, actualLaneLaunch: false, hardCancelOrNoReplyAuthority: false },
+				notices: inboxEntries,
+				authority: { displayOnly: true, mainSessionPromptAttempted: true, parentPromptInjection: true, providerCall: true, runtimeExecution: true, actualLaneLaunch: false, hardCancelOrNoReplyAuthority: false, userAcknowledgementNotGrantedByPrompt: true },
 			}, null, 2)}\n`, "utf8");
 		}
 	}

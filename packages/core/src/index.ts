@@ -63,6 +63,8 @@ export * from "./managed-dispatch-exposure-authorization.js";
 export * from "./managed-dispatch-evidence-shape.js";
 export * from "./model-availability-cache.js";
 export * from "./operational-intelligence.js";
+export * from "./omnigent-selection.js";
+export * from "./omnigent-trace-verification.js";
 export * from "./plan.js";
 export * from "./planning-evidence-common.js";
 export * from "./pre-dispatch-audit-record.js";

@@ -1,0 +1,12 @@
+spec_version: 1
+name: verification-agent
+description: Verification reviewer for FlowDesk MCP smoke.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+prompt: |
+  You are the verification reviewer. For smoke tests, return the requested sentinel exactly.

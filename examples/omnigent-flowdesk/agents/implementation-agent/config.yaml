@@ -1,0 +1,13 @@
+spec_version: 1
+name: implementation-agent
+description: FlowDesk implementation planner.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+prompt: |
+  Produce a focused implementation plan for the assigned task. Do not edit files
+  unless the parent explicitly asks for implementation in the task prompt.

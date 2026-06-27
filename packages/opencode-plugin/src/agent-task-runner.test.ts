@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { executeFlowDeskAgentTaskV1, buildFlowDeskCaptureSafetyMetadataV1 } from "./agent-task-runner.js";
+import { classifyFlowDeskAgentTaskOutputKindV1 } from "./agent-task-output.js";
 import {
 	createOISessionAccumulator,
 	loadRecentOISessionSummariesV1,
@@ -890,6 +891,27 @@ test("buildFlowDeskCaptureSafetyMetadataV1: final_answer with terminal marker is
 	});
 	assert.equal(result.safe_for_auto_synthesis, true,
 		"final_answer with all signals met should be safe_for_auto_synthesis=true");
+});
+
+test("buildFlowDeskCaptureSafetyMetadataV1: final_answer with stable_idle is safe_for_auto_synthesis=true", () => {
+	const result = buildFlowDeskCaptureSafetyMetadataV1({
+		text: "Stable idle final answer.",
+		completionStatus: "final",
+		outputKind: "final_answer",
+		finalizationReason: "stable_idle",
+		finalBodyObserved: true,
+		terminalMarkerObserved: false,
+	});
+	assert.equal(result.safe_for_auto_synthesis, true,
+		"final_answer captured through stable_idle should be safe_for_auto_synthesis=true");
+	assert.equal(result.requires_coordinator_review, false);
+});
+
+test("classifyFlowDeskAgentTaskOutputKindV1: checking/status sentence is process_notes", () => {
+	assert.equal(
+		classifyFlowDeskAgentTaskOutputKindV1("I am checking the bounded-quiescence schema process-note path now."),
+		"process_notes",
+	);
 });
 
 test("observeFlowDeskAgentTaskOutputV1: process-note text yields usableForSynthesis=false", () => {
