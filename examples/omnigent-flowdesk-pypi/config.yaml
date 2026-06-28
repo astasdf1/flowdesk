@@ -29,4 +29,5 @@ tools:
     - verification-agent
   flowdesk:
     type: mcp
+    description: FlowDesk advisory selector MCP server.
     command: flowdesk-omnigent-mcp

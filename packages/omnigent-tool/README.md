@@ -87,6 +87,12 @@ tools:
     command: flowdesk-omnigent-mcp
 ```
 
+Ensure the Omnigent server process inherits a `PATH` containing the Omnigent venv `bin` directory, for example:
+
+```bash
+export PATH="/path/to/omnigent/.venv/bin:$PATH"
+```
+
 The MCP server exposes only `flowdesk_select_agent_model`. It is selection-only and does not expose Omnigent dispatch, fallback, retry, write/apply, or provider-switch tools.
 
 Optional Omnigent function policy guard:

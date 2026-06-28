@@ -114,7 +114,7 @@ The bootstrap installer writes portable `/flowdesk-*` command files and redacted
 Published-package path after PyPI release:
 
 ```bash
-uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool
+uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool==0.1.1
 ```
 
 From the FlowDesk repository:
@@ -186,8 +186,18 @@ omnigent run examples/omnigent-flowdesk -p "Call flowdesk_select_agent_model for
 MCP fixture:
 
 ```bash
+export PATH="/path/to/omnigent/.venv/bin:$PATH"
 omnigent run examples/omnigent-flowdesk-mcp -p "Call the FlowDesk MCP selection tool for architecture and report the selected agent."
 ```
+
+For the repo-path-free PyPI fixture:
+
+```bash
+export PATH="/path/to/omnigent/.venv/bin:$PATH"
+omnigent run examples/omnigent-flowdesk-pypi -p "Call the FlowDesk MCP selection tool for architecture and report the selected agent."
+```
+
+The MCP `command` field is `flowdesk-omnigent-mcp`. Ensure the Omnigent server process inherits a `PATH` that includes the venv `bin` directory containing that console script.
 
 ## Verification Commands
 
