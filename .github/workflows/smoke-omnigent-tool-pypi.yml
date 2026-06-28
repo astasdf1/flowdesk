@@ -1,0 +1,80 @@
+name: Smoke Omnigent Tool PyPI Install
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "flowdesk-omnigent-tool version to install from PyPI"
+        required: false
+        default: "0.1.1"
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  pypi-install-smoke:
+    name: Ubuntu PyPI install smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Resolve package version
+        id: package-version
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.package_version }}"
+          if [[ -z "$version" ]]; then
+            version="0.1.1"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install package from PyPI in fresh venv
+        shell: bash
+        run: |
+          uv venv "$RUNNER_TEMP/flowdesk-omnigent-tool-smoke" --python 3.12
+          uv pip install \
+            --refresh \
+            --index-url https://pypi.org/simple \
+            --python "$RUNNER_TEMP/flowdesk-omnigent-tool-smoke/bin/python" \
+            "flowdesk-omnigent-tool==${{ steps.package-version.outputs.version }}"
+
+      - name: Smoke selector import
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/flowdesk-omnigent-tool-smoke/bin/python" - <<'PY'
+          from flowdesk_omnigent.selection import select_agent_model
+
+          selection = select_agent_model(
+              {
+                  "task_id": "task-linux-pypi-smoke",
+                  "task_role": "architecture",
+                  "allowed_provider_families": ["openai"],
+              }
+          )
+          assert selection["selection_status"] == "selected", selection
+          assert selection["agent"] == "architecture-agent", selection
+          assert selection["harness"] == "codex", selection
+          assert selection.get("model") is None, selection
+          print(
+              "FLOWDESK_LINUX_PYPI_INSTALL_SMOKE_OK",
+              selection["agent"],
+              selection["harness"],
+              selection.get("model"),
+          )
+          PY
+
+      - name: Smoke MCP tools list
+        shell: bash
+        run: |
+          output=$("$RUNNER_TEMP/flowdesk-omnigent-tool-smoke/bin/flowdesk-omnigent-mcp" <<'EOF'
+          {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
+          EOF
+          )
+          printf '%s\n' "$output"
+          grep -q 'flowdesk_select_agent_model' <<< "$output"
