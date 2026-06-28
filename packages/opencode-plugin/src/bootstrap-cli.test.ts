@@ -94,6 +94,38 @@ test("Release 1 bootstrap CLI installs only after exact approval phrase", () => 
   }
 });
 
+test("Release 1 bootstrap CLI creates missing profile and durable roots on approved install", () => {
+  const root = mkdtempSync(join(tmpdir(), "flowdesk-cli-missing-roots-"));
+  const profileRoot = join(root, "profile");
+  const durableRoot = join(root, "durable");
+  try {
+    const targetProfileRef = "profile-cli-missing-roots";
+    const confirmationRef = "confirmation-cli-missing-roots";
+    const approve = expectedFlowDeskRelease1BootstrapApprovalPhrase(profileRoot, targetProfileRef, confirmationRef);
+    const io = capture();
+    const result = runFlowDeskRelease1BootstrapCli({
+      argv: [
+        "--profile-root", profileRoot,
+        "--durable-root", durableRoot,
+        "--target-profile", targetProfileRef,
+        "--confirmation", confirmationRef,
+        "--expires-at", "2026-05-19T00:10:00.000Z",
+        "--approve", approve
+      ],
+      now: new Date("2026-05-19T00:00:00.000Z"),
+      streams: io.streams
+    });
+
+    const { stderr } = io.output();
+    assert.equal(result.exitCode, 0);
+    assert.equal(stderr, "");
+    assert.equal(existsSync(join(profileRoot, "commands", "flowdesk-doctor.md")), true);
+    assert.equal(existsSync(join(durableRoot, ".flowdesk", "bootstrap", "confirmations", `${confirmationRef}.json`)), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Release 1 bootstrap CLI exposes package bin without dispatch authority", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as Record<string, unknown>;
   assert.deepEqual(packageJson.bin, { "flowdesk-install-release1": "dist/bootstrap-cli.js" });

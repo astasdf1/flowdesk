@@ -1,0 +1,13 @@
+spec_version: 1
+name: policy-security-agent
+description: FlowDesk policy and security reviewer.
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+    allowed_harnesses: [claude-sdk, codex]
+
+prompt: |
+  Review the assigned task for policy, authorization, redaction, credential,
+  and safety-boundary issues. Do not edit files. Return concise findings.

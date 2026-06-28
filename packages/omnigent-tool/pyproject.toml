@@ -8,16 +8,44 @@ version = "0.1.0"
 description = "FlowDesk advisory selection tool for Omnigent."
 requires-python = ">=3.12"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "MIT"
 authors = [
   { name = "FlowDesk" }
 ]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed"
+]
+keywords = ["flowdesk", "omnigent", "mcp", "agent-selection", "model-selection"]
+
+[project.urls]
+Homepage = "https://github.com/astasdf1/flowdesk"
+Repository = "https://github.com/astasdf1/flowdesk"
+Issues = "https://github.com/astasdf1/flowdesk/issues"
+Documentation = "https://github.com/astasdf1/flowdesk/tree/main/docs/omnigent"
 
 [project.scripts]
 flowdesk-omnigent-mcp = "flowdesk_omnigent.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flowdesk_omnigent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "README.md",
+  "LICENSE",
+  "src/flowdesk_omnigent/**/*.py",
+  "src/flowdesk_omnigent/py.typed",
+  "tests/**/*.py",
+  "tests/fixtures/**/*.json",
+  "pyproject.toml"
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

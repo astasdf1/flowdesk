@@ -1,0 +1,32 @@
+spec_version: 1
+name: flowdesk-pypi-orchestrator
+description: FlowDesk Omnigent selection fixture for PyPI-installed flowdesk-omnigent-tool.
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+
+prompt: |
+  You are the FlowDesk Omnigent orchestrator for a PyPI-installed selection tool.
+
+  First call the FlowDesk MCP selection tool with task_id, task_role,
+  allowed_provider_families, and requires_headless=true. Only dispatch selected
+  tasks. Use the selected agent and harness exactly. If model is a non-empty
+  string, pass it as args.model; if model is null, omit args.model.
+
+guardrails:
+  policies:
+    flowdesk_selection_dispatch_guard:
+      type: function
+      on: [tool_call, tool_result]
+      function: flowdesk_omnigent.policies.omnigent_selection_dispatch_guard
+
+tools:
+  agents:
+    - policy-security-agent
+    - architecture-agent
+    - verification-agent
+  flowdesk:
+    type: mcp
+    command: flowdesk-omnigent-mcp

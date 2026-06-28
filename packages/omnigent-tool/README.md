@@ -13,13 +13,32 @@ This package implements the experimental Omnigent selection path from `docs/omni
 - post-run trace verification from Omnigent history/tool-call events;
 - optional fixture-level function policy guard for selector-provenance and binding consistency.
 
-Install into an Omnigent development venv:
+Install into an Omnigent venv from PyPI:
 
 ```bash
-cd /Users/bagel_macpro_055/Documents/work/projects/omnigent
-uv add --dev /Users/bagel_macpro_055/Documents/work/projects/flowdesk/packages/omnigent-tool
-uv sync
+uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool
 ```
+
+Development install from a FlowDesk checkout:
+
+```bash
+uv pip install --python /path/to/omnigent/.venv/bin/python -e packages/omnigent-tool
+```
+
+Release preflight from the FlowDesk repository:
+
+```bash
+npm run release:omnigent-tool
+```
+
+Publishing is explicit:
+
+```bash
+npm run release:omnigent-tool -- --test-pypi
+npm run release:omnigent-tool -- --publish
+```
+
+GitHub Actions Trusted Publishing is available through `.github/workflows/publish-omnigent-tool.yml`. Configure PyPI with workflow filename `publish-omnigent-tool.yml` and environment `pypi`; configure TestPyPI with environment `testpypi` if you want a TestPyPI dry run.
 
 Function path for Omnigent config:
 
@@ -57,6 +76,15 @@ Optional MCP stdio server:
 
 ```bash
 flowdesk-omnigent-mcp
+```
+
+Omnigent MCP config after PyPI install:
+
+```yaml
+tools:
+  flowdesk:
+    type: mcp
+    command: flowdesk-omnigent-mcp
 ```
 
 The MCP server exposes only `flowdesk_select_agent_model`. It is selection-only and does not expose Omnigent dispatch, fallback, retry, write/apply, or provider-switch tools.

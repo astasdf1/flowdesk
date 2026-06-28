@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkdirSync } from "node:fs";
 import {
   expectedFlowDeskRelease1BootstrapApprovalPhrase,
   flowDeskBootstrapProfileRootRef,
@@ -111,6 +112,19 @@ function defaultExpiresAt(now: Date): string {
   return new Date(now.getTime() + 10 * 60 * 1000).toISOString();
 }
 
+function ensureInstallRoots(profileRootDir: string, durableStateRootDir: string): { ok: true } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  for (const [label, directory] of [["profile root", profileRootDir], ["durable state root", durableStateRootDir]] as const) {
+    try {
+      mkdirSync(directory, { recursive: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown error";
+      errors.push(`${label} creation failed: ${message}`);
+    }
+  }
+  return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
 function completeArgs(parsed: ParsedInstallArgs, env: Readonly<Record<string, string | undefined>>, now: Date): Required<Omit<ParsedInstallArgs, "help">> & { help: false } {
   const profileRootDir = parsed.profileRootDir ?? envDefault(env, ["FLOWDESK_PROFILE_ROOT", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"]);
   const durableStateRootDir = parsed.durableStateRootDir ?? envDefault(env, ["FLOWDESK_DURABLE_STATE_ROOT", "FLOWDESK_PROFILE_ROOT", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"]);
@@ -172,6 +186,12 @@ export function runFlowDeskRelease1BootstrapCli(options: FlowDeskRelease1Bootstr
       "Release 1 bootstrap remains portable-command-only: non-dispatch registration metadata does not grant provider calls or runtime dispatch."
     ].join("\n")}\n`);
     return { exitCode: 2 };
+  }
+
+  const rootPreparation = ensureInstallRoots(profileRootDir, durableStateRootDir);
+  if (!rootPreparation.ok) {
+    streams.stderr(`FlowDesk Release 1 bootstrap install failed:\n${rootPreparation.errors.join("\n")}\n`);
+    return { exitCode: 1 };
   }
 
   const result = installFlowDeskRelease1Bootstrap({
