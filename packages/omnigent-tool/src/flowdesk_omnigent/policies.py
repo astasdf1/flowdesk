@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .selection import select_agent_model
@@ -22,6 +24,9 @@ DEFAULT_AGENT_HARNESS_BINDINGS: Mapping[str, str] = {
 }
 FLOWDESK_SELECTION_STATE_KEY = "flowdesk_selection_events"
 FLOWDESK_SELECTOR_TARGETS = frozenset({"flowdesk_select_agent_model", "select_agent_model", "mcp__flowdesk__flowdesk_select_agent_model"})
+_MAX_IN_MEMORY_SELECTION_RECORDS = 200
+_DIRECT_SELECTION_RECORDS: list[dict[str, Any]] = []
+_GUARD_CACHE_ENV = "FLOWDESK_OMNIGENT_GUARD_CACHE_PATH"
 
 
 def make_omnigent_selection_dispatch_guard(
@@ -38,57 +43,16 @@ def make_omnigent_selection_dispatch_guard(
     advisory binding contract.
     """
 
-    guarded = set(guarded_agents or DEFAULT_AGENT_MODEL_BINDINGS.keys())
+    local_selection_records: list[dict[str, Any]] = []
 
     def evaluate(event: Mapping[str, Any]) -> dict[str, Any] | None:
-        event_type = event.get("type")
-        if event_type not in {"tool_call", "tool_result"}:
-            return None
-        target = event.get("target")
-        if event_type == "tool_result" and isinstance(target, str) and _is_flowdesk_selector_target(target):
-            return _record_selection_output_event(event)
-        if event_type == "tool_result":
-            return None
-        if event_type == "tool_call" and isinstance(target, str) and _is_flowdesk_selector_target(target):
-            return _record_recomputed_selection_event(event)
-        if target != "sys_session_send":
-            return None
-        data = event.get("data")
-        if not isinstance(data, Mapping):
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: malformed tool_call data."}
-        arguments = data.get("arguments")
-        if not isinstance(arguments, Mapping):
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: malformed sys_session_send arguments."}
-        agent = arguments.get("agent")
-        if not isinstance(agent, str) or not agent:
-            return None
-        if agent not in guarded:
-            if allow_unknown_agents:
-                return None
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: unregistered sub-agent."}
-        if require_selection_provenance:
-            matching_selection = _matching_recorded_selection(event, arguments)
-            if matching_selection is None:
-                return {"result": "DENY", "reason": "FlowDesk dispatch guard: no matching FlowDesk selection was recorded for this dispatch."}
-            if matching_selection.get("selection_status") != "selected":
-                return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection was not dispatchable."}
-            if _selection_is_expired(matching_selection):
-                return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection has expired."}
-            expected_model = matching_selection.get("model")
-            expected_harness = matching_selection.get("harness")
-        else:
-            expected_model = DEFAULT_AGENT_MODEL_BINDINGS.get(agent)
-            expected_harness = DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
-        actual_harness = _dispatch_harness(arguments)
-        effective_harness = actual_harness or DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
-        if isinstance(expected_harness, str) and effective_harness != expected_harness:
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: harness does not match selected binding."}
-        actual_model = _dispatch_model(arguments)
-        if expected_model is None and actual_model is not None:
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: this sub-agent must use harness default model."}
-        if expected_model is not None and actual_model != expected_model:
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: model override does not match selected binding."}
-        return {"result": "ALLOW"}
+        return _evaluate_omnigent_selection_dispatch_guard(
+            event,
+            local_selection_records=local_selection_records,
+            guarded_agents=guarded_agents,
+            allow_unknown_agents=allow_unknown_agents,
+            require_selection_provenance=require_selection_provenance,
+        )
 
     return evaluate
 
@@ -96,7 +60,66 @@ def make_omnigent_selection_dispatch_guard(
 def omnigent_selection_dispatch_guard(event: Mapping[str, Any]) -> dict[str, Any] | None:
     """Direct Omnigent policy callable for config.yaml function policies."""
 
-    return make_omnigent_selection_dispatch_guard()(event)
+    return _evaluate_omnigent_selection_dispatch_guard(event, local_selection_records=_DIRECT_SELECTION_RECORDS)
+
+
+def _evaluate_omnigent_selection_dispatch_guard(
+    event: Mapping[str, Any],
+    *,
+    local_selection_records: list[dict[str, Any]],
+    guarded_agents: Sequence[str] | None = None,
+    allow_unknown_agents: bool = True,
+    require_selection_provenance: bool = True,
+) -> dict[str, Any] | None:
+    guarded = set(guarded_agents or DEFAULT_AGENT_MODEL_BINDINGS.keys())
+    event_type = event.get("type")
+    if event_type not in {"tool_call", "tool_result"}:
+        return None
+    target = event.get("target")
+    if event_type == "tool_result" and _is_flowdesk_selector_event(event):
+        return _record_selection_output_event(event, local_selection_records=local_selection_records)
+    if event_type == "tool_result":
+        return None
+    if event_type == "tool_call" and _is_flowdesk_selector_event(event):
+        return _record_recomputed_selection_event(event, local_selection_records=local_selection_records)
+    if target != "sys_session_send":
+        return None
+    data = event.get("data")
+    if not isinstance(data, Mapping):
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: malformed tool_call data."}
+    arguments = data.get("arguments")
+    if not isinstance(arguments, Mapping):
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: malformed sys_session_send arguments."}
+    agent = arguments.get("agent")
+    if not isinstance(agent, str) or not agent:
+        return None
+    if agent not in guarded:
+        if allow_unknown_agents:
+            return None
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: unregistered sub-agent."}
+    if require_selection_provenance:
+        matching_selection = _matching_recorded_selection(event, arguments, local_selection_records=local_selection_records)
+        if matching_selection is None:
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: no matching FlowDesk selection was recorded for this dispatch."}
+        if matching_selection.get("selection_status") != "selected":
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection was not dispatchable."}
+        if _selection_is_expired(matching_selection):
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection has expired."}
+        expected_model = matching_selection.get("model")
+        expected_harness = matching_selection.get("harness")
+    else:
+        expected_model = DEFAULT_AGENT_MODEL_BINDINGS.get(agent)
+        expected_harness = DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
+    actual_harness = _dispatch_harness(arguments)
+    effective_harness = actual_harness or DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
+    if isinstance(expected_harness, str) and effective_harness != expected_harness:
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: harness does not match selected binding."}
+    actual_model = _dispatch_model(arguments)
+    if expected_model is None and actual_model is not None:
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: this sub-agent must use harness default model."}
+    if expected_model is not None and actual_model != expected_model:
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: model override does not match selected binding."}
+    return {"result": "ALLOW"}
 
 
 def _dispatch_model(arguments: Mapping[str, Any]) -> str | None:
@@ -112,7 +135,11 @@ def _dispatch_harness(arguments: Mapping[str, Any]) -> str | None:
     return harness if isinstance(harness, str) and harness else None
 
 
-def _record_recomputed_selection_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
+def _record_recomputed_selection_event(
+    event: Mapping[str, Any],
+    *,
+    local_selection_records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     data = event.get("data")
     if not isinstance(data, Mapping):
         return None
@@ -123,17 +150,62 @@ def _record_recomputed_selection_event(event: Mapping[str, Any]) -> dict[str, An
     record = _record_from_selection(selection, provenance_source="selector_args_recomputed")
     if record is None:
         return None
+    _append_in_memory_selection_record(local_selection_records, record)
     return {"result": "ALLOW", "state_updates": [{"key": FLOWDESK_SELECTION_STATE_KEY, "action": "append", "value": record}]}
 
 
-def _record_selection_output_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
+def _record_selection_output_event(
+    event: Mapping[str, Any],
+    *,
+    local_selection_records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     selection = _selection_from_tool_result(event)
     if selection is None:
         return {"result": "ALLOW"}
     record = _record_from_selection(selection, provenance_source="selector_output")
     if record is None:
         return {"result": "ALLOW"}
+    _append_in_memory_selection_record(local_selection_records, record)
     return {"result": "ALLOW", "state_updates": [{"key": FLOWDESK_SELECTION_STATE_KEY, "action": "append", "value": record}]}
+
+
+def _append_in_memory_selection_record(records: list[dict[str, Any]], record: Mapping[str, Any]) -> None:
+    records.append(dict(record))
+    if len(records) > _MAX_IN_MEMORY_SELECTION_RECORDS:
+        del records[: len(records) - _MAX_IN_MEMORY_SELECTION_RECORDS]
+    _append_cached_selection_record(record)
+
+
+def _append_cached_selection_record(record: Mapping[str, Any]) -> None:
+    path = _guard_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        records = _read_cached_selection_records()
+        records.append(dict(record))
+        records = records[-_MAX_IN_MEMORY_SELECTION_RECORDS:]
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(records, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        return
+
+
+def _read_cached_selection_records() -> list[Mapping[str, Any]]:
+    path = _guard_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, Mapping)]
+
+
+def _guard_cache_path() -> Path:
+    override = os.environ.get(_GUARD_CACHE_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cache" / "flowdesk" / "omnigent-selection-guard-cache.json"
 
 
 def _selection_from_tool_result(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -196,17 +268,23 @@ def _record_from_selection(selection: Mapping[str, Any], *, provenance_source: s
     }
 
 
-def _matching_recorded_selection(event: Mapping[str, Any], arguments: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def _matching_recorded_selection(
+    event: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+    *,
+    local_selection_records: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
     state = event.get("session_state")
     if not isinstance(state, Mapping):
         return None
     records = state.get(FLOWDESK_SELECTION_STATE_KEY)
     if not isinstance(records, list):
-        return None
+        records = []
+    combined_records = [*records, *local_selection_records, *_read_cached_selection_records()]
     task_id = _dispatch_task_id(arguments)
     agent = arguments.get("agent")
     model = _dispatch_model(arguments)
-    for raw in reversed(records):
+    for raw in reversed(combined_records):
         if not isinstance(raw, Mapping):
             continue
         if task_id is not None and raw.get("task_id") != task_id:
@@ -235,7 +313,30 @@ def _dispatch_task_id(arguments: Mapping[str, Any]) -> str | None:
 
 
 def _is_flowdesk_selector_target(target: str) -> bool:
-    return target in FLOWDESK_SELECTOR_TARGETS or target.endswith("__flowdesk_select_agent_model")
+    return (
+        target in FLOWDESK_SELECTOR_TARGETS
+        or target.endswith("__flowdesk_select_agent_model")
+        or target.endswith(".flowdesk_select_agent_model")
+        or target.endswith("/flowdesk_select_agent_model")
+    )
+
+
+def _is_flowdesk_selector_event(event: Mapping[str, Any]) -> bool:
+    for candidate in _event_selector_name_candidates(event):
+        if isinstance(candidate, str) and _is_flowdesk_selector_target(candidate):
+            return True
+    return False
+
+
+def _event_selector_name_candidates(event: Mapping[str, Any]) -> list[Any]:
+    candidates: list[Any] = [event.get("target")]
+    data = event.get("data")
+    if isinstance(data, Mapping):
+        candidates.extend([data.get("name"), data.get("tool"), data.get("tool_name")])
+    request_data = event.get("request_data")
+    if isinstance(request_data, Mapping):
+        candidates.extend([request_data.get("name"), request_data.get("tool"), request_data.get("tool_name")])
+    return candidates
 
 
 def _selection_is_expired(selection: Mapping[str, Any]) -> bool:

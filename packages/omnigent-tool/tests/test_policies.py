@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
+import tempfile
 import unittest
 
 from flowdesk_omnigent.policies import make_omnigent_selection_dispatch_guard, omnigent_selection_dispatch_guard
@@ -79,6 +81,16 @@ def _selection_payload(
 
 
 class PolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        previous = os.environ.get("FLOWDESK_OMNIGENT_GUARD_CACHE_PATH")
+        os.environ["FLOWDESK_OMNIGENT_GUARD_CACHE_PATH"] = os.path.join(self._tmpdir.name, "guard-cache.json")
+        if previous is None:
+            self.addCleanup(os.environ.pop, "FLOWDESK_OMNIGENT_GUARD_CACHE_PATH", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "FLOWDESK_OMNIGENT_GUARD_CACHE_PATH", previous)
+
     def test_allows_expected_claude_policy_security_binding(self) -> None:
         guard = make_omnigent_selection_dispatch_guard()
         self.assertEqual(guard(_event("policy-security-agent", "claude-opus-4-8"))["result"], "ALLOW")
@@ -116,6 +128,15 @@ class PolicyTests(unittest.TestCase):
         event["session_state"] = {"flowdesk_selection_events": [_selection_record(agent="architecture-agent", model=None)]}
         self.assertEqual(omnigent_selection_dispatch_guard(event)["result"], "DENY")
 
+    def test_direct_policy_callable_records_in_memory_runner_state(self) -> None:
+        self.assertEqual(omnigent_selection_dispatch_guard(_selector_event())["result"], "ALLOW")
+        event = _event("architecture-agent")
+        event["session_state"] = {}
+
+        result = omnigent_selection_dispatch_guard(event)
+
+        self.assertEqual(result["result"], "ALLOW")
+
     def test_records_selector_call_in_policy_state(self) -> None:
         result = omnigent_selection_dispatch_guard(_selector_event())
         self.assertEqual(result["result"], "ALLOW")
@@ -124,6 +145,40 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(update["action"], "append")
         self.assertEqual(update["value"]["agent"], "architecture-agent")
         self.assertEqual(update["value"]["provenance_source"], "selector_args_recomputed")
+
+    def test_factory_policy_records_in_memory_runner_state(self) -> None:
+        guard = make_omnigent_selection_dispatch_guard()
+        self.assertEqual(guard(_selector_event())["result"], "ALLOW")
+        event = _event("architecture-agent")
+        event["session_state"] = {}
+
+        result = guard(event)
+
+        self.assertEqual(result["result"], "ALLOW")
+
+    def test_factory_policy_records_mcp_selector_name_from_data(self) -> None:
+        guard = make_omnigent_selection_dispatch_guard()
+        selector = _selector_event()
+        selector["target"] = "flowdesk"
+        selector["data"]["name"] = "flowdesk_select_agent_model"
+        self.assertEqual(guard(selector)["result"], "ALLOW")
+        event = _event("architecture-agent")
+        event["session_state"] = {}
+
+        result = guard(event)
+
+        self.assertEqual(result["result"], "ALLOW")
+
+    def test_cached_selection_record_supports_cross_policy_instance_matching(self) -> None:
+        first_guard = make_omnigent_selection_dispatch_guard()
+        second_guard = make_omnigent_selection_dispatch_guard()
+        self.assertEqual(first_guard(_selector_event())["result"], "ALLOW")
+        event = _event("architecture-agent")
+        event["session_state"] = {}
+
+        result = second_guard(event)
+
+        self.assertEqual(result["result"], "ALLOW")
 
     def test_records_selector_output_in_policy_state(self) -> None:
         result = omnigent_selection_dispatch_guard(_selector_result_event(_selection_payload()))
