@@ -154,7 +154,7 @@ def _record_recomputed_selection_event(
     if not isinstance(arguments, Mapping):
         arguments = {}
     selection = select_agent_model(arguments, write_evidence=False)
-    record = _record_from_selection(selection, provenance_source="selector_args_recomputed")
+    record = _record_from_selection(selection, provenance_source="selector_args_recomputed", event=event)
     if record is None:
         return None
     _append_in_memory_selection_record(local_selection_records, record)
@@ -169,7 +169,7 @@ def _record_selection_output_event(
     selection = _selection_from_tool_result(event)
     if selection is None:
         return {"result": "ALLOW"}
-    record = _record_from_selection(selection, provenance_source="selector_output")
+    record = _record_from_selection(selection, provenance_source="selector_output", event=event)
     if record is None:
         return {"result": "ALLOW"}
     _append_in_memory_selection_record(local_selection_records, record)
@@ -258,12 +258,12 @@ def _coerce_selection_payload(value: Any) -> Mapping[str, Any] | None:
     return payload
 
 
-def _record_from_selection(selection: Mapping[str, Any], *, provenance_source: str) -> dict[str, Any] | None:
+def _record_from_selection(selection: Mapping[str, Any], *, provenance_source: str, event: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     task_id = selection.get("task_id")
     status = selection.get("selection_status")
     if not isinstance(task_id, str) or not task_id or status not in {"selected", "blocked", "non_dispatchable"}:
         return None
-    return {
+    record = {
         "task_id": task_id,
         "selection_status": status,
         "agent": selection.get("agent"),
@@ -273,6 +273,10 @@ def _record_from_selection(selection: Mapping[str, Any], *, provenance_source: s
         "expires_at": selection.get("expires_at"),
         "provenance_source": provenance_source,
     }
+    session_ref = _event_session_ref(event or {})
+    if session_ref is not None:
+        record["session_ref"] = session_ref
+    return record
 
 
 def _matching_recorded_selection(
@@ -288,11 +292,15 @@ def _matching_recorded_selection(
     if not isinstance(records, list):
         records = []
     combined_records = [*records, *local_selection_records, *_read_cached_selection_records()]
+    event_session_ref = _event_session_ref(event)
     task_id = _dispatch_task_id(arguments)
     agent = arguments.get("agent")
     model = _dispatch_model(arguments)
     for raw in reversed(combined_records):
         if not isinstance(raw, Mapping):
+            continue
+        record_session_ref = raw.get("session_ref")
+        if event_session_ref is not None and isinstance(record_session_ref, str) and record_session_ref != event_session_ref:
             continue
         if task_id is not None and raw.get("task_id") != task_id:
             continue
@@ -317,6 +325,22 @@ def _dispatch_task_id(arguments: Mapping[str, Any]) -> str | None:
             return task_id
     title = arguments.get("title")
     return title if isinstance(title, str) and title else None
+
+
+def _event_session_ref(event: Mapping[str, Any]) -> str | None:
+    for key in ("session_ref", "session_id", "sessionId"):
+        value = event.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for container_key in ("data", "request_data"):
+        container = event.get(container_key)
+        if not isinstance(container, Mapping):
+            continue
+        for key in ("session_ref", "session_id", "sessionId"):
+            value = container.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _is_flowdesk_selector_target(target: str) -> bool:

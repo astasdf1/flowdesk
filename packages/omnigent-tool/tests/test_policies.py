@@ -9,25 +9,31 @@ import unittest
 from flowdesk_omnigent.policies import make_omnigent_selection_dispatch_guard, omnigent_selection_dispatch_guard
 
 
-def _event(agent: str, model: str | None = None) -> dict:
+def _event(agent: str, model: str | None = None, *, session_ref: str | None = None) -> dict:
     args = {"input": "redacted"}
     if model is not None:
         args["model"] = model
-    return {
+    event = {
         "type": "tool_call",
         "target": "sys_session_send",
         "data": {"name": "sys_session_send", "arguments": {"agent": agent, "title": "task-x", "args": args}},
         "session_state": {"flowdesk_selection_events": [{"task_id": "task-x", "selection_status": "selected", "agent": agent, "model": model}]},
     }
+    if session_ref is not None:
+        event["session_ref"] = session_ref
+    return event
 
 
-def _selector_event(task_role: str = "architecture") -> dict:
-    return {
+def _selector_event(task_role: str = "architecture", *, session_ref: str | None = None) -> dict:
+    event = {
         "type": "tool_call",
         "target": "flowdesk_select_agent_model",
         "data": {"name": "flowdesk_select_agent_model", "arguments": {"task_id": "task-x", "task_role": task_role, "allowed_provider_families": ["openai"]}},
         "session_state": {},
     }
+    if session_ref is not None:
+        event["session_ref"] = session_ref
+    return event
 
 
 def _selector_result_event(selection: dict) -> dict:
@@ -179,6 +185,21 @@ class PolicyTests(unittest.TestCase):
         result = second_guard(event)
 
         self.assertEqual(result["result"], "ALLOW")
+
+    def test_cached_selection_record_is_bound_to_matching_session_when_available(self) -> None:
+        first_guard = make_omnigent_selection_dispatch_guard()
+        second_guard = make_omnigent_selection_dispatch_guard()
+        self.assertEqual(first_guard(_selector_event(session_ref="session-a"))["result"], "ALLOW")
+        same_session_event = _event("architecture-agent", session_ref="session-a")
+        same_session_event["session_state"] = {}
+        other_session_event = _event("architecture-agent", session_ref="session-b")
+        other_session_event["session_state"] = {}
+
+        self.assertEqual(second_guard(same_session_event)["result"], "ALLOW")
+        result = second_guard(other_session_event)
+
+        self.assertEqual(result["result"], "DENY")
+        self.assertIn("no matching FlowDesk selection", result["reason"])
 
     def test_records_selector_output_in_policy_state(self) -> None:
         result = omnigent_selection_dispatch_guard(_selector_result_event(_selection_payload()))
