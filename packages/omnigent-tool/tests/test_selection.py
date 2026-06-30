@@ -171,7 +171,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["selection_status"], "selected")
         self.assertEqual(result["provider_family"], "claude")
 
-    def test_default_provider_usage_env_rejects_token_shaped_keys(self) -> None:
+    def test_default_provider_usage_env_rejects_non_allowlisted_keys(self) -> None:
         old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
         os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = json.dumps(
             {"providers": [{"provider_family": "claude", "alert_level": "exhausted", "access_token": "SHOULD_NOT_BE_READ"}]}
@@ -191,8 +191,75 @@ class SelectionTests(unittest.TestCase):
             else:
                 os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
 
-        self.assertEqual(result["selection_status"], "selected")
-        self.assertEqual(result["provider_family"], "claude")
+        self.assertEqual(result["selection_status"], "blocked")
+        self.assertEqual(result["blocked_labels"], ["provider_usage_snapshot_rejected"])
+
+    def test_default_provider_usage_env_rejects_malformed_json(self) -> None:
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = "{not-json"
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-malformed-env",
+                    "task_role": "architecture",
+                    "allowed_provider_families": ["claude", "openai"],
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+
+        self.assertEqual(result["selection_status"], "blocked")
+        self.assertEqual(result["blocked_labels"], ["provider_usage_snapshot_rejected"])
+
+    def test_default_provider_usage_env_rejects_unknown_top_level_key(self) -> None:
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = json.dumps(
+            {"providers": [{"provider_family": "openai", "alert_level": "ok"}], "raw_payload": "SHOULD_NOT_BE_ACCEPTED"}
+        )
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-unknown-key-env",
+                    "task_role": "architecture",
+                    "allowed_provider_families": ["claude", "openai"],
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+
+        self.assertEqual(result["selection_status"], "blocked")
+        self.assertEqual(result["blocked_labels"], ["provider_usage_snapshot_rejected"])
+
+    def test_default_provider_usage_env_rejects_out_of_range_remaining_percent(self) -> None:
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = json.dumps(
+            {"providers": [{"provider_family": "openai", "alert_level": "ok", "remaining_percent": 101}]}
+        )
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-bad-remaining-env",
+                    "task_role": "architecture",
+                    "allowed_provider_families": ["claude", "openai"],
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+
+        self.assertEqual(result["selection_status"], "blocked")
+        self.assertEqual(result["blocked_labels"], ["provider_usage_snapshot_rejected"])
 
     def test_high_complexity_implementation_prefers_reasoning_model(self) -> None:
         result = select_agent_model(

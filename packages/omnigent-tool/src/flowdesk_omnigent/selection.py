@@ -21,7 +21,24 @@ AUTHORITY = "advisory_selection_only"
 PROVIDER_USAGE_JSON_ENV = "FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"
 PROVIDER_USAGE_PATH_ENV = "FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH"
 PROVIDER_USAGE_MAX_BYTES = 64 * 1024
-FORBIDDEN_PROVIDER_USAGE_KEYS = {"authorization", "cookie", "credential", "credentials", "secret", "token"}
+PROVIDER_USAGE_REJECTED_MARKER = "__flowdesk_provider_usage_snapshot_rejected"
+PROVIDER_USAGE_SCHEMA_VERSION = "flowdesk.omnigent_provider_usage_input.v1"
+PROVIDER_USAGE_TOP_LEVEL_KEYS = {"schema_version", "captured_at", "observed_at", "source", "providers", "claude", "openai", "gemini"}
+PROVIDER_USAGE_ROW_KEYS = {
+    "provider_family",
+    "alert_level",
+    "alertLevel",
+    "remaining_percent",
+    "remainingPercent",
+    "reset_time",
+    "resetTime",
+    "reset_at",
+    "resetAt",
+    "bucket_label",
+    "dispatchable",
+    "non_dispatchable",
+    "status",
+}
 
 SelectionStatus = Literal["selected", "blocked", "non_dispatchable"]
 ProviderFamily = Literal["claude", "openai", "gemini"]
@@ -53,6 +70,7 @@ REASON_CODES = {
     "agent_not_available",
     "task_tier_prefers_reasoning_model",
     "provider_usage_unavailable",
+    "provider_usage_snapshot_rejected",
     "unknown_role_blocked",
     "malformed_request_blocked",
     "ts_cli_unavailable_blocked",
@@ -223,12 +241,23 @@ def select_agent_model(
 
     request = _request_with_default_provider_usage(request)
 
+    task_id = _safe_task_id(request.get("task_id"))
+    if request.get(PROVIDER_USAGE_REJECTED_MARKER) is True:
+        result = _blocked_response(
+            task_id=task_id,
+            role=request.get("task_role") if isinstance(request.get("task_role"), str) else None,
+            reason_codes=["provider_usage_snapshot_rejected"],
+            blocked_labels=["provider_usage_snapshot_rejected"],
+            now=now,
+        )
+        _write_evidence_if_enabled(result, write_evidence)
+        return result
+
     if request.get("engine") == "ts_cli":
         result = _select_via_ts_cli(request, now=now)
         _write_evidence_if_enabled(result, write_evidence)
         return result
 
-    task_id = _safe_task_id(request.get("task_id"))
     role = request.get("task_role")
     if not isinstance(role, str) or role not in ROLE_VALUES:
         result = _blocked_response(
@@ -587,7 +616,11 @@ def _provider_usage_allows(request: Mapping[str, Any], provider_family: Provider
 def _request_with_default_provider_usage(request: Mapping[str, Any]) -> Mapping[str, Any]:
     if request.get("provider_usage") is not None or request.get("provider_health") is not None:
         return request
-    snapshot = _load_default_provider_usage_snapshot()
+    snapshot, rejected = _load_default_provider_usage_snapshot()
+    if rejected:
+        merged = dict(request)
+        merged[PROVIDER_USAGE_REJECTED_MARKER] = True
+        return merged
     if snapshot is None:
         return request
     merged = dict(request)
@@ -595,54 +628,106 @@ def _request_with_default_provider_usage(request: Mapping[str, Any]) -> Mapping[
     return merged
 
 
-def _load_default_provider_usage_snapshot() -> Any | None:
+def _load_default_provider_usage_snapshot() -> tuple[Any | None, bool]:
     inline = os.environ.get(PROVIDER_USAGE_JSON_ENV)
     if inline:
         return _parse_provider_usage_snapshot(inline)
     raw_path = os.environ.get(PROVIDER_USAGE_PATH_ENV)
     if not raw_path:
-        return None
+        return (None, False)
     try:
         path = Path(raw_path).expanduser()
         if not path.exists() or not path.is_file() or path.stat().st_size > PROVIDER_USAGE_MAX_BYTES:
-            return None
+            return (None, True)
         return _parse_provider_usage_snapshot(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
-        return None
+        return (None, True)
 
 
-def _parse_provider_usage_snapshot(raw: str) -> Any | None:
+def _parse_provider_usage_snapshot(raw: str) -> tuple[Any | None, bool]:
     if len(raw.encode("utf-8")) > PROVIDER_USAGE_MAX_BYTES:
-        return None
+        return (None, True)
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
+        return (None, True)
+    normalized = _normalize_provider_usage_snapshot(parsed)
+    return (normalized, normalized is None)
+
+
+def _normalize_provider_usage_snapshot(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
         return None
-    return parsed if _provider_usage_snapshot_is_redaction_safe(parsed) else None
+    if any(not isinstance(key, str) or key not in PROVIDER_USAGE_TOP_LEVEL_KEYS for key in value):
+        return None
+    rows: list[dict[str, Any]] = []
+    providers = value.get("providers")
+    if providers is not None:
+        if not isinstance(providers, Sequence) or isinstance(providers, (str, bytes)) or len(providers) > 50:
+            return None
+        for row in providers:
+            normalized = _normalize_provider_usage_row(row)
+            if normalized is None:
+                return None
+            rows.append(normalized)
+    for family in ("claude", "openai", "gemini"):
+        if family in value:
+            normalized = _normalize_provider_usage_row(value[family], default_provider_family=family)
+            if normalized is None:
+                return None
+            rows.append(normalized)
+    if not rows:
+        return None
+    result: dict[str, Any] = {"schema_version": PROVIDER_USAGE_SCHEMA_VERSION, "providers": rows}
+    for key in ("captured_at", "observed_at", "source"):
+        item = value.get(key)
+        if item is not None:
+            if not isinstance(item, str) or len(item) > 120:
+                return None
+            result[key] = item
+    schema_version = value.get("schema_version")
+    if schema_version is not None and schema_version != PROVIDER_USAGE_SCHEMA_VERSION:
+        return None
+    return result
 
 
-def _provider_usage_snapshot_is_redaction_safe(value: Any, *, depth: int = 0) -> bool:
-    if depth > 8:
-        return False
-    if value is None or isinstance(value, (bool, int, float)):
-        return True
-    if isinstance(value, str):
-        return len(value) <= 500
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return len(value) <= 100 and all(_provider_usage_snapshot_is_redaction_safe(item, depth=depth + 1) for item in value)
-    if isinstance(value, Mapping):
-        if len(value) > 100:
-            return False
-        for key, item in value.items():
-            if not isinstance(key, str) or len(key) > 80:
-                return False
-            lowered = key.lower()
-            if any(forbidden in lowered for forbidden in FORBIDDEN_PROVIDER_USAGE_KEYS):
-                return False
-            if not _provider_usage_snapshot_is_redaction_safe(item, depth=depth + 1):
-                return False
-        return True
-    return False
+def _normalize_provider_usage_row(value: Any, *, default_provider_family: str | None = None) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    if any(not isinstance(key, str) or key not in PROVIDER_USAGE_ROW_KEYS for key in value):
+        return None
+    provider_family = value.get("provider_family") or default_provider_family
+    if provider_family not in {"claude", "openai", "gemini"}:
+        return None
+    row: dict[str, Any] = {"provider_family": provider_family}
+    alert = value.get("alert_level") if "alert_level" in value else value.get("alertLevel")
+    status = value.get("status")
+    if alert is not None:
+        if not isinstance(alert, str) or alert not in {"ok", "warning", "critical", "exhausted", "stale", "non_dispatchable", "blocked", "unavailable", "unknown"}:
+            return None
+        row["alert_level"] = alert
+    if status is not None:
+        if not isinstance(status, str) or status not in {"ok", "warning", "critical", "exhausted", "stale", "non_dispatchable", "blocked", "unavailable", "unknown"}:
+            return None
+        row["status"] = status
+    remaining = value.get("remaining_percent") if "remaining_percent" in value else value.get("remainingPercent")
+    if remaining is not None:
+        if not isinstance(remaining, (int, float)) or isinstance(remaining, bool) or remaining < 0 or remaining > 100:
+            return None
+        row["remaining_percent"] = remaining
+    for source_key, target_key in (("reset_time", "reset_time"), ("resetTime", "reset_time"), ("reset_at", "reset_at"), ("resetAt", "reset_at"), ("bucket_label", "bucket_label")):
+        item = value.get(source_key)
+        if item is not None:
+            if not isinstance(item, str) or len(item) > 120:
+                return None
+            row[target_key] = item
+    for key in ("dispatchable", "non_dispatchable"):
+        item = value.get(key)
+        if item is not None:
+            if not isinstance(item, bool):
+                return None
+            row[key] = item
+    return row
 
 
 def _provider_usage_row_allows(row: Mapping[str, Any]) -> bool:

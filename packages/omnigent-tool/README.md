@@ -48,7 +48,7 @@ flowdesk_omnigent.selection.select_agent_model
 
 The selector accepts optional `provider_usage` or `provider_health` snapshots. Exhausted, critical, stale, blocked, unavailable, non-dispatchable, or 0%-remaining provider rows are skipped when another allowed provider can satisfy the request. If every allowed provider is unavailable, the selector returns `selection_status=blocked` with `provider_usage_unavailable`.
 
-If a selector request omits both usage fields, the Python selector can load a redaction-safe usage snapshot from either `FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON` or `FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH`. Inline JSON takes precedence over the file path, explicit request fields take precedence over both, and snapshots containing token/secret/credential-shaped keys are ignored fail-open. This path reads only caller-provided sanitized usage JSON; it does not read provider credential or token files.
+If a selector request omits both usage fields, the Python selector can load a strict allowlist usage snapshot from either `FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON` or `FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH`. Inline JSON takes precedence over the file path and explicit request fields take precedence over both. Env/path snapshots must contain only the bounded Omnigent usage input fields (`schema_version`, `captured_at`, `observed_at`, `source`, `providers`, or direct `claude`/`openai`/`gemini` rows); malformed, oversized, unknown-key, token-shaped, or out-of-range snapshots fail closed with `provider_usage_snapshot_rejected`. This path reads only caller-provided sanitized usage JSON; it does not read provider credential or token files.
 
 Trace verifier import path:
 
