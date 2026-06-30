@@ -1,8 +1,8 @@
-# FlowDesk for opencode User Manual
+# FlowDesk OpenCode Plugin User Manual
 
 ## Purpose
 
-This manual explains how ordinary OpenCode users should work with FlowDesk for opencode Release 1 and how to avoid abnormal use that can weaken safety or create confusing results.
+This manual explains how ordinary OpenCode users should work with the FlowDesk OpenCode plugin Release 1 and how to avoid abnormal use that can weaken safety or create confusing results.
 
 Release 1 is a General-Use MVP, with Release 3 advisory OI/provider-catalog capabilities now included. Use natural-language chat first. FlowDesk routes accepted chat requests into guarded command-backed workflows. Commands are still available for setup, status, recovery, diagnostics, and fallback.
 

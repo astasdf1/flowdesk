@@ -1,7 +1,7 @@
 # @flowdesk/core
 
-Core FlowDesk for opencode contracts, validators, schema artifacts, durable
-session evidence helpers, and Release 1 safety boundaries.
+Core FlowDesk contracts, validators, schema artifacts, durable session evidence
+helpers, Omnigent selection contracts, and OpenCode Release 1 safety boundaries.
 
 This package is consumed by `@flowdesk/opencode-plugin` and by any
 FlowDesk-aware tooling that needs the same fail-closed validators and

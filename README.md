@@ -1,8 +1,8 @@
-# FlowDesk for opencode
+# FlowDesk
 
-FlowDesk is an OpenCode plugin and safety harness for turning natural-language work into guarded, recoverable AI workflows.
+FlowDesk is an agent/model selection layer for existing AI orchestration platforms. The current development priority is Omnigent workspace-first selection; the OpenCode plugin remains the safety, evidence, provider-usage, status, and lane-observability track.
 
-The long-term goal is practical orchestration: use the AI subscriptions you already pay for as effectively as possible by checking provider/account usage, preserving remaining quota, and choosing or routing work to the right model only when FlowDesk can prove the binding, usage state, provider health, audit trail, and runtime behavior are safe enough.
+The long-term goal is practical platform-attached selection: use the AI subscriptions you already pay for as effectively as possible by checking provider/account usage, preserving remaining quota, and recommending the right agent/harness/model binding only when FlowDesk can prove the selection inputs, provider usage state, provider health, and runtime consistency evidence are safe enough for the target platform's authority boundary.
 
 FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in Natural Language with the Conductor](https://arxiv.org/abs/2512.04388), which frames a learned conductor as a coordinator over pools of specialized LLM workers. FlowDesk is not an implementation of that paper. It borrows the product intuition: keep the main agent small, make orchestration explicit, and let bounded worker/reviewer lanes do the heavy work when the runtime can prove what happened.
 
@@ -15,6 +15,10 @@ npm install @flowdesk/core@^0.2.1 @flowdesk/opencode-plugin@^0.2.1
 ```
 
 See `docs/INSTALL.md` for local development install, OpenCode bootstrap, and Omnigent tool installation.
+
+For Omnigent, `flowdesk-omnigent-tool` provides a Python selector, selection-only MCP server, trace adapter/verifier, and an optional function-policy dispatch-consistency guard. Omnigent still owns workflow decomposition, dispatch, runtime execution, context, inbox, compaction, and synthesis. FlowDesk does not call `sys_session_send` or approve Omnigent dispatch.
+
+For OpenCode, `@flowdesk/opencode-plugin` provides command/status/usage/evidence surfaces and post-dispatch lane observability for separately authorized lanes. Release 1 default behavior remains non-dispatch.
 
 Add the plugin to your OpenCode config. Use the package root as the plugin
 entry; OpenCode resolves npm plugin packages at the package root:
@@ -102,7 +106,9 @@ The preview path writes nothing. Installation requires re-running with the exact
 
 ## Safety Boundary
 
-FlowDesk Guard is the only dispatch authority. Status, audit, runtime echo, provider health, usage snapshots, hook observations, reviewer outputs, lane summaries, and scores are evidence or diagnostics; they are not approval.
+FlowDesk Guard is the only dispatch authority in the OpenCode track. Status, audit, runtime echo, provider health, usage snapshots, hook observations, reviewer outputs, lane summaries, and scores are evidence or diagnostics; they are not approval.
+
+In the Omnigent track, FlowDesk selector results are advisory. The optional Omnigent function-policy guard is a narrow, opt-in dispatch-consistency gate: it may deny FlowDesk-known `sys_session_send` calls whose task/agent/harness/model binding does not match fresh selector provenance. That guard does not grant FlowDesk general Omnigent dispatch authority, provider/model fallback authority, runtime retry authority, or write/apply authority.
 
 Release 1 default behavior does not claim:
 
@@ -182,6 +188,7 @@ Pure OpenCode is the baseline at `1.0x` token use. OMO/OMC-style orchestration c
 
 - `packages/core` - contracts, validators, schemas, safety gates, usage/provider evidence, state, status, fake runtime, and lane observability.
 - `packages/opencode-plugin` - OpenCode plugin registration, local command-backed tools, chat intake, bootstrap installer, and opt-in managed-dispatch adapter boundary.
+- `packages/omnigent-tool` - Omnigent selection adapter, Python selector, selection-only MCP server, trace adapter/verifier, and optional dispatch-consistency guard.
 - `docs/START_HERE.md` - documentation authority map.
 - `docs/IMPLEMENTATION_ROADMAP.md` - release tracks and phase plan.
 - `docs/PROGRESS_SNAPSHOT.md` - current implementation progress and blockers.

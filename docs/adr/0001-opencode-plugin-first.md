@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for initial implementation.
+Accepted for initial implementation; current product priority and public positioning refined by [ADR 0003](./0003-omnigent-first-selection-layer.md).
 
 ## Context
 
@@ -19,7 +19,7 @@ FlowDesk will be implemented as an OpenCode plugin-first project.
 Primary identity:
 
 1. Project name: FlowDesk.
-2. Public name: FlowDesk for opencode.
+2. Public name at initial implementation time: FlowDesk for opencode. ADR 0003 updates current public spelling to FlowDesk and treats this as the OpenCode plugin track.
 3. Repository slug: `flowdesk`.
 4. OpenCode plugin id: `flowdesk`.
 5. Primary package: `@flowdesk/opencode-plugin`.

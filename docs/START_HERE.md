@@ -1,4 +1,4 @@
-# FlowDesk for opencode Documentation Start Here
+# FlowDesk Documentation Start Here
 
 ## Purpose
 
@@ -8,14 +8,18 @@ This file summarizes the authority and scope of the FlowDesk documentation set. 
 
 Implementation decisions use these documents as the normative set:
 
-1. `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md`
-2. `schemas/RELEASE_1_TOOL_CONTRACTS.md`
-3. `adr/0001-opencode-plugin-first.md`
-4. `IMPLEMENTATION_ROADMAP.md`
-5. `PROGRESS_SNAPSHOT.md`
-6. `OPENCODE_CONFORMANCE_PLAN.md`
-7. `THREAT_MODEL.md`
-8. `USER_MANUAL.md`
+1. `adr/0003-omnigent-first-selection-layer.md`
+2. `omnigent/OMNIGENT_DESIGN.md`
+3. `omnigent/OMNIGENT_SAFETY_RULES.md`
+4. `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md`
+5. `schemas/RELEASE_1_TOOL_CONTRACTS.md`
+6. `adr/0001-opencode-plugin-first.md`
+7. `adr/0002-omnigent-selection-integration.md`
+8. `IMPLEMENTATION_ROADMAP.md`
+9. `PROGRESS_SNAPSHOT.md`
+10. `OPENCODE_CONFORMANCE_PLAN.md`
+11. `THREAT_MODEL.md`
+12. `USER_MANUAL.md`
 
 If these documents conflict, the implementation specification wins unless a newer ADR explicitly changes the decision.
 
@@ -32,7 +36,9 @@ They are not normative for FlowDesk implementation identity, package names, proj
 
 ## Current Implementation Target
 
-Release 1 is a **General-Use MVP** for ordinary OpenCode users. Natural-language chat is the primary UX. FlowDesk routes accepted chat requests into guarded command-backed workflows when OpenCode 1.14.40 conformance evidence supports safe mutation/throw behavior.
+Current product priority is the **Omnigent-first selection layer** described by ADR 0003. FlowDesk attaches to Omnigent as an advisory agent/model selector and optional dispatch-consistency guard. Omnigent owns workflow decomposition, dispatch, runtime execution, context/memory, inbox collection, compaction, and synthesis.
+
+The OpenCode plugin remains a maintained track for command/status/usage/evidence surfaces, safety gates, and post-dispatch lane observability. OpenCode Release 1 is a General-Use MVP for ordinary OpenCode users. Natural-language chat is the primary UX for that track, and FlowDesk routes accepted chat requests into guarded command-backed workflows when pinned OpenCode conformance evidence supports safe mutation/throw behavior.
 
 Current planning update: FlowDesk must not use broad hidden prefix injection to force most chat through FlowDesk. Chat routing is conservative: ordinary chat is left alone, likely FlowDesk-related work may receive a visible suggestion, explicit FlowDesk requests may enter command-backed workflows, and later-gate unsafe requests are routed to safe alternatives. Execution-like chat requires confirmation before guarded dry-run or fake-runtime behavior.
 
@@ -40,7 +46,7 @@ Release 1 provider/API/model outage handling is diagnostic only. FlowDesk may sh
 
 OpenCode Go and z.ai are supported in this design as diagnostic provider families, not as fallback or dispatch authority. Missing official quota or account-specific availability evidence remains unknown and non-dispatchable for real provider/model selection.
 
-Final product purpose: FlowDesk minimizes main-agent context. The main agent should do only intake, routing, compact summaries, Guard handoff, and safe next actions. Heavy workflow drafting, refinement, and review belong in bounded subagent lanes that return typed summaries and redacted references when the release gate and pinned OpenCode conformance permit actual lane launch; Release 1 may otherwise use delegated records, fake-runtime lane summaries, and command-backed fallback summaries.
+Final product purpose: FlowDesk keeps existing platform orchestrators small and evidence-aware. In Omnigent, FlowDesk recommends bounded `{agent, harness, model}` bindings from task metadata, available agents, provider usage/health, and compatibility signals. In OpenCode, FlowDesk keeps the main agent focused on intake, routing, compact summaries, Guard handoff, and safe next actions. Heavy workflow drafting, refinement, and review belong in bounded subagent lanes only when the relevant platform release gate permits actual lane launch; OpenCode Release 1 may otherwise use delegated records, fake-runtime lane summaries, and command-backed fallback summaries.
 
 Commands are still required, but they are controls for setup, status, recovery, diagnostics, and fallback. They are not the primary UX for normal work.
 
@@ -73,13 +79,13 @@ Excluded until later gates:
 Current FlowDesk identity:
 
 1. Project name: FlowDesk.
-2. Public name: FlowDesk for opencode.
+2. Public name: FlowDesk.
 3. Repository slug: `flowdesk`.
 4. Plugin id: `flowdesk`.
 5. Package scope: `@flowdesk/*` unless a future ADR changes it.
 6. Project data root: `.flowdesk/`.
 
-Public product spelling is **FlowDesk for opencode**. Upstream runtime references may use **OpenCode** when naming the external project or API surface.
+Public product spelling is **FlowDesk**. Use **FlowDesk OpenCode plugin** or **FlowDesk Omnigent tool** when naming a platform-specific package or integration surface. Upstream runtime references may use **OpenCode** or **Omnigent** when naming the external project or API surface.
 
 Legacy terms such as DEX Conductor, `@dex-conductor/*`, and `.conductor/` are background or migration references only.
 

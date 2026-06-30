@@ -1,7 +1,7 @@
 # FlowDesk + Omnigent 통합 설계
 
-**상태**: Phase 1 live smoke 통과 / Phase 1b pure trace verifier 구현
-**ADR**: [ADR 0002](../adr/0002-omnigent-selection-integration.md)
+**상태**: PyPI package + selector/MCP/guard 구현 / task-tier 및 provider-usage snapshot 입력 지원
+**ADR**: [ADR 0002](../adr/0002-omnigent-selection-integration.md), [ADR 0003](../adr/0003-omnigent-first-selection-layer.md)
 **Safety Rules**: [OMNIGENT_SAFETY_RULES.md](./OMNIGENT_SAFETY_RULES.md)
 **기본 정보**: [OMNIGENT_BASE_INFO.md](./OMNIGENT_BASE_INFO.md)
 **설치 가이드**: [OMNIGENT_SETUP.md](./OMNIGENT_SETUP.md)
@@ -15,17 +15,18 @@
 ## 목표
 
 메인 오케스트레이터가 워크플로우 생성/세부작업 분할/결과 종합을 담당하고,
-각 subtask에 FlowDesk가 전문 agent와 최적 모델을 선택해서
-병렬 또는 순차로 실행하는 구조를 만든다.
+각 subtask에 FlowDesk가 전문 agent/harness/model binding을 권고해서
+Omnigent가 병렬 또는 순차로 실행하는 구조를 만든다.
 
 ### FlowDesk의 역할
 
 FlowDesk는 **선택 레이어**만 담당한다:
 
 - 각 task의 성격(security/architecture/implementation 등)을 분석한다.
-- provider usage 상태를 파악한다 (quota, 가용성).
+- provider usage/health snapshot을 selection input으로 반영한다 (quota, 가용성).
 - 적합한 agent harness와 model을 결정한다.
-- 결과를 `{agent, harness, model}` 형태로 반환한다.
+- 결과를 `{agent, harness, model}` 형태의 advisory selection으로 반환한다.
+- opt-in function-policy guard가 설치된 경우, 선택 결과와 실제 `sys_session_send` binding이 어긋나는지만 좁게 차단한다.
 
 context 관리, memory, orchestration loop, 실행, 결과 수집은 Omnigent가 담당한다.
 
@@ -57,11 +58,12 @@ Orchestrator (Omnigent, claude-sdk harness, Claude 구독)
 | 역할 | 담당 | 구현 위치 |
 |---|---|---|
 | 워크플로우 생성/분할/종합 | Omnigent orchestrator | config.yaml prompt |
-| agent/model 선택 intelligence | **FlowDesk** | Python local function tool |
+| agent/model 선택 | **FlowDesk** | Python local function tool / MCP selector |
+| binding consistency guard | **FlowDesk** opt-in | Omnigent function policy |
 | 병렬/순차 실행 | Omnigent runner | asyncio.gather() 자동 |
 | context/memory 관리 | Omnigent harness | 각 harness 내부 |
 | 결과 수집 | Omnigent inbox | sys_read_inbox |
-| provider quota 모니터링 | **FlowDesk** | provider-usage-live-tool |
+| provider quota 입력 | **FlowDesk/Caller** | explicit snapshot / sanitized env JSON or path |
 
 ---
 
@@ -89,11 +91,13 @@ Orchestrator (Omnigent, claude-sdk harness, Claude 구독)
 
 def flowdesk_select_agent_model(
     task_role: str,           # "policy_security" | "architecture" | "implementation" | "verification" | "research" | "general"
-    task_description: str,    # 수행할 작업 설명
-    quota_snapshot: dict,     # 각 provider의 현재 quota 상태 (미정)
+    available_agents: list,   # 현재 parent spec이 등록한 agent 이름들
+    provider_usage: dict,     # optional redacted provider usage snapshot
+    task_complexity: str,     # optional "low" | "medium" | "high" | "critical"
+    task_phase: str,          # optional "high_level_design" 등
 ) -> dict:
-    # 반환 형태 (미정)
     return {
+        "schema_version": "flowdesk.omnigent_selection.v1",
         "selection_status": "selected",
         "agent": "policy-security-agent",    # Omnigent agent 이름
         "harness": "claude-sdk",      # 사용할 harness
@@ -103,11 +107,11 @@ def flowdesk_select_agent_model(
 ```
 
 **미결 사항**:
-- FlowDesk model selection 로직을 Python으로 어떻게 포팅할 것인가
-- quota 정보를 Omnigent에서 FlowDesk로 어떻게 전달할 것인가
-- tool을 MCP 방식으로 할 것인가, local function 방식으로 할 것인가
+- Python/TypeScript selector registry를 single source of truth로 통합하는 방법
+- provider usage snapshot을 strict allowlist schema로 formalize하는 방법
+- FD-OC user-level templates를 repo-managed, versioned, opt-in template으로 제공하는 방법
 
-현재 추천은 `local function tool MVP → TypeScript selection CLI bridge → optional MCP/upstream hook` 순서다.
+현재 추천은 `Python selector/MCP portable path 유지 → registry parity/golden fixtures → strict provider usage schema → repo-owned FD-OC template` 순서다. Upstream Omnigent core hook은 아직 deferred다.
 
 ---
 
@@ -122,7 +126,7 @@ prompt: |
   각 subtask 실행 전에 flowdesk_select_agent_model을 호출해서
   적합한 agent와 model을 선택하세요.
   선택 결과가 selected일 때만 sys_session_send를 호출하여 병렬 실행하세요.
-  이 MVP는 advisory-only이며, dispatch safety boundary라고 주장하지 않습니다.
+  selector 결과는 advisory-only입니다. 선택적으로 설치된 FlowDesk guard는 task/agent/harness/model binding mismatch만 좁게 차단합니다.
 
 executor:
   harness: claude-sdk
@@ -185,7 +189,7 @@ Phase 1b 후속, Phase 2, Phase 3, Phase 4의 실행 단위 todo는 [OMNIGENT_PH
 | 항목 | 상태 | 비고 |
 |---|---|---|
 | FlowDesk Python tool 구현 방식 | 추천 확정 | `packages/omnigent-tool` local function MVP 우선 |
-| quota 정보 Omnigent → FlowDesk 전달 | 미정 | sys_list_models 활용 가능성 검토 |
+| quota 정보 Omnigent → FlowDesk 전달 | 부분 구현 | explicit `provider_usage`/`provider_health`, sanitized env JSON/path bridge |
 | antigravity-native tmux 의존성 테스트 | 보류 | MVP default 제외, experimental/non-dispatchable |
 | Gemini OAuth token 만료 처리 | 보류 | agy TUI 재로그인 필요 |
 | FlowDesk audit/evidence Omnigent 통합 | 부분 확정 | Phase 1 transcript/history, core schema alignment는 후속 |
@@ -194,8 +198,10 @@ Phase 1b 후속, Phase 2, Phase 3, Phase 4의 실행 단위 todo는 [OMNIGENT_PH
 | Phase 2 TS CLI bridge | 구현 | `packages/core` CLI + Python opt-in `engine="ts_cli"` wrapper |
 | Phase 3 schema alignment | 부분 구현 | core selection/trace types, validators, schema registry artifacts 추가 |
 | Phase 4 MCP path | 실험 구현 및 live smoke 통과 | stdio MCP selection-only server + Omnigent MCP fixture |
-| Phase 4b pre-dispatch binding guard | 구현 및 live smoke 통과 | function policy로 FlowDesk-known binding mismatch DENY |
-| orchestrator spec YAML 상세 설계 | 미정 | 1~2단계 테스트 후 확정 |
+| Phase 4b pre-dispatch binding guard | 구현 및 live smoke 통과 | opt-in function policy로 FlowDesk-known binding mismatch만 DENY |
+| task-tier-aware selection | 구현 | `task_complexity`/`task_phase`/`task_tier`로 reasoning model preference |
+| provider usage env/path bridge | 구현 | sanitized snapshot 입력만, strict schema formalization 필요 |
+| orchestrator spec YAML 상세 설계 | 부분 구현 | PyPI fixture + user-level FD-OC bundles, repo-managed template 필요 |
 | Pi harness와의 병용 가능성 | 검토 필요 | multi-provider 유연성 확보용 |
 
 Live smoke 결과 (2026-06-26):
