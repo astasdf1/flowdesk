@@ -1,0 +1,21 @@
+spec_version: 1
+name: architecture-agent
+description: Workspace architecture reviewer.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+prompt: |
+  Review the assigned task in the active session workspace for module
+  boundaries, contracts, integration shape, and sequencing risks.
+  Inspect workspace-local instructions before judging. Do not edit files.
+  Return concise findings.

@@ -1,0 +1,21 @@
+spec_version: 1
+name: implementation-agent
+description: Workspace implementation worker.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+prompt: |
+  Implement or investigate the assigned task in the active session workspace.
+  Inspect workspace-local instructions before acting. Keep changes minimal and
+  report what changed, what was verified, and any blockers. Do not delegate
+  further work unless explicitly instructed by the parent orchestrator.

@@ -4,7 +4,7 @@ Experimental Omnigent integration package for FlowDesk advisory agent/model sele
 
 This package implements the experimental Omnigent selection path from `docs/omnigent/OMNIGENT_DEVELOPMENT_DESIGN_OPTIONS.md`:
 
-- local Python function tool only;
+- local Python function and MCP selection tools;
 - advisory selection only;
 - no Omnigent dispatch calls;
 - no provider fallback/retry authority;
@@ -12,6 +12,7 @@ This package implements the experimental Omnigent selection path from `docs/omni
 - optional local debug JSONL only when explicitly requested by the caller.
 - post-run trace verification from Omnigent history/tool-call events;
 - optional fixture-level function policy guard for selector-provenance and binding consistency.
+- optional FD-OC Omnigent templates and a foreground server+host launcher.
 
 Install into an Omnigent venv from PyPI:
 
@@ -24,6 +25,55 @@ Development install from a FlowDesk checkout:
 ```bash
 uv pip install --python /path/to/omnigent/.venv/bin/python -e packages/omnigent-tool
 ```
+
+After install, ensure the Python environment's `bin` directory is on the `PATH` used by your shell and Omnigent server:
+
+```bash
+export PATH="/path/to/omnigent/.venv/bin:$PATH"
+```
+
+Install the bundled workspace-first FD-OC Omnigent templates into `~/.omnigent/agents`:
+
+```bash
+flowdesk-omnigent-install-templates
+```
+
+Preview or install to a custom agent root:
+
+```bash
+flowdesk-omnigent-install-templates --dry-run
+flowdesk-omnigent-install-templates --agent-root /path/to/agents
+flowdesk-omnigent-install-templates --force
+```
+
+Run Omnigent server and host daemon from one foreground command:
+
+```bash
+flowdesk-omnigent-start --open
+```
+
+This starts the equivalent of:
+
+```bash
+omnigent server --port 6767 \
+  --agent ~/.omnigent/agents/FD-OC \
+  --agent ~/.omnigent/agents/FD-OC-Opus \
+  --agent ~/.omnigent/agents/FD-OC-Codex
+omnigent host --server http://127.0.0.1:6767
+```
+
+Useful launcher options:
+
+```bash
+flowdesk-omnigent-start --dry-run
+flowdesk-omnigent-start --bind 100.x.y.z --open
+flowdesk-omnigent-start --port 6767
+flowdesk-omnigent-start --agent-root ~/.omnigent/agents
+flowdesk-omnigent-start --no-host-daemon
+flowdesk-omnigent-start --omnigent-bin /path/to/omnigent
+```
+
+The launcher binds to `127.0.0.1` by default. Use `--bind <tailscale-ip-or-hostname>` to expose the Omnigent server on a Tailscale interface, or `--bind 0.0.0.0` only when you intentionally want every interface to listen. The launcher is foreground-only. It does not install a background daemon, edit shell profiles, register launchd/systemd services, or write Omnigent config. Press `Ctrl-C` to stop the child server and host processes.
 
 Release preflight from the FlowDesk repository:
 

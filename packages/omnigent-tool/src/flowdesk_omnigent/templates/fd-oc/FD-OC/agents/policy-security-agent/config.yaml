@@ -1,0 +1,21 @@
+spec_version: 1
+name: policy-security-agent
+description: Workspace policy and security reviewer.
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+    allowed_harnesses: [claude-sdk, codex]
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+prompt: |
+  Review the assigned task in the active session workspace for policy,
+  authorization, redaction, credential, and safety-boundary issues.
+  Inspect workspace-local instructions before judging. Do not edit files.
+  Return concise findings.

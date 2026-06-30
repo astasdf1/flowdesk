@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flowdesk-omnigent-tool"
-version = "0.1.2"
+version = "0.1.3"
 description = "FlowDesk advisory selection tool for Omnigent."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -32,6 +32,8 @@ Documentation = "https://github.com/astasdf1/flowdesk/tree/main/docs/omnigent"
 
 [project.scripts]
 flowdesk-omnigent-mcp = "flowdesk_omnigent.mcp_server:main"
+flowdesk-omnigent-install-templates = "flowdesk_omnigent.template_installer:main"
+flowdesk-omnigent-start = "flowdesk_omnigent.launcher:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flowdesk_omnigent"]
@@ -41,6 +43,7 @@ include = [
   "README.md",
   "LICENSE",
   "src/flowdesk_omnigent/**/*.py",
+  "src/flowdesk_omnigent/templates/**/*.yaml",
   "src/flowdesk_omnigent/py.typed",
   "tests/**/*.py",
   "tests/fixtures/**/*.json",

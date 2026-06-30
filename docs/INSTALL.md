@@ -114,7 +114,7 @@ The bootstrap installer writes portable `/flowdesk-*` command files and redacted
 Published-package path after PyPI release:
 
 ```bash
-uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool==0.1.2
+uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool==0.1.3
 ```
 
 From the FlowDesk repository:
@@ -134,6 +134,66 @@ The script runs:
 - `uv pip install --python <python> -e packages/omnigent-tool`
 - import smoke for `flowdesk_omnigent.selection`
 - MCP tool-list smoke for `flowdesk_omnigent.mcp_server`
+
+### FD-OC Templates and One-Command Launcher
+
+The PyPI package installs three console scripts:
+
+```bash
+flowdesk-omnigent-mcp
+flowdesk-omnigent-install-templates
+flowdesk-omnigent-start
+```
+
+Install the bundled workspace-first Omnigent templates into the default user agent root:
+
+```bash
+flowdesk-omnigent-install-templates
+```
+
+This writes:
+
+```text
+~/.omnigent/agents/FD-OC
+~/.omnigent/agents/FD-OC-Opus
+~/.omnigent/agents/FD-OC-Codex
+```
+
+Existing files block installation unless you pass `--force`. Preview first if needed:
+
+```bash
+flowdesk-omnigent-install-templates --dry-run
+flowdesk-omnigent-install-templates --agent-root /path/to/agents
+```
+
+Start Omnigent server and the matching host daemon from one foreground command:
+
+```bash
+flowdesk-omnigent-start --open
+```
+
+The launcher registers the three FD-OC parent agents and starts the equivalent of:
+
+```bash
+omnigent server --port 6767 \
+  --agent ~/.omnigent/agents/FD-OC \
+  --agent ~/.omnigent/agents/FD-OC-Opus \
+  --agent ~/.omnigent/agents/FD-OC-Codex
+omnigent host --server http://127.0.0.1:6767
+```
+
+Useful options:
+
+```bash
+flowdesk-omnigent-start --dry-run
+flowdesk-omnigent-start --bind 100.x.y.z --open
+flowdesk-omnigent-start --port 6767
+flowdesk-omnigent-start --agent-root ~/.omnigent/agents
+flowdesk-omnigent-start --no-host-daemon
+flowdesk-omnigent-start --omnigent-bin /path/to/omnigent
+```
+
+The launcher binds to `127.0.0.1` by default. For Tailscale access, pass your Tailscale IP or MagicDNS hostname with `--bind`, for example `flowdesk-omnigent-start --bind 100.x.y.z --open`. Use `--bind 0.0.0.0` only when you intentionally want every interface to listen. The launcher is foreground-only. It does not register launchd/systemd services, edit shell profiles, or silently write Omnigent config. Stop it with `Ctrl-C`.
 
 Build check for distribution artifacts:
 

@@ -1,0 +1,20 @@
+spec_version: 1
+name: verification-agent
+description: Workspace verification reviewer.
+
+executor:
+  type: omnigent
+  config:
+    harness: codex
+    allowed_harnesses: [codex, claude-sdk]
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+prompt: |
+  Review the assigned task in the active session workspace for tests, smoke
+  coverage, reproducibility, and regression risks. Inspect workspace-local
+  instructions before judging. Do not edit files. Return concise findings.

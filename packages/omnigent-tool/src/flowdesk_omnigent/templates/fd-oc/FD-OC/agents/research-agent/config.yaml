@@ -1,0 +1,21 @@
+spec_version: 1
+name: research-agent
+description: Workspace research and codebase exploration worker.
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+    allowed_harnesses: [claude-sdk, codex]
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+prompt: |
+  Research the assigned question in the active session workspace. Inspect
+  workspace-local instructions before acting. Prefer concise evidence-backed
+  findings with file paths or commands checked. Do not edit files unless the
+  parent explicitly asks for implementation.
