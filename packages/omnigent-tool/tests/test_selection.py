@@ -82,6 +82,88 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["selection_status"], "blocked")
         self.assertEqual(result["blocked_labels"], ["provider_usage_unavailable"])
 
+    def test_high_complexity_implementation_prefers_reasoning_model(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-implementation-high",
+                "task_role": "implementation",
+                "task_complexity": "high",
+                "allowed_provider_families": ["claude", "openai"],
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+        self.assertEqual(result["harness"], "claude-sdk")
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
+        self.assertIn("task_tier_prefers_reasoning_model", result["reason_codes"])
+
+    def test_high_level_architecture_phase_prefers_reasoning_model(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-architecture-tier",
+                "task_role": "architecture",
+                "task_phase": "high_level_design",
+                "allowed_provider_families": ["claude", "openai"],
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+        self.assertEqual(result["harness"], "claude-sdk")
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
+
+    def test_tier_preference_still_falls_back_when_reasoning_provider_unavailable(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-tier-usage-fallback",
+                "task_role": "implementation",
+                "task_complexity": "critical",
+                "allowed_provider_families": ["claude", "openai"],
+                "provider_usage": {
+                    "providers": [
+                        {"provider_family": "claude", "alert_level": "exhausted", "remaining_percent": 0},
+                        {"provider_family": "openai", "alert_level": "ok", "remaining_percent": 70},
+                    ]
+                },
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "openai")
+        self.assertEqual(result["harness"], "codex")
+
+    def test_available_agents_filter_skips_unregistered_primary_agent(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-available-agents",
+                "task_role": "research",
+                "available_agents": ["general-agent"],
+                "allowed_provider_families": ["claude", "openai"],
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "blocked")
+        self.assertEqual(result["blocked_labels"], ["agent_not_available"])
+
+    def test_available_agents_filter_allows_registered_secondary_agent(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-available-secondary",
+                "task_role": "research",
+                "available_agents": ["research-agent"],
+                "allowed_provider_families": ["claude", "openai"],
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "research-agent")
+
     def test_unknown_role_blocks(self) -> None:
         result = select_agent_model(
             {"task_id": "task-bad-role", "task_role": "security"},

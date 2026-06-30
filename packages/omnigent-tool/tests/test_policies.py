@@ -217,6 +217,19 @@ class PolicyTests(unittest.TestCase):
 
         self.assertEqual(result["result"], "ALLOW")
 
+    def test_uses_recorded_dynamic_harness_binding_from_sys_session_send_args(self) -> None:
+        event = _event("architecture-agent", "claude-sonnet-4-6")
+        event["data"]["arguments"]["args"]["harness"] = "claude-sdk"
+        event["session_state"] = {
+            "flowdesk_selection_events": [
+                {**_selection_record(agent="architecture-agent", model="claude-sonnet-4-6"), "harness": "claude-sdk"}
+            ]
+        }
+
+        result = omnigent_selection_dispatch_guard(event)
+
+        self.assertEqual(result["result"], "ALLOW")
+
     def test_denies_dynamic_harness_binding_when_override_is_missing(self) -> None:
         event = _event("architecture-agent", "claude-sonnet-4-6")
         event["session_state"] = {

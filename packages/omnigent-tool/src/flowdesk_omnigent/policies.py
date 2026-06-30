@@ -15,12 +15,16 @@ DEFAULT_AGENT_MODEL_BINDINGS: Mapping[str, str | None] = {
     "architecture-agent": None,
     "implementation-agent": None,
     "verification-agent": None,
+    "research-agent": "claude-sonnet-4-6",
+    "general-agent": None,
 }
 DEFAULT_AGENT_HARNESS_BINDINGS: Mapping[str, str] = {
     "policy-security-agent": "claude-sdk",
     "architecture-agent": "codex",
     "implementation-agent": "codex",
     "verification-agent": "codex",
+    "research-agent": "claude-sdk",
+    "general-agent": "codex",
 }
 FLOWDESK_SELECTION_STATE_KEY = "flowdesk_selection_events"
 FLOWDESK_SELECTOR_TARGETS = frozenset({"flowdesk_select_agent_model", "select_agent_model", "mcp__flowdesk__flowdesk_select_agent_model"})
@@ -131,7 +135,10 @@ def _dispatch_model(arguments: Mapping[str, Any]) -> str | None:
 
 
 def _dispatch_harness(arguments: Mapping[str, Any]) -> str | None:
-    harness = arguments.get("harness")
+    args = arguments.get("args")
+    harness = args.get("harness") if isinstance(args, Mapping) else None
+    if not isinstance(harness, str) or not harness:
+        harness = arguments.get("harness")
     return harness if isinstance(harness, str) and harness else None
 
 
