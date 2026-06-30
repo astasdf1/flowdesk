@@ -18,6 +18,10 @@ from uuid import uuid4
 SCHEMA_VERSION = "flowdesk.omnigent_selection.v1"
 LOG_SCHEMA_VERSION = "flowdesk.omnigent_selection_debug_log.v1"
 AUTHORITY = "advisory_selection_only"
+PROVIDER_USAGE_JSON_ENV = "FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"
+PROVIDER_USAGE_PATH_ENV = "FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH"
+PROVIDER_USAGE_MAX_BYTES = 64 * 1024
+FORBIDDEN_PROVIDER_USAGE_KEYS = {"authorization", "cookie", "credential", "credentials", "secret", "token"}
 
 SelectionStatus = Literal["selected", "blocked", "non_dispatchable"]
 ProviderFamily = Literal["claude", "openai", "gemini"]
@@ -216,6 +220,8 @@ def select_agent_model(
         )
         _write_evidence_if_enabled(result, write_evidence)
         return result
+
+    request = _request_with_default_provider_usage(request)
 
     if request.get("engine") == "ts_cli":
         result = _select_via_ts_cli(request, now=now)
@@ -576,6 +582,67 @@ def _provider_usage_allows(request: Mapping[str, Any], provider_family: Provider
     if not rows:
         return True
     return any(_provider_usage_row_allows(row) for row in rows)
+
+
+def _request_with_default_provider_usage(request: Mapping[str, Any]) -> Mapping[str, Any]:
+    if request.get("provider_usage") is not None or request.get("provider_health") is not None:
+        return request
+    snapshot = _load_default_provider_usage_snapshot()
+    if snapshot is None:
+        return request
+    merged = dict(request)
+    merged["provider_usage"] = snapshot
+    return merged
+
+
+def _load_default_provider_usage_snapshot() -> Any | None:
+    inline = os.environ.get(PROVIDER_USAGE_JSON_ENV)
+    if inline:
+        return _parse_provider_usage_snapshot(inline)
+    raw_path = os.environ.get(PROVIDER_USAGE_PATH_ENV)
+    if not raw_path:
+        return None
+    try:
+        path = Path(raw_path).expanduser()
+        if not path.exists() or not path.is_file() or path.stat().st_size > PROVIDER_USAGE_MAX_BYTES:
+            return None
+        return _parse_provider_usage_snapshot(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _parse_provider_usage_snapshot(raw: str) -> Any | None:
+    if len(raw.encode("utf-8")) > PROVIDER_USAGE_MAX_BYTES:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if _provider_usage_snapshot_is_redaction_safe(parsed) else None
+
+
+def _provider_usage_snapshot_is_redaction_safe(value: Any, *, depth: int = 0) -> bool:
+    if depth > 8:
+        return False
+    if value is None or isinstance(value, (bool, int, float)):
+        return True
+    if isinstance(value, str):
+        return len(value) <= 500
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return len(value) <= 100 and all(_provider_usage_snapshot_is_redaction_safe(item, depth=depth + 1) for item in value)
+    if isinstance(value, Mapping):
+        if len(value) > 100:
+            return False
+        for key, item in value.items():
+            if not isinstance(key, str) or len(key) > 80:
+                return False
+            lowered = key.lower()
+            if any(forbidden in lowered for forbidden in FORBIDDEN_PROVIDER_USAGE_KEYS):
+                return False
+            if not _provider_usage_snapshot_is_redaction_safe(item, depth=depth + 1):
+                return False
+        return True
+    return False
 
 
 def _provider_usage_row_allows(row: Mapping[str, Any]) -> bool:

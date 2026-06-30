@@ -82,6 +82,118 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["selection_status"], "blocked")
         self.assertEqual(result["blocked_labels"], ["provider_usage_unavailable"])
 
+    def test_default_provider_usage_json_env_is_injected_when_request_omits_usage(self) -> None:
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        old_path = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = json.dumps(
+            {
+                "providers": [
+                    {"provider_family": "claude", "alert_level": "exhausted", "remaining_percent": 0},
+                    {"provider_family": "openai", "alert_level": "ok", "remaining_percent": 70},
+                ]
+            }
+        )
+        os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH", None)
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-env-json",
+                    "task_role": "policy_security",
+                    "allowed_provider_families": ["claude", "openai"],
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+            if old_path is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH"] = old_path
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "openai")
+
+    def test_default_provider_usage_path_is_injected_when_request_omits_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provider-usage.json"
+            path.write_text(
+                json.dumps({"openai": {"alertLevel": "critical", "remainingPercent": 1}}),
+                encoding="utf-8",
+            )
+            old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+            old_path = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH")
+            os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH"] = str(path)
+            try:
+                result = select_agent_model(
+                    {
+                        "task_id": "task-usage-env-path",
+                        "task_role": "architecture",
+                        "allowed_provider_families": ["openai"],
+                    },
+                    write_evidence=False,
+                )
+            finally:
+                if old_json is None:
+                    os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+                else:
+                    os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+                if old_path is None:
+                    os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH", None)
+                else:
+                    os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH"] = old_path
+
+        self.assertEqual(result["selection_status"], "blocked")
+        self.assertEqual(result["blocked_labels"], ["provider_usage_unavailable"])
+
+    def test_explicit_provider_usage_overrides_default_provider_usage_env(self) -> None:
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = json.dumps({"claude": {"alertLevel": "exhausted", "remainingPercent": 0}})
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-explicit-wins",
+                    "task_role": "policy_security",
+                    "allowed_provider_families": ["claude", "openai"],
+                    "provider_usage": {"claude": {"alertLevel": "ok", "remainingPercent": 90}},
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+
+    def test_default_provider_usage_env_rejects_token_shaped_keys(self) -> None:
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = json.dumps(
+            {"providers": [{"provider_family": "claude", "alert_level": "exhausted", "access_token": "SHOULD_NOT_BE_READ"}]}
+        )
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-unsafe-env",
+                    "task_role": "policy_security",
+                    "allowed_provider_families": ["claude", "openai"],
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+
     def test_high_complexity_implementation_prefers_reasoning_model(self) -> None:
         result = select_agent_model(
             {
