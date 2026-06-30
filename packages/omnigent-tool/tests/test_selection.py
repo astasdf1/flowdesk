@@ -10,7 +10,30 @@ from unittest.mock import patch
 from flowdesk_omnigent.selection import RegistryEntry, select_agent_model
 
 
+PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
+
+
 class SelectionTests(unittest.TestCase):
+    def test_selection_parity_golden_cases(self) -> None:
+        cases = json.loads(PARITY_FIXTURE_PATH.read_text(encoding="utf-8"))
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                result = select_agent_model(case["request"], write_evidence=False)
+                expected = case["expected"]
+                self.assertEqual(result["schema_version"], "flowdesk.omnigent_selection.v1")
+                self.assertEqual(result["authority"], "advisory_selection_only")
+                self.assertEqual(result["task_id"], case["request"].get("task_id", "task-unknown"))
+                self.assertEqual(result["task_role"], expected["task_role"])
+                self.assertEqual(result["selection_status"], expected["selection_status"])
+                self.assertEqual(result["confidence"], expected["confidence"])
+                for key in ("agent", "harness", "model", "provider_family"):
+                    if key in expected:
+                        self.assertEqual(result.get(key), expected[key])
+                if "blocked_labels" in expected:
+                    self.assertEqual(result["blocked_labels"], expected["blocked_labels"])
+                for reason_code in expected["reason_codes_include"]:
+                    self.assertIn(reason_code, result["reason_codes"])
+
     def test_policy_security_selects_claude_opus(self) -> None:
         result = select_agent_model(
             {

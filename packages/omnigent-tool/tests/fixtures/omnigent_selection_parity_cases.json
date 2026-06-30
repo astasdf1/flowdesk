@@ -1,0 +1,126 @@
+[
+  {
+    "name": "policy_security_prefers_claude_opus",
+    "request": {
+      "task_id": "task-parity-policy",
+      "task_role": "policy_security",
+      "allowed_provider_families": ["claude", "openai"]
+    },
+    "expected": {
+      "task_role": "policy_security",
+      "selection_status": "selected",
+      "agent": "policy-security-agent",
+      "harness": "claude-sdk",
+      "model": "claude-opus-4-8",
+      "provider_family": "claude",
+      "confidence": "high",
+      "reason_codes_include": ["role_policy_security_prefers_deep_reasoning", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "architecture_openai_only_uses_codex_default",
+    "request": {
+      "task_id": "task-parity-architecture",
+      "task_role": "architecture",
+      "allowed_provider_families": ["openai"]
+    },
+    "expected": {
+      "task_role": "architecture",
+      "selection_status": "selected",
+      "agent": "architecture-agent",
+      "harness": "codex",
+      "model": null,
+      "provider_family": "openai",
+      "confidence": "high",
+      "reason_codes_include": ["role_architecture_prefers_frontier_reasoning", "subscription_harness_default_model"]
+    }
+  },
+  {
+    "name": "implementation_high_complexity_prefers_reasoning",
+    "request": {
+      "task_id": "task-parity-implementation-high",
+      "task_role": "implementation",
+      "task_complexity": "high",
+      "allowed_provider_families": ["claude", "openai"]
+    },
+    "expected": {
+      "task_role": "implementation",
+      "selection_status": "selected",
+      "agent": "implementation-agent",
+      "harness": "claude-sdk",
+      "model": "claude-sonnet-4-6",
+      "provider_family": "claude",
+      "confidence": "medium",
+      "reason_codes_include": ["role_implementation_prefers_coding_harness", "task_tier_prefers_reasoning_model", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "tier_preference_falls_back_when_claude_exhausted",
+    "request": {
+      "task_id": "task-parity-tier-usage",
+      "task_role": "implementation",
+      "task_complexity": "critical",
+      "allowed_provider_families": ["claude", "openai"],
+      "provider_usage": {
+        "providers": [
+          { "provider_family": "claude", "alert_level": "exhausted", "remaining_percent": 0 },
+          { "provider_family": "openai", "alert_level": "ok", "remaining_percent": 70 }
+        ]
+      }
+    },
+    "expected": {
+      "task_role": "implementation",
+      "selection_status": "selected",
+      "agent": "implementation-agent",
+      "harness": "codex",
+      "model": null,
+      "provider_family": "openai",
+      "confidence": "high",
+      "reason_codes_include": ["role_implementation_prefers_coding_harness", "task_tier_prefers_reasoning_model", "subscription_harness_default_model"]
+    }
+  },
+  {
+    "name": "openai_usage_blocked_when_only_allowed_provider_unavailable",
+    "request": {
+      "task_id": "task-parity-usage-blocked",
+      "task_role": "architecture",
+      "allowed_provider_families": ["openai"],
+      "provider_usage": { "openai": { "alertLevel": "critical", "remainingPercent": 1 } }
+    },
+    "expected": {
+      "task_role": "architecture",
+      "selection_status": "blocked",
+      "confidence": "low",
+      "blocked_labels": ["provider_usage_unavailable"],
+      "reason_codes_include": ["provider_usage_unavailable"]
+    }
+  },
+  {
+    "name": "gemini_experimental_is_non_dispatchable",
+    "request": {
+      "task_id": "task-parity-gemini",
+      "task_role": "gemini_experimental"
+    },
+    "expected": {
+      "task_role": "gemini_experimental",
+      "selection_status": "non_dispatchable",
+      "confidence": "low",
+      "blocked_labels": ["gemini_oauth_refresh_unstable"],
+      "reason_codes_include": ["gemini_oauth_refresh_unstable"]
+    }
+  },
+  {
+    "name": "unknown_role_blocks",
+    "request": {
+      "task_id": "task-parity-unknown",
+      "task_role": "missing"
+    },
+    "expected": {
+      "task_role": "unknown",
+      "selection_status": "blocked",
+      "confidence": "low",
+      "blocked_labels": ["unknown_role"],
+      "reason_codes_include": ["unknown_role_blocked"]
+    }
+  }
+]

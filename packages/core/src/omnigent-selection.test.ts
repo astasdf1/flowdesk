@@ -1,6 +1,42 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { selectFlowDeskOmnigentAgentModelV1, validateFlowDeskOmnigentSelectionV1 } from "./index.js";
+
+interface ParityCase {
+	name: string;
+	request: Record<string, unknown>;
+	expected: {
+		task_role: string;
+		selection_status: string;
+		confidence: string;
+		agent?: string;
+		harness?: string;
+		model?: string | null;
+		provider_family?: string;
+		blocked_labels?: string[];
+		reason_codes_include: string[];
+	};
+}
+
+const parityCases = JSON.parse(readFileSync("packages/omnigent-tool/tests/fixtures/omnigent_selection_parity_cases.json", "utf8")) as ParityCase[];
+
+test("omnigent selection matches Python/TypeScript parity golden cases", () => {
+	for (const parityCase of parityCases) {
+		const result = selectFlowDeskOmnigentAgentModelV1(parityCase.request, new Date("2026-06-26T00:00:00.000Z"));
+		assert.equal(result.schema_version, "flowdesk.omnigent_selection.v1", parityCase.name);
+		assert.equal(result.authority, "advisory_selection_only", parityCase.name);
+		assert.equal(result.task_id, parityCase.request.task_id, parityCase.name);
+		assert.equal(result.task_role, parityCase.expected.task_role, parityCase.name);
+		assert.equal(result.selection_status, parityCase.expected.selection_status, parityCase.name);
+		assert.equal(result.confidence, parityCase.expected.confidence, parityCase.name);
+		for (const key of ["agent", "harness", "model", "provider_family"] as const) {
+			if (key in parityCase.expected) assert.deepEqual(result[key], parityCase.expected[key], parityCase.name);
+		}
+		if (parityCase.expected.blocked_labels) assert.deepEqual(result.blocked_labels, parityCase.expected.blocked_labels, parityCase.name);
+		for (const reasonCode of parityCase.expected.reason_codes_include) assert.ok(result.reason_codes.includes(reasonCode), `${parityCase.name}: ${reasonCode}`);
+	}
+});
 
 test("omnigent selection picks Claude Opus for policy/security", () => {
 	const result = selectFlowDeskOmnigentAgentModelV1({ task_id: "task-policy", task_role: "policy_security", allowed_provider_families: ["claude", "openai"] }, new Date("2026-06-26T00:00:00.000Z"));
