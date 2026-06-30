@@ -79,6 +79,13 @@ def _tool_definition() -> dict[str, Any]:
                     "type": "string",
                     "enum": ["policy_security", "architecture", "implementation", "verification", "research", "general", "gemini_experimental"],
                 },
+                "available_agents": {"type": "array", "items": {"type": "string"}},
+                "task_complexity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                "task_phase": {
+                    "type": "string",
+                    "enum": ["high_level_design", "detailed_design", "implementation", "verification", "research", "risk_review"],
+                },
+                "task_tier": {"type": "string", "enum": ["lower", "middle", "upper", "senior", "reasoning", "frontier"]},
                 "allowed_provider_families": {"type": "array", "items": {"type": "string", "enum": ["claude", "openai", "gemini"]}},
                 "preferred_provider_family": {"type": "string", "enum": ["claude", "openai", "gemini"]},
                 "requires_headless": {"type": "boolean"},

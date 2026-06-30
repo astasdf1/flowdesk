@@ -22,6 +22,16 @@ guardrails:
       on: [tool_call, tool_result]
       function: flowdesk_omnigent.policies.omnigent_selection_dispatch_guard
 
+terminals:
+  shell:
+    command: bash
+    allow_cwd_override: true
+    os_env:
+      type: caller_process
+      cwd: .
+      sandbox:
+        type: none
+
 tools:
   agents:
     - policy-security-agent

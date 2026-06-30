@@ -20,6 +20,50 @@ test("omnigent selection preserves Codex subscription default as null model", ()
 	assert.match(result.reason_codes.join("|"), /subscription_harness_default_model/);
 });
 
+test("omnigent selection promotes high-complexity implementation to reasoning model", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-implementation-high", task_role: "implementation", task_complexity: "high", allowed_provider_families: ["claude", "openai"] },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "claude");
+	assert.equal(result.harness, "claude-sdk");
+	assert.equal(result.model, "claude-sonnet-4-6");
+	assert.match(result.reason_codes.join("|"), /task_tier_prefers_reasoning_model/);
+});
+
+test("omnigent selection promotes high-level architecture phase to reasoning model", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-architecture-tier", task_role: "architecture", task_phase: "high_level_design", allowed_provider_families: ["claude", "openai"] },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "claude");
+	assert.equal(result.harness, "claude-sdk");
+	assert.equal(result.model, "claude-sonnet-4-6");
+});
+
+test("omnigent selection still falls back when preferred reasoning provider is unavailable", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{
+			task_id: "task-tier-usage-fallback",
+			task_role: "implementation",
+			task_complexity: "critical",
+			allowed_provider_families: ["claude", "openai"],
+			provider_usage: {
+				providers: [
+					{ provider_family: "claude", alert_level: "exhausted", remaining_percent: 0 },
+					{ provider_family: "openai", alert_level: "ok", remaining_percent: 70 },
+				],
+			},
+		},
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "openai");
+	assert.equal(result.harness, "codex");
+});
+
 test("omnigent selection skips exhausted primary provider using usage snapshot", () => {
 	const result = selectFlowDeskOmnigentAgentModelV1(
 		{

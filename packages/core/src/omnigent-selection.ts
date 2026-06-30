@@ -11,6 +11,12 @@ export type FlowDeskOmnigentConfidenceV1 = "high" | "medium" | "low";
 export interface FlowDeskOmnigentSelectionRequestV1 {
 	task_id?: unknown;
 	task_role?: unknown;
+	task_complexity?: unknown;
+	task_phase?: unknown;
+	task_tier?: unknown;
+	complexity?: unknown;
+	phase?: unknown;
+	tier?: unknown;
 	allowed_provider_families?: unknown;
 	preferred_provider_family?: unknown;
 	requires_headless?: unknown;
@@ -89,14 +95,15 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 		return negativeSelection({ taskId, role: taskRole, status: "non_dispatchable", reasonCodes: ["gemini_oauth_refresh_unstable"], blockedLabels: ["gemini_oauth_refresh_unstable"], now });
 	}
 	const allowed = allowedProviderFamilies(request.allowed_provider_families);
+	const tierReason = taskTierReasonCode(request);
 	let providerUsageBlocked = false;
-	for (const entry of DEFAULT_REGISTRY[taskRole]) {
+	for (const entry of orderedEntriesForTask(request, DEFAULT_REGISTRY[taskRole])) {
 		if (!allowed.has(entry.provider_family)) continue;
 		if (!providerUsageAllows(request, entry.provider_family)) {
 			providerUsageBlocked = true;
 			continue;
 		}
-		return selectedSelection({ taskId, role: taskRole, entry, now });
+		return selectedSelection({ taskId, role: taskRole, entry, now, extraReasonCodes: tierReason ? [tierReason] : [] });
 	}
 	const blockedReason = providerUsageBlocked ? "provider_usage_unavailable" : "provider_not_allowed";
 	return negativeSelection({ taskId, role: taskRole, status: "blocked", reasonCodes: [blockedReason], blockedLabels: [blockedReason], now });
@@ -123,7 +130,7 @@ export function validateFlowDeskOmnigentSelectionV1(value: unknown): { ok: boole
 	return { ok: errors.length === 0, errors };
 }
 
-function selectedSelection(input: { taskId: string; role: FlowDeskOmnigentTaskRoleV1; entry: RegistryEntry; now: Date }): FlowDeskOmnigentSelectionV1 {
+function selectedSelection(input: { taskId: string; role: FlowDeskOmnigentTaskRoleV1; entry: RegistryEntry; now: Date; extraReasonCodes?: string[] }): FlowDeskOmnigentSelectionV1 {
 	return {
 		schema_version: FLOWDESK_OMNIGENT_SELECTION_SCHEMA_VERSION_V1,
 		selection_id: selectionId(),
@@ -135,7 +142,7 @@ function selectedSelection(input: { taskId: string; role: FlowDeskOmnigentTaskRo
 		model: input.entry.model,
 		provider_family: input.entry.provider_family,
 		confidence: input.entry.confidence,
-		reason_codes: [input.entry.reason_code, "headless_subscription_verified", "quota_unknown_used_as_non_blocking_mvp_default", input.entry.model === null ? "subscription_harness_default_model" : "model_family_compatible"],
+		reason_codes: [input.entry.reason_code, ...(input.extraReasonCodes ?? []), "headless_subscription_verified", "quota_unknown_used_as_non_blocking_mvp_default", input.entry.model === null ? "subscription_harness_default_model" : "model_family_compatible"],
 		blocked_labels: [],
 		authority: FLOWDESK_OMNIGENT_SELECTION_AUTHORITY_V1,
 		created_at: iso(input.now),
@@ -163,6 +170,27 @@ function allowedProviderFamilies(value: unknown): Set<FlowDeskOmnigentProviderFa
 	if (value === undefined || value === null) return new Set(["claude", "openai"]);
 	if (!Array.isArray(value)) return new Set();
 	return new Set(value.filter((entry): entry is FlowDeskOmnigentProviderFamilyV1 => PROVIDER_FAMILIES.has(entry)));
+}
+
+function orderedEntriesForTask(request: FlowDeskOmnigentSelectionRequestV1, entries: readonly RegistryEntry[]): readonly RegistryEntry[] {
+	if (!taskTierReasonCode(request)) return entries;
+	return [...entries].sort((left, right) => tierEntryScore(left) - tierEntryScore(right));
+}
+
+function tierEntryScore(entry: RegistryEntry): number {
+	const reasoningScore = entry.provider_family === "claude" && entry.model !== null ? 0 : 10;
+	const confidenceScore = entry.confidence === "high" ? 0 : entry.confidence === "medium" ? 1 : 2;
+	return reasoningScore + confidenceScore;
+}
+
+function taskTierReasonCode(request: FlowDeskOmnigentSelectionRequestV1): string | null {
+	const complexity = request.task_complexity ?? request.complexity;
+	if (complexity === "high" || complexity === "critical") return "task_tier_prefers_reasoning_model";
+	const phase = request.task_phase ?? request.phase;
+	if (phase === "high_level_design" || phase === "detailed_design" || phase === "risk_review") return "task_tier_prefers_reasoning_model";
+	const tier = request.task_tier ?? request.tier;
+	if (tier === "upper" || tier === "senior" || tier === "reasoning" || tier === "frontier") return "task_tier_prefers_reasoning_model";
+	return null;
 }
 
 function providerUsageAllows(request: FlowDeskOmnigentSelectionRequestV1, providerFamily: FlowDeskOmnigentProviderFamilyV1): boolean {

@@ -46,6 +46,8 @@ REASON_CODES = {
     "model_family_compatible",
     "model_family_mismatch_blocked",
     "provider_not_allowed",
+    "agent_not_available",
+    "task_tier_prefers_reasoning_model",
     "provider_usage_unavailable",
     "unknown_role_blocked",
     "malformed_request_blocked",
@@ -244,10 +246,16 @@ def select_agent_model(
         return result
 
     allowed_provider_families = _allowed_provider_families(request)
+    available_agents = _available_agents(request)
     entries = (registry or DEFAULT_REGISTRY).get(role, ())
 
+    agent_unavailable = False
     provider_usage_blocked = False
-    for entry in entries:
+    tier_reason = _task_tier_reason_code(request)
+    for entry in _ordered_entries_for_task(request, entries):
+        if available_agents is not None and entry.agent not in available_agents:
+            agent_unavailable = True
+            continue
         if entry.provider_family not in allowed_provider_families:
             continue
         if not _provider_usage_allows(request, entry.provider_family):
@@ -265,11 +273,16 @@ def select_agent_model(
             _write_evidence_if_enabled(result, write_evidence)
             return result
 
-        result = _selected_response(task_id=task_id, role=role, entry=entry, now=now)
+        result = _selected_response(task_id=task_id, role=role, entry=entry, now=now, extra_reason_codes=[tier_reason] if tier_reason else [])
         _write_evidence_if_enabled(result, write_evidence)
         return result
 
-    blocked_reason = "provider_usage_unavailable" if provider_usage_blocked else "provider_not_allowed"
+    if provider_usage_blocked:
+        blocked_reason = "provider_usage_unavailable"
+    elif agent_unavailable:
+        blocked_reason = "agent_not_available"
+    else:
+        blocked_reason = "provider_not_allowed"
     result = _blocked_response(
         task_id=task_id,
         role=role,
@@ -291,7 +304,7 @@ def flowdesk_select_agent_model(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return select_agent_model(**kwargs)
 
 
-def _selected_response(*, task_id: str, role: str, entry: RegistryEntry, now: datetime) -> dict[str, Any]:
+def _selected_response(*, task_id: str, role: str, entry: RegistryEntry, now: datetime, extra_reason_codes: Sequence[str] = ()) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "selection_id": _selection_id(),
@@ -303,12 +316,15 @@ def _selected_response(*, task_id: str, role: str, entry: RegistryEntry, now: da
         "model": entry.model,
         "provider_family": entry.provider_family,
         "confidence": entry.confidence,
-        "reason_codes": [
-            entry.reason_code,
-            "headless_subscription_verified",
-            "quota_unknown_used_as_non_blocking_mvp_default",
-            "subscription_harness_default_model" if entry.model is None else "model_family_compatible",
-        ],
+        "reason_codes": _clean_reason_codes(
+            [
+                entry.reason_code,
+                *extra_reason_codes,
+                "headless_subscription_verified",
+                "quota_unknown_used_as_non_blocking_mvp_default",
+                "subscription_harness_default_model" if entry.model is None else "model_family_compatible",
+            ]
+        ),
         "blocked_labels": [],
         "authority": AUTHORITY,
         "created_at": _iso(now),
@@ -507,6 +523,40 @@ def _allowed_provider_families(request: Mapping[str, Any]) -> set[ProviderFamily
         if item in {"claude", "openai", "gemini"}:
             allowed.add(item)
     return allowed
+
+
+def _available_agents(request: Mapping[str, Any]) -> set[str] | None:
+    raw = request.get("available_agents") or request.get("allowed_agents")
+    if raw is None:
+        return None
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return set()
+    return {item for item in raw if isinstance(item, str) and item}
+
+
+def _ordered_entries_for_task(request: Mapping[str, Any], entries: tuple[RegistryEntry, ...]) -> tuple[RegistryEntry, ...]:
+    if _task_tier_reason_code(request) is None:
+        return entries
+    return tuple(sorted(entries, key=_tier_entry_sort_key))
+
+
+def _tier_entry_sort_key(entry: RegistryEntry) -> tuple[int, int]:
+    reasoning_score = 0 if entry.provider_family == "claude" and entry.model is not None else 1
+    confidence_score = {"high": 0, "medium": 1, "low": 2}.get(entry.confidence, 2)
+    return (reasoning_score, confidence_score)
+
+
+def _task_tier_reason_code(request: Mapping[str, Any]) -> str | None:
+    complexity = request.get("task_complexity") or request.get("complexity")
+    if complexity in {"high", "critical"}:
+        return "task_tier_prefers_reasoning_model"
+    phase = request.get("task_phase") or request.get("phase")
+    if phase in {"high_level_design", "detailed_design", "risk_review"}:
+        return "task_tier_prefers_reasoning_model"
+    tier = request.get("task_tier") or request.get("tier")
+    if tier in {"upper", "senior", "reasoning", "frontier"}:
+        return "task_tier_prefers_reasoning_model"
+    return None
 
 
 def _provider_usage_allows(request: Mapping[str, Any], provider_family: ProviderFamily) -> bool:
