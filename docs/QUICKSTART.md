@@ -1,4 +1,4 @@
-# FlowDesk for opencode Quickstart
+# FlowDesk OpenCode Plugin Quickstart
 
 This quickstart is for ordinary users. Implementer-oriented context is available in `START_HERE.md` and `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md`.
 

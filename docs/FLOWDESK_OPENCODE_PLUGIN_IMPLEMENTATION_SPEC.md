@@ -1,10 +1,10 @@
-# FlowDesk for opencode Plugin Implementation Specification
+# FlowDesk OpenCode Plugin Implementation Specification
 
 ## 1. Project Identity
 
 Project name: **FlowDesk**
 
-Public name: **FlowDesk for opencode**
+Current public name: **FlowDesk**. This document specifies the **FlowDesk OpenCode plugin** track; ADR 0003 makes Omnigent-first selection the current product priority.
 
 Repository slug: `flowdesk`
 
@@ -20,7 +20,7 @@ Project data root: `.flowdesk/`. A future migration utility may read legacy `.co
 
 Initial OpenCode API research snapshot: `anomalyco/opencode` commit `c43edc5b71a2b1aedd8159ed4b547edc4c97606f`, verified on 2026-05-15. A later isolated OpenCode 1.14.40 PoC is summarized in `conformance/2026-05-15-opencode-1.14.40-poc.md` and supports a scoped Release 1 General-Use MVP with chat-routed command-backed workflows, while leaving hard chat interception and real external-provider trusted echo gated.
 
-FlowDesk is a new OpenCode-plugin-first project. It may reuse concepts and contracts from `dex-conductor`, but it is not an OMO compatibility layer and not a CLI-first subprocess wrapper.
+FlowDesk began as an OpenCode-plugin-first project. It may reuse concepts and contracts from `dex-conductor`, but it is not an OMO compatibility layer and not a CLI-first subprocess wrapper. ADR 0003 refines current product priority toward Omnigent-first selection while preserving this OpenCode plugin track.
 
 Release 1 project config loading is opt-in in the OpenCode plugin profile through the `projectConfig` option. When enabled, FlowDesk reads `.flowdesk/config.json` under the configured root, validates it as `flowdesk.project_config.v1`, and exposes only redacted config status in doctor output. Missing, unreadable, malformed, or invalid config fails closed for natural-language routing instead of silently falling back to permissive defaults. A loaded config may disable chat steering by setting `chat_intake_mode="off"` or `hook_harness_mode="off"` with the required `chat_routed` disabled mode. Config loading never enables real dispatch, provider calls, actual lane launch, automatic fallback, or hard chat control.
 

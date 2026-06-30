@@ -1,6 +1,6 @@
 # @flowdesk/opencode-plugin
 
-FlowDesk for opencode plugin with Release 1 non-dispatch command-backed
+FlowDesk OpenCode plugin with Release 1 non-dispatch command-backed
 registration plus opt-in description-driven natural-language tools.
 
 ## Install

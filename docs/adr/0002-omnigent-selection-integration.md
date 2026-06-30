@@ -1,6 +1,6 @@
 # ADR 0002: Omnigent Selection Integration Track
 
-**Status**: Accepted for design and experimental integration
+**Status**: Accepted for design and experimental integration; refined by [ADR 0003](./0003-omnigent-first-selection-layer.md)
 **Date**: 2026-06-26
 
 ---
@@ -38,7 +38,7 @@ The Omnigent integration track does not grant FlowDesk any of these authorities:
 - OpenCode hard chat/noReply/cancel/stop authority.
 - OpenCode Release 1 production dispatch authority.
 
-FlowDesk selection results are recommendations unless a later ADR and conformance evidence define a machine-enforced dispatch gate.
+FlowDesk selection results are recommendations. ADR 0003 refines the implemented function-policy guard as an opt-in dispatch-consistency gate: it may mechanically deny only FlowDesk-known task/agent/harness/model binding mismatches with fresh selector provenance. It does not grant provider/model fallback, runtime retry, write/apply, hard-chat/noReply, or OpenCode Release 1 production dispatch authority.
 
 ---
 

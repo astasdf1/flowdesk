@@ -5,13 +5,13 @@ that attaches to AI orchestration platforms as a plugin or tool.
 
 ## 개발 방향
 
-FlowDesk는 두 가지 통합 방향을 병행 개발 중이다.
+FlowDesk는 두 가지 통합 방향을 병행 개발 중이며, 현재 제품 우선순위는 Omnigent-first selection layer다.
 작업 전에 어느 방향인지 확인하고 해당 문서를 참조한다.
 
 | 방향 | 설명 | 문서 |
 |---|---|---|
-| **OpenCode 플러그인** | OpenCode에 플러그인으로 통합, Release 1 MVP | `docs/opencode/` |
-| **Omnigent 통합** | Omnigent orchestrator의 agent/model 선택 tool | `docs/omnigent/` |
+| **Omnigent 통합** | 현재 우선순위. Omnigent orchestrator의 agent/model 선택 tool | `docs/omnigent/` |
+| **OpenCode 플러그인** | Safety/evidence/provider-usage/status/lane-observability track | `docs/opencode/` |
 
 ---
 
@@ -62,7 +62,7 @@ FlowDesk product workflow 규칙의 제약을 받지 않는다.
 | 항목 | 값 |
 |---|---|
 | Project name | FlowDesk |
-| Public name | FlowDesk for opencode |
+| Public name | FlowDesk |
 | Repository slug | `flowdesk` |
 | Plugin id | `flowdesk` |
 | Package scope | `@flowdesk/*` |
