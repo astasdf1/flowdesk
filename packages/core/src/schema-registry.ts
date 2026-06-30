@@ -184,6 +184,7 @@ export const RELEASE_1_SCHEMA_REGISTRY: Release1SchemaMetadata[] = [
   artifactEntry("flowdesk.task_agent_assignment.v1", "task-agent-assignment", "FlowDeskTaskAgentAssignmentV1", "workflow"),
   artifactEntry("flowdesk.task_model_selection.v1", "task-model-selection", "FlowDeskTaskModelSelectionV1", "workflow"),
   artifactEntry("flowdesk.omnigent_selection.v1", "omnigent-selection", "FlowDeskOmnigentSelectionV1", "later_release"),
+  artifactEntry("flowdesk.omnigent_provider_usage_input.v1", "omnigent-provider-usage-input", "FlowDeskOmnigentProviderUsageInputV1", "later_release"),
   artifactEntry("flowdesk.omnigent_trace_verification.v1", "omnigent-trace-verification", "FlowDeskOmnigentTraceVerificationV1", "later_release"),
   artifactEntry("flowdesk.workflow_dispatch_plan.v1", "workflow-dispatch-plan", "FlowDeskWorkflowDispatchPlanV1", "workflow"),
   artifactEntry("flowdesk.top_tier_reviewer_binding.v1", "top-tier-reviewer-binding", "FlowDeskTopTierReviewerBindingV1", "later_release"),

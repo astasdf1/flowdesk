@@ -10,6 +10,7 @@ import {
   getProviderFailureDiagnosticMappingsV1,
   getRelease1ProductionToolRegistry,
   getRelease1RegisteredToolNames,
+  getRelease1SchemaArtifact,
   mapProviderFailureClassToDiagnosticOutcomeV1,
   PROVIDER_FAILURE_CLASSES,
   RELEASE_1_OPTIONAL_DIAGNOSTIC_TOOL_NAMES,
@@ -192,6 +193,18 @@ test("all registry entries have deterministic closed schema artifacts", () => {
     assert.ok(Array.isArray(artifact.required));
     assert.ok(Object.keys(artifact.properties).length >= artifact.required.length);
   }
+});
+
+test("Omnigent provider usage input has a closed schema artifact", () => {
+  const artifact = getRelease1SchemaArtifact("flowdesk.omnigent_provider_usage_input.v1");
+
+  assert.ok(artifact);
+  assert.deepEqual(artifact.required, ["schema_version", "source", "providers"]);
+  assert.equal(artifact.additionalProperties, false);
+  assert.equal(artifact.properties.providers?.type, "array");
+  assert.equal(artifact.properties.claude?.type, "object");
+  assert.equal(artifact.properties.openai?.type, "object");
+  assert.equal(artifact.properties.gemini?.type, "object");
 });
 
 test("Release 1 minimum tools are eligible for non-dispatch production registration", () => {
