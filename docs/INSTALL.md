@@ -114,7 +114,7 @@ The bootstrap installer writes portable `/flowdesk-*` command files and redacted
 Published-package path after PyPI release:
 
 ```bash
-uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool==0.1.5
+uv pip install --python /path/to/omnigent/.venv/bin/python flowdesk-omnigent-tool==0.1.6
 ```
 
 From the FlowDesk repository:
