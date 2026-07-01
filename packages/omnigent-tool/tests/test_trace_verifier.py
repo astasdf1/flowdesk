@@ -14,6 +14,7 @@ class TraceVerifierTests(unittest.TestCase):
                     "task_id": "task-policy",
                     "selection_status": "selected",
                     "agent": "policy-security-agent",
+                    "provider_family": "claude",
                     "model": "claude-opus-4-8",
                     "authority": "advisory_selection_only",
                 },
@@ -21,7 +22,7 @@ class TraceVerifierTests(unittest.TestCase):
                     "type": "dispatch",
                     "task_id": "task-policy",
                     "agent": "policy-security-agent",
-                    "model": "claude-opus-4-8",
+                    "model": "claude-sonnet-4-6",
                 },
             ]
         )
@@ -37,12 +38,35 @@ class TraceVerifierTests(unittest.TestCase):
                     "task_id": "task-architecture",
                     "selection_status": "selected",
                     "agent": "architecture-agent",
+                    "provider_family": "openai",
                     "model": None,
                 },
                 {
                     "type": "dispatch",
                     "task_id": "task-architecture",
                     "agent": "architecture-agent",
+                },
+            ]
+        )
+
+        self.assertEqual(result["status"], "pass")
+
+    def test_passes_gemini_selection_when_family_is_inferred_from_harness(self) -> None:
+        result = verify_selection_dispatch_trace(
+            [
+                {
+                    "type": "selection",
+                    "task_id": "task-gemini",
+                    "selection_status": "selected",
+                    "agent": "gemini-agent",
+                    "harness": "antigravity-native",
+                    "authority": "advisory_selection_only",
+                },
+                {
+                    "type": "dispatch",
+                    "task_id": "task-gemini",
+                    "agent": "gemini-agent",
+                    "harness": "antigravity-native",
                 },
             ]
         )
@@ -71,6 +95,7 @@ class TraceVerifierTests(unittest.TestCase):
                     "task_id": "task-x",
                     "selection_status": "selected",
                     "agent": "architecture-agent",
+                    "provider_family": "openai",
                     "model": None,
                 },
                 {
@@ -84,7 +109,7 @@ class TraceVerifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["issues"][0]["code"], "dispatch_agent_mismatch")
 
-    def test_fails_model_mismatch(self) -> None:
+    def test_fails_cross_family_model_override(self) -> None:
         result = verify_selection_dispatch_trace(
             [
                 {
@@ -92,21 +117,22 @@ class TraceVerifierTests(unittest.TestCase):
                     "task_id": "task-y",
                     "selection_status": "selected",
                     "agent": "policy-security-agent",
+                    "provider_family": "claude",
                     "model": "claude-opus-4-8",
                 },
                 {
                     "type": "dispatch",
                     "task_id": "task-y",
                     "agent": "policy-security-agent",
-                    "model": "claude-sonnet-4-6",
+                    "model": "openai/gpt-5.5",
                 },
             ]
         )
 
         self.assertEqual(result["status"], "fail")
-        self.assertEqual(result["issues"][0]["code"], "dispatch_model_mismatch")
+        self.assertEqual(result["issues"][0]["code"], "dispatch_model_family_mismatch")
 
-    def test_fails_null_model_with_override(self) -> None:
+    def test_allows_same_family_model_override_when_selection_keeps_family(self) -> None:
         result = verify_selection_dispatch_trace(
             [
                 {
@@ -114,6 +140,7 @@ class TraceVerifierTests(unittest.TestCase):
                     "task_id": "task-z",
                     "selection_status": "selected",
                     "agent": "verification-agent",
+                    "provider_family": "openai",
                     "model": None,
                 },
                 {
@@ -125,8 +152,7 @@ class TraceVerifierTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(result["status"], "fail")
-        self.assertEqual(result["issues"][0]["code"], "dispatch_model_override_should_be_omitted")
+        self.assertEqual(result["status"], "pass")
 
     def test_fails_blocked_selection_dispatch(self) -> None:
         result = verify_selection_dispatch_trace(

@@ -54,30 +54,53 @@ interface RegistryEntry {
 const ROLE_VALUES = new Set<FlowDeskOmnigentTaskRoleV1>(["policy_security", "architecture", "implementation", "verification", "research", "general", "gemini_experimental"]);
 const PROVIDER_FAMILIES = new Set<FlowDeskOmnigentProviderFamilyV1>(["claude", "openai", "gemini"]);
 
-export const FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1: Record<Exclude<FlowDeskOmnigentTaskRoleV1, "gemini_experimental">, readonly RegistryEntry[]> = {
+export const FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1: Record<FlowDeskOmnigentTaskRoleV1, readonly RegistryEntry[]> = {
 	policy_security: [
-		{ agent: "policy-security-agent", harness: "claude-sdk", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "high" },
+		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "high" },
+		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
+		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
 		{ agent: "policy-security-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
 	],
 	architecture: [
 		{ agent: "architecture-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "high" },
-		{ agent: "architecture-agent", harness: "claude-sdk", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
+		{ agent: "architecture-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
+		{ agent: "architecture-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
+		{ agent: "architecture-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
 	],
 	implementation: [
 		{ agent: "implementation-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_implementation_prefers_coding_harness", confidence: "high" },
-		{ agent: "implementation-agent", harness: "claude-sdk", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
+		{ agent: "implementation-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
+		{ agent: "implementation-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
+		{ agent: "implementation-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
 	],
 	verification: [
 		{ agent: "verification-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "high" },
-		{ agent: "verification-agent", harness: "claude-sdk", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "antigravity-native", model: "google/gemini-3.1-flash-lite", provider_family: "gemini", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
 	],
 	research: [
-		{ agent: "research-agent", harness: "claude-sdk", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "high" },
+		{ agent: "research-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
+		{ agent: "research-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
+		{ agent: "research-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 		{ agent: "research-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 	],
 	general: [
 		{ agent: "general-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
-		{ agent: "general-agent", harness: "claude-sdk", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+		{ agent: "general-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+		{ agent: "general-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+		{ agent: "general-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+	],
+	gemini_experimental: [
+		{
+			agent: "gemini-agent",
+			harness: "antigravity-native",
+			model: "google/gemini-3.1-flash-lite",
+			provider_family: "gemini",
+			reason_code: "role_gemini_experimental_prefers_gemini_native",
+			confidence: "high",
+		},
 	],
 };
 
@@ -91,9 +114,6 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 		return negativeSelection({ taskId, role: "unknown", status: "blocked", reasonCodes: ["unknown_role_blocked"], blockedLabels: ["unknown_role"], now });
 	}
 	const taskRole = role as FlowDeskOmnigentTaskRoleV1;
-	if (taskRole === "gemini_experimental") {
-		return negativeSelection({ taskId, role: taskRole, status: "non_dispatchable", reasonCodes: ["gemini_oauth_refresh_unstable"], blockedLabels: ["gemini_oauth_refresh_unstable"], now });
-	}
 	const allowed = allowedProviderFamilies(request.allowed_provider_families);
 	const tierReason = taskTierReasonCode(request);
 	let providerUsageBlocked = false;
@@ -167,7 +187,7 @@ function negativeSelection(input: { taskId: string; role: FlowDeskOmnigentTaskRo
 }
 
 function allowedProviderFamilies(value: unknown): Set<FlowDeskOmnigentProviderFamilyV1> {
-	if (value === undefined || value === null) return new Set(["claude", "openai"]);
+	if (value === undefined || value === null) return new Set(["claude", "openai", "gemini"]);
 	if (!Array.isArray(value)) return new Set();
 	return new Set(value.filter((entry): entry is FlowDeskOmnigentProviderFamilyV1 => PROVIDER_FAMILIES.has(entry)));
 }

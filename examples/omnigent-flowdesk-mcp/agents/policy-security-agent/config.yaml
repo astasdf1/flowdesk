@@ -5,8 +5,8 @@ description: Policy and security reviewer for FlowDesk MCP smoke.
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
-    allowed_harnesses: [claude-sdk, codex]
+    harness: claude-native
+    allowed_harnesses: [claude-native, codex]
 
 prompt: |
   You are the policy/security reviewer. For smoke tests, return the requested sentinel exactly.

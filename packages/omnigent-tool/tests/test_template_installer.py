@@ -17,6 +17,9 @@ class TemplateInstallerTests(unittest.TestCase):
         self.assertIn("FD-OC-Opus/config.yaml", relative_paths)
         self.assertIn("FD-OC-Codex/config.yaml", relative_paths)
         self.assertIn("FD-OC/agents/implementation-agent/config.yaml", relative_paths)
+        self.assertIn("FD-OC/agents/gemini-agent/config.yaml", relative_paths)
+        gemini_agent_text = next(text for path, text in plan.files_to_write if str(path.relative_to(tmp)) == "FD-OC/agents/gemini-agent/config.yaml")
+        self.assertIn("model: google/gemini-3.1-flash-lite", gemini_agent_text)
         self.assertEqual(len(plan.links_to_create), 2)
 
     def test_install_templates_writes_configs_and_variant_agent_links(self) -> None:
@@ -27,6 +30,7 @@ class TemplateInstallerTests(unittest.TestCase):
             self.assertEqual(result["status"], "installed")
             self.assertTrue((root / "FD-OC" / "config.yaml").exists())
             self.assertTrue((root / "FD-OC" / "agents" / "general-agent" / "config.yaml").exists())
+            self.assertTrue((root / "FD-OC" / "agents" / "gemini-agent" / "config.yaml").exists())
             self.assertTrue((root / "FD-OC-Opus" / "agents").exists())
             self.assertTrue((root / "FD-OC-Codex" / "agents").exists())
 

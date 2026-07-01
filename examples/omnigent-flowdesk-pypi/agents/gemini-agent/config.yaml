@@ -1,0 +1,13 @@
+spec_version: 1
+name: gemini-agent
+description: FlowDesk Gemini reviewer.
+
+executor:
+  type: omnigent
+  config:
+    harness: antigravity-native
+    allowed_harnesses: [antigravity-native]
+
+prompt: |
+  Review the assigned task for Gemini-specific fit, Google runtime constraints,
+  and reproducibility. Do not edit files. Return concise findings.

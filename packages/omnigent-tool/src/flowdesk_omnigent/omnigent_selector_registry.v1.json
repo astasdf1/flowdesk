@@ -5,11 +5,27 @@
     "policy_security": [
       {
         "agent": "policy-security-agent",
-        "harness": "claude-sdk",
+        "harness": "claude-native",
         "model": "claude-opus-4-8",
         "provider_family": "claude",
         "reason_code": "role_policy_security_prefers_deep_reasoning",
         "confidence": "high"
+      },
+      {
+        "agent": "policy-security-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_policy_security_prefers_deep_reasoning",
+        "confidence": "medium"
+      },
+      {
+        "agent": "policy-security-agent",
+        "harness": "claude-native",
+        "model": "claude-haiku-4-5",
+        "provider_family": "claude",
+        "reason_code": "role_policy_security_prefers_deep_reasoning",
+        "confidence": "medium"
       },
       {
         "agent": "policy-security-agent",
@@ -31,8 +47,24 @@
       },
       {
         "agent": "architecture-agent",
-        "harness": "claude-sdk",
+        "harness": "claude-native",
         "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "medium"
+      },
+      {
+        "agent": "architecture-agent",
+        "harness": "claude-native",
+        "model": "claude-opus-4-8",
+        "provider_family": "claude",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "medium"
+      },
+      {
+        "agent": "architecture-agent",
+        "harness": "claude-native",
+        "model": "claude-haiku-4-5",
         "provider_family": "claude",
         "reason_code": "role_architecture_prefers_frontier_reasoning",
         "confidence": "medium"
@@ -49,8 +81,24 @@
       },
       {
         "agent": "implementation-agent",
-        "harness": "claude-sdk",
+        "harness": "claude-native",
         "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "medium"
+      },
+      {
+        "agent": "implementation-agent",
+        "harness": "claude-native",
+        "model": "claude-opus-4-8",
+        "provider_family": "claude",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "medium"
+      },
+      {
+        "agent": "implementation-agent",
+        "harness": "claude-native",
+        "model": "claude-haiku-4-5",
         "provider_family": "claude",
         "reason_code": "role_implementation_prefers_coding_harness",
         "confidence": "medium"
@@ -67,9 +115,33 @@
       },
       {
         "agent": "verification-agent",
-        "harness": "claude-sdk",
+        "harness": "claude-native",
         "model": "claude-haiku-4-5",
         "provider_family": "claude",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "claude-native",
+        "model": "claude-opus-4-8",
+        "provider_family": "claude",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3.1-flash-lite",
+        "provider_family": "gemini",
         "reason_code": "role_verification_prefers_cost_controlled_model",
         "confidence": "medium"
       }
@@ -77,11 +149,27 @@
     "research": [
       {
         "agent": "research-agent",
-        "harness": "claude-sdk",
+        "harness": "claude-native",
         "model": "claude-sonnet-4-6",
         "provider_family": "claude",
         "reason_code": "role_research_prefers_sonnet_context",
-        "confidence": "high"
+        "confidence": "medium"
+      },
+      {
+        "agent": "research-agent",
+        "harness": "claude-native",
+        "model": "claude-opus-4-8",
+        "provider_family": "claude",
+        "reason_code": "role_research_prefers_sonnet_context",
+        "confidence": "medium"
+      },
+      {
+        "agent": "research-agent",
+        "harness": "claude-native",
+        "model": "claude-haiku-4-5",
+        "provider_family": "claude",
+        "reason_code": "role_research_prefers_sonnet_context",
+        "confidence": "medium"
       },
       {
         "agent": "research-agent",
@@ -103,11 +191,37 @@
       },
       {
         "agent": "general-agent",
-        "harness": "claude-sdk",
+        "harness": "claude-native",
         "model": "claude-sonnet-4-6",
         "provider_family": "claude",
         "reason_code": "role_general_prefers_balanced_model",
         "confidence": "medium"
+      },
+      {
+        "agent": "general-agent",
+        "harness": "claude-native",
+        "model": "claude-opus-4-8",
+        "provider_family": "claude",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "general-agent",
+        "harness": "claude-native",
+        "model": "claude-haiku-4-5",
+        "provider_family": "claude",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      }
+    ],
+    "gemini_experimental": [
+      {
+        "agent": "gemini-agent",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3.1-flash-lite",
+        "provider_family": "gemini",
+        "reason_code": "role_gemini_experimental_prefers_gemini_native",
+        "confidence": "high"
       }
     ]
   }

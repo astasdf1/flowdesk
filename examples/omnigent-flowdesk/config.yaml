@@ -5,7 +5,7 @@ description: FlowDesk advisory selection MVP for Omnigent.
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
+    harness: claude-native
 
 prompt: |
   You are the FlowDesk Omnigent orchestrator for an advisory-selection MVP.
@@ -24,8 +24,12 @@ prompt: |
   non_dispatchable selections. This is advisory-only MVP behavior, not a hard
   dispatch safety boundary.
 
-  Launch selected Claude/GPT subtasks in the same turn when possible, then read
+  Launch selected Claude/GPT/Gemini subtasks in the same turn when possible, then read
   the inbox and synthesize the results.
+
+  After any dispatch in a turn, do not start fresh parent-side investigation or
+  implementation until the inbox returns child results. In the same turn, only
+  dispatch additional independent subtasks or finish by waiting for the inbox.
 
 guardrails:
   policies:
@@ -33,6 +37,13 @@ guardrails:
       type: function
       on: [tool_call, tool_result]
       function: flowdesk_omnigent.policies.omnigent_selection_dispatch_guard
+    spawn_bounds:
+      type: function
+      on: [tool_call, tool_result]
+      function: omnigent.inner.nessie.policies.spawn_bounds
+      arguments:
+        max_dispatches_per_turn: 5
+        dispatch_tools: [sys_session_send]
 
 tools:
   agents:
@@ -40,3 +51,4 @@ tools:
     - architecture-agent
     - implementation-agent
     - verification-agent
+    - gemini-agent

@@ -10,7 +10,7 @@
       "task_role": "policy_security",
       "selection_status": "selected",
       "agent": "policy-security-agent",
-      "harness": "claude-sdk",
+      "harness": "claude-native",
       "model": "claude-opus-4-8",
       "provider_family": "claude",
       "confidence": "high",
@@ -47,11 +47,48 @@
       "task_role": "implementation",
       "selection_status": "selected",
       "agent": "implementation-agent",
-      "harness": "claude-sdk",
+      "harness": "claude-native",
       "model": "claude-sonnet-4-6",
       "provider_family": "claude",
       "confidence": "medium",
       "reason_codes_include": ["role_implementation_prefers_coding_harness", "task_tier_prefers_reasoning_model", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "verification_critical_prefers_haiku",
+    "request": {
+      "task_id": "task-parity-verification-critical",
+      "task_role": "verification",
+      "task_complexity": "critical",
+      "allowed_provider_families": ["claude", "openai"]
+    },
+    "expected": {
+      "task_role": "verification",
+      "selection_status": "selected",
+      "agent": "verification-agent",
+      "harness": "claude-native",
+      "model": "claude-haiku-4-5",
+      "provider_family": "claude",
+      "confidence": "medium",
+      "reason_codes_include": ["role_verification_prefers_cost_controlled_model", "task_tier_prefers_reasoning_model", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "verification_gemini_only_routes_to_antigravity_native",
+    "request": {
+      "task_id": "task-parity-verification-gemini",
+      "task_role": "verification",
+      "allowed_provider_families": ["gemini"]
+    },
+    "expected": {
+      "task_role": "verification",
+      "selection_status": "selected",
+      "agent": "verification-agent",
+      "harness": "antigravity-native",
+      "model": "google/gemini-3.1-flash-lite",
+      "provider_family": "gemini",
+      "confidence": "medium",
+      "reason_codes_include": ["role_verification_prefers_cost_controlled_model", "model_family_compatible"]
     }
   },
   {
@@ -96,17 +133,21 @@
     }
   },
   {
-    "name": "gemini_experimental_is_non_dispatchable",
+    "name": "gemini_experimental_routes_to_dedicated_agent",
     "request": {
       "task_id": "task-parity-gemini",
-      "task_role": "gemini_experimental"
+      "task_role": "gemini_experimental",
+      "allowed_provider_families": ["gemini"]
     },
     "expected": {
       "task_role": "gemini_experimental",
-      "selection_status": "non_dispatchable",
-      "confidence": "low",
-      "blocked_labels": ["gemini_oauth_refresh_unstable"],
-      "reason_codes_include": ["gemini_oauth_refresh_unstable"]
+      "selection_status": "selected",
+      "agent": "gemini-agent",
+      "harness": "antigravity-native",
+      "model": "google/gemini-3.1-flash-lite",
+      "provider_family": "gemini",
+      "confidence": "high",
+      "reason_codes_include": ["role_gemini_experimental_prefers_gemini_native", "model_family_compatible"]
     }
   },
   {

@@ -5,8 +5,8 @@ description: FlowDesk policy and security reviewer.
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
-    allowed_harnesses: [claude-sdk, codex]
+    harness: claude-native
+    allowed_harnesses: [claude-native, codex]
 
 prompt: |
   Review the assigned task for security, credential, redaction, and authority

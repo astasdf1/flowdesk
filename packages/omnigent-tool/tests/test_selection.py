@@ -12,6 +12,7 @@ from flowdesk_omnigent.selection import DEFAULT_REGISTRY, RegistryEntry, select_
 
 PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
 REGISTRY_ARTIFACT_PATH = Path(__file__).parents[1] / "src" / "flowdesk_omnigent" / "omnigent_selector_registry.v1.json"
+CLAUDE_MODEL_SET = {"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
 
 
 class SelectionTests(unittest.TestCase):
@@ -34,6 +35,23 @@ class SelectionTests(unittest.TestCase):
             for role, entries in DEFAULT_REGISTRY.items()
         }
         self.assertEqual(artifact["roles"], normalized)
+
+    def test_python_registry_exposes_all_claude_variants_per_role(self) -> None:
+        for role, entries in DEFAULT_REGISTRY.items():
+            with self.subTest(role=role):
+                if role == "gemini_experimental":
+                    continue
+                claude_models = {entry.model for entry in entries if entry.provider_family == "claude" and entry.model is not None}
+                self.assertEqual(claude_models, CLAUDE_MODEL_SET)
+                self.assertTrue(any(entry.provider_family == "openai" and entry.model is None for entry in entries))
+
+    def test_python_registry_exposes_dedicated_gemini_agent(self) -> None:
+        entries = DEFAULT_REGISTRY["gemini_experimental"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].agent, "gemini-agent")
+        self.assertEqual(entries[0].harness, "antigravity-native")
+        self.assertEqual(entries[0].provider_family, "gemini")
+        self.assertEqual(entries[0].model, "google/gemini-3.1-flash-lite")
 
     def test_selection_parity_golden_cases(self) -> None:
         cases = json.loads(PARITY_FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -70,7 +88,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["schema_version"], "flowdesk.omnigent_selection.v1")
         self.assertEqual(result["selection_status"], "selected")
         self.assertEqual(result["agent"], "policy-security-agent")
-        self.assertEqual(result["harness"], "claude-sdk")
+        self.assertEqual(result["harness"], "claude-native")
         self.assertEqual(result["model"], "claude-opus-4-8")
         self.assertEqual(result["provider_family"], "claude")
         self.assertEqual(result["authority"], "advisory_selection_only")
@@ -91,6 +109,20 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["harness"], "codex")
         self.assertIsNone(result["model"])
         self.assertIn("subscription_harness_default_model", result["reason_codes"])
+
+    def test_default_provider_family_set_includes_gemini(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-gemini-default",
+                "task_role": "gemini_experimental",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "gemini-agent")
+        self.assertEqual(result["harness"], "antigravity-native")
+        self.assertEqual(result["provider_family"], "gemini")
 
     def test_usage_snapshot_skips_exhausted_primary_provider(self) -> None:
         result = select_agent_model(
@@ -318,9 +350,43 @@ class SelectionTests(unittest.TestCase):
 
         self.assertEqual(result["selection_status"], "selected")
         self.assertEqual(result["provider_family"], "claude")
-        self.assertEqual(result["harness"], "claude-sdk")
+        self.assertEqual(result["harness"], "claude-native")
         self.assertEqual(result["model"], "claude-sonnet-4-6")
+
+    def test_critical_verification_prefers_claude_haiku(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-verification-tier",
+                "task_role": "verification",
+                "task_complexity": "critical",
+                "allowed_provider_families": ["claude", "openai"],
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+        self.assertEqual(result["harness"], "claude-native")
+        self.assertEqual(result["model"], "claude-haiku-4-5")
         self.assertIn("task_tier_prefers_reasoning_model", result["reason_codes"])
+        self.assertIn("task_tier_prefers_reasoning_model", result["reason_codes"])
+
+    def test_verification_can_select_gemini_flash_lite(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-verification-gemini",
+                "task_role": "verification",
+                "allowed_provider_families": ["gemini"],
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "verification-agent")
+        self.assertEqual(result["harness"], "antigravity-native")
+        self.assertEqual(result["model"], "google/gemini-3.1-flash-lite")
+        self.assertEqual(result["provider_family"], "gemini")
+        self.assertIn("model_family_compatible", result["reason_codes"])
 
     def test_high_level_architecture_phase_prefers_reasoning_model(self) -> None:
         result = select_agent_model(
@@ -335,7 +401,7 @@ class SelectionTests(unittest.TestCase):
 
         self.assertEqual(result["selection_status"], "selected")
         self.assertEqual(result["provider_family"], "claude")
-        self.assertEqual(result["harness"], "claude-sdk")
+        self.assertEqual(result["harness"], "claude-native")
         self.assertEqual(result["model"], "claude-sonnet-4-6")
 
     def test_tier_preference_still_falls_back_when_reasoning_provider_unavailable(self) -> None:
@@ -403,14 +469,18 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["selection_status"], "blocked")
         self.assertEqual(result["blocked_labels"], ["malformed_request"])
 
-    def test_gemini_experimental_is_non_dispatchable(self) -> None:
+    def test_gemini_experimental_routes_to_dedicated_agent(self) -> None:
         result = select_agent_model(
-            {"task_id": "task-gemini", "task_role": "gemini_experimental"},
+            {"task_id": "task-gemini", "task_role": "gemini_experimental", "allowed_provider_families": ["gemini"]},
             write_evidence=False,
         )
 
-        self.assertEqual(result["selection_status"], "non_dispatchable")
-        self.assertEqual(result["blocked_labels"], ["gemini_oauth_refresh_unstable"])
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "gemini-agent")
+        self.assertEqual(result["harness"], "antigravity-native")
+        self.assertEqual(result["model"], "google/gemini-3.1-flash-lite")
+        self.assertEqual(result["provider_family"], "gemini")
+        self.assertIn("role_gemini_experimental_prefers_gemini_native", result["reason_codes"])
 
     def test_model_family_mismatch_blocks(self) -> None:
         bad_registry = {

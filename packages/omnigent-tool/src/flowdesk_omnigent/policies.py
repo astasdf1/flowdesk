@@ -11,20 +11,22 @@ from typing import Any, Callable, Mapping, Sequence
 from .selection import select_agent_model
 
 DEFAULT_AGENT_MODEL_BINDINGS: Mapping[str, str | None] = {
-    "policy-security-agent": "claude-opus-4-8",
+    "policy-security-agent": None,
     "architecture-agent": None,
     "implementation-agent": None,
     "verification-agent": None,
-    "research-agent": "claude-sonnet-4-6",
+    "research-agent": None,
     "general-agent": None,
+    "gemini-agent": None,
 }
 DEFAULT_AGENT_HARNESS_BINDINGS: Mapping[str, str] = {
-    "policy-security-agent": "claude-sdk",
+    "policy-security-agent": "claude-native",
     "architecture-agent": "codex",
     "implementation-agent": "codex",
     "verification-agent": "codex",
-    "research-agent": "claude-sdk",
+    "research-agent": "claude-native",
     "general-agent": "codex",
+    "gemini-agent": "antigravity-native",
 }
 FLOWDESK_SELECTION_STATE_KEY = "flowdesk_selection_events"
 FLOWDESK_SELECTOR_TARGETS = frozenset({"flowdesk_select_agent_model", "select_agent_model", "mcp__flowdesk__flowdesk_select_agent_model"})
@@ -101,6 +103,8 @@ def _evaluate_omnigent_selection_dispatch_guard(
         if allow_unknown_agents:
             return None
         return {"result": "DENY", "reason": "FlowDesk dispatch guard: unregistered sub-agent."}
+    actual_model = _dispatch_model(arguments)
+    actual_provider_family = _dispatch_provider_family(arguments)
     if require_selection_provenance:
         matching_selection = _matching_recorded_selection(event, arguments, local_selection_records=local_selection_records)
         if matching_selection is None:
@@ -109,20 +113,20 @@ def _evaluate_omnigent_selection_dispatch_guard(
             return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection was not dispatchable."}
         if _selection_is_expired(matching_selection):
             return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection has expired."}
-        expected_model = matching_selection.get("model")
+        expected_provider_family = _selection_provider_family(matching_selection, agent=agent)
         expected_harness = matching_selection.get("harness")
     else:
-        expected_model = DEFAULT_AGENT_MODEL_BINDINGS.get(agent)
+        expected_provider_family = _provider_family_for_harness(DEFAULT_AGENT_HARNESS_BINDINGS.get(agent))
         expected_harness = DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
     actual_harness = _dispatch_harness(arguments)
     effective_harness = actual_harness or DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
     if isinstance(expected_harness, str) and effective_harness != expected_harness:
         return {"result": "DENY", "reason": "FlowDesk dispatch guard: harness does not match selected binding."}
-    actual_model = _dispatch_model(arguments)
-    if expected_model is None and actual_model is not None:
-        return {"result": "DENY", "reason": "FlowDesk dispatch guard: this sub-agent must use harness default model."}
-    if expected_model is not None and actual_model != expected_model:
-        return {"result": "DENY", "reason": "FlowDesk dispatch guard: model override does not match selected binding."}
+    if actual_model is not None:
+        if actual_provider_family is None:
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: model override does not match selected binding."}
+        if expected_provider_family is not None and actual_provider_family != expected_provider_family:
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: model family does not match selected binding."}
     return {"result": "ALLOW"}
 
 
@@ -132,6 +136,10 @@ def _dispatch_model(arguments: Mapping[str, Any]) -> str | None:
         model = args.get("model")
         return model if isinstance(model, str) and model else None
     return None
+
+
+def _dispatch_provider_family(arguments: Mapping[str, Any]) -> str | None:
+    return _model_provider_family(_dispatch_model(arguments))
 
 
 def _dispatch_harness(arguments: Mapping[str, Any]) -> str | None:
@@ -268,6 +276,7 @@ def _record_from_selection(selection: Mapping[str, Any], *, provenance_source: s
         "selection_status": status,
         "agent": selection.get("agent"),
         "harness": selection.get("harness"),
+        "provider_family": selection.get("provider_family"),
         "model": selection.get("model"),
         "selection_id": selection.get("selection_id"),
         "expires_at": selection.get("expires_at"),
@@ -296,6 +305,7 @@ def _matching_recorded_selection(
     task_id = _dispatch_task_id(arguments)
     agent = arguments.get("agent")
     model = _dispatch_model(arguments)
+    actual_provider_family = _model_provider_family(model)
     for raw in reversed(combined_records):
         if not isinstance(raw, Mapping):
             continue
@@ -308,10 +318,8 @@ def _matching_recorded_selection(
             continue
         if _selection_is_expired(raw):
             continue
-        expected_model = raw.get("model")
-        if expected_model is None and model is not None:
-            continue
-        if expected_model is not None and expected_model != model:
+        expected_provider_family = _selection_provider_family(raw, agent=agent)
+        if actual_provider_family is not None and expected_provider_family is not None and actual_provider_family != expected_provider_family:
             continue
         return raw
     return None
@@ -340,6 +348,45 @@ def _event_session_ref(event: Mapping[str, Any]) -> str | None:
             value = container.get(key)
             if isinstance(value, str) and value:
                 return value
+    return None
+
+
+def _selection_provider_family(selection: Mapping[str, Any], *, agent: str | None = None) -> str | None:
+    provider_family = selection.get("provider_family")
+    if isinstance(provider_family, str) and provider_family in {"claude", "openai", "gemini"}:
+        return provider_family
+    model = selection.get("model")
+    if isinstance(model, str):
+        derived = _model_provider_family(model)
+        if derived is not None:
+            return derived
+    if isinstance(agent, str):
+        return _provider_family_for_harness(DEFAULT_AGENT_HARNESS_BINDINGS.get(agent))
+    harness = selection.get("harness")
+    return _provider_family_for_harness(harness if isinstance(harness, str) else None)
+
+
+def _provider_family_for_harness(harness: str | None) -> str | None:
+    if harness == "claude-native":
+        return "claude"
+    if harness == "claude-sdk":
+        return "claude"
+    if harness == "codex":
+        return "openai"
+    if harness == "antigravity-native":
+        return "gemini"
+    return None
+
+
+def _model_provider_family(model: str | None) -> str | None:
+    if model is None:
+        return None
+    if model.startswith(("claude/", "anthropic/", "claude-")):
+        return "claude"
+    if model.startswith("openai/"):
+        return "openai"
+    if model.startswith(("gemini/", "google/")):
+        return "gemini"
     return None
 
 

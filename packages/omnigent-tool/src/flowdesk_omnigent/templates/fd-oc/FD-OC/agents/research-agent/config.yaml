@@ -5,8 +5,8 @@ description: Workspace research and codebase exploration worker.
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
-    allowed_harnesses: [claude-sdk, codex]
+    harness: claude-native
+    allowed_harnesses: [claude-native, codex]
 
 os_env:
   type: caller_process

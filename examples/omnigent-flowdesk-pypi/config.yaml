@@ -5,7 +5,7 @@ description: FlowDesk Omnigent selection fixture for PyPI-installed flowdesk-omn
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
+    harness: claude-native
 
 prompt: |
   You are the FlowDesk Omnigent orchestrator for a PyPI-installed selection tool.
@@ -37,6 +37,7 @@ tools:
     - policy-security-agent
     - architecture-agent
     - verification-agent
+    - gemini-agent
   flowdesk:
     type: mcp
     description: FlowDesk advisory selector MCP server.

@@ -75,9 +75,11 @@ REASON_CODES = {
     "malformed_request_blocked",
     "ts_cli_unavailable_blocked",
     "ts_cli_invalid_response_blocked",
+    "role_gemini_experimental_prefers_gemini_native",
 }
 
 PROVIDER_BY_HARNESS: Mapping[str, ProviderFamily] = {
+    "claude-native": "claude",
     "claude-sdk": "claude",
     "codex": "openai",
     "antigravity-native": "gemini",
@@ -100,14 +102,76 @@ class RegistryEntry:
     confidence: Literal["high", "medium", "low"] = "high"
 
 
+def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]]:
+    path = Path(__file__).with_name("omnigent_selector_registry.v1.json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping) or payload.get("schema_version") != "flowdesk.omnigent_selector_registry.v1":
+        raise RuntimeError("Invalid FlowDesk Omnigent selector registry artifact")
+    roles = payload.get("roles")
+    if not isinstance(roles, Mapping):
+        raise RuntimeError("FlowDesk Omnigent selector registry artifact is missing roles")
+    registry: dict[str, tuple[RegistryEntry, ...]] = {}
+    for role, raw_entries in roles.items():
+        if not isinstance(role, str) or role not in ROLE_VALUES:
+            raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry role: {role!r}")
+        if not isinstance(raw_entries, Sequence) or isinstance(raw_entries, (str, bytes)):
+            raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry entries for role: {role}")
+        entries: list[RegistryEntry] = []
+        for raw_entry in raw_entries:
+            if not isinstance(raw_entry, Mapping):
+                raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry entry for role: {role}")
+            agent = raw_entry.get("agent")
+            harness = raw_entry.get("harness")
+            model = raw_entry.get("model")
+            provider_family = raw_entry.get("provider_family")
+            reason_code = raw_entry.get("reason_code")
+            confidence = raw_entry.get("confidence", "high")
+            if not isinstance(agent, str) or not isinstance(harness, str) or provider_family not in PROVIDER_BY_HARNESS.values():
+                raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry binding for role: {role}")
+            if model is not None and not isinstance(model, str):
+                raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry model for role: {role}")
+            if not isinstance(reason_code, str) or reason_code not in REASON_CODES:
+                raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry reason code for role: {role}")
+            if confidence not in {"high", "medium", "low"}:
+                raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry confidence for role: {role}")
+            entries.append(
+                RegistryEntry(
+                    agent=agent,
+                    harness=harness,
+                    model=model,
+                    provider_family=provider_family,  # type: ignore[arg-type]
+                    reason_code=reason_code,
+                    confidence=confidence,  # type: ignore[arg-type]
+                )
+            )
+        registry[role] = tuple(entries)
+    return registry
+
+
 DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
     "policy_security": (
         RegistryEntry(
             agent="policy-security-agent",
-            harness="claude-sdk",
+            harness="claude-native",
             model="claude-opus-4-8",
             provider_family="claude",
             reason_code="role_policy_security_prefers_deep_reasoning",
+        ),
+        RegistryEntry(
+            agent="policy-security-agent",
+            harness="claude-native",
+            model="claude-sonnet-4-6",
+            provider_family="claude",
+            reason_code="role_policy_security_prefers_deep_reasoning",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="policy-security-agent",
+            harness="claude-native",
+            model="claude-haiku-4-5",
+            provider_family="claude",
+            reason_code="role_policy_security_prefers_deep_reasoning",
+            confidence="medium",
         ),
         RegistryEntry(
             agent="policy-security-agent",
@@ -128,8 +192,24 @@ DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
         ),
         RegistryEntry(
             agent="architecture-agent",
-            harness="claude-sdk",
+            harness="claude-native",
             model="claude-sonnet-4-6",
+            provider_family="claude",
+            reason_code="role_architecture_prefers_frontier_reasoning",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="architecture-agent",
+            harness="claude-native",
+            model="claude-opus-4-8",
+            provider_family="claude",
+            reason_code="role_architecture_prefers_frontier_reasoning",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="architecture-agent",
+            harness="claude-native",
+            model="claude-haiku-4-5",
             provider_family="claude",
             reason_code="role_architecture_prefers_frontier_reasoning",
             confidence="medium",
@@ -145,8 +225,24 @@ DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
         ),
         RegistryEntry(
             agent="implementation-agent",
-            harness="claude-sdk",
+            harness="claude-native",
             model="claude-sonnet-4-6",
+            provider_family="claude",
+            reason_code="role_implementation_prefers_coding_harness",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="implementation-agent",
+            harness="claude-native",
+            model="claude-opus-4-8",
+            provider_family="claude",
+            reason_code="role_implementation_prefers_coding_harness",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="implementation-agent",
+            harness="claude-native",
+            model="claude-haiku-4-5",
             provider_family="claude",
             reason_code="role_implementation_prefers_coding_harness",
             confidence="medium",
@@ -162,9 +258,33 @@ DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
         ),
         RegistryEntry(
             agent="verification-agent",
-            harness="claude-sdk",
+            harness="claude-native",
             model="claude-haiku-4-5",
             provider_family="claude",
+            reason_code="role_verification_prefers_cost_controlled_model",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="verification-agent",
+            harness="claude-native",
+            model="claude-sonnet-4-6",
+            provider_family="claude",
+            reason_code="role_verification_prefers_cost_controlled_model",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="verification-agent",
+            harness="claude-native",
+            model="claude-opus-4-8",
+            provider_family="claude",
+            reason_code="role_verification_prefers_cost_controlled_model",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="verification-agent",
+            harness="antigravity-native",
+            model="google/gemini-3.1-flash-lite",
+            provider_family="gemini",
             reason_code="role_verification_prefers_cost_controlled_model",
             confidence="medium",
         ),
@@ -172,10 +292,27 @@ DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
     "research": (
         RegistryEntry(
             agent="research-agent",
-            harness="claude-sdk",
+            harness="claude-native",
             model="claude-sonnet-4-6",
             provider_family="claude",
             reason_code="role_research_prefers_sonnet_context",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="research-agent",
+            harness="claude-native",
+            model="claude-opus-4-8",
+            provider_family="claude",
+            reason_code="role_research_prefers_sonnet_context",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="research-agent",
+            harness="claude-native",
+            model="claude-haiku-4-5",
+            provider_family="claude",
+            reason_code="role_research_prefers_sonnet_context",
+            confidence="medium",
         ),
         RegistryEntry(
             agent="research-agent",
@@ -197,14 +334,41 @@ DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
         ),
         RegistryEntry(
             agent="general-agent",
-            harness="claude-sdk",
+            harness="claude-native",
             model="claude-sonnet-4-6",
             provider_family="claude",
             reason_code="role_general_prefers_balanced_model",
             confidence="medium",
         ),
+        RegistryEntry(
+            agent="general-agent",
+            harness="claude-native",
+            model="claude-opus-4-8",
+            provider_family="claude",
+            reason_code="role_general_prefers_balanced_model",
+            confidence="medium",
+        ),
+        RegistryEntry(
+            agent="general-agent",
+            harness="claude-native",
+            model="claude-haiku-4-5",
+            provider_family="claude",
+            reason_code="role_general_prefers_balanced_model",
+            confidence="medium",
+        ),
+    ),
+    "gemini_experimental": (
+        RegistryEntry(
+            agent="gemini-agent",
+            harness="antigravity-native",
+            model="google/gemini-3.1-flash-lite",
+            provider_family="gemini",
+            reason_code="role_gemini_experimental_prefers_gemini_native",
+        ),
     ),
 }
+
+DEFAULT_REGISTRY = _load_selector_registry_artifact()
 
 
 def select_agent_model(
@@ -264,17 +428,6 @@ def select_agent_model(
             task_id=task_id,
             reason_codes=["unknown_role_blocked"],
             blocked_labels=["unknown_role"],
-            now=now,
-        )
-        _write_evidence_if_enabled(result, write_evidence)
-        return result
-
-    if role == "gemini_experimental":
-        result = _non_dispatchable_response(
-            task_id=task_id,
-            role=role,
-            reason_codes=["gemini_oauth_refresh_unstable"],
-            blocked_labels=["gemini_oauth_refresh_unstable"],
             now=now,
         )
         _write_evidence_if_enabled(result, write_evidence)
@@ -550,7 +703,7 @@ def _valid_selection_response(value: Any) -> bool:
 def _allowed_provider_families(request: Mapping[str, Any]) -> set[ProviderFamily]:
     raw = request.get("allowed_provider_families")
     if raw is None:
-        return {"claude", "openai"}
+        return {"claude", "openai", "gemini"}
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         return set()
     allowed: set[ProviderFamily] = set()

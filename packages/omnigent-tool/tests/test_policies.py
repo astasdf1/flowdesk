@@ -50,10 +50,18 @@ def _selection_record(
     task_id: str = "task-x",
     status: str = "selected",
     agent: str = "architecture-agent",
+    provider_family: str | None = None,
     model: str | None = None,
     expires_at: str | None = None,
 ) -> dict:
-    record = {"task_id": task_id, "selection_status": status, "agent": agent, "model": model, "selection_id": f"selection-{task_id}"}
+    record = {
+        "task_id": task_id,
+        "selection_status": status,
+        "agent": agent,
+        "provider_family": provider_family or _provider_family_for_model(model) or _provider_family_for_agent(agent),
+        "model": model,
+        "selection_id": f"selection-{task_id}",
+    }
     if expires_at is not None:
         record["expires_at"] = expires_at
     return record
@@ -65,6 +73,7 @@ def _selection_payload(
     status: str = "selected",
     agent: str = "architecture-agent",
     harness: str = "codex",
+    provider_family: str | None = None,
     model: str | None = None,
     expires_at: str | None = None,
 ) -> dict:
@@ -76,6 +85,7 @@ def _selection_payload(
         "selection_status": status,
         "agent": agent if status == "selected" else None,
         "harness": harness if status == "selected" else None,
+        "provider_family": provider_family or _provider_family_for_harness(harness) if status == "selected" else None,
         "model": model,
         "confidence": "high",
         "reason_codes": [],
@@ -84,6 +94,40 @@ def _selection_payload(
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
     }
+
+
+def _provider_family_for_model(model: str | None) -> str | None:
+    if model is None:
+        return None
+    if model.startswith(("claude/", "anthropic/", "claude-")):
+        return "claude"
+    if model.startswith("openai/"):
+        return "openai"
+    if model.startswith(("gemini/", "google/")):
+        return "gemini"
+    return None
+
+
+def _provider_family_for_harness(harness: str | None) -> str | None:
+    if harness == "claude-native":
+        return "claude"
+    if harness == "claude-sdk":
+        return "claude"
+    if harness == "codex":
+        return "openai"
+    if harness == "antigravity-native":
+        return "gemini"
+    return None
+
+
+def _provider_family_for_agent(agent: str) -> str | None:
+    if agent in {"policy-security-agent", "research-agent"}:
+        return "claude"
+    if agent in {"architecture-agent", "implementation-agent", "verification-agent", "general-agent"}:
+        return "openai"
+    if agent == "gemini-agent":
+        return "gemini"
+    return None
 
 
 class PolicyTests(unittest.TestCase):
@@ -101,19 +145,51 @@ class PolicyTests(unittest.TestCase):
         guard = make_omnigent_selection_dispatch_guard()
         self.assertEqual(guard(_event("policy-security-agent", "claude-opus-4-8"))["result"], "ALLOW")
 
-    def test_denies_policy_security_wrong_model(self) -> None:
+    def test_allows_policy_security_same_family_model_override(self) -> None:
         guard = make_omnigent_selection_dispatch_guard()
-        event = _event("policy-security-agent", "claude-sonnet-4-6")
+        event = _event("policy-security-agent", "claude-opus-4-8")
         event["session_state"] = {
-            "flowdesk_selection_events": [_selection_record(agent="policy-security-agent", model="claude-opus-4-8")]
+            "flowdesk_selection_events": [_selection_record(agent="policy-security-agent", provider_family="claude", model="claude-opus-4-8")]
+        }
+        self.assertEqual(guard(event)["result"], "ALLOW")
+
+    def test_denies_policy_security_cross_family_model_override(self) -> None:
+        guard = make_omnigent_selection_dispatch_guard()
+        event = _event("policy-security-agent", "openai/gpt-5.5")
+        event["session_state"] = {
+            "flowdesk_selection_events": [_selection_record(agent="policy-security-agent", provider_family="claude", model="claude-opus-4-8")]
         }
         self.assertEqual(guard(event)["result"], "DENY")
 
-    def test_denies_codex_default_agent_model_override(self) -> None:
+    def test_allows_codex_default_agent_model_override(self) -> None:
         guard = make_omnigent_selection_dispatch_guard()
         event = _event("architecture-agent", "openai/gpt-5.5")
-        event["session_state"] = {"flowdesk_selection_events": [_selection_record(agent="architecture-agent", model=None)]}
-        self.assertEqual(guard(event)["result"], "DENY")
+        event["session_state"] = {"flowdesk_selection_events": [_selection_record(agent="architecture-agent", provider_family="openai", model=None)]}
+        self.assertEqual(guard(event)["result"], "ALLOW")
+
+    def test_allows_gemini_verification_binding(self) -> None:
+        guard = make_omnigent_selection_dispatch_guard()
+        event = _event("verification-agent", "google/gemini-3.1-flash-lite")
+        event["data"]["arguments"]["args"]["harness"] = "antigravity-native"
+        selection = _selection_record(
+            agent="verification-agent",
+            provider_family="gemini",
+            model="google/gemini-3.1-flash-lite",
+        )
+        selection["harness"] = "antigravity-native"
+        event["session_state"] = {"flowdesk_selection_events": [selection]}
+
+        self.assertEqual(guard(event)["result"], "ALLOW")
+
+    def test_allows_gemini_agent_binding(self) -> None:
+        guard = make_omnigent_selection_dispatch_guard()
+        event = _event("gemini-agent", "google/gemini-3.1-flash-lite")
+        event["data"]["arguments"]["args"]["harness"] = "antigravity-native"
+        selection = _selection_record(agent="gemini-agent", provider_family="gemini", model="google/gemini-3.1-flash-lite")
+        selection["harness"] = "antigravity-native"
+        event["session_state"] = {"flowdesk_selection_events": [selection]}
+
+        self.assertEqual(guard(event)["result"], "ALLOW")
 
     def test_allows_codex_default_agent_without_model_override(self) -> None:
         guard = make_omnigent_selection_dispatch_guard()
@@ -131,8 +207,8 @@ class PolicyTests(unittest.TestCase):
 
     def test_direct_policy_callable_matches_omnigent_contract(self) -> None:
         event = _event("architecture-agent", "openai/gpt-5.5")
-        event["session_state"] = {"flowdesk_selection_events": [_selection_record(agent="architecture-agent", model=None)]}
-        self.assertEqual(omnigent_selection_dispatch_guard(event)["result"], "DENY")
+        event["session_state"] = {"flowdesk_selection_events": [_selection_record(agent="architecture-agent", provider_family="openai", model=None)]}
+        self.assertEqual(omnigent_selection_dispatch_guard(event)["result"], "ALLOW")
 
     def test_direct_policy_callable_records_in_memory_runner_state(self) -> None:
         self.assertEqual(omnigent_selection_dispatch_guard(_selector_event())["result"], "ALLOW")
@@ -227,10 +303,10 @@ class PolicyTests(unittest.TestCase):
 
     def test_uses_recorded_dynamic_model_binding_instead_of_static_registry(self) -> None:
         event = _event("architecture-agent", "claude-sonnet-4-6")
-        event["data"]["arguments"]["harness"] = "claude-sdk"
+        event["data"]["arguments"]["harness"] = "claude-native"
         event["session_state"] = {
             "flowdesk_selection_events": [
-                {**_selection_record(agent="architecture-agent", model="claude-sonnet-4-6"), "harness": "claude-sdk"}
+                {**_selection_record(agent="architecture-agent", provider_family="claude", model="claude-opus-4-8"), "harness": "claude-native"}
             ]
         }
 
@@ -240,10 +316,10 @@ class PolicyTests(unittest.TestCase):
 
     def test_uses_recorded_dynamic_harness_binding_from_sys_session_send_args(self) -> None:
         event = _event("architecture-agent", "claude-sonnet-4-6")
-        event["data"]["arguments"]["args"]["harness"] = "claude-sdk"
+        event["data"]["arguments"]["args"]["harness"] = "claude-native"
         event["session_state"] = {
             "flowdesk_selection_events": [
-                {**_selection_record(agent="architecture-agent", model="claude-sonnet-4-6"), "harness": "claude-sdk"}
+                {**_selection_record(agent="architecture-agent", provider_family="claude", model="claude-sonnet-4-6"), "harness": "claude-native"}
             ]
         }
 
@@ -255,7 +331,7 @@ class PolicyTests(unittest.TestCase):
         event = _event("architecture-agent", "claude-sonnet-4-6")
         event["session_state"] = {
             "flowdesk_selection_events": [
-                {**_selection_record(agent="architecture-agent", model="claude-sonnet-4-6"), "harness": "claude-sdk"}
+                {**_selection_record(agent="architecture-agent", provider_family="claude", model="claude-sonnet-4-6"), "harness": "claude-native"}
             ]
         }
 
@@ -276,11 +352,11 @@ class PolicyTests(unittest.TestCase):
 
     def test_latest_selector_output_record_wins_over_recomputed_record(self) -> None:
         event = _event("architecture-agent", "claude-sonnet-4-6")
-        event["data"]["arguments"]["harness"] = "claude-sdk"
+        event["data"]["arguments"]["harness"] = "claude-native"
         event["session_state"] = {
             "flowdesk_selection_events": [
-                _selection_record(task_id="task-x", agent="architecture-agent", model=None),
-                {**_selection_record(task_id="task-x", agent="architecture-agent", model="claude-sonnet-4-6"), "harness": "claude-sdk"},
+                _selection_record(task_id="task-x", agent="architecture-agent", provider_family="openai", model=None),
+                {**_selection_record(task_id="task-x", agent="architecture-agent", provider_family="claude", model="claude-opus-4-8"), "harness": "claude-native"},
             ]
         }
 

@@ -6,7 +6,7 @@ executor:
   type: omnigent
   config:
     harness: codex
-    allowed_harnesses: [codex, claude-sdk]
+    allowed_harnesses: [codex, claude-native, antigravity-native]
 
 os_env:
   type: caller_process

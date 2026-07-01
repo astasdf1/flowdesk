@@ -113,8 +113,21 @@ def _verify_dispatch(
         )
 
     selected_model = selection.get("model")
+    selected_provider_family = _selection_provider_family(selection)
     dispatched_model = dispatch.get("model")
-    if selected_model is None:
+    dispatched_provider_family = _provider_family_for_model(dispatched_model if isinstance(dispatched_model, str) else None)
+    if selected_provider_family is not None:
+        if dispatched_model is not None and dispatched_provider_family != selected_provider_family:
+            issues.append(
+                _issue(
+                    "error",
+                    "dispatch_model_family_mismatch",
+                    index=index,
+                    task_id=task_id,
+                    dispatched_model=dispatched_model,
+                )
+            )
+    elif selected_model is None:
         if dispatched_model is not None:
             issues.append(
                 _issue(
@@ -144,3 +157,37 @@ def _safe_str(value: Any) -> str | None:
 
 def _issue(severity: TraceIssueSeverity, code: str, **details: Any) -> dict[str, Any]:
     return {"severity": severity, "code": code, **details}
+
+
+def _selection_provider_family(selection: Mapping[str, Any]) -> str | None:
+    provider_family = selection.get("provider_family")
+    if isinstance(provider_family, str) and provider_family in {"claude", "openai", "gemini"}:
+        return provider_family
+    selected_model = selection.get("model")
+    if isinstance(selected_model, str):
+        derived = _provider_family_for_model(selected_model)
+        if derived is not None:
+            return derived
+    return _provider_family_for_harness(selection.get("harness") if isinstance(selection.get("harness"), str) else None)
+
+
+def _provider_family_for_model(model: str | None) -> str | None:
+    if model is None:
+        return None
+    if model.startswith(("claude/", "anthropic/", "claude-")):
+        return "claude"
+    if model.startswith("openai/"):
+        return "openai"
+    if model.startswith(("gemini/", "google/")):
+        return "gemini"
+    return None
+
+
+def _provider_family_for_harness(harness: str | None) -> str | None:
+    if harness in {"claude-native", "claude-sdk"}:
+        return "claude"
+    if harness == "codex":
+        return "openai"
+    if harness == "antigravity-native":
+        return "gemini"
+    return None

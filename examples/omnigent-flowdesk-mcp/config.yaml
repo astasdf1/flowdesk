@@ -5,7 +5,7 @@ description: FlowDesk advisory selection through an experimental stdio MCP serve
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
+    harness: claude-native
 
 prompt: |
   You are the FlowDesk Omnigent orchestrator for an MCP selection-path smoke.
@@ -37,3 +37,4 @@ tools:
     - policy-security-agent
     - architecture-agent
     - verification-agent
+    - gemini-agent

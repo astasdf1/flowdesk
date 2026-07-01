@@ -96,6 +96,17 @@ Function path for Omnigent config:
 flowdesk_omnigent.selection.select_agent_model
 ```
 
+The shared registry is role-based, not role-exclusive: every agent role now has
+Claude Opus, Sonnet, and Haiku entries where Claude is supported, alongside the
+existing OpenAI harness fallback. The selector still prefers the role-appropriate
+Claude variant when tier signals are present, but dispatch remains provenance-
+gated by the selection guard.
+
+The bundled FlowDesk templates bind Claude to the native `claude-native`
+runtime path. `claude-sdk` remains accepted as a compatibility alias, but when
+Claude-native is unavailable in the local environment that is a runtime/auth
+constraint, not a FlowDesk policy block.
+
 The selector accepts optional `provider_usage` or `provider_health` snapshots. Exhausted, critical, stale, blocked, unavailable, non-dispatchable, or 0%-remaining provider rows are skipped when another allowed provider can satisfy the request. If every allowed provider is unavailable, the selector returns `selection_status=blocked` with `provider_usage_unavailable`.
 
 If a selector request omits both usage fields, the Python selector can load a strict allowlist usage snapshot from either `FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON` or `FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH`. Inline JSON takes precedence over the file path and explicit request fields take precedence over both. Env/path snapshots must contain only the bounded Omnigent usage input fields (`schema_version`, `captured_at`, `observed_at`, `source`, `providers`, or direct `claude`/`openai`/`gemini` rows); malformed, oversized, unknown-key, token-shaped, or out-of-range snapshots fail closed with `provider_usage_snapshot_rejected`. This path reads only caller-provided sanitized usage JSON; it does not read provider credential or token files.

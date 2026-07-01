@@ -33,8 +33,9 @@ prompt: |
   Use the FlowDesk MCP selection tool before every subtask dispatch. Call
   flowdesk_select_agent_model with task_id, task_role, available_agents set to
   [policy-security-agent, architecture-agent, implementation-agent,
-  verification-agent, research-agent, general-agent], allowed_provider_families,
-  and requires_headless=true. Only dispatch selected tasks. Use the selected
+  verification-agent, research-agent, general-agent, gemini-agent],
+  allowed_provider_families, and requires_headless=true. Only dispatch selected
+  tasks. Use the selected
   agent and harness exactly. Use the selected task_id as the sys_session_send
   title to keep provenance checks aligned. Pass the selected harness as
   args.harness. If model is a non-empty string, pass it as args.model; if model
@@ -58,12 +59,23 @@ prompt: |
   expand that summary into implementation, investigation, review, or
   verification work owned by a child session.
 
+  After any dispatch in a turn, do not start fresh parent-side investigation or
+  implementation until the inbox returns child results. In the same turn, only
+  dispatch additional independent subtasks or finish by waiting for the inbox.
+
 guardrails:
   policies:
     flowdesk_selection_dispatch_guard:
       type: function
       on: [tool_call, tool_result]
       function: flowdesk_omnigent.policies.omnigent_selection_dispatch_guard
+    spawn_bounds:
+      type: function
+      on: [tool_call, tool_result]
+      function: omnigent.inner.nessie.policies.spawn_bounds
+      arguments:
+        max_dispatches_per_turn: 5
+        dispatch_tools: [sys_session_send]
 
 terminals:
   shell:
@@ -83,6 +95,7 @@ tools:
     - verification-agent
     - research-agent
     - general-agent
+    - gemini-agent
   flowdesk:
     type: mcp
     description: FlowDesk advisory selector MCP server.

@@ -13,22 +13,40 @@
     "output": "{\"schema_version\":\"flowdesk.omnigent_selection.v1\",\"selection_id\":\"selection-fixture-architecture\",\"task_id\":\"task-fixture-architecture\",\"task_role\":\"architecture\",\"selection_status\":\"selected\",\"agent\":\"architecture-agent\",\"harness\":\"codex\",\"model\":null,\"provider_family\":\"openai\",\"confidence\":\"high\",\"reason_codes\":[\"role_architecture_prefers_frontier_reasoning\",\"headless_subscription_verified\",\"quota_unknown_used_as_non_blocking_mvp_default\",\"subscription_harness_default_model\"],\"blocked_labels\":[],\"authority\":\"advisory_selection_only\",\"created_at\":\"2026-06-27T00:00:00Z\",\"expires_at\":\"2026-06-27T00:10:00Z\"}"
   },
   {
-    "id": "item-select-policy",
+    "id": "item-select-verification",
     "type": "function_call",
     "name": "flowdesk_select_agent_model",
     "arguments": {
-      "task_id": "task-fixture-policy",
-      "task_role": "policy_security",
-      "allowed_provider_families": ["claude"],
+      "task_id": "task-fixture-verification",
+      "task_role": "verification",
+      "allowed_provider_families": ["gemini"],
       "requires_headless": true
     },
-    "call_id": "call-select-policy"
+    "call_id": "call-select-verification"
   },
   {
-    "id": "item-select-policy-output",
+    "id": "item-select-verification-output",
     "type": "function_call_output",
-    "call_id": "call-select-policy",
-    "output": "{\"schema_version\":\"flowdesk.omnigent_selection.v1\",\"selection_id\":\"selection-fixture-policy\",\"task_id\":\"task-fixture-policy\",\"task_role\":\"policy_security\",\"selection_status\":\"selected\",\"agent\":\"policy-security-agent\",\"harness\":\"claude-sdk\",\"model\":\"claude-opus-4-8\",\"provider_family\":\"claude\",\"confidence\":\"high\",\"reason_codes\":[\"role_policy_security_prefers_deep_reasoning\",\"headless_subscription_verified\",\"quota_unknown_used_as_non_blocking_mvp_default\",\"model_family_compatible\"],\"blocked_labels\":[],\"authority\":\"advisory_selection_only\",\"created_at\":\"2026-06-27T00:00:00Z\",\"expires_at\":\"2026-06-27T00:10:00Z\"}"
+    "call_id": "call-select-verification",
+    "output": "{\"schema_version\":\"flowdesk.omnigent_selection.v1\",\"selection_id\":\"selection-fixture-verification\",\"task_id\":\"task-fixture-verification\",\"task_role\":\"verification\",\"selection_status\":\"selected\",\"agent\":\"verification-agent\",\"harness\":\"antigravity-native\",\"model\":\"google/gemini-3.1-flash-lite\",\"provider_family\":\"gemini\",\"confidence\":\"medium\",\"reason_codes\":[\"role_verification_prefers_cost_controlled_model\",\"headless_subscription_verified\",\"quota_unknown_used_as_non_blocking_mvp_default\",\"model_family_compatible\"],\"blocked_labels\":[],\"authority\":\"advisory_selection_only\",\"created_at\":\"2026-06-27T00:00:00Z\",\"expires_at\":\"2026-06-27T00:10:00Z\"}"
+  },
+  {
+    "id": "item-select-gemini",
+    "type": "function_call",
+    "name": "flowdesk_select_agent_model",
+    "arguments": {
+      "task_id": "task-fixture-gemini",
+      "task_role": "gemini_experimental",
+      "allowed_provider_families": ["gemini"],
+      "requires_headless": true
+    },
+    "call_id": "call-select-gemini"
+  },
+  {
+    "id": "item-select-gemini-output",
+    "type": "function_call_output",
+    "call_id": "call-select-gemini",
+    "output": "{\"schema_version\":\"flowdesk.omnigent_selection.v1\",\"selection_id\":\"selection-fixture-gemini\",\"task_id\":\"task-fixture-gemini\",\"task_role\":\"gemini_experimental\",\"selection_status\":\"selected\",\"agent\":\"gemini-agent\",\"harness\":\"antigravity-native\",\"model\":\"google/gemini-3.1-flash-lite\",\"confidence\":\"high\",\"reason_codes\":[\"role_gemini_experimental_prefers_gemini_native\",\"headless_subscription_verified\",\"quota_unknown_used_as_non_blocking_mvp_default\",\"model_family_compatible\"],\"blocked_labels\":[],\"authority\":\"advisory_selection_only\",\"created_at\":\"2026-06-27T00:00:00Z\",\"expires_at\":\"2026-06-27T00:10:00Z\"}"
   },
   {
     "id": "item-dispatch-architecture",
@@ -38,17 +56,33 @@
     "call_id": "call-dispatch-architecture"
   },
   {
-    "id": "item-dispatch-policy",
+    "id": "item-dispatch-verification",
     "type": "function_call",
     "name": "sys_session_send",
     "arguments": {
-      "agent": "policy-security-agent",
-      "title": "task-fixture-policy",
+      "agent": "verification-agent",
+      "title": "task-fixture-verification",
       "args": {
         "input": "redacted fixture task",
-        "model": "claude-opus-4-8"
+        "harness": "antigravity-native",
+        "model": "google/gemini-3.1-flash-lite"
       }
     },
-    "call_id": "call-dispatch-policy"
+    "call_id": "call-dispatch-verification"
+  },
+  {
+    "id": "item-dispatch-gemini",
+    "type": "function_call",
+    "name": "sys_session_send",
+    "arguments": {
+      "agent": "gemini-agent",
+      "title": "task-fixture-gemini",
+      "args": {
+        "input": "redacted fixture task",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3.1-flash-lite"
+      }
+    },
+    "call_id": "call-dispatch-gemini"
   }
 ]

@@ -6,7 +6,7 @@ executor:
   type: omnigent
   config:
     harness: codex
-    allowed_harnesses: [codex, claude-sdk]
+    allowed_harnesses: [codex, claude-native]
 
 prompt: |
   You are the architecture reviewer. For smoke tests, return the requested sentinel exactly.

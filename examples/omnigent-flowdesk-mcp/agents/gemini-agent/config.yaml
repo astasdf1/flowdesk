@@ -1,0 +1,12 @@
+spec_version: 1
+name: gemini-agent
+description: Gemini reviewer for FlowDesk MCP smoke.
+
+executor:
+  type: omnigent
+  config:
+    harness: antigravity-native
+    allowed_harnesses: [antigravity-native]
+
+prompt: |
+  You are the Gemini reviewer. For smoke tests, return the requested sentinel exactly.

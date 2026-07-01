@@ -119,6 +119,11 @@ def _selection_event_from_output(output_text: str, *, source_ref: str) -> dict[s
     task_id = _safe_str(payload.get("task_id"))
     if task_id is None:
         return None
+    provider_family = payload.get("provider_family")
+    if not isinstance(provider_family, str) or provider_family not in {"claude", "openai", "gemini"}:
+        provider_family = _provider_family_for_model(_safe_str(payload.get("model")))
+        if provider_family is None:
+            provider_family = _provider_family_for_harness(_safe_str(payload.get("harness")))
     return {
         "type": "selection",
         "task_id": task_id,
@@ -126,6 +131,7 @@ def _selection_event_from_output(output_text: str, *, source_ref: str) -> dict[s
         "selection_status": payload.get("selection_status"),
         "agent": payload.get("agent"),
         "harness": payload.get("harness"),
+        "provider_family": provider_family,
         "model": payload.get("model"),
         "source_ref": source_ref,
     }
@@ -173,3 +179,25 @@ def _source_ref(item: Mapping[str, Any], index: int) -> str:
 
 def _warning(code: str, **details: Any) -> dict[str, Any]:
     return {"severity": "warning", "code": code, **details}
+
+
+def _provider_family_for_model(model: str | None) -> str | None:
+    if model is None:
+        return None
+    if model.startswith(("claude/", "anthropic/", "claude-")):
+        return "claude"
+    if model.startswith("openai/"):
+        return "openai"
+    if model.startswith(("gemini/", "google/")):
+        return "gemini"
+    return None
+
+
+def _provider_family_for_harness(harness: str | None) -> str | None:
+    if harness in {"claude-native", "claude-sdk"}:
+        return "claude"
+    if harness == "codex":
+        return "openai"
+    if harness == "antigravity-native":
+        return "gemini"
+    return None
