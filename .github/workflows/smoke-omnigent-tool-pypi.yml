@@ -6,7 +6,7 @@ on:
       package_version:
         description: "flowdesk-omnigent-tool version to install from PyPI"
         required: false
-        default: "0.1.4"
+        default: "0.1.5"
   schedule:
     - cron: "17 3 * * 1"
 
@@ -30,7 +30,7 @@ jobs:
         run: |
           version="${{ github.event.inputs.package_version }}"
           if [[ -z "$version" ]]; then
-            version="0.1.4"
+            version="0.1.5"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
