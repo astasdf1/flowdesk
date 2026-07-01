@@ -156,7 +156,7 @@ Ensure the Omnigent server process inherits a `PATH` containing the Omnigent ven
 export PATH="/path/to/omnigent/.venv/bin:$PATH"
 ```
 
-The MCP server exposes only `flowdesk_select_agent_model`. It is selection-only and does not expose Omnigent dispatch, fallback, retry, write/apply, or provider-switch tools.
+The MCP server exposes only `flowdesk_select_agent_model`. It accepts advisory hints such as `task_complexity`, `task_phase`, `task_tier`, `model_tier`, `preferred_model`, and `allowed_models`; these only rank/filter selector candidates. The server is selection-only and does not expose Omnigent dispatch, fallback, retry, write/apply, or provider-switch tools.
 
 Optional Omnigent function policy guard:
 

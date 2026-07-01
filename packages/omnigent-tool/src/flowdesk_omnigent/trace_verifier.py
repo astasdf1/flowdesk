@@ -178,7 +178,7 @@ def _provider_family_for_model(model: str | None) -> str | None:
         return "claude"
     if model.startswith("openai/"):
         return "openai"
-    if model.startswith(("gemini/", "google/")):
+    if model.startswith(("gemini/", "google/", "gemini-")):
         return "gemini"
     return None
 

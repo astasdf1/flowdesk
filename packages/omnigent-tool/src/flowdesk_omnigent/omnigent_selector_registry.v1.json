@@ -14,6 +14,15 @@
       {
         "agent": "policy-security-agent",
         "harness": "claude-native",
+        "model": "claude-sonnet-5",
+        "model_tier": "sonnet",
+        "provider_family": "claude",
+        "reason_code": "role_policy_security_prefers_deep_reasoning",
+        "confidence": "medium"
+      },
+      {
+        "agent": "policy-security-agent",
+        "harness": "claude-native",
         "model": "claude-sonnet-4-6",
         "provider_family": "claude",
         "reason_code": "role_policy_security_prefers_deep_reasoning",
@@ -34,6 +43,15 @@
         "provider_family": "openai",
         "reason_code": "role_policy_security_prefers_deep_reasoning",
         "confidence": "medium"
+      },
+      {
+        "agent": "policy-security-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.5",
+        "model_tier": "frontier",
+        "provider_family": "openai",
+        "reason_code": "role_policy_security_prefers_deep_reasoning",
+        "confidence": "medium"
       }
     ],
     "architecture": [
@@ -44,6 +62,33 @@
         "provider_family": "openai",
         "reason_code": "role_architecture_prefers_frontier_reasoning",
         "confidence": "high"
+      },
+      {
+        "agent": "architecture-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.5",
+        "model_tier": "frontier",
+        "provider_family": "openai",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "high"
+      },
+      {
+        "agent": "architecture-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.4",
+        "model_tier": "normal",
+        "provider_family": "openai",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "high"
+      },
+      {
+        "agent": "architecture-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-5",
+        "model_tier": "sonnet",
+        "provider_family": "claude",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "medium"
       },
       {
         "agent": "architecture-agent",
@@ -81,6 +126,33 @@
       },
       {
         "agent": "implementation-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.4-mini-fast",
+        "model_tier": "fast",
+        "provider_family": "openai",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "high"
+      },
+      {
+        "agent": "implementation-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.3-codex-spark",
+        "model_tier": "spark",
+        "provider_family": "openai",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "medium"
+      },
+      {
+        "agent": "implementation-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-5",
+        "model_tier": "sonnet",
+        "provider_family": "claude",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "medium"
+      },
+      {
+        "agent": "implementation-agent",
         "harness": "claude-native",
         "model": "claude-sonnet-4-6",
         "provider_family": "claude",
@@ -115,8 +187,35 @@
       },
       {
         "agent": "verification-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.4-mini",
+        "model_tier": "mini",
+        "provider_family": "openai",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "high"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.4-mini-fast",
+        "model_tier": "fast",
+        "provider_family": "openai",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
         "harness": "claude-native",
         "model": "claude-haiku-4-5",
+        "provider_family": "claude",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-5",
+        "model_tier": "sonnet",
         "provider_family": "claude",
         "reason_code": "role_verification_prefers_cost_controlled_model",
         "confidence": "medium"
@@ -141,12 +240,49 @@
         "agent": "verification-agent",
         "harness": "antigravity-native",
         "model": "google/gemini-3.1-flash-lite",
+        "model_tier": "flash-lite",
+        "provider_family": "gemini",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3-flash-preview",
+        "model_tier": "flash",
+        "provider_family": "gemini",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "antigravity-native",
+        "model": "gemini-3.5-flash",
+        "model_tier": "flash",
+        "provider_family": "gemini",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "high"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3.1-pro-preview",
+        "model_tier": "pro",
         "provider_family": "gemini",
         "reason_code": "role_verification_prefers_cost_controlled_model",
         "confidence": "medium"
       }
     ],
     "research": [
+      {
+        "agent": "research-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-5",
+        "model_tier": "sonnet",
+        "provider_family": "claude",
+        "reason_code": "role_research_prefers_sonnet_context",
+        "confidence": "medium"
+      },
       {
         "agent": "research-agent",
         "harness": "claude-native",
@@ -178,6 +314,15 @@
         "provider_family": "openai",
         "reason_code": "role_research_prefers_sonnet_context",
         "confidence": "medium"
+      },
+      {
+        "agent": "research-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.5",
+        "model_tier": "frontier",
+        "provider_family": "openai",
+        "reason_code": "role_research_prefers_sonnet_context",
+        "confidence": "medium"
       }
     ],
     "general": [
@@ -186,6 +331,33 @@
         "harness": "codex",
         "model": null,
         "provider_family": "openai",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "general-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.4-mini-fast",
+        "model_tier": "fast",
+        "provider_family": "openai",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "general-agent",
+        "harness": "codex",
+        "model": "openai/gpt-5.3-codex-spark",
+        "model_tier": "spark",
+        "provider_family": "openai",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "general-agent",
+        "harness": "claude-native",
+        "model": "claude-sonnet-5",
+        "model_tier": "sonnet",
+        "provider_family": "claude",
         "reason_code": "role_general_prefers_balanced_model",
         "confidence": "medium"
       },
@@ -219,9 +391,37 @@
         "agent": "gemini-agent",
         "harness": "antigravity-native",
         "model": "google/gemini-3.1-flash-lite",
+        "model_tier": "flash-lite",
         "provider_family": "gemini",
         "reason_code": "role_gemini_experimental_prefers_gemini_native",
         "confidence": "high"
+      },
+      {
+        "agent": "gemini-agent",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3-flash-preview",
+        "model_tier": "flash",
+        "provider_family": "gemini",
+        "reason_code": "role_gemini_experimental_prefers_gemini_native",
+        "confidence": "medium"
+      },
+      {
+        "agent": "gemini-agent",
+        "harness": "antigravity-native",
+        "model": "gemini-3.5-flash",
+        "model_tier": "flash",
+        "provider_family": "gemini",
+        "reason_code": "role_gemini_experimental_prefers_gemini_native",
+        "confidence": "high"
+      },
+      {
+        "agent": "gemini-agent",
+        "harness": "antigravity-native",
+        "model": "google/gemini-3.1-pro-preview",
+        "model_tier": "pro",
+        "provider_family": "gemini",
+        "reason_code": "role_gemini_experimental_prefers_gemini_native",
+        "confidence": "medium"
       }
     ]
   }

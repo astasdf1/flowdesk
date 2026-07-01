@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flowdesk-omnigent-tool"
-version = "0.1.6"
+version = "0.1.7"
 description = "FlowDesk advisory selection tool for Omnigent."
 requires-python = ">=3.12"
 readme = "README.md"

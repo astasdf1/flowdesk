@@ -69,6 +69,8 @@ REASON_CODES = {
     "provider_not_allowed",
     "agent_not_available",
     "task_tier_prefers_reasoning_model",
+    "model_tier_preference_applied",
+    "preferred_model_applied",
     "provider_usage_unavailable",
     "provider_usage_snapshot_rejected",
     "unknown_role_blocked",
@@ -88,7 +90,7 @@ PROVIDER_BY_HARNESS: Mapping[str, ProviderFamily] = {
 MODEL_PREFIXES: Mapping[ProviderFamily, tuple[str, ...]] = {
     "claude": ("anthropic/", "claude/", "claude-"),
     "openai": ("openai/",),
-    "gemini": ("google/", "gemini/"),
+    "gemini": ("google/", "gemini/", "gemini-"),
 }
 
 
@@ -100,6 +102,7 @@ class RegistryEntry:
     provider_family: ProviderFamily
     reason_code: str
     confidence: Literal["high", "medium", "low"] = "high"
+    model_tier: str | None = None
 
 
 def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]]:
@@ -126,6 +129,7 @@ def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]
             provider_family = raw_entry.get("provider_family")
             reason_code = raw_entry.get("reason_code")
             confidence = raw_entry.get("confidence", "high")
+            model_tier = raw_entry.get("model_tier")
             if not isinstance(agent, str) or not isinstance(harness, str) or provider_family not in PROVIDER_BY_HARNESS.values():
                 raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry binding for role: {role}")
             if model is not None and not isinstance(model, str):
@@ -134,6 +138,8 @@ def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]
                 raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry reason code for role: {role}")
             if confidence not in {"high", "medium", "low"}:
                 raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry confidence for role: {role}")
+            if model_tier is not None and not isinstance(model_tier, str):
+                raise RuntimeError(f"Invalid FlowDesk Omnigent selector registry model tier for role: {role}")
             entries.append(
                 RegistryEntry(
                     agent=agent,
@@ -142,6 +148,7 @@ def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]
                     provider_family=provider_family,  # type: ignore[arg-type]
                     reason_code=reason_code,
                     confidence=confidence,  # type: ignore[arg-type]
+                    model_tier=model_tier,
                 )
             )
         registry[role] = tuple(entries)
@@ -440,6 +447,7 @@ def select_agent_model(
     agent_unavailable = False
     provider_usage_blocked = False
     tier_reason = _task_tier_reason_code(request)
+    model_preference_reason = _model_preference_reason_code(request)
     for entry in _ordered_entries_for_task(request, entries):
         if available_agents is not None and entry.agent not in available_agents:
             agent_unavailable = True
@@ -461,7 +469,8 @@ def select_agent_model(
             _write_evidence_if_enabled(result, write_evidence)
             return result
 
-        result = _selected_response(task_id=task_id, role=role, entry=entry, now=now, extra_reason_codes=[tier_reason] if tier_reason else [])
+        extra_reason_codes = [reason for reason in (tier_reason, model_preference_reason) if reason]
+        result = _selected_response(task_id=task_id, role=role, entry=entry, now=now, extra_reason_codes=extra_reason_codes)
         _write_evidence_if_enabled(result, write_evidence)
         return result
 
@@ -723,9 +732,63 @@ def _available_agents(request: Mapping[str, Any]) -> set[str] | None:
 
 
 def _ordered_entries_for_task(request: Mapping[str, Any], entries: tuple[RegistryEntry, ...]) -> tuple[RegistryEntry, ...]:
-    if _task_tier_reason_code(request) is None:
-        return entries
-    return tuple(sorted(entries, key=_tier_entry_sort_key))
+    filtered = tuple(entry for entry in entries if _entry_allowed_by_model_request(request, entry))
+    if not filtered:
+        return ()
+    if _preferred_model(request) is not None or _model_tier(request) is not None:
+        return tuple(sorted(filtered, key=lambda entry: _model_preference_sort_key(request, entry)))
+    if _task_tier_reason_code(request) is not None:
+        return tuple(sorted(filtered, key=_tier_entry_sort_key))
+    return filtered
+
+
+def _entry_allowed_by_model_request(request: Mapping[str, Any], entry: RegistryEntry) -> bool:
+    allowed_models = _allowed_models(request)
+    if allowed_models is not None and entry.model not in allowed_models:
+        return False
+    preferred = _preferred_model(request)
+    if preferred is not None and entry.model != preferred:
+        return False
+    requested_tier = _model_tier(request)
+    if requested_tier is not None and entry.model_tier != requested_tier:
+        return False
+    return True
+
+
+def _model_preference_sort_key(request: Mapping[str, Any], entry: RegistryEntry) -> tuple[int, int, int]:
+    preferred = _preferred_model(request)
+    preferred_score = 0 if preferred is not None and entry.model == preferred else 1
+    requested_tier = _model_tier(request)
+    tier_score = 0 if requested_tier is not None and entry.model_tier == requested_tier else 1
+    confidence_score = {"high": 0, "medium": 1, "low": 2}.get(entry.confidence, 2)
+    return (preferred_score, tier_score, confidence_score)
+
+
+def _preferred_model(request: Mapping[str, Any]) -> str | None:
+    raw = request.get("preferred_model")
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _model_tier(request: Mapping[str, Any]) -> str | None:
+    raw = request.get("model_tier") or request.get("modelTier")
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _allowed_models(request: Mapping[str, Any]) -> set[str | None] | None:
+    raw = request.get("allowed_models")
+    if raw is None:
+        return None
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return set()
+    return {item for item in raw if item is None or isinstance(item, str)}
+
+
+def _model_preference_reason_code(request: Mapping[str, Any]) -> str | None:
+    if _preferred_model(request) is not None:
+        return "preferred_model_applied"
+    if _model_tier(request) is not None:
+        return "model_tier_preference_applied"
+    return None
 
 
 def _tier_entry_sort_key(entry: RegistryEntry) -> tuple[int, int]:

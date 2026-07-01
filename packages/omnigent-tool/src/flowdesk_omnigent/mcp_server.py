@@ -86,6 +86,12 @@ def _tool_definition() -> dict[str, Any]:
                     "enum": ["high_level_design", "detailed_design", "implementation", "verification", "research", "risk_review"],
                 },
                 "task_tier": {"type": "string", "enum": ["lower", "middle", "upper", "senior", "reasoning", "frontier"]},
+                "model_tier": {
+                    "type": "string",
+                    "enum": ["frontier", "normal", "mini", "fast", "spark", "sonnet", "pro", "flash", "flash-lite"],
+                },
+                "preferred_model": {"type": "string"},
+                "allowed_models": {"type": "array", "items": {"type": ["string", "null"]}},
                 "allowed_provider_families": {"type": "array", "items": {"type": "string", "enum": ["claude", "openai", "gemini"]}},
                 "preferred_provider_family": {"type": "string", "enum": ["claude", "openai", "gemini"]},
                 "requires_headless": {"type": "boolean"},

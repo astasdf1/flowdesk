@@ -22,6 +22,10 @@ export interface FlowDeskOmnigentSelectionRequestV1 {
 	requires_headless?: unknown;
 	provider_usage?: unknown;
 	provider_health?: unknown;
+	preferred_model?: unknown;
+	allowed_models?: unknown;
+	model_tier?: unknown;
+	modelTier?: unknown;
 }
 
 export interface FlowDeskOmnigentSelectionV1 {
@@ -49,6 +53,7 @@ interface RegistryEntry {
 	provider_family: FlowDeskOmnigentProviderFamilyV1;
 	reason_code: string;
 	confidence: FlowDeskOmnigentConfidenceV1;
+	model_tier?: string;
 }
 
 const ROLE_VALUES = new Set<FlowDeskOmnigentTaskRoleV1>(["policy_security", "architecture", "implementation", "verification", "research", "general", "gemini_experimental"]);
@@ -57,37 +62,56 @@ const PROVIDER_FAMILIES = new Set<FlowDeskOmnigentProviderFamilyV1>(["claude", "
 export const FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1: Record<FlowDeskOmnigentTaskRoleV1, readonly RegistryEntry[]> = {
 	policy_security: [
 		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "high" },
+		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-sonnet-5", model_tier: "sonnet", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
 		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
 		{ agent: "policy-security-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
 		{ agent: "policy-security-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
+		{ agent: "policy-security-agent", harness: "codex", model: "openai/gpt-5.5", model_tier: "frontier", provider_family: "openai", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
 	],
 	architecture: [
 		{ agent: "architecture-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "high" },
+		{ agent: "architecture-agent", harness: "codex", model: "openai/gpt-5.5", model_tier: "frontier", provider_family: "openai", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "high" },
+		{ agent: "architecture-agent", harness: "codex", model: "openai/gpt-5.4", model_tier: "normal", provider_family: "openai", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "high" },
+		{ agent: "architecture-agent", harness: "claude-native", model: "claude-sonnet-5", model_tier: "sonnet", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
 		{ agent: "architecture-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
 		{ agent: "architecture-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
 		{ agent: "architecture-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_architecture_prefers_frontier_reasoning", confidence: "medium" },
 	],
 	implementation: [
 		{ agent: "implementation-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_implementation_prefers_coding_harness", confidence: "high" },
+		{ agent: "implementation-agent", harness: "codex", model: "openai/gpt-5.4-mini-fast", model_tier: "fast", provider_family: "openai", reason_code: "role_implementation_prefers_coding_harness", confidence: "high" },
+		{ agent: "implementation-agent", harness: "codex", model: "openai/gpt-5.3-codex-spark", model_tier: "spark", provider_family: "openai", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
+		{ agent: "implementation-agent", harness: "claude-native", model: "claude-sonnet-5", model_tier: "sonnet", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
 		{ agent: "implementation-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
 		{ agent: "implementation-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
 		{ agent: "implementation-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_implementation_prefers_coding_harness", confidence: "medium" },
 	],
 	verification: [
 		{ agent: "verification-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "high" },
+		{ agent: "verification-agent", harness: "codex", model: "openai/gpt-5.4-mini", model_tier: "mini", provider_family: "openai", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "high" },
+		{ agent: "verification-agent", harness: "codex", model: "openai/gpt-5.4-mini-fast", model_tier: "fast", provider_family: "openai", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
 		{ agent: "verification-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "claude-native", model: "claude-sonnet-5", model_tier: "sonnet", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
 		{ agent: "verification-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
 		{ agent: "verification-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
-		{ agent: "verification-agent", harness: "antigravity-native", model: "google/gemini-3.1-flash-lite", provider_family: "gemini", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "antigravity-native", model: "google/gemini-3.1-flash-lite", model_tier: "flash-lite", provider_family: "gemini", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "antigravity-native", model: "google/gemini-3-flash-preview", model_tier: "flash", provider_family: "gemini", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
+		{ agent: "verification-agent", harness: "antigravity-native", model: "gemini-3.5-flash", model_tier: "flash", provider_family: "gemini", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "high" },
+		{ agent: "verification-agent", harness: "antigravity-native", model: "google/gemini-3.1-pro-preview", model_tier: "pro", provider_family: "gemini", reason_code: "role_verification_prefers_cost_controlled_model", confidence: "medium" },
 	],
 	research: [
+		{ agent: "research-agent", harness: "claude-native", model: "claude-sonnet-5", model_tier: "sonnet", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 		{ agent: "research-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 		{ agent: "research-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 		{ agent: "research-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 		{ agent: "research-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
+		{ agent: "research-agent", harness: "codex", model: "openai/gpt-5.5", model_tier: "frontier", provider_family: "openai", reason_code: "role_research_prefers_sonnet_context", confidence: "medium" },
 	],
 	general: [
 		{ agent: "general-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+		{ agent: "general-agent", harness: "codex", model: "openai/gpt-5.4-mini-fast", model_tier: "fast", provider_family: "openai", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+		{ agent: "general-agent", harness: "codex", model: "openai/gpt-5.3-codex-spark", model_tier: "spark", provider_family: "openai", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
+		{ agent: "general-agent", harness: "claude-native", model: "claude-sonnet-5", model_tier: "sonnet", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
 		{ agent: "general-agent", harness: "claude-native", model: "claude-sonnet-4-6", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
 		{ agent: "general-agent", harness: "claude-native", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
 		{ agent: "general-agent", harness: "claude-native", model: "claude-haiku-4-5", provider_family: "claude", reason_code: "role_general_prefers_balanced_model", confidence: "medium" },
@@ -97,10 +121,14 @@ export const FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1: Record<FlowDeskOmnigentTaskR
 			agent: "gemini-agent",
 			harness: "antigravity-native",
 			model: "google/gemini-3.1-flash-lite",
+			model_tier: "flash-lite",
 			provider_family: "gemini",
 			reason_code: "role_gemini_experimental_prefers_gemini_native",
 			confidence: "high",
 		},
+		{ agent: "gemini-agent", harness: "antigravity-native", model: "google/gemini-3-flash-preview", model_tier: "flash", provider_family: "gemini", reason_code: "role_gemini_experimental_prefers_gemini_native", confidence: "medium" },
+		{ agent: "gemini-agent", harness: "antigravity-native", model: "gemini-3.5-flash", model_tier: "flash", provider_family: "gemini", reason_code: "role_gemini_experimental_prefers_gemini_native", confidence: "high" },
+		{ agent: "gemini-agent", harness: "antigravity-native", model: "google/gemini-3.1-pro-preview", model_tier: "pro", provider_family: "gemini", reason_code: "role_gemini_experimental_prefers_gemini_native", confidence: "medium" },
 	],
 };
 
@@ -116,6 +144,7 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 	const taskRole = role as FlowDeskOmnigentTaskRoleV1;
 	const allowed = allowedProviderFamilies(request.allowed_provider_families);
 	const tierReason = taskTierReasonCode(request);
+	const modelPreferenceReason = modelPreferenceReasonCode(request);
 	let providerUsageBlocked = false;
 	for (const entry of orderedEntriesForTask(request, FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1[taskRole])) {
 		if (!allowed.has(entry.provider_family)) continue;
@@ -123,7 +152,7 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 			providerUsageBlocked = true;
 			continue;
 		}
-		return selectedSelection({ taskId, role: taskRole, entry, now, extraReasonCodes: tierReason ? [tierReason] : [] });
+		return selectedSelection({ taskId, role: taskRole, entry, now, extraReasonCodes: [tierReason, modelPreferenceReason].filter((reason): reason is string => typeof reason === "string") });
 	}
 	const blockedReason = providerUsageBlocked ? "provider_usage_unavailable" : "provider_not_allowed";
 	return negativeSelection({ taskId, role: taskRole, status: "blocked", reasonCodes: [blockedReason], blockedLabels: [blockedReason], now });
@@ -193,8 +222,54 @@ function allowedProviderFamilies(value: unknown): Set<FlowDeskOmnigentProviderFa
 }
 
 function orderedEntriesForTask(request: FlowDeskOmnigentSelectionRequestV1, entries: readonly RegistryEntry[]): readonly RegistryEntry[] {
-	if (!taskTierReasonCode(request)) return entries;
-	return [...entries].sort((left, right) => tierEntryScore(left) - tierEntryScore(right));
+	const filtered = entries.filter((entry) => entryAllowedByModelRequest(request, entry));
+	if (preferredModel(request) || modelTier(request)) return [...filtered].sort((left, right) => compareModelPreference(request, left, right));
+	if (taskTierReasonCode(request)) return [...filtered].sort((left, right) => tierEntryScore(left) - tierEntryScore(right));
+	return filtered;
+}
+
+function entryAllowedByModelRequest(request: FlowDeskOmnigentSelectionRequestV1, entry: RegistryEntry): boolean {
+	const allowed = allowedModels(request);
+	if (allowed && !allowed.has(entry.model)) return false;
+	const preferred = preferredModel(request);
+	if (preferred && entry.model !== preferred) return false;
+	const tier = modelTier(request);
+	if (tier && entry.model_tier !== tier) return false;
+	return true;
+}
+
+function compareModelPreference(request: FlowDeskOmnigentSelectionRequestV1, left: RegistryEntry, right: RegistryEntry): number {
+	const leftKey = modelPreferenceScore(request, left);
+	const rightKey = modelPreferenceScore(request, right);
+	return leftKey[0] - rightKey[0] || leftKey[1] - rightKey[1] || leftKey[2] - rightKey[2];
+}
+
+function modelPreferenceScore(request: FlowDeskOmnigentSelectionRequestV1, entry: RegistryEntry): [number, number, number] {
+	const preferred = preferredModel(request);
+	const tier = modelTier(request);
+	const confidenceScore = entry.confidence === "high" ? 0 : entry.confidence === "medium" ? 1 : 2;
+	return [preferred && entry.model === preferred ? 0 : 1, tier && entry.model_tier === tier ? 0 : 1, confidenceScore];
+}
+
+function preferredModel(request: FlowDeskOmnigentSelectionRequestV1): string | null {
+	return typeof request.preferred_model === "string" && request.preferred_model ? request.preferred_model : null;
+}
+
+function modelTier(request: FlowDeskOmnigentSelectionRequestV1): string | null {
+	const raw = request.model_tier ?? request.modelTier;
+	return typeof raw === "string" && raw ? raw : null;
+}
+
+function allowedModels(request: FlowDeskOmnigentSelectionRequestV1): Set<string | null> | null {
+	if (request.allowed_models === undefined || request.allowed_models === null) return null;
+	if (!Array.isArray(request.allowed_models)) return new Set();
+	return new Set(request.allowed_models.filter((model): model is string | null => model === null || typeof model === "string"));
+}
+
+function modelPreferenceReasonCode(request: FlowDeskOmnigentSelectionRequestV1): string | null {
+	if (preferredModel(request)) return "preferred_model_applied";
+	if (modelTier(request)) return "model_tier_preference_applied";
+	return null;
 }
 
 function tierEntryScore(entry: RegistryEntry): number {

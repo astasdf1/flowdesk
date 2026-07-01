@@ -12,7 +12,7 @@ from flowdesk_omnigent.selection import DEFAULT_REGISTRY, RegistryEntry, select_
 
 PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
 REGISTRY_ARTIFACT_PATH = Path(__file__).parents[1] / "src" / "flowdesk_omnigent" / "omnigent_selector_registry.v1.json"
-CLAUDE_MODEL_SET = {"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
+CLAUDE_MODEL_SET = {"claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"}
 
 
 class SelectionTests(unittest.TestCase):
@@ -26,6 +26,7 @@ class SelectionTests(unittest.TestCase):
                     "agent": entry.agent,
                     "harness": entry.harness,
                     "model": entry.model,
+                    **({"model_tier": entry.model_tier} if entry.model_tier is not None else {}),
                     "provider_family": entry.provider_family,
                     "reason_code": entry.reason_code,
                     "confidence": entry.confidence,
@@ -47,11 +48,13 @@ class SelectionTests(unittest.TestCase):
 
     def test_python_registry_exposes_dedicated_gemini_agent(self) -> None:
         entries = DEFAULT_REGISTRY["gemini_experimental"]
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 4)
         self.assertEqual(entries[0].agent, "gemini-agent")
         self.assertEqual(entries[0].harness, "antigravity-native")
         self.assertEqual(entries[0].provider_family, "gemini")
         self.assertEqual(entries[0].model, "google/gemini-3.1-flash-lite")
+        self.assertEqual({entry.model_tier for entry in entries}, {"flash-lite", "flash", "pro"})
+        self.assertIn("gemini-3.5-flash", {entry.model for entry in entries})
 
     def test_selection_parity_golden_cases(self) -> None:
         cases = json.loads(PARITY_FIXTURE_PATH.read_text(encoding="utf-8"))
@@ -109,6 +112,106 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["harness"], "codex")
         self.assertIsNone(result["model"])
         self.assertIn("subscription_harness_default_model", result["reason_codes"])
+
+    def test_openai_model_tier_selects_codex_fast_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-codex-fast",
+                "task_role": "implementation",
+                "allowed_provider_families": ["openai"],
+                "model_tier": "fast",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "openai")
+        self.assertEqual(result["harness"], "codex")
+        self.assertEqual(result["model"], "openai/gpt-5.4-mini-fast")
+        self.assertIn("model_tier_preference_applied", result["reason_codes"])
+        self.assertIn("model_family_compatible", result["reason_codes"])
+
+    def test_claude_model_tier_selects_sonnet_5_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-claude-sonnet-5",
+                "task_role": "architecture",
+                "allowed_provider_families": ["claude"],
+                "model_tier": "sonnet",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+        self.assertEqual(result["harness"], "claude-native")
+        self.assertEqual(result["model"], "claude-sonnet-5")
+        self.assertIn("model_tier_preference_applied", result["reason_codes"])
+
+    def test_openai_model_tier_selects_codex_spark_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-codex-spark",
+                "task_role": "general",
+                "allowed_provider_families": ["openai"],
+                "model_tier": "spark",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "general-agent")
+        self.assertEqual(result["harness"], "codex")
+        self.assertEqual(result["model"], "openai/gpt-5.3-codex-spark")
+
+    def test_preferred_model_selects_exact_codex_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-codex-preferred",
+                "task_role": "architecture",
+                "allowed_provider_families": ["openai"],
+                "preferred_model": "openai/gpt-5.4",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["model"], "openai/gpt-5.4")
+        self.assertIn("preferred_model_applied", result["reason_codes"])
+
+    def test_gemini_model_tier_selects_pro_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-gemini-pro",
+                "task_role": "gemini_experimental",
+                "allowed_provider_families": ["gemini"],
+                "model_tier": "pro",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "gemini-agent")
+        self.assertEqual(result["harness"], "antigravity-native")
+        self.assertEqual(result["model"], "google/gemini-3.1-pro-preview")
+        self.assertIn("model_tier_preference_applied", result["reason_codes"])
+
+    def test_gemini_model_tier_selects_35_flash_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-gemini-35-flash",
+                "task_role": "gemini_experimental",
+                "allowed_provider_families": ["gemini"],
+                "model_tier": "flash",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["agent"], "gemini-agent")
+        self.assertEqual(result["harness"], "antigravity-native")
+        self.assertEqual(result["model"], "gemini-3.5-flash")
+        self.assertIn("model_tier_preference_applied", result["reason_codes"])
 
     def test_default_provider_family_set_includes_gemini(self) -> None:
         result = select_agent_model(
@@ -351,7 +454,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["selection_status"], "selected")
         self.assertEqual(result["provider_family"], "claude")
         self.assertEqual(result["harness"], "claude-native")
-        self.assertEqual(result["model"], "claude-sonnet-4-6")
+        self.assertEqual(result["model"], "claude-sonnet-5")
 
     def test_critical_verification_prefers_claude_haiku(self) -> None:
         result = select_agent_model(
@@ -402,7 +505,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["selection_status"], "selected")
         self.assertEqual(result["provider_family"], "claude")
         self.assertEqual(result["harness"], "claude-native")
-        self.assertEqual(result["model"], "claude-sonnet-4-6")
+        self.assertEqual(result["model"], "claude-sonnet-5")
 
     def test_tier_preference_still_falls_back_when_reasoning_provider_unavailable(self) -> None:
         result = select_agent_model(

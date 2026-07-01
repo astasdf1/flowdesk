@@ -48,7 +48,7 @@
       "selection_status": "selected",
       "agent": "implementation-agent",
       "harness": "claude-native",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5",
       "provider_family": "claude",
       "confidence": "medium",
       "reason_codes_include": ["role_implementation_prefers_coding_harness", "task_tier_prefers_reasoning_model", "model_family_compatible"]
@@ -130,6 +130,101 @@
       "confidence": "low",
       "blocked_labels": ["provider_usage_unavailable"],
       "reason_codes_include": ["provider_usage_unavailable"]
+    }
+  },
+  {
+    "name": "implementation_openai_fast_model_tier",
+    "request": {
+      "task_id": "task-parity-codex-fast",
+      "task_role": "implementation",
+      "allowed_provider_families": ["openai"],
+      "model_tier": "fast"
+    },
+    "expected": {
+      "task_role": "implementation",
+      "selection_status": "selected",
+      "agent": "implementation-agent",
+      "harness": "codex",
+      "model": "openai/gpt-5.4-mini-fast",
+      "provider_family": "openai",
+      "confidence": "high",
+      "reason_codes_include": ["role_implementation_prefers_coding_harness", "model_tier_preference_applied", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "architecture_claude_sonnet_5_model_tier",
+    "request": {
+      "task_id": "task-parity-claude-sonnet-5",
+      "task_role": "architecture",
+      "allowed_provider_families": ["claude"],
+      "model_tier": "sonnet"
+    },
+    "expected": {
+      "task_role": "architecture",
+      "selection_status": "selected",
+      "agent": "architecture-agent",
+      "harness": "claude-native",
+      "model": "claude-sonnet-5",
+      "provider_family": "claude",
+      "confidence": "medium",
+      "reason_codes_include": ["role_architecture_prefers_frontier_reasoning", "model_tier_preference_applied", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "architecture_openai_preferred_model",
+    "request": {
+      "task_id": "task-parity-codex-preferred",
+      "task_role": "architecture",
+      "allowed_provider_families": ["openai"],
+      "preferred_model": "openai/gpt-5.4"
+    },
+    "expected": {
+      "task_role": "architecture",
+      "selection_status": "selected",
+      "agent": "architecture-agent",
+      "harness": "codex",
+      "model": "openai/gpt-5.4",
+      "provider_family": "openai",
+      "confidence": "high",
+      "reason_codes_include": ["role_architecture_prefers_frontier_reasoning", "preferred_model_applied", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "gemini_experimental_pro_model_tier",
+    "request": {
+      "task_id": "task-parity-gemini-pro",
+      "task_role": "gemini_experimental",
+      "allowed_provider_families": ["gemini"],
+      "model_tier": "pro"
+    },
+    "expected": {
+      "task_role": "gemini_experimental",
+      "selection_status": "selected",
+      "agent": "gemini-agent",
+      "harness": "antigravity-native",
+      "model": "google/gemini-3.1-pro-preview",
+      "provider_family": "gemini",
+      "confidence": "medium",
+      "reason_codes_include": ["role_gemini_experimental_prefers_gemini_native", "model_tier_preference_applied", "model_family_compatible"]
+    }
+  },
+  {
+    "name": "gemini_experimental_35_flash_model_tier",
+    "request": {
+      "task_id": "task-parity-gemini-35-flash",
+      "task_role": "gemini_experimental",
+      "allowed_provider_families": ["gemini"],
+      "model_tier": "flash"
+    },
+    "expected": {
+      "task_role": "gemini_experimental",
+      "selection_status": "selected",
+      "agent": "gemini-agent",
+      "harness": "antigravity-native",
+      "model": "gemini-3.5-flash",
+      "provider_family": "gemini",
+      "confidence": "high",
+      "reason_codes_include": ["role_gemini_experimental_prefers_gemini_native", "model_tier_preference_applied", "model_family_compatible"]
     }
   },
   {

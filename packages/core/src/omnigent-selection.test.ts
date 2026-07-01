@@ -26,7 +26,7 @@ const registryArtifact = JSON.parse(readFileSync("packages/omnigent-tool/src/flo
 	roles: typeof FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1;
 };
 
-const CLAUDE_MODEL_SET = new Set(["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
+const CLAUDE_MODEL_SET = new Set(["claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]);
 
 test("omnigent TypeScript registry matches shared registry artifact", () => {
 	assert.equal(registryArtifact.schema_version, "flowdesk.omnigent_selector_registry.v1");
@@ -45,11 +45,13 @@ test("omnigent registry exposes all Claude variants per agent role", () => {
 
 test("omnigent registry exposes a dedicated Gemini agent", () => {
 	const entries = FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1.gemini_experimental;
-	assert.equal(entries.length, 1);
+	assert.equal(entries.length, 4);
 	assert.equal(entries[0].agent, "gemini-agent");
 	assert.equal(entries[0].harness, "antigravity-native");
 	assert.equal(entries[0].provider_family, "gemini");
 	assert.equal(entries[0].model, "google/gemini-3.1-flash-lite");
+	assert.deepEqual(new Set(entries.map((entry) => entry.model_tier)), new Set(["flash-lite", "flash", "pro"]));
+	assert.ok(entries.some((entry) => entry.model === "gemini-3.5-flash"));
 });
 
 test("omnigent selection matches Python/TypeScript parity golden cases", () => {
@@ -87,6 +89,76 @@ test("omnigent selection preserves Codex subscription default as null model", ()
 	assert.match(result.reason_codes.join("|"), /subscription_harness_default_model/);
 });
 
+test("omnigent selection can choose Codex fast model tier", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-codex-fast", task_role: "implementation", allowed_provider_families: ["openai"], model_tier: "fast" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "openai");
+	assert.equal(result.harness, "codex");
+	assert.equal(result.model, "openai/gpt-5.4-mini-fast");
+	assert.match(result.reason_codes.join("|"), /model_tier_preference_applied/);
+	assert.match(result.reason_codes.join("|"), /model_family_compatible/);
+});
+
+test("omnigent selection can choose Claude Sonnet 5 model tier", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-claude-sonnet-5", task_role: "architecture", allowed_provider_families: ["claude"], model_tier: "sonnet" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "claude");
+	assert.equal(result.harness, "claude-native");
+	assert.equal(result.model, "claude-sonnet-5");
+	assert.match(result.reason_codes.join("|"), /model_tier_preference_applied/);
+});
+
+test("omnigent selection can choose Codex spark model tier", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-codex-spark", task_role: "general", allowed_provider_families: ["openai"], model_tier: "spark" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.agent, "general-agent");
+	assert.equal(result.harness, "codex");
+	assert.equal(result.model, "openai/gpt-5.3-codex-spark");
+});
+
+test("omnigent selection can choose exact preferred model", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-codex-preferred", task_role: "architecture", allowed_provider_families: ["openai"], preferred_model: "openai/gpt-5.4" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.model, "openai/gpt-5.4");
+	assert.match(result.reason_codes.join("|"), /preferred_model_applied/);
+});
+
+test("omnigent selection can choose Gemini pro model tier", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-gemini-pro", task_role: "gemini_experimental", allowed_provider_families: ["gemini"], model_tier: "pro" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.agent, "gemini-agent");
+	assert.equal(result.harness, "antigravity-native");
+	assert.equal(result.model, "google/gemini-3.1-pro-preview");
+	assert.match(result.reason_codes.join("|"), /model_tier_preference_applied/);
+});
+
+test("omnigent selection can choose Gemini 3.5 Flash model tier", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-gemini-35-flash", task_role: "gemini_experimental", allowed_provider_families: ["gemini"], model_tier: "flash" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.agent, "gemini-agent");
+	assert.equal(result.harness, "antigravity-native");
+	assert.equal(result.model, "gemini-3.5-flash");
+	assert.match(result.reason_codes.join("|"), /model_tier_preference_applied/);
+});
+
 test("omnigent selection defaults to allowing Gemini for Gemini-only roles", () => {
 	const result = selectFlowDeskOmnigentAgentModelV1({ task_id: "task-gemini-default", task_role: "gemini_experimental" }, new Date("2026-06-26T00:00:00.000Z"));
 	assert.equal(result.selection_status, "selected");
@@ -103,7 +175,7 @@ test("omnigent selection promotes high-complexity implementation to reasoning mo
 	assert.equal(result.selection_status, "selected");
 	assert.equal(result.provider_family, "claude");
 	assert.equal(result.harness, "claude-native");
-	assert.equal(result.model, "claude-sonnet-4-6");
+	assert.equal(result.model, "claude-sonnet-5");
 	assert.match(result.reason_codes.join("|"), /task_tier_prefers_reasoning_model/);
 });
 
@@ -115,7 +187,7 @@ test("omnigent selection promotes high-level architecture phase to reasoning mod
 	assert.equal(result.selection_status, "selected");
 	assert.equal(result.provider_family, "claude");
 	assert.equal(result.harness, "claude-native");
-	assert.equal(result.model, "claude-sonnet-4-6");
+	assert.equal(result.model, "claude-sonnet-5");
 });
 
 test("omnigent selection promotes critical verification to Claude Haiku", () => {
