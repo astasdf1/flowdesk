@@ -1,0 +1,114 @@
+{
+  "schema_version": "flowdesk.omnigent_selector_registry.v1",
+  "authority": "advisory_registry_only",
+  "roles": {
+    "policy_security": [
+      {
+        "agent": "policy-security-agent",
+        "harness": "claude-sdk",
+        "model": "claude-opus-4-8",
+        "provider_family": "claude",
+        "reason_code": "role_policy_security_prefers_deep_reasoning",
+        "confidence": "high"
+      },
+      {
+        "agent": "policy-security-agent",
+        "harness": "codex",
+        "model": null,
+        "provider_family": "openai",
+        "reason_code": "role_policy_security_prefers_deep_reasoning",
+        "confidence": "medium"
+      }
+    ],
+    "architecture": [
+      {
+        "agent": "architecture-agent",
+        "harness": "codex",
+        "model": null,
+        "provider_family": "openai",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "high"
+      },
+      {
+        "agent": "architecture-agent",
+        "harness": "claude-sdk",
+        "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_architecture_prefers_frontier_reasoning",
+        "confidence": "medium"
+      }
+    ],
+    "implementation": [
+      {
+        "agent": "implementation-agent",
+        "harness": "codex",
+        "model": null,
+        "provider_family": "openai",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "high"
+      },
+      {
+        "agent": "implementation-agent",
+        "harness": "claude-sdk",
+        "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_implementation_prefers_coding_harness",
+        "confidence": "medium"
+      }
+    ],
+    "verification": [
+      {
+        "agent": "verification-agent",
+        "harness": "codex",
+        "model": null,
+        "provider_family": "openai",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "high"
+      },
+      {
+        "agent": "verification-agent",
+        "harness": "claude-sdk",
+        "model": "claude-haiku-4-5",
+        "provider_family": "claude",
+        "reason_code": "role_verification_prefers_cost_controlled_model",
+        "confidence": "medium"
+      }
+    ],
+    "research": [
+      {
+        "agent": "research-agent",
+        "harness": "claude-sdk",
+        "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_research_prefers_sonnet_context",
+        "confidence": "high"
+      },
+      {
+        "agent": "research-agent",
+        "harness": "codex",
+        "model": null,
+        "provider_family": "openai",
+        "reason_code": "role_research_prefers_sonnet_context",
+        "confidence": "medium"
+      }
+    ],
+    "general": [
+      {
+        "agent": "general-agent",
+        "harness": "codex",
+        "model": null,
+        "provider_family": "openai",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      },
+      {
+        "agent": "general-agent",
+        "harness": "claude-sdk",
+        "model": "claude-sonnet-4-6",
+        "provider_family": "claude",
+        "reason_code": "role_general_prefers_balanced_model",
+        "confidence": "medium"
+      }
+    ]
+  }
+}

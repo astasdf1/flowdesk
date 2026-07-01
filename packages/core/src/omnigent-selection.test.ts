@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { selectFlowDeskOmnigentAgentModelV1, validateFlowDeskOmnigentSelectionV1 } from "./index.js";
+import { FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1, selectFlowDeskOmnigentAgentModelV1, validateFlowDeskOmnigentSelectionV1 } from "./index.js";
 
 interface ParityCase {
 	name: string;
@@ -20,6 +20,17 @@ interface ParityCase {
 }
 
 const parityCases = JSON.parse(readFileSync("packages/omnigent-tool/tests/fixtures/omnigent_selection_parity_cases.json", "utf8")) as ParityCase[];
+const registryArtifact = JSON.parse(readFileSync("packages/omnigent-tool/src/flowdesk_omnigent/omnigent_selector_registry.v1.json", "utf8")) as {
+	schema_version: string;
+	authority: string;
+	roles: typeof FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1;
+};
+
+test("omnigent TypeScript registry matches shared registry artifact", () => {
+	assert.equal(registryArtifact.schema_version, "flowdesk.omnigent_selector_registry.v1");
+	assert.equal(registryArtifact.authority, "advisory_registry_only");
+	assert.deepEqual(registryArtifact.roles, FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1);
+});
 
 test("omnigent selection matches Python/TypeScript parity golden cases", () => {
 	for (const parityCase of parityCases) {

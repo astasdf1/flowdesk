@@ -7,13 +7,34 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from flowdesk_omnigent.selection import RegistryEntry, select_agent_model
+from flowdesk_omnigent.selection import DEFAULT_REGISTRY, RegistryEntry, select_agent_model
 
 
 PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
+REGISTRY_ARTIFACT_PATH = Path(__file__).parents[1] / "src" / "flowdesk_omnigent" / "omnigent_selector_registry.v1.json"
 
 
 class SelectionTests(unittest.TestCase):
+    def test_python_registry_matches_shared_registry_artifact(self) -> None:
+        artifact = json.loads(REGISTRY_ARTIFACT_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(artifact["schema_version"], "flowdesk.omnigent_selector_registry.v1")
+        self.assertEqual(artifact["authority"], "advisory_registry_only")
+        normalized = {
+            role: [
+                {
+                    "agent": entry.agent,
+                    "harness": entry.harness,
+                    "model": entry.model,
+                    "provider_family": entry.provider_family,
+                    "reason_code": entry.reason_code,
+                    "confidence": entry.confidence,
+                }
+                for entry in entries
+            ]
+            for role, entries in DEFAULT_REGISTRY.items()
+        }
+        self.assertEqual(artifact["roles"], normalized)
+
     def test_selection_parity_golden_cases(self) -> None:
         cases = json.loads(PARITY_FIXTURE_PATH.read_text(encoding="utf-8"))
         for case in cases:

@@ -54,7 +54,7 @@ interface RegistryEntry {
 const ROLE_VALUES = new Set<FlowDeskOmnigentTaskRoleV1>(["policy_security", "architecture", "implementation", "verification", "research", "general", "gemini_experimental"]);
 const PROVIDER_FAMILIES = new Set<FlowDeskOmnigentProviderFamilyV1>(["claude", "openai", "gemini"]);
 
-const DEFAULT_REGISTRY: Record<Exclude<FlowDeskOmnigentTaskRoleV1, "gemini_experimental">, readonly RegistryEntry[]> = {
+export const FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1: Record<Exclude<FlowDeskOmnigentTaskRoleV1, "gemini_experimental">, readonly RegistryEntry[]> = {
 	policy_security: [
 		{ agent: "policy-security-agent", harness: "claude-sdk", model: "claude-opus-4-8", provider_family: "claude", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "high" },
 		{ agent: "policy-security-agent", harness: "codex", model: null, provider_family: "openai", reason_code: "role_policy_security_prefers_deep_reasoning", confidence: "medium" },
@@ -97,7 +97,7 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 	const allowed = allowedProviderFamilies(request.allowed_provider_families);
 	const tierReason = taskTierReasonCode(request);
 	let providerUsageBlocked = false;
-	for (const entry of orderedEntriesForTask(request, DEFAULT_REGISTRY[taskRole])) {
+	for (const entry of orderedEntriesForTask(request, FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1[taskRole])) {
 		if (!allowed.has(entry.provider_family)) continue;
 		if (!providerUsageAllows(request, entry.provider_family)) {
 			providerUsageBlocked = true;

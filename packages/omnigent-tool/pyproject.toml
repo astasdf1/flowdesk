@@ -43,6 +43,7 @@ include = [
   "README.md",
   "LICENSE",
   "src/flowdesk_omnigent/**/*.py",
+  "src/flowdesk_omnigent/**/*.json",
   "src/flowdesk_omnigent/templates/**/*.yaml",
   "src/flowdesk_omnigent/py.typed",
   "tests/**/*.py",
