@@ -26,12 +26,11 @@ tools:
   flowdesk:
     type: mcp
     description: FlowDesk advisory selector MCP server.
-    command: /Users/bagel_macpro_055/Documents/work/projects/omnigent/.venv/bin/python
-    args:
-      - -m
-      - flowdesk_omnigent.mcp_server
-    env:
-      PYTHONPATH: /Users/bagel_macpro_055/Documents/work/projects/flowdesk/packages/omnigent-tool/src
+    # Supported, portable form: the console script exposed by installing
+    # flowdesk-omnigent-tool (editable or from PyPI). Run Omnigent with PATH
+    # including the venv bin so this resolves. See OMNIGENT_MCP_OPERATION.md
+    # "Supported invocation" for the dev-only python -m fallback.
+    command: flowdesk-omnigent-mcp
 
   agents:
     - policy-security-agent

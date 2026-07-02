@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
-from flowdesk_omnigent.template_installer import build_install_plan, install_templates
+from flowdesk_omnigent.template_installer import MANIFEST_NAME, build_install_plan, check_templates, install_templates
 
 
 class TemplateInstallerTests(unittest.TestCase):
@@ -44,6 +45,34 @@ class TemplateInstallerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked_existing_paths")
         self.assertTrue(result["blocked_paths"])
+
+
+    def test_install_writes_manifest_and_check_reports_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_templates(root)
+            manifest_path = root / MANIFEST_NAME
+            self.assertTrue(manifest_path.exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema"], "flowdesk.omnigent_template_manifest.v1")
+            self.assertIn("FD-OC/config.yaml", manifest["files"])
+            check = check_templates(root)
+        self.assertEqual(check["status"], "current")
+        self.assertEqual(check["drifted_files"], {})
+
+    def test_check_detects_user_modified_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_templates(root)
+            (root / "FD-OC" / "config.yaml").write_text("user edited", encoding="utf-8")
+            check = check_templates(root)
+        self.assertEqual(check["status"], "drift")
+        self.assertEqual(check["drifted_files"].get("FD-OC/config.yaml"), "modified")
+
+    def test_check_reports_not_installed_on_empty_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            check = check_templates(Path(tmp))
+        self.assertEqual(check["status"], "not_installed")
 
 
 if __name__ == "__main__":

@@ -17,19 +17,24 @@ Example fixture:
 
 - `examples/omnigent-flowdesk-mcp/config.yaml`
 
-Inline MCP shape:
+### Supported invocation
+
+There is **one supported invocation**: the `flowdesk-omnigent-mcp` console script
+that `flowdesk-omnigent-tool` installs (editable or from PyPI). Fixtures use it and
+no absolute paths, so they are portable. Run Omnigent with `PATH` including the
+install venv's `bin` directory so the script resolves.
 
 ```yaml
 tools:
   flowdesk:
     type: mcp
-    command: /Users/bagel_macpro_055/Documents/work/projects/omnigent/.venv/bin/python
-    args:
-      - -m
-      - flowdesk_omnigent.mcp_server
-    env:
-      PYTHONPATH: /Users/bagel_macpro_055/Documents/work/projects/flowdesk/packages/omnigent-tool/src
+    command: flowdesk-omnigent-mcp
 ```
+
+The `python -m flowdesk_omnigent.mcp_server` form with an explicit interpreter and
+`PYTHONPATH` is a **dev-only fallback** for running against a source checkout
+without installing the console script; do not use it in shared fixtures or docs
+as the primary path (it hardcodes machine-specific absolute paths).
 
 ## Operational Checks
 
