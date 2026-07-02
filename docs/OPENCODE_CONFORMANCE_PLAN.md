@@ -1,5 +1,8 @@
 # OpenCode Conformance Plan
 
+> **Omnigent experimental track 표기 (2026-07-02)**: 이 문서의 conformance 증거·게이트는 **OpenCode 트랙 전용**이다. Omnigent 통합(ADR 0002/0003)은 별도의 experimental track으로, 여기의 어떤 게이트에도 산입되지 않고(non-gating) 이 문서의 phase 번호도 공유하지 않는다. Omnigent 트랙의 계약 검증은 `docs/omnigent/OMNIGENT_PHASE_BACKLOG.md`와 주간 CI `contract-omnigent-pinned.yml`(핀 버전 매트릭스: `docs/omnigent/OMNIGENT_SETUP.md`)이 담당한다.
+
+
 ## Purpose
 
 FlowDesk must not enable real OpenCode dispatch or hard managed chat control based on assumptions. This plan defines plugin/SDK-observable evidence for a pinned OpenCode release or commit. Release 1 uses chat as the normal entry point and routes accepted requests into guarded command-backed FlowDesk workflows when mutation/throw behavior is proven, but it must not claim main-chat cancellation or SDK-scoped noReply control. FlowDesk also targets delegated workflow authoring so the main agent keeps only routing, compact summaries, Guard handoff, and safe next actions in context.

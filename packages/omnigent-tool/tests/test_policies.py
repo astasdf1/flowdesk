@@ -218,6 +218,28 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("keep", task_ids)
         self.assertIn("new", task_ids)
 
+    def test_guard_cache_partitions_by_session_and_isolates_eviction(self) -> None:
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "guard-cache.json")
+            with patch.dict(os.environ, {"FLOWDESK_OMNIGENT_GUARD_CACHE_PATH": cache}):
+                # Session B writes one record; session A floods its own partition.
+                _policies._append_cached_selection_record(
+                    {"task_id": "task-b", "agent": "architecture-agent", "selection_status": "selected", "expires_at": future, "session_ref": "ses-b"}
+                )
+                for index in range(210):
+                    _policies._append_cached_selection_record(
+                        {"task_id": f"task-a-{index}", "agent": "architecture-agent", "selection_status": "selected", "expires_at": future, "session_ref": "ses-a"}
+                    )
+                # Partition isolation: B's record survives A's flood (no cross-session
+                # eviction), and A's reader does not see B's record.
+                b_records = _policies._read_cached_selection_records("ses-b")
+                a_records = _policies._read_cached_selection_records("ses-a")
+        self.assertIn("task-b", {r.get("task_id") for r in b_records})
+        self.assertNotIn("task-b", {r.get("task_id") for r in a_records})
+        # A's own window stays bounded.
+        self.assertLessEqual(len([r for r in a_records if str(r.get("task_id", "")).startswith("task-a-")]), 200)
+
     def test_guard_reads_canonical_sys_session_send_event_shape(self) -> None:
         # Pins the Omnigent sys_session_send tool_call shape the guard depends on:
         # agent at arguments.agent, task id at arguments.args.task_id (or title),

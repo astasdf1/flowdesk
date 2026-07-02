@@ -224,14 +224,19 @@ def _append_cached_selection_record(record: Mapping[str, Any]) -> None:
     # We harden the cheap, correct parts: 0700 dir / 0600 file so other users
     # cannot read or forge it, a unique per-process tmp name so concurrent writers
     # do not clobber a shared tmp, and O_NOFOLLOW so a swapped symlink is refused.
-    path = _guard_cache_path()
+    # Records that carry a session_ref go to a per-session partition file so one
+    # session's selections cannot evict another session's records from the
+    # bounded window (multi-session isolation for the eviction dimension; the
+    # match itself already filters on session_ref).
+    session_ref = record.get("session_ref")
+    path = _guard_cache_path(session_ref if isinstance(session_ref, str) else None)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
-        records = [r for r in _read_cached_selection_records() if not _selection_is_expired(r)]
+        records = [r for r in _read_partition(path) if not _selection_is_expired(r)]
         records.append(dict(record))
         records = records[-_MAX_IN_MEMORY_SELECTION_RECORDS:]
         _cleanup_stale_guard_cache_tmp(path)
@@ -266,8 +271,17 @@ def _cleanup_stale_guard_cache_tmp(path: Path) -> None:
         return
 
 
-def _read_cached_selection_records() -> list[Mapping[str, Any]]:
-    path = _guard_cache_path()
+def _read_cached_selection_records(session_ref: str | None = None) -> list[Mapping[str, Any]]:
+    # Read the caller-session partition first (when known), then the global file
+    # (records written without a session id, and pre-partition legacy caches).
+    records: list[Mapping[str, Any]] = []
+    if session_ref is not None:
+        records.extend(_read_partition(_guard_cache_path(session_ref)))
+    records.extend(_read_partition(_guard_cache_path(None)))
+    return records
+
+
+def _read_partition(path: Path) -> list[Mapping[str, Any]]:
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
@@ -289,11 +303,15 @@ def _read_cached_selection_records() -> list[Mapping[str, Any]]:
     return [item for item in payload if isinstance(item, Mapping)]
 
 
-def _guard_cache_path() -> Path:
+def _guard_cache_path(session_ref: str | None = None) -> Path:
     override = os.environ.get(_GUARD_CACHE_ENV)
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".cache" / "flowdesk" / "omnigent-selection-guard-cache.json"
+    base = Path(override).expanduser() if override else Path.home() / ".cache" / "flowdesk" / "omnigent-selection-guard-cache.json"
+    if session_ref is None:
+        return base
+    safe = "".join(ch for ch in session_ref if ch.isalnum() or ch in "_-")[:64]
+    if not safe:
+        return base
+    return base.with_name(f"{base.stem}.{safe}{base.suffix}")
 
 
 def _selection_from_tool_result(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -373,7 +391,7 @@ def _matching_recorded_selection(
     records = state.get(FLOWDESK_SELECTION_STATE_KEY)
     if not isinstance(records, list):
         records = []
-    combined_records = [*records, *local_selection_records, *_read_cached_selection_records()]
+    combined_records = [*records, *local_selection_records, *_read_cached_selection_records(_event_session_ref(event))]
     event_session_ref = _event_session_ref(event)
     task_id = _dispatch_task_id(arguments)
     agent = arguments.get("agent")

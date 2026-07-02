@@ -121,6 +121,7 @@ def _tool_definition() -> dict[str, Any]:
                 "preferred_model": {"type": "string"},
                 "allowed_models": {"type": "array", "items": {"type": ["string", "null"]}},
                 "allowed_provider_families": {"type": "array", "items": {"type": "string", "enum": ["claude", "openai", "gemini"]}},
+                "entitled_providers": {"type": "array", "items": {"type": "string", "enum": ["claude", "openai", "gemini"]}, "description": "Provider families the caller actually holds subscriptions for; absent/empty means no constraint."},
                 "preferred_provider_family": {"type": "string", "enum": ["claude", "openai", "gemini"]},
                 "requires_headless": {"type": "boolean"},
             },

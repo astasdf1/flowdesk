@@ -67,6 +67,7 @@ REASON_CODES = {
     "model_family_compatible",
     "model_family_mismatch_blocked",
     "provider_not_allowed",
+    "provider_not_entitled",
     "agent_not_available",
     "task_tier_prefers_reasoning_model",
     "model_tier_preference_applied",
@@ -251,10 +252,12 @@ def select_agent_model(
 
     allowed_provider_families = _allowed_provider_families(request)
     available_agents = _available_agents(request)
+    entitled_providers = _entitled_providers(request)
     entries = (registry or DEFAULT_REGISTRY).get(role, ())
 
     agent_unavailable = False
     provider_usage_blocked = False
+    provider_not_entitled = False
     tier_reason = _task_tier_reason_code(request)
     model_preference_reason = _model_preference_reason_code(request)
     for entry in _ordered_entries_for_task(request, entries):
@@ -262,6 +265,9 @@ def select_agent_model(
             agent_unavailable = True
             continue
         if entry.provider_family not in allowed_provider_families:
+            continue
+        if entitled_providers is not None and entry.provider_family not in entitled_providers:
+            provider_not_entitled = True
             continue
         if not _provider_usage_allows(request, entry.provider_family):
             provider_usage_blocked = True
@@ -287,6 +293,8 @@ def select_agent_model(
         blocked_reason = "provider_usage_unavailable"
     elif agent_unavailable:
         blocked_reason = "agent_not_available"
+    elif provider_not_entitled:
+        blocked_reason = "provider_not_entitled"
     else:
         blocked_reason = "provider_not_allowed"
     result = _blocked_response(
@@ -541,6 +549,23 @@ def _available_agents(request: Mapping[str, Any]) -> set[str] | None:
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         return set()
     return {item for item in raw if isinstance(item, str) and item}
+
+
+def _entitled_providers(request: Mapping[str, Any]) -> set[str] | None:
+    """Provider families the caller actually holds subscriptions/entitlements for.
+
+    Distinct from ``allowed_provider_families`` (policy allow) and
+    ``available_agents`` (parent-registered agents): this expresses "what the
+    user can actually use". An absent or empty value means no constraint
+    (Python-falsy, mirrored by ``pythonTruthy`` in the TS selector); a
+    malformed value fails closed to an empty set (blocks everything).
+    """
+    raw = request.get("entitled_providers")
+    if raw is None or (isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) and len(raw) == 0):
+        return None
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return set()
+    return {item for item in raw if isinstance(item, str) and item in {"claude", "openai", "gemini"}}
 
 
 def _ordered_entries_for_task(request: Mapping[str, Any], entries: tuple[RegistryEntry, ...]) -> tuple[RegistryEntry, ...]:

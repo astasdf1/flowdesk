@@ -48,7 +48,7 @@
 - [x] negative fixture: `blocked`/`non_dispatchable` 뒤 dispatch.
 - [x] negative fixture: Codex `model=null` selection 뒤 explicit model override.
 - [x] unit suite 재실행: `PYTHONPATH=packages/omnigent-tool/src ... unittest discover`.
-- [ ] 가능하면 live smoke transcript 일부를 redacted/minimized fixture로 재현한다.
+- [x] 가능하면 live smoke transcript 일부를 redacted/minimized fixture로 재현한다. (완료: `omnigent_function_history_selection_dispatch.json` — live-shaped history의 redaction-safe 재현 + `test_realistic_fixture_normalizes_and_verifies_end_to_end`)
 
 현재 구현 상태: `flowdesk_omnigent.trace_adapter.normalize_omnigent_trace_events`가 Omnigent `function_call` / `function_call_output` item shape와 generic `tool_calls` shape를 받아 redaction-safe normalized events를 생성한다. Verification-only adapter이며 dispatch deny authority를 만들지 않는다.
 
@@ -111,14 +111,14 @@
 - [x] OpenCode `flowdesk.task_model_selection.v1`과 공통 authority fields를 비교한다.
 - [x] evidence 저장 원칙을 정한다: transcript/history가 source of truth, optional debug export는 derived evidence.
 - [x] redaction policy를 schema field별로 정의한다.
-- [ ] conformance 문서에 Omnigent experimental track을 어떻게 표시할지 결정한다.
+- [x] conformance 문서에 Omnigent experimental track을 어떻게 표시할지 결정한다. (완료 2026-07-02: `OPENCODE_CONFORMANCE_PLAN.md` 상단 note — non-gating experimental track, 번호체계 비공유, 계약 검증은 pinned CI)
 
 ### 구현 Todo
 
 - [x] core schema/type definitions를 추가한다.
-- [ ] Python response shape와 core schema 사이 golden examples를 추가한다.
+- [x] Python response shape와 core schema 사이 golden examples를 추가한다. (완료 2026-07-02: `omnigent_selection_golden_examples.json` 4예제 — Python은 재생성-동일성, TS는 `validateFlowDeskOmnigentSelectionV1` 검증)
 - [x] trace verifier result를 schema-validating fixture로 고정한다.
-- [ ] optional debug export writer를 schema-aligned derived evidence로 제한한다.
+- [x] optional debug export writer를 schema-aligned derived evidence로 제한한다. (완료 2026-07-02: writer는 응답 allowlist 투영만 기록 — `test_debug_evidence_writer_emits_only_schema_aligned_fields`로 고정, 요청/prompt 미에코)
 - [x] docs에 evidence source-of-truth와 derived debug artifact 차이를 명시한다.
 
 ### 검증 Todo
@@ -126,13 +126,13 @@
 - [x] schema validation tests.
 - [x] redaction tests: raw prompt, token-shaped string, credential path가 derived evidence에 포함되지 않음.
 - [x] OpenCode schema와 authority naming drift check.
-- [ ] Omnigent selection smoke artifact를 최소 redacted fixture로 검증한다.
+- [x] Omnigent selection smoke artifact를 최소 redacted fixture로 검증한다. (완료 2026-07-02: golden examples redaction-safe 테스트 — token/JWT-shape·credential path·prompt 부재 단언)
 
 ### 완료 기준
 
 - [x] Omnigent selection/trace outputs가 documented schema와 일치한다.
 - [x] OpenCode Release 1 evidence/authority와 이름 충돌이 없다.
-- [ ] debug/export artifact는 source-of-truth가 아니라 derived evidence로만 문서화된다.
+- [x] debug/export artifact는 source-of-truth가 아니라 derived evidence로만 문서화된다. (완료 2026-07-02: `OMNIGENT_DESIGN.md` Evidence 원칙 절)
 
 현재 구현 상태: core에 `FlowDeskOmnigentSelectionV1` / `FlowDeskOmnigentTraceVerificationV1` 타입과 validators가 있고, `schema-registry.ts` / `schema-artifacts.ts`에 later-release artifact로 등록되었다.
 
@@ -144,9 +144,9 @@
 
 ### Gate Todo
 
-- [ ] Phase 1b transcript adapter가 안정적으로 real trace를 검증한다.
-- [ ] Phase 2 CLI bridge 또는 static selector가 최소 2회 이상 smoke에서 안정 동작한다.
-- [ ] Phase 3 schema/evidence alignment가 완료된다.
+- [x] Phase 1b transcript adapter가 안정적으로 real trace를 검증한다. (realistic fixture E2E + quota-회피 관통 테스트)
+- [x] Phase 2 CLI bridge 또는 static selector가 최소 2회 이상 smoke에서 안정 동작한다. (static selector live smoke 다수: 20260626~0628 sentinel 기록)
+- [x] Phase 3 schema/evidence alignment가 완료된다. (2026-07-02 golden/redaction/derived-evidence/conformance 표기 완료)
 - [ ] local function tool의 한계가 명확히 기록된다: lifecycle, guardrail, distribution, shared service 중 무엇이 문제인지.
 - [ ] 사용자/프로젝트가 MCP 또는 upstream hook의 운영 복잡도를 감수할 가치가 있다고 판단한다.
 
@@ -266,9 +266,9 @@
 ### P2 — 제품 가치 증분 (Phase 3 hygiene보다 우선 검토)
 
 - [x] **Usage bridge** (완료 2026-07-02: `flowdesk-omnigent-usage-snapshot` CLI — `packages/core/src/omnigent-usage-snapshot{,-cli}.ts`. Claude/Codex/Gemini live collector → allowlist snapshot(atomic write) → `FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH`. 실자격증명 live E2E로 openai 81%/gemini 100% 수집→셀렉터 소비 확인. 공유 픽스처를 TS/Python 양쪽 테스트가 검증): OpenCode 트랙 live usage collector(Claude/OpenAI/Gemini) 출력을 strict allowlist schema로 정규화해 Omnigent selector의 snapshot 입력(env/path)으로 연결. snapshot을 caller가 수작업으로 만들어야 하는 현 UX가 핵심 가치(quota 보존)를 무력화하는 주 갭. (제품 HIGH)
-- [ ] **entitled_providers 1급 입력**: "사용자가 실제 보유한 구독/자격" allowlist를 selector 입력으로 formalize. `available_agents`(parent 등록 목록)와 구독 자격은 다른 개념. "구독 없는 provider 추천 금지"를 negative fixture로 고정. (제품 HIGH)
-- [ ] **Quota-보존 증명 시나리오** (부분 완료 2026-07-02: selection-level 증명은 usage-bridge 픽스처 테스트로 고정 — claude exhausted→openai 선택. 잔여: trace-verifier까지 관통하는 "회피 결정이 실제 dispatch에 반영" redacted fixture): "A 90% 소모 → selector가 A 회피, B 선택 → A quota 미증가"를 redacted fixture + trace verifier 검증으로 고정하고 완료 기준에 포함. 현재 가치 제안은 기능 정상성 테스트만 있고 보존 결과 지표가 없다. (제품 HIGH)
-- [ ] **제품 성공 지표 정의**: 최소 2개(예: 추천 수용률, quota-회피가 실소모를 줄인 사례 수)와 측정 방법을 정의하고 Phase 4 승격 gate("반복 사용 가치")를 주관 판단이 아닌 이 지표에 연결. (제품 MED)
+- [x] **entitled_providers 1급 입력** (완료 2026-07-02: Py+TS selector에 `entitled_providers` — 절대/empty=무제약(pythonTruthy parity), 미보유 family 스킵, 전부 미보유 시 `provider_not_entitled` blocked. MCP schema 추가, parity fixture 3케이스→20): "사용자가 실제 보유한 구독/자격" allowlist를 selector 입력으로 formalize. `available_agents`(parent 등록 목록)와 구독 자격은 다른 개념. "구독 없는 provider 추천 금지"를 negative fixture로 고정. (제품 HIGH)
+- [x] **Quota-보존 증명 시나리오** (완료 2026-07-02: selection-level은 usage-bridge 픽스처, trace-level은 `test_quota_avoidance_flows_through_selection_dispatch_and_verifies` — 실제 selector가 exhausted claude를 회피해 openai/codex 선택→해당 dispatch가 adapter→verifier pass까지 관통): "A 90% 소모 → selector가 A 회피, B 선택 → A quota 미증가"를 redacted fixture + trace verifier 검증으로 고정하고 완료 기준에 포함. 현재 가치 제안은 기능 정상성 테스트만 있고 보존 결과 지표가 없다. (제품 HIGH)
+- [x] **제품 성공 지표 정의** (완료 2026-07-02: `OMNIGENT_DESIGN.md` "제품 성공 지표" — 추천 수용률·quota-회피 유효 사례, trace adapter/verifier 기반 측정, Phase 4 gate를 "10회 중 수용률≥80% AND 회피≥1"로 연결): 최소 2개(예: 추천 수용률, quota-회피가 실소모를 줄인 사례 수)와 측정 방법을 정의하고 Phase 4 승격 gate("반복 사용 가치")를 주관 판단이 아닌 이 지표에 연결. (제품 MED)
 - [ ] **snapshot 미주입 시 퇴화 명시**: usage snapshot이 없으면 selector는 정적 role 매핑으로 동작하며 quota-보존 가치가 발생하지 않음을 사용자 문서에 정직하게 명시. (제품 MED)
 
 ### 리뷰에서 기각/보류된 항목

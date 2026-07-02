@@ -46,6 +46,64 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(claude_models, CLAUDE_MODEL_SET)
                 self.assertTrue(any(entry.provider_family == "openai" and entry.model is None for entry in entries))
 
+    def test_selection_golden_examples_shape_is_stable(self) -> None:
+        # Golden bridge between the Python response shape and the core schema:
+        # regenerating each canonical request must produce exactly the golden
+        # object modulo the dynamic fields (selection_id/created_at/expires_at).
+        # The TS side validates the same fixture with
+        # validateFlowDeskOmnigentSelectionV1.
+        golden_path = Path(__file__).parent / "fixtures" / "omnigent_selection_golden_examples.json"
+        golden = json.loads(golden_path.read_text(encoding="utf-8"))
+        requests = {
+            "selected_policy_security_claude": {"task_id": "task-golden-selected", "task_role": "policy_security", "allowed_provider_families": ["claude", "openai"]},
+            "selected_codex_default_null_model": {"task_id": "task-golden-codex", "task_role": "architecture", "allowed_provider_families": ["openai"]},
+            "blocked_unknown_role": {"task_id": "task-golden-blocked", "task_role": "nonexistent"},
+            "blocked_provider_not_entitled": {"task_id": "task-golden-entitled", "task_role": "architecture", "allowed_provider_families": ["openai"], "entitled_providers": ["gemini"]},
+        }
+        self.assertEqual(set(golden), set(requests))
+        dynamic = {"selection_id", "created_at", "expires_at"}
+        for name, request in requests.items():
+            with self.subTest(example=name):
+                regenerated = select_agent_model(request, write_evidence=False)
+                expected = {k: v for k, v in golden[name].items() if k not in dynamic}
+                actual = {k: v for k, v in regenerated.items() if k not in dynamic}
+                self.assertEqual(actual, expected)
+
+    def test_selection_golden_examples_are_redaction_safe(self) -> None:
+        # Smoke-artifact redaction guarantee: golden selection artifacts must not
+        # contain token-shaped strings, credential paths, or prompt echoes.
+        import re
+
+        golden_path = Path(__file__).parent / "fixtures" / "omnigent_selection_golden_examples.json"
+        raw = golden_path.read_text(encoding="utf-8")
+        # Token-shaped secrets (anchored so "task-..." does not false-positive on "sk-").
+        self.assertIsNone(re.search(r"\bsk-[A-Za-z0-9]{8,}", raw))
+        self.assertIsNone(re.search(r"\beyJ[A-Za-z0-9_-]{10,}", raw))  # JWT-shaped
+        for marker in ("Bearer ", "oauth", "credentials.json", "auth.json", "task_description", "prompt"):
+            self.assertNotIn(marker, raw)
+
+    def test_debug_evidence_writer_emits_only_schema_aligned_fields(self) -> None:
+        # The optional debug log is DERIVED evidence: an allowlist projection of
+        # the flowdesk.omnigent_selection.v1 response only. It must never echo
+        # request fields (descriptions/prompts) or grow unlisted keys.
+        allowed = {
+            "schema_version", "selection_id", "task_id", "task_role", "selection_status",
+            "agent", "harness", "model", "provider_family", "reason_codes",
+            "blocked_labels", "created_at", "expires_at", "authority",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            log_path = os.path.join(d, "selection-log.jsonl")
+            with patch.dict(os.environ, {"FLOWDESK_OMNIGENT_SELECTION_LOG_PATH": log_path}):
+                select_agent_model(
+                    {"task_id": "task-debug-writer", "task_role": "architecture", "task_description": "SECRET prompt text", "allowed_provider_families": ["openai"]},
+                    write_evidence=True,
+                )
+            lines = [line for line in open(log_path, encoding="utf-8").read().splitlines() if line]
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertTrue(set(record).issubset(allowed), set(record) - allowed)
+        self.assertNotIn("SECRET", lines[0])
+
     def test_usage_bridge_fixture_is_accepted_and_skips_exhausted_provider(self) -> None:
         # Cross-language guarantee for the OpenCode->Omnigent usage bridge:
         # the TS builder (packages/core/src/omnigent-usage-snapshot.ts) asserts

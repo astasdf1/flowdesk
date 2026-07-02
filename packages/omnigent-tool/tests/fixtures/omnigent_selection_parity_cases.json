@@ -429,5 +429,79 @@
         "model_family_compatible"
       ]
     }
+  },
+  {
+    "name": "entitled_providers_filters_to_openai",
+    "request": {
+      "task_id": "task-parity-entitled-openai",
+      "task_role": "policy_security",
+      "allowed_provider_families": [
+        "claude",
+        "openai"
+      ],
+      "entitled_providers": [
+        "openai"
+      ]
+    },
+    "expected": {
+      "task_role": "policy_security",
+      "selection_status": "selected",
+      "agent": "policy-security-agent",
+      "harness": "codex",
+      "model": null,
+      "provider_family": "openai",
+      "confidence": "medium",
+      "reason_codes_include": [
+        "role_policy_security_prefers_deep_reasoning",
+        "subscription_harness_default_model"
+      ]
+    }
+  },
+  {
+    "name": "entitled_providers_none_available_blocks",
+    "request": {
+      "task_id": "task-parity-entitled-blocked",
+      "task_role": "architecture",
+      "allowed_provider_families": [
+        "openai"
+      ],
+      "entitled_providers": [
+        "gemini"
+      ]
+    },
+    "expected": {
+      "task_role": "architecture",
+      "selection_status": "blocked",
+      "confidence": "low",
+      "blocked_labels": [
+        "provider_not_entitled"
+      ],
+      "reason_codes_include": [
+        "provider_not_entitled"
+      ]
+    }
+  },
+  {
+    "name": "entitled_providers_empty_list_is_no_constraint",
+    "request": {
+      "task_id": "task-parity-entitled-empty",
+      "task_role": "architecture",
+      "allowed_provider_families": [
+        "openai"
+      ],
+      "entitled_providers": []
+    },
+    "expected": {
+      "task_role": "architecture",
+      "selection_status": "selected",
+      "agent": "architecture-agent",
+      "harness": "codex",
+      "model": null,
+      "provider_family": "openai",
+      "confidence": "high",
+      "reason_codes_include": [
+        "role_architecture_prefers_frontier_reasoning"
+      ]
+    }
   }
 ]

@@ -64,6 +64,20 @@ test("omnigent registry exposes a dedicated Gemini agent", () => {
 	assert.ok(entries.some((entry) => entry.model === "gemini-3.5-flash"));
 });
 
+test("python golden selection examples validate against the core schema", () => {
+	// Golden bridge for Phase 3 evidence alignment: the fixture holds REAL
+	// Python selector outputs (dynamic fields pinned); every one of them must
+	// satisfy the core validator, so the Python response shape and the core
+	// schema cannot drift apart silently.
+	const golden = JSON.parse(readFileSync("packages/omnigent-tool/tests/fixtures/omnigent_selection_golden_examples.json", "utf8")) as Record<string, unknown>;
+	const names = Object.keys(golden);
+	assert.ok(names.length >= 4, names.join(","));
+	for (const name of names) {
+		const validation = validateFlowDeskOmnigentSelectionV1(golden[name]);
+		assert.ok(validation.ok, `${name}: ${validation.errors.join("; ")}`);
+	}
+});
+
 test("omnigent selection matches Python/TypeScript parity golden cases", () => {
 	for (const parityCase of parityCases) {
 		const result = selectFlowDeskOmnigentAgentModelV1(parityCase.request, new Date("2026-06-26T00:00:00.000Z"));

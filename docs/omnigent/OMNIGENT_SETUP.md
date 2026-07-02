@@ -101,6 +101,14 @@ omnigent server start
 Python 코드 변경은 editable install이라 `git pull`만으로 즉시 반영된다.
 `uv sync`는 `pyproject.toml`이 변경된 경우에만 필요하다.
 
+### 검증된 Omnigent 버전 (호환 매트릭스)
+
+FlowDesk guard/trace adapter는 Omnigent 내부 shape(FunctionPolicy 이벤트, `sys_session_send` args, spec 로더)에 결합되어 있고 Omnigent는 pre-1.0이다. 아래 표의 조합만 검증되었으며, 주간 CI `.github/workflows/contract-omnigent-pinned.yml`이 핀된 커밋으로 계약을 재검한다. 새 버전 검증 시 이 표와 워크플로 `OMNIGENT_PIN`을 함께 갱신한다.
+
+| Omnigent 버전 | 커밋 | flowdesk-omnigent-tool | 검증일 | 검증 범위 |
+|---|---|---|---|---|
+| 0.3.0.dev0 | `741d5b52` | 0.1.7+working tree | 2026-07-02 | 전체 unit suite(108), fixture spec parse, guard import, live selection→guard→dispatch smoke(이전 세션) |
+
 ### Usage bridge: 실제 잔여 quota를 셀렉터에 공급
 
 셀렉터는 usage snapshot이 없으면 정적 role 매핑으로 동작한다(quota-보존 가치 없음). OpenCode 트랙의 live usage collector(Claude OAuth usage, Codex live usage, Gemini Code Assist quota)를 Omnigent 셀렉터 입력으로 연결하는 브리지 CLI가 제공된다:

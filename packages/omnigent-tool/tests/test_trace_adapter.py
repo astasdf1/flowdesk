@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import unittest
 
+from flowdesk_omnigent.selection import select_agent_model
 from flowdesk_omnigent.trace_adapter import normalize_omnigent_trace_events
 from flowdesk_omnigent.trace_verifier import verify_selection_dispatch_trace
 
@@ -259,6 +260,53 @@ class TraceAdapterTests(unittest.TestCase):
 
         result = verify_selection_dispatch_trace(normalized["events"])
         self.assertEqual(result["status"], "pass")
+
+    def test_quota_avoidance_flows_through_selection_dispatch_and_verifies(self) -> None:
+        # End-to-end quota-preservation proof at the trace level: the selector,
+        # given a usage snapshot with claude exhausted, avoids claude and selects
+        # openai/codex; that REAL selector output is recorded as the tool_result
+        # in an Omnigent-shaped history; the matching codex dispatch normalizes
+        # and passes post-run verification. This pins that the avoidance decision
+        # is reflected in an actually-verified dispatch, not just the selection.
+        selection = select_agent_model(
+            {
+                "task_id": "task-quota-avoid",
+                "task_role": "policy_security",
+                "allowed_provider_families": ["claude", "openai"],
+                "provider_usage": {
+                    "claude": {"alert_level": "exhausted", "remaining_percent": 0},
+                    "openai": {"alert_level": "ok", "remaining_percent": 82},
+                },
+            },
+            write_evidence=False,
+        )
+        self.assertEqual(selection["selection_status"], "selected")
+        self.assertEqual(selection["provider_family"], "openai")
+        self.assertEqual(selection["harness"], "codex")
+
+        normalized = normalize_omnigent_trace_events(
+            [
+                {
+                    "type": "function_call",
+                    "name": "flowdesk_select_agent_model",
+                    "arguments": json.dumps({"task_id": "task-quota-avoid", "task_role": "policy_security"}),
+                    "call_id": "call_select_quota",
+                },
+                {"type": "function_call_output", "call_id": "call_select_quota", "output": json.dumps(selection)},
+                {
+                    "type": "function_call",
+                    "name": "sys_session_send",
+                    "arguments": json.dumps(
+                        {"agent": "policy-security-agent", "title": "task-quota-avoid", "args": {"harness": "codex"}}
+                    ),
+                    "call_id": "call_dispatch_quota",
+                },
+            ]
+        )
+
+        result = verify_selection_dispatch_trace(normalized["events"])
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["error_count"], 0)
 
     def test_verifier_fails_when_model_and_harness_families_differ_from_normalized_history(self) -> None:
         # Model overridden to openai but harness left as claude-native -> the dispatched

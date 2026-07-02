@@ -18,6 +18,7 @@ export interface FlowDeskOmnigentSelectionRequestV1 {
 	phase?: unknown;
 	tier?: unknown;
 	allowed_provider_families?: unknown;
+	entitled_providers?: unknown;
 	available_agents?: unknown;
 	allowed_agents?: unknown;
 	preferred_provider_family?: unknown;
@@ -182,6 +183,16 @@ function availableAgents(request: FlowDeskOmnigentSelectionRequestV1): Set<strin
 	return new Set(raw.filter((item): item is string => typeof item === "string" && item.length > 0));
 }
 
+// Provider families the caller actually holds subscriptions for — distinct from
+// allowed_provider_families (policy) and available_agents (parent registration).
+// Absent/empty = no constraint (Python-falsy parity); malformed fails closed.
+function entitledProviders(request: FlowDeskOmnigentSelectionRequestV1): Set<FlowDeskOmnigentProviderFamilyV1> | undefined {
+	const raw = request.entitled_providers;
+	if (raw === undefined || raw === null || (Array.isArray(raw) && raw.length === 0)) return undefined;
+	if (!Array.isArray(raw)) return new Set();
+	return new Set(raw.filter((item): item is FlowDeskOmnigentProviderFamilyV1 => item === "claude" || item === "openai" || item === "gemini"));
+}
+
 function entryCompatibilityError(entry: RegistryEntry): string | null {
 	if (PROVIDER_BY_HARNESS[entry.harness] !== entry.provider_family) return "model_family_mismatch_blocked";
 	if (entry.model === null) return null;
@@ -202,16 +213,22 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 	const taskRole = role as FlowDeskOmnigentTaskRoleV1;
 	const allowed = allowedProviderFamilies(request.allowed_provider_families);
 	const available = availableAgents(request);
+	const entitled = entitledProviders(request);
 	const tierReason = taskTierReasonCode(request);
 	const modelPreferenceReason = modelPreferenceReasonCode(request);
 	let providerUsageBlocked = false;
 	let agentUnavailable = false;
+	let providerNotEntitled = false;
 	for (const entry of orderedEntriesForTask(request, FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1[taskRole])) {
 		if (available !== undefined && !available.has(entry.agent)) {
 			agentUnavailable = true;
 			continue;
 		}
 		if (!allowed.has(entry.provider_family)) continue;
+		if (entitled !== undefined && !entitled.has(entry.provider_family)) {
+			providerNotEntitled = true;
+			continue;
+		}
 		if (!providerUsageAllows(request, entry.provider_family)) {
 			providerUsageBlocked = true;
 			continue;
@@ -222,7 +239,7 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 		}
 		return selectedSelection({ taskId, role: taskRole, entry, now, extraReasonCodes: [tierReason, modelPreferenceReason].filter((reason): reason is string => typeof reason === "string") });
 	}
-	const blockedReason = providerUsageBlocked ? "provider_usage_unavailable" : agentUnavailable ? "agent_not_available" : "provider_not_allowed";
+	const blockedReason = providerUsageBlocked ? "provider_usage_unavailable" : agentUnavailable ? "agent_not_available" : providerNotEntitled ? "provider_not_entitled" : "provider_not_allowed";
 	return negativeSelection({ taskId, role: taskRole, status: "blocked", reasonCodes: [blockedReason], blockedLabels: [blockedReason], now });
 }
 

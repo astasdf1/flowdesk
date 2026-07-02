@@ -1,0 +1,61 @@
+# Contract check against a PINNED Omnigent version.
+#
+# The FlowDesk guard/trace adapter depend on Omnigent-internal shapes
+# (FunctionPolicy tool_call/tool_result events, sys_session_send args, spec
+# loader). Omnigent is pre-1.0, so this workflow pins the exact verified
+# commit and re-runs the contract surface against it weekly: if the pinned
+# install, the spec parse of our fixture, or the guard/adapter test suite
+# breaks, the drift is caught here instead of silently failing open at
+# runtime. Update OMNIGENT_PIN (and the version matrix in
+# docs/omnigent/OMNIGENT_SETUP.md) when a new Omnigent version is verified.
+name: Contract (pinned Omnigent)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 3 * * 1" # weekly, Monday 03:00 UTC
+
+permissions:
+  contents: read
+
+env:
+  # omnigent 0.3.0.dev0 verified 2026-07-02 (harness coupling + guard suite).
+  OMNIGENT_PIN: 741d5b52302cdfc72c03d6c1d469c2a45b5b80f6
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pipx install uv
+      - name: Install pinned Omnigent + FlowDesk tool
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python "omnigent @ git+https://github.com/omnigent-ai/omnigent@${OMNIGENT_PIN}"
+          uv pip install --python .venv/bin/python -e packages/omnigent-tool
+      - name: FlowDesk Omnigent tool suite (guard/adapter/verifier contract)
+        run: .venv/bin/python -m unittest discover -s packages/omnigent-tool/tests -v
+      - name: Fixture parses with the pinned Omnigent spec loader
+        run: |
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          from importlib import metadata
+          import omnigent.spec as spec
+          print("omnigent", metadata.version("omnigent"))
+          s = spec.load(Path("examples/omnigent-flowdesk-pypi"), expand_env=False)
+          mcp_names = [m.name for m in s.mcp_servers]
+          assert "flowdesk" in mcp_names, mcp_names
+          agents = list(s.tools.agents)
+          for expected in ("policy-security-agent", "architecture-agent", "verification-agent"):
+              assert expected in agents, agents
+          from flowdesk_omnigent.policies import omnigent_selection_dispatch_guard
+          assert callable(omnigent_selection_dispatch_guard)
+          print("CONTRACT_PINNED_OMNIGENT_OK", mcp_names, agents)
+          PY

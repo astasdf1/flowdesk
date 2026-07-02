@@ -30,6 +30,8 @@ FlowDesk는 **선택 레이어**만 담당한다:
 
 context 관리, memory, orchestration loop, 실행, 결과 수집은 Omnigent가 담당한다.
 
+**Evidence 원칙**: selection evidence의 source of truth는 Omnigent transcript/tool-call history다. `FLOWDESK_OMNIGENT_SELECTION_LOG_PATH`로 켜는 optional debug log는 **derived evidence**일 뿐이며, `flowdesk.omnigent_selection.v1` 응답의 allowlist 필드 투영만 기록한다(요청 본문·prompt·credential 미포함 — `test_debug_evidence_writer_emits_only_schema_aligned_fields`로 고정). 감사·검증은 transcript를 adapter/verifier로 정규화해 수행하고, debug log를 승인·감사 근거로 쓰지 않는다.
+
 ---
 
 ## 목표 아키텍처 (방향성)
@@ -70,6 +72,17 @@ Orchestrator (Omnigent, claude-sdk harness, Claude 구독)
 OpenCode 트랙의 Phase 7 Operational Intelligence 자산(9-dimension scoring engine, score ledger, HHI/ESS rollup, hash chain/JCS, GitHub publisher, OI MCP tools)은 **Omnigent 셀렉터 경로에서 사용하지 않는다.** 결정: [ADR 0003](../adr/0003-omnigent-first-selection-layer.md) 및 사용자 결정(2026-07-02)에 따라 OI를 OpenCode 트랙 전용 자산으로 격리한다.
 
 Omnigent 셀렉터는 정적 레지스트리 아티팩트(`omnigent_selector_registry.v1.json`) + task role/tier + provider usage/health snapshot 입력만으로 advisory 선택을 계산한다. `packages/omnigent-tool`은 `packages/core`의 operational-intelligence 모듈이나 `packages/opencode-plugin`에 의존하지 않는다(ADR 0002 구현 규칙). OI 스코어링을 Omnigent 경로에 연결하려면 별도 ADR로 재검토한다.
+
+### 제품 성공 지표 (2026-07-02 정의)
+
+Phase 4/후속 승격 판단("반복 사용 가치")은 주관 판단이 아니라 아래 두 지표로 한다. 둘 다 기존 trace adapter/verifier 출력에서 기계적으로 산출 가능하다.
+
+| 지표 | 정의 | 측정 방법 |
+|---|---|---|
+| **추천 수용률** | guarded dispatch 중 선행 FlowDesk selection이 존재하고 (family, harness) 바인딩이 검증-통과한 비율 | transcript를 `normalize_omnigent_trace_events`로 정규화 → `verify_selection_dispatch_trace` 결과에서 `dispatch_without_prior_selection`/binding 오류가 없는 dispatch 비율 |
+| **quota-회피 유효 사례** | usage snapshot에 `exhausted`/`critical` family가 있고, selection이 그 family를 회피했으며, 후속 dispatch가 회피된 binding으로 검증-통과한 세션 수 | selection의 provider_family ≠ exhausted family + 동일 task dispatch verifier pass 조합 카운트 (레퍼런스 구현: `test_quota_avoidance_flows_through_selection_dispatch_and_verifies`) |
+
+**승격 gate 연결**: 최근 10회 실사용 orchestration 기준 수용률 ≥ 80% AND quota-회피 유효 사례 ≥ 1 이면 "반복 사용 가치 있음"으로 판정한다. 미달이면 MCP/upstream hook 승격을 보류한다.
 
 ---
 
