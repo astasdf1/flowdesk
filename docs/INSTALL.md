@@ -195,6 +195,15 @@ flowdesk-omnigent-start --omnigent-bin /path/to/omnigent
 
 The launcher binds to `127.0.0.1` by default. For Tailscale access, pass your Tailscale IP or MagicDNS hostname with `--bind`, for example `flowdesk-omnigent-start --bind 100.x.y.z --open`. Use `--bind 0.0.0.0` only when you intentionally want every interface to listen. The launcher is foreground-only. It does not register launchd/systemd services, edit shell profiles, or silently write Omnigent config. Stop it with `Ctrl-C`.
 
+If the launcher was backgrounded (or its terminal is gone), stop the whole trip with the companion command:
+
+```bash
+flowdesk-omnigent-stop            # SIGINT the wrapper+server+host, escalate to SIGKILL, then `omnigent stop`
+flowdesk-omnigent-stop --dry-run  # list what would be stopped, without signalling
+```
+
+`flowdesk-omnigent-stop` terminates only the server/host/wrapper that `flowdesk-omnigent-start` launched (because those run in the foreground and are not Omnigent-managed daemons, plain `omnigent stop` misses them), then delegates to `omnigent stop` for any daemon-managed instances. It never touches interactive `omnigent run` / TUI sessions.
+
 Build check for distribution artifacts:
 
 ```bash
