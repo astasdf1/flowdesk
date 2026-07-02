@@ -223,7 +223,7 @@
 - [x] Dynamic binding guard: policy records selector output when available, falls back to selector-call recomputation, and dispatch must match recorded task/agent/harness/model binding.
 - [x] Selection expiry/title collision checks: expired records and mismatched task/title dispatches are denied by the guard.
 - [x] Dynamic quota/usage-aware binding: selector accepts provider usage/health snapshots and skips exhausted, critical, stale, blocked, unavailable, or non-dispatchable providers when alternatives exist.
-- [ ] Upstream pre-dispatch evidence hook: not implemented; reviewed in `OMNIGENT_UPSTREAM_HOOK_REVIEW.md` and deferred.
+- [x] Upstream pre-dispatch evidence hook: **불필요로 해소 (2026-07-02)** — 근본 갭(policy `state_updates` 비지속)이 omnigent 0.3.0.dev0 modern policy 엔진에서 이미 해소됨. guard는 엔진-persisted `session_state`를 1차 provenance로 사용(회귀 `test_session_state_roundtrip`, pinned CI), cache는 방어적 fallback으로 격하. 전용 core hook 미작성.
 
 ---
 
