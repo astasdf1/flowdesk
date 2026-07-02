@@ -32,10 +32,17 @@
     "README.md",
     "LICENSE"
   ],
+  "bin": {
+    "flowdesk-omnigent-usage-snapshot": "dist/omnigent-usage-snapshot-cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./omnigent-usage-snapshot-cli": {
+      "types": "./dist/omnigent-usage-snapshot-cli.d.ts",
+      "default": "./dist/omnigent-usage-snapshot-cli.js"
     },
     "./omnigent-selection-cli": {
       "types": "./dist/omnigent-selection-cli.d.ts",

@@ -101,6 +101,24 @@ omnigent server start
 Python 코드 변경은 editable install이라 `git pull`만으로 즉시 반영된다.
 `uv sync`는 `pyproject.toml`이 변경된 경우에만 필요하다.
 
+### Usage bridge: 실제 잔여 quota를 셀렉터에 공급
+
+셀렉터는 usage snapshot이 없으면 정적 role 매핑으로 동작한다(quota-보존 가치 없음). OpenCode 트랙의 live usage collector(Claude OAuth usage, Codex live usage, Gemini Code Assist quota)를 Omnigent 셀렉터 입력으로 연결하는 브리지 CLI가 제공된다:
+
+```bash
+# FlowDesk repo에서 (또는 @flowdesk/core 설치 후 bin으로)
+node packages/core/dist/omnigent-usage-snapshot-cli.js --out ~/.cache/flowdesk/omnigent-usage.json
+
+# Omnigent(FD-OC) 실행 시 셀렉터가 읽도록 env 지정
+export FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH=~/.cache/flowdesk/omnigent-usage.json
+```
+
+- 출력은 셀렉터의 strict allowlist 스키마(`flowdesk.omnigent_provider_usage_input.v1`)로만 구성되며, credential/token은 절대 포함하지 않는다. 파일 쓰기는 atomic(tmp→rename)이라 mid-refresh 읽기가 안전하다.
+- alert 임계값은 OpenCode live tool과 동일: remaining ≤0 `exhausted`, ≤10 `critical`, ≤30 `warning`, 그 외 `ok`; stale 버킷은 `stale`, 수집 실패/거부는 `unknown`.
+- `unknown`은 non-blocking(셀렉터가 그 provider를 차단하지 않음) — 수치를 지어내지 않는다. Claude는 keychain 접근이 필요해 headless 실행에서 `unknown`이 될 수 있다.
+- snapshot 신선도는 사용자가 관리한다: dispatch 세션 시작 전 1회 실행하거나 주기 실행(cron/launchd)으로 갱신. 셀렉터는 오래된 파일도 그대로 믿으므로 갱신 없이 오래 두지 말 것.
+- 검증: 공유 픽스처(`omnigent_usage_bridge_snapshot_example.json`)를 TS 빌더 출력과 Python 파서 양쪽 테스트가 소비 — exhausted provider가 실제로 스킵되는 것까지 테스트로 고정.
+
 ### 셀렉터 레지스트리 model-id 유지보수
 
 `packages/omnigent-tool/src/flowdesk_omnigent/omnigent_selector_registry.v1.json`의 model-id(예: `claude-opus-4-8`, `openai/gpt-5.5`, `gemini-3.5-flash`)는 **수동 확인 산물**이다. 자동 검증(provider 실 목록 대조)은 아직 없으므로, provider가 모델을 deprecate/rename하면 이 JSON을 직접 갱신해야 한다. 두 가지 안전망이 drift를 부분적으로 잡는다:

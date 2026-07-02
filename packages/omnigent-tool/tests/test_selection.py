@@ -46,6 +46,42 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(claude_models, CLAUDE_MODEL_SET)
                 self.assertTrue(any(entry.provider_family == "openai" and entry.model is None for entry in entries))
 
+    def test_usage_bridge_fixture_is_accepted_and_skips_exhausted_provider(self) -> None:
+        # Cross-language guarantee for the OpenCode->Omnigent usage bridge:
+        # the TS builder (packages/core/src/omnigent-usage-snapshot.ts) asserts
+        # it produces exactly this fixture; here we assert the Python selector
+        # accepts it via the env snapshot path and actually acts on it
+        # (claude exhausted -> policy_security falls through to openai/codex).
+        fixture_path = Path(__file__).parent / "fixtures" / "omnigent_usage_bridge_snapshot_example.json"
+        raw = fixture_path.read_text(encoding="utf-8")
+        old_json = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON")
+        old_path = os.environ.get("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH")
+        os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = raw
+        os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH", None)
+        try:
+            result = select_agent_model(
+                {
+                    "task_id": "task-usage-bridge",
+                    "task_role": "policy_security",
+                    "allowed_provider_families": ["claude", "openai"],
+                },
+                write_evidence=False,
+            )
+        finally:
+            if old_json is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_JSON"] = old_json
+            if old_path is None:
+                os.environ.pop("FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH", None)
+            else:
+                os.environ["FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH"] = old_path
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "openai")
+        self.assertEqual(result["harness"], "codex")
+        self.assertNotIn("provider_usage_snapshot_rejected", result["reason_codes"])
+
     def test_registry_model_ids_conform_to_family_prefixes(self) -> None:
         # Registry model ids are a manually-verified artifact (see OMNIGENT_SETUP).
         # This is a drift canary: a non-null model id must match a known prefix for its

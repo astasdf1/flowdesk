@@ -65,6 +65,7 @@ export * from "./model-availability-cache.js";
 export * from "./operational-intelligence.js";
 export * from "./omnigent-selection.js";
 export * from "./omnigent-trace-verification.js";
+export * from "./omnigent-usage-snapshot.js";
 export * from "./plan.js";
 export * from "./planning-evidence-common.js";
 export * from "./pre-dispatch-audit-record.js";

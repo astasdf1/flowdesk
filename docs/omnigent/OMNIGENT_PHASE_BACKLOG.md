@@ -265,9 +265,9 @@
 
 ### P2 — 제품 가치 증분 (Phase 3 hygiene보다 우선 검토)
 
-- [ ] **Usage bridge**: OpenCode 트랙 live usage collector(Claude/OpenAI/Gemini) 출력을 strict allowlist schema로 정규화해 Omnigent selector의 snapshot 입력(env/path)으로 연결. snapshot을 caller가 수작업으로 만들어야 하는 현 UX가 핵심 가치(quota 보존)를 무력화하는 주 갭. (제품 HIGH)
+- [x] **Usage bridge** (완료 2026-07-02: `flowdesk-omnigent-usage-snapshot` CLI — `packages/core/src/omnigent-usage-snapshot{,-cli}.ts`. Claude/Codex/Gemini live collector → allowlist snapshot(atomic write) → `FLOWDESK_OMNIGENT_PROVIDER_USAGE_PATH`. 실자격증명 live E2E로 openai 81%/gemini 100% 수집→셀렉터 소비 확인. 공유 픽스처를 TS/Python 양쪽 테스트가 검증): OpenCode 트랙 live usage collector(Claude/OpenAI/Gemini) 출력을 strict allowlist schema로 정규화해 Omnigent selector의 snapshot 입력(env/path)으로 연결. snapshot을 caller가 수작업으로 만들어야 하는 현 UX가 핵심 가치(quota 보존)를 무력화하는 주 갭. (제품 HIGH)
 - [ ] **entitled_providers 1급 입력**: "사용자가 실제 보유한 구독/자격" allowlist를 selector 입력으로 formalize. `available_agents`(parent 등록 목록)와 구독 자격은 다른 개념. "구독 없는 provider 추천 금지"를 negative fixture로 고정. (제품 HIGH)
-- [ ] **Quota-보존 증명 시나리오**: "A 90% 소모 → selector가 A 회피, B 선택 → A quota 미증가"를 redacted fixture + trace verifier 검증으로 고정하고 완료 기준에 포함. 현재 가치 제안은 기능 정상성 테스트만 있고 보존 결과 지표가 없다. (제품 HIGH)
+- [ ] **Quota-보존 증명 시나리오** (부분 완료 2026-07-02: selection-level 증명은 usage-bridge 픽스처 테스트로 고정 — claude exhausted→openai 선택. 잔여: trace-verifier까지 관통하는 "회피 결정이 실제 dispatch에 반영" redacted fixture): "A 90% 소모 → selector가 A 회피, B 선택 → A quota 미증가"를 redacted fixture + trace verifier 검증으로 고정하고 완료 기준에 포함. 현재 가치 제안은 기능 정상성 테스트만 있고 보존 결과 지표가 없다. (제품 HIGH)
 - [ ] **제품 성공 지표 정의**: 최소 2개(예: 추천 수용률, quota-회피가 실소모를 줄인 사례 수)와 측정 방법을 정의하고 Phase 4 승격 gate("반복 사용 가치")를 주관 판단이 아닌 이 지표에 연결. (제품 MED)
 - [ ] **snapshot 미주입 시 퇴화 명시**: usage snapshot이 없으면 selector는 정적 role 매핑으로 동작하며 quota-보존 가치가 발생하지 않음을 사용자 문서에 정직하게 명시. (제품 MED)
 
