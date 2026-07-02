@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping, Sequence
 
+from .policies import DEFAULT_AGENT_HARNESS_BINDINGS
+from .selection import agent_allowed_bindings
+
 TRACE_VERIFIER_SCHEMA_VERSION = "flowdesk.omnigent_trace_verification.v1"
 
 TraceEventType = Literal["selection", "dispatch"]
@@ -112,43 +115,32 @@ def _verify_dispatch(
             )
         )
 
-    selected_model = selection.get("model")
-    selected_provider_family = _selection_provider_family(selection)
+    # Guard-parity (omnigent_selection_dispatch_guard): the harness is coupled to the
+    # model's provider family. Validate the dispatched (family, harness) pair for
+    # internal consistency and membership in the agent's registry-allowed pairs, rather
+    # than tying to the recorded selection's specific model/family. This lets an agent
+    # switch across the families it supports when model and harness move together, and
+    # keeps a stale/mismatched harness or an unsupported family failing closed.
     dispatched_model = dispatch.get("model")
-    dispatched_provider_family = _provider_family_for_model(dispatched_model if isinstance(dispatched_model, str) else None)
-    if selected_provider_family is not None:
-        if dispatched_model is not None and dispatched_provider_family != selected_provider_family:
-            issues.append(
-                _issue(
-                    "error",
-                    "dispatch_model_family_mismatch",
-                    index=index,
-                    task_id=task_id,
-                    dispatched_model=dispatched_model,
-                )
-            )
-    elif selected_model is None:
-        if dispatched_model is not None:
-            issues.append(
-                _issue(
-                    "error",
-                    "dispatch_model_override_should_be_omitted",
-                    index=index,
-                    task_id=task_id,
-                    dispatched_model=dispatched_model,
-                )
-            )
-    elif selected_model != dispatched_model:
-        issues.append(
-            _issue(
-                "error",
-                "dispatch_model_mismatch",
-                index=index,
-                task_id=task_id,
-                selected_model=selected_model,
-                dispatched_model=dispatched_model,
-            )
-        )
+    dispatched_harness = _safe_str(dispatch.get("harness"))
+    effective_harness = dispatched_harness or DEFAULT_AGENT_HARNESS_BINDINGS.get(dispatched_agent or "")
+    if isinstance(dispatched_model, str) and dispatched_model:
+        model_family = _provider_family_for_model(dispatched_model)
+        if model_family is None:
+            issues.append(_issue("error", "dispatch_model_family_unresolved", index=index, task_id=task_id, dispatched_model=dispatched_model))
+            return
+        if _provider_family_for_harness(effective_harness) != model_family:
+            issues.append(_issue("error", "dispatch_harness_model_family_mismatch", index=index, task_id=task_id, dispatched_model=dispatched_model))
+            return
+        dispatch_family: str | None = model_family
+    else:
+        dispatch_family = _provider_family_for_harness(effective_harness)
+    allowed = agent_allowed_bindings().get(dispatched_agent or "")
+    if allowed is not None:
+        if not isinstance(effective_harness, str) or dispatch_family is None:
+            issues.append(_issue("error", "dispatch_binding_unresolved", index=index, task_id=task_id))
+        elif (dispatch_family, effective_harness) not in allowed:
+            issues.append(_issue("error", "dispatch_binding_not_registered", index=index, task_id=task_id, dispatched_model=dispatched_model))
 
 
 def _safe_str(value: Any) -> str | None:

@@ -237,7 +237,7 @@
 - **완료(신규)**: harness↔model-family 커플링 — 정본 `HARNESSES_BY_FAMILY`/`PROVIDER_FAMILY_HARNESS`(Py+TS), `agent_allowed_bindings()`, guard를 "recorded harness exact-match"에서 "dispatched (family,harness) 쌍 일관 + agent 레지스트리 허용 쌍" 검증으로 변경(matcher family 필터 제거), 레지스트리 harness↔family 불변식 테스트(Py+TS), cross-family coupled guard 테스트 3건, FD-OC 프롬프트에 family별 harness 동반 설정 지시. 검증: Python 97 OK, TS core 987, TS omnigent 26.
 - **부분**: guard cache 무결성(same-UID poisoning은 근본적으로 남음 — session-binding/HMAC 미도입, "best-effort" 문서 유지); parity fixture(allowed_models·preferred+tier·dispatchable=false·expires_at 케이스 미추가); guard 실패 모드 매트릭스의 `OMNIGENT_SAFETY_RULES.md` 반영 미완.
 - **미착수(P1 잔여)**: event-shape 계약 테스트+버전 핀, model-id drift 검증, guard cache pruning/다중세션 격리(근본 해결 upstream hook), template manifest, live E2E smoke, 설치경로 정리, ts_cli ADR.
-- **후속 parity 갭**: 트레이스 verifier(`trace_verifier`/`omnigent-trace-verification`)는 여전히 cross-family override를 실패로 본다. guard가 coupled cross-family를 허용하도록 바뀌었으므로, post-run verifier도 동일 규칙(agent 레지스트리 허용 쌍)으로 완화해야 guard와 정합. 별도 작업으로 분리.
+- **후속 parity 갭 (해소, 2026-07-02)**: 트레이스 verifier(`trace_verifier.py`)를 guard와 동일 규칙으로 완화했다 — recorded selection의 model/family 결속을 버리고 "dispatched (family,harness) 쌍 내부 일관성 + agent 레지스트리 허용 쌍" 검증으로 교체. coupled cross-family(model+harness 함께 변경)는 pass, harness 미변경/불일치는 `dispatch_harness_model_family_mismatch`, 레지스트리 미지원 family는 `dispatch_binding_not_registered`로 fail. TS `omnigent-trace-verification.ts`는 결과-객체 스키마 검증기일 뿐 selection→dispatch 로직이 없어 변경 불필요.
 
 ### P0 — 기존 기능의 정확성·안전 (즉시)
 

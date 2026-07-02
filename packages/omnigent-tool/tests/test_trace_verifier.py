@@ -109,7 +109,9 @@ class TraceVerifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["issues"][0]["code"], "dispatch_agent_mismatch")
 
-    def test_fails_cross_family_model_override(self) -> None:
+    def test_fails_cross_family_model_override_without_matching_harness(self) -> None:
+        # Model switched to openai but harness left as claude-native -> the dispatched
+        # (family, harness) pair is inconsistent -> fail (guard parity).
         result = verify_selection_dispatch_trace(
             [
                 {
@@ -125,12 +127,64 @@ class TraceVerifierTests(unittest.TestCase):
                     "task_id": "task-y",
                     "agent": "policy-security-agent",
                     "model": "openai/gpt-5.5",
+                    "harness": "claude-native",
                 },
             ]
         )
 
         self.assertEqual(result["status"], "fail")
-        self.assertEqual(result["issues"][0]["code"], "dispatch_model_family_mismatch")
+        self.assertEqual(result["issues"][0]["code"], "dispatch_harness_model_family_mismatch")
+
+    def test_allows_cross_family_override_when_harness_changed_together(self) -> None:
+        # Model AND harness switched together to (openai, codex), a registered binding
+        # for policy-security-agent -> allowed even though the selection was claude.
+        result = verify_selection_dispatch_trace(
+            [
+                {
+                    "type": "selection",
+                    "task_id": "task-y2",
+                    "selection_status": "selected",
+                    "agent": "policy-security-agent",
+                    "provider_family": "claude",
+                    "model": "claude-opus-4-8",
+                },
+                {
+                    "type": "dispatch",
+                    "task_id": "task-y2",
+                    "agent": "policy-security-agent",
+                    "model": "openai/gpt-5.5",
+                    "harness": "codex",
+                },
+            ]
+        )
+
+        self.assertEqual(result["status"], "pass")
+
+    def test_fails_family_outside_agent_registry(self) -> None:
+        # gemini+antigravity is internally consistent but architecture-agent has no
+        # gemini binding in the registry -> fail.
+        result = verify_selection_dispatch_trace(
+            [
+                {
+                    "type": "selection",
+                    "task_id": "task-y3",
+                    "selection_status": "selected",
+                    "agent": "architecture-agent",
+                    "provider_family": "openai",
+                    "model": None,
+                },
+                {
+                    "type": "dispatch",
+                    "task_id": "task-y3",
+                    "agent": "architecture-agent",
+                    "model": "google/gemini-3.1-flash-lite",
+                    "harness": "antigravity-native",
+                },
+            ]
+        )
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["issues"][0]["code"], "dispatch_binding_not_registered")
 
     def test_allows_same_family_model_override_when_selection_keeps_family(self) -> None:
         result = verify_selection_dispatch_trace(

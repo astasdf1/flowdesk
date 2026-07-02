@@ -260,7 +260,10 @@ class TraceAdapterTests(unittest.TestCase):
         result = verify_selection_dispatch_trace(normalized["events"])
         self.assertEqual(result["status"], "pass")
 
-    def test_verifier_fails_cross_family_model_override_from_normalized_history(self) -> None:
+    def test_verifier_fails_when_model_and_harness_families_differ_from_normalized_history(self) -> None:
+        # Model overridden to openai but harness left as claude-native -> the dispatched
+        # (family, harness) pair is inconsistent -> fail (guard parity). A cross-family
+        # switch is only allowed when the harness moves together (see verifier tests).
         normalized = normalize_omnigent_trace_events(
             [
                 {
@@ -274,7 +277,7 @@ class TraceAdapterTests(unittest.TestCase):
                     "type": "function_call",
                     "name": "sys_session_send",
                     "arguments": json.dumps(
-                        {"agent": "architecture-agent", "title": "task-claude", "args": {"model": "openai/gpt-5.5"}}
+                        {"agent": "architecture-agent", "title": "task-claude", "args": {"model": "openai/gpt-5.5", "harness": "claude-native"}}
                     ),
                     "call_id": "call_dispatch",
                 },
@@ -283,7 +286,7 @@ class TraceAdapterTests(unittest.TestCase):
 
         result = verify_selection_dispatch_trace(normalized["events"])
         self.assertEqual(result["status"], "fail")
-        self.assertEqual(result["issues"][0]["code"], "dispatch_model_family_mismatch")
+        self.assertEqual(result["issues"][0]["code"], "dispatch_harness_model_family_mismatch")
 
     def test_realistic_fixture_normalizes_and_verifies_end_to_end(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "omnigent_function_history_selection_dispatch.json"
