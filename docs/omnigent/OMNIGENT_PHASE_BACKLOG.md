@@ -82,7 +82,7 @@
 
 - [x] TS unit tests: valid request, invalid request, provider disallowed, model family mismatch.
 - [x] Python wrapper tests: timeout, malformed stdout, stderr redaction, env stripping.
-- [ ] Cross-language golden fixture tests: 같은 request가 expected response shape를 유지한다.
+- [x] Cross-language golden fixture tests: 같은 request가 expected response shape를 유지한다. (`packages/omnigent-tool/tests/fixtures/omnigent_selection_parity_cases.json` 14개 케이스를 Python `test_selection_parity_golden_cases`와 TS `omnigent selection matches Python/TypeScript parity golden cases`가 동일 필드로 검증.)
 - [x] 기존 Python selector tests와 trace verifier tests를 유지한다.
 - [x] Omnigent example smoke를 `static` mode와 `ts_cli` mode 중 최소 하나로 재실행한다.
 
@@ -93,6 +93,8 @@
 - [x] 실패 시 자동 fallback/retry/provider switch 없이 fail-closed로 끝난다.
 
 현재 구현 상태: `packages/core/src/omnigent-selection.ts`와 `packages/core/src/omnigent-selection-cli.ts`가 추가되었고, Python selector는 명시적 `engine="ts_cli"`에서만 Node CLI를 호출한다. CLI failure는 static fallback 없이 `blocked`로 끝난다.
+
+**Registry SSOT (2026-07-02 확인)**: `omnigent_selector_registry.v1.json`이 단일 소스다. Python 런타임 레지스트리는 이 JSON을 직접 로드하고(`_load_selector_registry_artifact`), TS는 하드코딩 복사본(`FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1`)을 유지하되 양쪽 테스트가 각자의 레지스트리를 JSON 아티팩트와 `deepEqual`/normalized-equal로 검증한다(`test_python_registry_matches_shared_registry_artifact`, `omnigent TypeScript registry matches shared registry artifact`). 따라서 TS ≡ JSON ≡ Python이 테스트로 강제되며 drift는 CI 실패가 된다. TS가 런타임에 JSON을 직접 읽지 않는 이유는 `@flowdesk/core`가 `packages/omnigent-tool`에 의존하지 않아야 하는 ADR 0002 패키징 경계 때문이다(런타임 cross-package 파일 읽기 회피). 검증: Python 92 tests OK, TS omnigent 25 tests OK.
 
 ---
 

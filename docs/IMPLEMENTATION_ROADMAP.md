@@ -1,5 +1,9 @@
 # FlowDesk Implementation Roadmap
 
+## Scope and Track
+
+**This is the OpenCode-track roadmap.** Its `Release 1–4` and `Phase 0–8` numbering describes the OpenCode plugin harness only. Per [ADR 0003](adr/0003-omnigent-first-selection-layer.md), the OpenCode track is maintained but is **not** the current development priority. For the current-priority Omnigent-first selection layer, the sequenced plan lives in [`omnigent/OMNIGENT_PHASE_BACKLOG.md`](omnigent/OMNIGENT_PHASE_BACKLOG.md), which uses its own independent `Phase 1–4b` numbering. Do not conflate an OpenCode-track "Phase 4" with an Omnigent-track "Phase 4"; they are separate schemes.
+
 ## Purpose
 
 This roadmap turns `FLOWDESK_OPENCODE_PLUGIN_IMPLEMENTATION_SPEC.md` into an implementation sequence. It is intentionally conservative: Release 1 proves the safety harness through chat-routed command-backed workflows, guarded dry-run, fake runtime, provider health diagnostics, audit, abnormal-use guidance, and Plugin/SDK compatibility before enabling real OpenCode dispatch, automatic provider/model fallback, or hard chat cancellation authority. For managed dispatch, completion is judged at the FlowDesk plugin boundary: plugin-verifiable evidence must be real and durable, while OpenCode platform-internal facts remain non-gating diagnostics rather than gate, blocker, or completion criteria.

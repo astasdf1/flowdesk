@@ -11,7 +11,9 @@ FlowDesk currently enforces dispatch compatibility through an Omnigent function 
 - fixture policy name: `flowdesk_selection_dispatch_guard`
 - phase: `tool_call`
 
-The policy now records selector-call provenance in Omnigent `session_state` and requires a matching recorded selection for guarded `sys_session_send` calls.
+The policy records selector-call provenance and requires a matching recorded selection for guarded `sys_session_send` calls.
+
+**Provenance storage is not solely Omnigent `session_state`.** In practice the current Omnigent runner does not reliably persist FunctionPolicy `state_updates` across the selector-call evaluation and the later dispatch evaluation. To work around that, the guard combines three provenance sources (`policies.py`): (1) Omnigent-provided `session_state`, (2) an in-process record list, and (3) a transient local cache at `~/.cache/flowdesk/omnigent-selection-guard-cache.json` (overridable via `FLOWDESK_OMNIGENT_GUARD_CACHE_PATH`). The local cache is the source that makes the guard work today.
 
 ## Verified Behavior
 
@@ -31,6 +33,18 @@ Live sentinel evidence:
 - Final positive after output-provenance guard: `FLOWDESK_PROVENANCE_GUARD_POSITIVE_FINAL_2_20260628_OK`
 - Previous binding mismatch negative: `FLOWDESK_DISPATCH_GUARD_NEGATIVE_20260627_OK`
 - Previous binding positive: `FLOWDESK_DISPATCH_GUARD_POSITIVE_20260627_OK`
+
+## Honest Limitations — This Is Not a Hard Security Gate
+
+The guard is a **best-effort, opt-in dispatch-consistency check**, not a tamper-resistant security boundary. It must not be described or relied on as a hard gate. Known limitations:
+
+- **Transient-cache dependency:** provenance correctness depends on the local guard cache (above). Cache miss, eviction, a cleared/relocated `~/.cache`, a different `HOME`/user, or a separate process without the cache can leave a legitimate selection unrecognized (guard denies and forces re-selection) or, if provenance cannot be established, weaken the consistency check.
+- **Opt-in only:** the guard exists only when the operator installs `flowdesk_selection_dispatch_guard` in `guardrails.policies`. Without it there is no deny at all.
+- **Known-agent scope:** it only checks FlowDesk-known `{task, agent, harness, model}` bindings. Dispatch paths, agents, or tools FlowDesk does not know about are not gated.
+- **Consistency, not authority:** it verifies that a guarded dispatch matches a recorded FlowDesk selection. It does not prove the selector was actually consulted for unknown paths, and it grants no provider/model fallback, retry, write/apply, or hard-chat authority.
+- **Platform coupling:** behavior depends on the current Omnigent `tool_call`/`tool_result` event shapes and policy semantics, which are pre-1.0 and may change.
+
+A robust, tamper-resistant pre-dispatch gate requires the upstream core hook described below; until that exists, treat the guard as advisory consistency enforcement for cooperative fixtures, not as a trust boundary.
 
 ## Why No Core Hook Yet
 

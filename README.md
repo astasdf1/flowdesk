@@ -2,7 +2,10 @@
 
 FlowDesk is an agent/model selection layer for existing AI orchestration platforms. The current development priority is Omnigent workspace-first selection; the OpenCode plugin remains the safety, evidence, provider-usage, status, and lane-observability track.
 
-The long-term goal is practical platform-attached selection: use the AI subscriptions you already pay for as effectively as possible by checking provider/account usage, preserving remaining quota, and recommending the right agent/harness/model binding only when FlowDesk can prove the selection inputs, provider usage state, provider health, and runtime consistency evidence are safe enough for the target platform's authority boundary.
+The long-term goal is practical platform-attached selection: use the AI subscriptions you already pay for as effectively as possible by checking provider/account usage, preserving remaining quota, and recommending the right agent/harness/model binding for each task. FlowDesk is a selection layer, not an orchestrator, and its authority ceiling differs by track:
+
+- **Omnigent track (current priority):** FlowDesk returns `advisory_selection_only` recommendations and Omnigent owns dispatch, runtime execution, and synthesis. FlowDesk never dispatches, retries, or falls back; with the optional guard installed it can only deny FlowDesk-known binding mismatches. The goal here is the best possible advisory `{agent, harness, model}` selection plus consistency verification — not FlowDesk-controlled routing.
+- **OpenCode track (maintained, not current priority):** the safety, evidence, provider-usage, status, and lane-observability harness. Any real usage-based dispatch there is gated behind the [OpenCode-track dispatch gates](#opencode-track-dispatch-gates) and remains non-dispatch by default.
 
 FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in Natural Language with the Conductor](https://arxiv.org/abs/2512.04388), which frames a learned conductor as a coordinator over pools of specialized LLM workers. FlowDesk is not an implementation of that paper. It borrows the product intuition: keep the main agent small, make orchestration explicit, and let bounded worker/reviewer lanes do the heavy work when the runtime can prove what happened.
 
@@ -68,7 +71,9 @@ Modern coding users often have access to several capable AI systems: Claude, GPT
 - whether a reviewer lane was separate from the authoring lane,
 - and whether a fallback or retry would be safe rather than wasteful.
 
-FlowDesk treats those as product requirements, not nice-to-have logs. Usage readiness and provider health are separate signals. Unknown, stale, shared-limit, refused, or untrusted usage does not authorize real model selection. Release 3 uses remaining-usage evidence advisory-only via OI tools, but only after performance and suitability have already selected an eligible candidate set; usage is a reserve/tie-break signal, not a replacement for fit.
+The first three signals — usable quota, signal freshness, and task fit — are what the current-priority Omnigent selector reasons about before returning a recommendation; the platform then decides dispatch. The remaining signals (runtime echo/telemetry, pre-dispatch audit, reviewer-lane separation, safe fallback/retry) are dispatch-gating concerns owned by the OpenCode track and its [dispatch gates](#opencode-track-dispatch-gates), not by the advisory selector.
+
+FlowDesk treats these as product requirements, not nice-to-have logs. Usage readiness and provider health are separate signals. Unknown, stale, shared-limit, refused, or untrusted usage never upgrades an advisory recommendation into authority: in the Omnigent track FlowDesk does not dispatch at all, and in the OpenCode track untrusted usage does not authorize real dispatch. Usage is a reserve/tie-break signal applied only inside an already-eligible candidate set, never a replacement for fit.
 
 ## Current Commands
 
@@ -108,7 +113,7 @@ The preview path writes nothing. Installation requires re-running with the exact
 
 FlowDesk Guard is the only dispatch authority in the OpenCode track. Status, audit, runtime echo, provider health, usage snapshots, hook observations, reviewer outputs, lane summaries, and scores are evidence or diagnostics; they are not approval.
 
-In the Omnigent track, FlowDesk selector results are advisory. The optional Omnigent function-policy guard is a narrow, opt-in dispatch-consistency gate: it may deny FlowDesk-known `sys_session_send` calls whose task/agent/harness/model binding does not match fresh selector provenance. That guard does not grant FlowDesk general Omnigent dispatch authority, provider/model fallback authority, runtime retry authority, or write/apply authority.
+In the Omnigent track, FlowDesk selector results are advisory. The optional Omnigent function-policy guard is a narrow, opt-in dispatch-consistency check: it may deny FlowDesk-known `sys_session_send` calls whose task/agent/harness/model binding does not match fresh selector provenance. It is **best-effort, not a hard security gate** — its provenance relies on a transient local cache (the current Omnigent runner does not reliably persist FunctionPolicy state), it only covers FlowDesk-known bindings, and it can fail open on cache loss; see [`docs/omnigent/OMNIGENT_UPSTREAM_HOOK_REVIEW.md`](docs/omnigent/OMNIGENT_UPSTREAM_HOOK_REVIEW.md). That guard does not grant FlowDesk general Omnigent dispatch authority, provider/model fallback authority, runtime retry authority, or write/apply authority.
 
 Release 1 default behavior does not claim:
 
@@ -126,7 +131,9 @@ Provider-free local preview helpers such as `flowdesk_workflow_synthesis_preview
 
 ## Roadmap Checklist
 
-This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md`. Percentages are approximate readiness, not marketing claims.
+**This checklist is the OpenCode track only** (see [ADR 0003](docs/adr/0003-omnigent-first-selection-layer.md)). It mirrors `docs/IMPLEMENTATION_ROADMAP.md` and `docs/PROGRESS_SNAPSHOT.md`. Percentages are approximate readiness, not marketing claims. The current-priority Omnigent-first selection layer tracks its own progress in [`docs/omnigent/OMNIGENT_PHASE_BACKLOG.md`](docs/omnigent/OMNIGENT_PHASE_BACKLOG.md) and does **not** share this phase numbering.
+
+Note on Operational Intelligence (Phase 7–8): the scoring/ledger/registry apparatus is an **OpenCode-track asset only**. The Omnigent-first selector uses a static registry plus task-tier and provider-usage inputs; it does not call the OpenCode OI scoring engine, score ledgers, or federated registry. That investment is intentionally scoped to the OpenCode track and is not on the Omnigent critical path.
 
 - [x] **Phase 0: Bootstrap workspace (100%)**
   - Workspace, packages, build/test scripts, docs, and no-OMO/no-production-dispatch scaffolding exist.
@@ -156,16 +163,26 @@ This checklist mirrors the implementation roadmap and `docs/PROGRESS_SNAPSHOT.md
   - Conservative chat routing, visible FlowDesk suggestions, confirmation-before-run behavior, pending approval state, retry/abort/resume/usage/export-debug diagnostics, duplicate steering suppression, heartbeat stall projection, evidence-only guarded auto-abort, guarded auto-retry, watchdog trigger, and SDK-scoped session controls exist.
   - Remaining: intent detector split, broader abnormal-use recovery UX, continuation supervision, and hook-level blocking/no-reply only if OpenCode exposes a supported boundary.
 
-- [ ] **Phase 7: Operational intelligence (about 14%)**
-  - Advisory-output firewall contracts, exact-model availability cache planning, selected-cache fan-out planning, prompt-backed provider acquisition, quick reviewer fan-out, and opt-in agent task execution exist.
-  - Remaining: advisory evaluation, score ledgers, reference packs, production model-selection policy, and live connector execution.
+- [~] **Phase 7: Operational intelligence — OpenCode-track asset, not on Omnigent path**
+  - Implemented under Release 3 (per `PROGRESS_SNAPSHOT.md`): 9-dimension scoring engine, atomic score ledger writer, threshold/fanout gates, RFC 8785 JCS, hash chain, partition lifecycle, ledger rollup (HHI/ESS/decay), GitHub publisher, and OI MCP tools.
+  - Scope: **not consumed by the Omnigent-first selector.** Remaining OpenCode-track work: reconcile known-failing mainline tests in the reviewer-bridge / provider-acquisition area before asserting production readiness; production model-selection policy; live connector execution.
 
-- [ ] **Phase 8: Federated score registry (0%)**
-  - Planned only. Any shared score/telemetry system must be explicit opt-in, revocable, redacted, and advisory-only.
+- [ ] **Phase 8: Federated score registry (0%) — OpenCode-track only**
+  - Planned only. Any shared score/telemetry system must be explicit opt-in, revocable, redacted, and advisory-only. Not on the Omnigent critical path.
 
-## Planned Performance-First Usage-Aware Model Selection
+## Performance-First, Usage-Aware Model Selection
 
-FlowDesk's model-selection target is deliberately stricter than “pick the cheapest or strongest model.” The primary selector is task fit: capability, policy eligibility, runtime compatibility, expected quality, and verification requirements. Remaining usage only applies inside that already-eligible set to avoid exhausting scarce providers or to break ties. A future dispatch-capable release must prove all of the following before routing work based on remaining usage:
+FlowDesk's model-selection target is deliberately stricter than “pick the cheapest or strongest model.” The primary selector is task fit: capability, policy eligibility, runtime compatibility, expected quality, and verification requirements. Remaining usage only applies inside that already-eligible set to avoid exhausting scarce providers or to break ties.
+
+How far that selection is allowed to reach depends on the track.
+
+### Omnigent track (current priority): advisory selection
+
+FlowDesk returns a bounded `flowdesk.omnigent_selection.v1` recommendation of `{agent, harness, model}` with `authority="advisory_selection_only"`. It does not dispatch, retry, fall back, or approve. Omnigent owns dispatch and runtime authority. When the optional function-policy guard is installed, FlowDesk can additionally deny only FlowDesk-known `sys_session_send` binding mismatches; that consistency check is not general dispatch authority. This track can ship and add value without clearing a dispatch-gate bundle, because FlowDesk never routes real work itself here.
+
+### OpenCode-track dispatch gates
+
+The OpenCode track is where FlowDesk itself could someday route real work based on remaining usage. That is **not** the current priority, and it stays non-dispatch by default. A future dispatch-capable OpenCode release must prove all of the following before routing work based on remaining usage:
 
 1. fresh provider-native usage or quota evidence,
 2. fresh provider health,
@@ -178,7 +195,7 @@ FlowDesk's model-selection target is deliberately stricter than “pick the chea
 9. explicit Guard approval,
 10. no silent fallback or model substitution.
 
-Until those gates pass, FlowDesk reports usage readiness and provider health as diagnostics and stays on safe command-backed, degraded, guarded dry-run, or fake-runtime paths.
+Until those gates pass, the OpenCode track reports usage readiness and provider health as diagnostics and stays on safe command-backed, degraded, guarded dry-run, or fake-runtime paths.
 
 ## Token Use Compared With OMO/OMC
 

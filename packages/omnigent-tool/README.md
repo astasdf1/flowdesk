@@ -90,6 +90,16 @@ npm run release:omnigent-tool -- --publish
 
 GitHub Actions Trusted Publishing is available through `.github/workflows/publish-omnigent-tool.yml`. Configure PyPI with workflow filename `publish-omnigent-tool.yml` and environment `pypi`; configure TestPyPI with environment `testpypi` if you want a TestPyPI dry run.
 
+### Release cadence policy
+
+`flowdesk-omnigent-tool` is an **advisory-only** selection package. Publish a new PyPI version only when a change is user-facing for installers of the package — that is, one of:
+
+- a change to selector behavior, the registry artifact, or the response contract (`flowdesk.omnigent_selection.v1`);
+- a change to the MCP server tool surface, the console script, or the guard policy semantics;
+- a packaging, dependency, install-path, or security fix that affects installed behavior.
+
+Do **not** cut a release for repo-only changes: documentation edits, examples, tests, CI tweaks, or progress-snapshot updates. Batch such changes and let them ride the next behavior-driven release. Because the tool cannot dispatch, provider-switch, or gain authority by design, version churn adds install/verification cost without user benefit. When in doubt, land the change unversioned and defer the bump until the next capability change. Record each published version once in `PROGRESS_SNAPSHOT.md`; a bump with no capability delta should be rare and justified.
+
 Function path for Omnigent config:
 
 ```text
@@ -170,3 +180,5 @@ guardrails:
 ```
 
 The guard records FlowDesk selector calls in Omnigent policy state and, when Omnigent emits a selector `tool_result`, records exact selector output provenance. Guarded `sys_session_send` calls must match a recorded task/agent/harness/model binding and must not use expired selection records. This remains fixture-level policy enforcement only; it does not grant provider fallback, retry, write/apply, hard-chat/noReply, credential, or upstream Omnigent core-hook authority.
+
+**This is a best-effort, opt-in consistency check, not a hard security gate.** Because the current Omnigent runner does not reliably persist FunctionPolicy state between selector and dispatch evaluation, provenance depends on a transient local cache at `~/.cache/flowdesk/omnigent-selection-guard-cache.json` (override with `FLOWDESK_OMNIGENT_GUARD_CACHE_PATH`). The guard only covers FlowDesk-known bindings, only exists when installed, and can fail open on cache loss or a changed cache location/user. Do not treat it as a trust boundary. See `docs/omnigent/OMNIGENT_UPSTREAM_HOOK_REVIEW.md` → "Honest Limitations".

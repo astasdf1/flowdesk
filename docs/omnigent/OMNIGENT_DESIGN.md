@@ -65,6 +65,12 @@ Orchestrator (Omnigent, claude-sdk harness, Claude 구독)
 | 결과 수집 | Omnigent inbox | sys_read_inbox |
 | provider quota 입력 | **FlowDesk/Caller** | explicit snapshot / sanitized env JSON or path |
 
+### 범위 밖: Operational Intelligence (OpenCode 트랙 전용)
+
+OpenCode 트랙의 Phase 7 Operational Intelligence 자산(9-dimension scoring engine, score ledger, HHI/ESS rollup, hash chain/JCS, GitHub publisher, OI MCP tools)은 **Omnigent 셀렉터 경로에서 사용하지 않는다.** 결정: [ADR 0003](../adr/0003-omnigent-first-selection-layer.md) 및 사용자 결정(2026-07-02)에 따라 OI를 OpenCode 트랙 전용 자산으로 격리한다.
+
+Omnigent 셀렉터는 정적 레지스트리 아티팩트(`omnigent_selector_registry.v1.json`) + task role/tier + provider usage/health snapshot 입력만으로 advisory 선택을 계산한다. `packages/omnigent-tool`은 `packages/core`의 operational-intelligence 모듈이나 `packages/opencode-plugin`에 의존하지 않는다(ADR 0002 구현 규칙). OI 스코어링을 Omnigent 경로에 연결하려면 별도 ADR로 재검토한다.
+
 ---
 
 ## Harness 구성 (현재 방향)
