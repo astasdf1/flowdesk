@@ -243,25 +243,25 @@
 
 ### P0 — 기존 기능의 정확성·안전 (즉시)
 
-- [ ] **Guard cache 위협모델 + 무결성**: `~/.cache/flowdesk/omnigent-selection-guard-cache.json`은 같은 UID의 임의 프로세스가 가짜 selected record를 주입해 guard DENY를 우회할 수 있다(`policies.py:194-216` — 권한 미설정 write, 무검증 Mapping 수용). 파일/디렉토리 0600/0700 강제, session_ref 매칭 필수화, record HMAC 서명 또는 in-process-only(캐시 폐기) 중 설계 결정 + 테스트. (보안 HIGH)
-- [ ] **Guard 실패 모드 매트릭스 명문화**: 미설치=no-deny, unknown-agent=`allow_unknown_agents=True` 기본 통과(fail-open), 캐시 read 실패=record 부재→DENY(fail-closed 가용성 실패), 캐시 poisoning=fail-open 우회. 이 매트릭스를 `OMNIGENT_SAFETY_RULES.md`에 반영하고 사용자 문서의 방향 오기를 정정한다. (보안 HIGH; 문구 정정은 2026-07-02 완료)
-- [ ] **TS selector 로직 parity 갭 해소**: `omnigent-selection.ts`에 `available_agents`/`allowed_agents` 필터, `_entry_compatibility_error` 상당, `agent_not_available` blocked 사유가 없다(0-hit). 같은 request에 Python=blocked, TS=selected가 가능한 침묵 divergence. TS에 이식하거나, 미지원 필드 수신 시 fail-closed(blocked) 처리 + 문서화. (엔지니어링 HIGH)
-- [ ] **Parity fixture 분기 커버리지 확장**: available_agents 필터, agent_not_available/model_family_mismatch blocked, allowed_models 필터, preferred_model+model_tier 동시 지정, provider_usage dispatchable=false / remaining_percent<=0, expires_at 검증 케이스를 `omnigent_selection_parity_cases.json`에 추가(현재 14케이스에 전부 부재). (엔지니어링 HIGH)
-- [ ] **Dead DEFAULT_REGISTRY 리터럴 제거**: `selection.py:158-376` 리터럴은 line 378의 JSON 로드로 즉시 덮어써지는 dead code이며 내용도 stale(sonnet-5 등 부재)해 SSOT 오인 위험. 삭제하고 JSON 단일 소스를 유지. (엔지니어링 MED, 위험도 낮고 비용 미미)
+- [ ] **Guard cache 위협모델 + 무결성** (부분 완료 2026-07-02: 0700/0600·unique tmp·O_NOFOLLOW·read 상한 적용. 잔여: session_ref 매칭 필수화 또는 HMAC/in-process-only 설계 결정): `~/.cache/flowdesk/omnigent-selection-guard-cache.json`은 같은 UID의 임의 프로세스가 가짜 selected record를 주입해 guard DENY를 우회할 수 있다(`policies.py:194-216` — 권한 미설정 write, 무검증 Mapping 수용). 파일/디렉토리 0600/0700 강제, session_ref 매칭 필수화, record HMAC 서명 또는 in-process-only(캐시 폐기) 중 설계 결정 + 테스트. (보안 HIGH)
+- [ ] **Guard 실패 모드 매트릭스 명문화** (부분 완료 2026-07-02: 사용자 문서 4곳 방향 정정 + UPSTREAM_HOOK_REVIEW 명시. 잔여: OMNIGENT_SAFETY_RULES.md 반영): 미설치=no-deny, unknown-agent=`allow_unknown_agents=True` 기본 통과(fail-open), 캐시 read 실패=record 부재→DENY(fail-closed 가용성 실패), 캐시 poisoning=fail-open 우회. 이 매트릭스를 `OMNIGENT_SAFETY_RULES.md`에 반영하고 사용자 문서의 방향 오기를 정정한다. (보안 HIGH; 문구 정정은 2026-07-02 완료)
+- [x] **TS selector 로직 parity 갭 해소**: `omnigent-selection.ts`에 `available_agents`/`allowed_agents` 필터, `_entry_compatibility_error` 상당, `agent_not_available` blocked 사유가 없다(0-hit). 같은 request에 Python=blocked, TS=selected가 가능한 침묵 divergence. TS에 이식하거나, 미지원 필드 수신 시 fail-closed(blocked) 처리 + 문서화. (엔지니어링 HIGH)
+- [ ] **Parity fixture 분기 커버리지 확장** (부분 완료 2026-07-02: available_agents 3케이스 추가→17. 잔여: allowed_models·preferred+tier 동시·dispatchable=false·expires_at): available_agents 필터, agent_not_available/model_family_mismatch blocked, allowed_models 필터, preferred_model+model_tier 동시 지정, provider_usage dispatchable=false / remaining_percent<=0, expires_at 검증 케이스를 `omnigent_selection_parity_cases.json`에 추가(현재 14케이스에 전부 부재). (엔지니어링 HIGH)
+- [x] **Dead DEFAULT_REGISTRY 리터럴 제거**: `selection.py:158-376` 리터럴은 line 378의 JSON 로드로 즉시 덮어써지는 dead code이며 내용도 stale(sonnet-5 등 부재)해 SSOT 오인 위험. 삭제하고 JSON 단일 소스를 유지. (엔지니어링 MED, 위험도 낮고 비용 미미)
 
 ### P1 — drift·플랫폼 결합·하드닝
 
-- [ ] **Omnigent event shape 계약 테스트 + 버전 호환 매트릭스**: guard/trace가 의존하는 `tool_call`/`tool_result`/`function_call` shape를 golden fixture로 핀하고, 검증된 Omnigent 버전 범위(현재 0.3.0.dev0)를 명시. shape drift 시 guard가 조용히 fail-open으로 퇴화하는 회귀를 CI에서 감지. (엔지니어링 MED + 운영 HIGH 중복 → 통합)
-- [ ] **레지스트리 model-id 실존/deprecation 검증 절차**: 하드코딩 id(claude-sonnet-5, openai/gpt-5.5, gemini-3.5-flash 등)의 verified_at/source 메타 도입 + "수동 확인 산물" 문서화 + 가능하면 provider 목록 대조 스모크. (엔지니어링 HIGH)
-- [ ] **Guard cache concurrency/pruning**: 고정 `.tmp` suffix 동시-write 손상 및 read-modify-write lost-update(마지막 writer 승) 해소 — PID/랜덤 suffix + lock 또는 append-only 포맷. append 시 expired record prune, crash 잔여 `.tmp` cleanup. (보안 MED + 운영 MED 통합)
+- [ ] **Omnigent event shape 계약 테스트 + 버전 호환 매트릭스** (부분 완료 2026-07-02: sys_session_send shape 추출 canary 테스트. 잔여: 버전 핀/호환 매트릭스 — live E2E CI와 세트): guard/trace가 의존하는 `tool_call`/`tool_result`/`function_call` shape를 golden fixture로 핀하고, 검증된 Omnigent 버전 범위(현재 0.3.0.dev0)를 명시. shape drift 시 guard가 조용히 fail-open으로 퇴화하는 회귀를 CI에서 감지. (엔지니어링 MED + 운영 HIGH 중복 → 통합)
+- [ ] **레지스트리 model-id 실존/deprecation 검증 절차** (부분 완료 2026-07-02: family-prefix canary + OMNIGENT_SETUP 수동검증 문서화. 잔여: verified_at/source 메타, provider 목록 대조 스모크): 하드코딩 id(claude-sonnet-5, openai/gpt-5.5, gemini-3.5-flash 등)의 verified_at/source 메타 도입 + "수동 확인 산물" 문서화 + 가능하면 provider 목록 대조 스모크. (엔지니어링 HIGH)
+- [ ] **Guard cache concurrency/pruning** (부분 완료 2026-07-02: PID unique tmp·만료 prune·stale tmp cleanup. 잔여: lock/append-only — RMW last-writer-wins는 다중세션 격리 항목과 함께): 고정 `.tmp` suffix 동시-write 손상 및 read-modify-write lost-update(마지막 writer 승) 해소 — PID/랜덤 suffix + lock 또는 append-only 포맷. append 시 expired record prune, crash 잔여 `.tmp` cleanup. (보안 MED + 운영 MED 통합)
 - [ ] **Guard cache 다중 세션 격리**: 전역 200-record 파일을 FD-OC/Opus/Codex 세션이 공유 — 한 세션 selection이 다른 세션 dispatch를 ALLOW하거나 window 밀림으로 정당 dispatch DENY 가능. 세션/task 스코프 키 분리 또는 "동시 세션 best-effort" 명시. 근본 해결은 upstream hook. (운영 MED)
-- [ ] **MCP stdio 입력 하드닝**: 라인/요청 바이트 상한(예: 256KB) + 초과·malformed 시 JSON-RPC 에러 반환, oversized/no-newline DoS 테스트. (보안 MED)
-- [ ] **provider_usage PATH 입력 TOCTOU/symlink 방어**: stat-then-read race 제거(O_NOFOLLOW+fstat 기반), symlink 거부 테스트. (보안 MED)
-- [ ] **subprocess env allowlist에서 NODE_PATH 제거 검토**: NODE_PATH는 TS CLI 모듈 해석을 공격자 통제 경로로 돌릴 수 있어 credential-strip 취지와 상충. 제거 또는 정당화 문서화. (보안 LOW)
-- [ ] **ts_cli bridge 운명 결정(ADR)**: `engine="ts_cli"` 실소비자가 테스트 외 전무. 유지/삭제/승격 기준을 ADR로 확정하고, 유지 시 "실험/미사용" 명시. (엔지니어링 MED)
-- [ ] **Template manifest + drift 감지**: `template_installer`에 버전+checksum manifest 기록(현재 0건), `--check` drift 리포트 모드, launcher stale 경고. `--force`의 사용자 수정 소실 위험 문서화. (운영 HIGH)
+- [x] **MCP stdio 입력 하드닝**: 라인/요청 바이트 상한(예: 256KB) + 초과·malformed 시 JSON-RPC 에러 반환, oversized/no-newline DoS 테스트. (보안 MED)
+- [x] **provider_usage PATH 입력 TOCTOU/symlink 방어**: stat-then-read race 제거(O_NOFOLLOW+fstat 기반), symlink 거부 테스트. (보안 MED)
+- [x] **subprocess env allowlist에서 NODE_PATH 제거 검토**: NODE_PATH는 TS CLI 모듈 해석을 공격자 통제 경로로 돌릴 수 있어 credential-strip 취지와 상충. 제거 또는 정당화 문서화. (보안 LOW)
+- [x] **ts_cli bridge 운명 결정(ADR)**: `engine="ts_cli"` 실소비자가 테스트 외 전무. 유지/삭제/승격 기준을 ADR로 확정하고, 유지 시 "실험/미사용" 명시. (엔지니어링 MED)
+- [x] **Template manifest + drift 감지**: `template_installer`에 버전+checksum manifest 기록(현재 0건), `--check` drift 리포트 모드, launcher stale 경고. `--force`의 사용자 수정 소실 위험 문서화. (운영 HIGH)
 - [ ] **Live E2E smoke 자동화**: 주간 PyPI smoke는 import/tools-list만 커버 — 고정 버전 Omnigent를 CI에 설치해 실제 FunctionPolicy allow/deny 왕복을 검증하거나, 불가 시 smoke 미커버 범위를 문서화. (운영 MED)
-- [ ] **정식 설치 경로 1개 선언**: 현재 5갈래(editable/uv/PyPI/MCP venv-python/콘솔스크립트). supported 1개 + 나머지 experimental 격하, MCP fixture의 절대경로(`/Users/...`) 제거. (운영 MED)
+- [x] **정식 설치 경로 1개 선언**: 현재 5갈래(editable/uv/PyPI/MCP venv-python/콘솔스크립트). supported 1개 + 나머지 experimental 격하, MCP fixture의 절대경로(`/Users/...`) 제거. (운영 MED)
 
 ### P2 — 제품 가치 증분 (Phase 3 hygiene보다 우선 검토)
 
