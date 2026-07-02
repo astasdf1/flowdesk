@@ -155,226 +155,6 @@ def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]
     return registry
 
 
-DEFAULT_REGISTRY: Mapping[str, tuple[RegistryEntry, ...]] = {
-    "policy_security": (
-        RegistryEntry(
-            agent="policy-security-agent",
-            harness="claude-native",
-            model="claude-opus-4-8",
-            provider_family="claude",
-            reason_code="role_policy_security_prefers_deep_reasoning",
-        ),
-        RegistryEntry(
-            agent="policy-security-agent",
-            harness="claude-native",
-            model="claude-sonnet-4-6",
-            provider_family="claude",
-            reason_code="role_policy_security_prefers_deep_reasoning",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="policy-security-agent",
-            harness="claude-native",
-            model="claude-haiku-4-5",
-            provider_family="claude",
-            reason_code="role_policy_security_prefers_deep_reasoning",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="policy-security-agent",
-            harness="codex",
-            model=None,
-            provider_family="openai",
-            reason_code="role_policy_security_prefers_deep_reasoning",
-            confidence="medium",
-        ),
-    ),
-    "architecture": (
-        RegistryEntry(
-            agent="architecture-agent",
-            harness="codex",
-            model=None,
-            provider_family="openai",
-            reason_code="role_architecture_prefers_frontier_reasoning",
-        ),
-        RegistryEntry(
-            agent="architecture-agent",
-            harness="claude-native",
-            model="claude-sonnet-4-6",
-            provider_family="claude",
-            reason_code="role_architecture_prefers_frontier_reasoning",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="architecture-agent",
-            harness="claude-native",
-            model="claude-opus-4-8",
-            provider_family="claude",
-            reason_code="role_architecture_prefers_frontier_reasoning",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="architecture-agent",
-            harness="claude-native",
-            model="claude-haiku-4-5",
-            provider_family="claude",
-            reason_code="role_architecture_prefers_frontier_reasoning",
-            confidence="medium",
-        ),
-    ),
-    "implementation": (
-        RegistryEntry(
-            agent="implementation-agent",
-            harness="codex",
-            model=None,
-            provider_family="openai",
-            reason_code="role_implementation_prefers_coding_harness",
-        ),
-        RegistryEntry(
-            agent="implementation-agent",
-            harness="claude-native",
-            model="claude-sonnet-4-6",
-            provider_family="claude",
-            reason_code="role_implementation_prefers_coding_harness",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="implementation-agent",
-            harness="claude-native",
-            model="claude-opus-4-8",
-            provider_family="claude",
-            reason_code="role_implementation_prefers_coding_harness",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="implementation-agent",
-            harness="claude-native",
-            model="claude-haiku-4-5",
-            provider_family="claude",
-            reason_code="role_implementation_prefers_coding_harness",
-            confidence="medium",
-        ),
-    ),
-    "verification": (
-        RegistryEntry(
-            agent="verification-agent",
-            harness="codex",
-            model=None,
-            provider_family="openai",
-            reason_code="role_verification_prefers_cost_controlled_model",
-        ),
-        RegistryEntry(
-            agent="verification-agent",
-            harness="claude-native",
-            model="claude-haiku-4-5",
-            provider_family="claude",
-            reason_code="role_verification_prefers_cost_controlled_model",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="verification-agent",
-            harness="claude-native",
-            model="claude-sonnet-4-6",
-            provider_family="claude",
-            reason_code="role_verification_prefers_cost_controlled_model",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="verification-agent",
-            harness="claude-native",
-            model="claude-opus-4-8",
-            provider_family="claude",
-            reason_code="role_verification_prefers_cost_controlled_model",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="verification-agent",
-            harness="antigravity-native",
-            model="google/gemini-3.1-flash-lite",
-            provider_family="gemini",
-            reason_code="role_verification_prefers_cost_controlled_model",
-            confidence="medium",
-        ),
-    ),
-    "research": (
-        RegistryEntry(
-            agent="research-agent",
-            harness="claude-native",
-            model="claude-sonnet-4-6",
-            provider_family="claude",
-            reason_code="role_research_prefers_sonnet_context",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="research-agent",
-            harness="claude-native",
-            model="claude-opus-4-8",
-            provider_family="claude",
-            reason_code="role_research_prefers_sonnet_context",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="research-agent",
-            harness="claude-native",
-            model="claude-haiku-4-5",
-            provider_family="claude",
-            reason_code="role_research_prefers_sonnet_context",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="research-agent",
-            harness="codex",
-            model=None,
-            provider_family="openai",
-            reason_code="role_research_prefers_sonnet_context",
-            confidence="medium",
-        ),
-    ),
-    "general": (
-        RegistryEntry(
-            agent="general-agent",
-            harness="codex",
-            model=None,
-            provider_family="openai",
-            reason_code="role_general_prefers_balanced_model",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="general-agent",
-            harness="claude-native",
-            model="claude-sonnet-4-6",
-            provider_family="claude",
-            reason_code="role_general_prefers_balanced_model",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="general-agent",
-            harness="claude-native",
-            model="claude-opus-4-8",
-            provider_family="claude",
-            reason_code="role_general_prefers_balanced_model",
-            confidence="medium",
-        ),
-        RegistryEntry(
-            agent="general-agent",
-            harness="claude-native",
-            model="claude-haiku-4-5",
-            provider_family="claude",
-            reason_code="role_general_prefers_balanced_model",
-            confidence="medium",
-        ),
-    ),
-    "gemini_experimental": (
-        RegistryEntry(
-            agent="gemini-agent",
-            harness="antigravity-native",
-            model="google/gemini-3.1-flash-lite",
-            provider_family="gemini",
-            reason_code="role_gemini_experimental_prefers_gemini_native",
-        ),
-    ),
-}
-
 DEFAULT_REGISTRY = _load_selector_registry_artifact()
 
 
@@ -678,7 +458,10 @@ def _ts_cli_path(request: Mapping[str, Any]) -> Path | None:
 
 
 def _safe_subprocess_env() -> dict[str, str]:
-    keep = {"PATH", "HOME", "USER", "TMPDIR", "TMP", "TEMP", "SHELL", "NODE_PATH"}
+    # NODE_PATH is intentionally excluded: it can redirect the ts_cli's module
+    # resolution to an attacker-controlled directory, which would defeat the
+    # credential/code-loading isolation this allowlist exists to provide.
+    keep = {"PATH", "HOME", "USER", "TMPDIR", "TMP", "TEMP", "SHELL"}
     safe: dict[str, str] = {}
     for key, value in os.environ.items():
         upper = key.upper()
@@ -853,9 +636,25 @@ def _load_default_provider_usage_snapshot() -> tuple[Any | None, bool]:
         return (None, False)
     try:
         path = Path(raw_path).expanduser()
-        if not path.exists() or not path.is_file() or path.stat().st_size > PROVIDER_USAGE_MAX_BYTES:
+        # Refuse symlinks and resolve/read atomically to avoid a stat-then-read
+        # TOCTOU and symlink-follow: open with O_NOFOLLOW, fstat the opened fd
+        # (not the path), and bound the read so a swapped/oversized target cannot
+        # be read past the limit.
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
             return (None, True)
-        return _parse_provider_usage_snapshot(path.read_text(encoding="utf-8"))
+        try:
+            stat_result = os.fstat(fd)
+            import stat as _stat
+            if not _stat.S_ISREG(stat_result.st_mode) or stat_result.st_size > PROVIDER_USAGE_MAX_BYTES:
+                return (None, True)
+            raw = os.read(fd, PROVIDER_USAGE_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > PROVIDER_USAGE_MAX_BYTES:
+            return (None, True)
+        return _parse_provider_usage_snapshot(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError):
         return (None, True)
 

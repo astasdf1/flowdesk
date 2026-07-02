@@ -18,6 +18,8 @@ export interface FlowDeskOmnigentSelectionRequestV1 {
 	phase?: unknown;
 	tier?: unknown;
 	allowed_provider_families?: unknown;
+	available_agents?: unknown;
+	allowed_agents?: unknown;
 	preferred_provider_family?: unknown;
 	requires_headless?: unknown;
 	provider_usage?: unknown;
@@ -132,6 +134,49 @@ export const FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1: Record<FlowDeskOmnigentTaskR
 	],
 };
 
+// Parity with the Python selector (flowdesk_omnigent.selection): compatibility
+// is defense-in-depth over the curated registry, and available-agent filtering
+// lets the parent restrict selection to agents it actually registered.
+const PROVIDER_BY_HARNESS: Record<string, FlowDeskOmnigentProviderFamilyV1> = {
+	"claude-native": "claude",
+	"claude-sdk": "claude",
+	codex: "openai",
+	"antigravity-native": "gemini",
+};
+const MODEL_PREFIXES: Record<FlowDeskOmnigentProviderFamilyV1, readonly string[]> = {
+	claude: ["anthropic/", "claude/", "claude-"],
+	openai: ["openai/"],
+	gemini: ["google/", "gemini/", "gemini-"],
+};
+
+// Match the Python selector's `request.get("available_agents") or request.get("allowed_agents")`:
+// an EMPTY list is Python-falsy and falls through to allowed_agents (and, if that
+// is also absent, to "no constraint"). Using JS `??` here would instead treat `[]`
+// as "block every agent" — the opposite of the Python behavior.
+function pythonTruthy(value: unknown): boolean {
+	if (value === undefined || value === null || value === false) return false;
+	if (Array.isArray(value)) return value.length > 0;
+	if (typeof value === "string") return value.length > 0;
+	if (typeof value === "number") return value !== 0;
+	if (typeof value === "object") return Object.keys(value).length > 0;
+	return true;
+}
+
+function availableAgents(request: FlowDeskOmnigentSelectionRequestV1): Set<string> | undefined {
+	const raw = pythonTruthy(request.available_agents) ? request.available_agents : request.allowed_agents;
+	if (raw === undefined || raw === null) return undefined;
+	if (!Array.isArray(raw)) return new Set();
+	return new Set(raw.filter((item): item is string => typeof item === "string" && item.length > 0));
+}
+
+function entryCompatibilityError(entry: RegistryEntry): string | null {
+	if (PROVIDER_BY_HARNESS[entry.harness] !== entry.provider_family) return "model_family_mismatch_blocked";
+	if (entry.model === null) return null;
+	const prefixes = MODEL_PREFIXES[entry.provider_family] ?? [];
+	if (!prefixes.some((prefix) => entry.model!.startsWith(prefix))) return "model_family_mismatch_blocked";
+	return null;
+}
+
 export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSelectionRequestV1 | null | undefined, now = new Date()): FlowDeskOmnigentSelectionV1 {
 	if (!request || typeof request !== "object") {
 		return negativeSelection({ taskId: "task-unknown", role: "unknown", status: "blocked", reasonCodes: ["malformed_request_blocked"], blockedLabels: ["malformed_request"], now });
@@ -143,18 +188,28 @@ export function selectFlowDeskOmnigentAgentModelV1(request: FlowDeskOmnigentSele
 	}
 	const taskRole = role as FlowDeskOmnigentTaskRoleV1;
 	const allowed = allowedProviderFamilies(request.allowed_provider_families);
+	const available = availableAgents(request);
 	const tierReason = taskTierReasonCode(request);
 	const modelPreferenceReason = modelPreferenceReasonCode(request);
 	let providerUsageBlocked = false;
+	let agentUnavailable = false;
 	for (const entry of orderedEntriesForTask(request, FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1[taskRole])) {
+		if (available !== undefined && !available.has(entry.agent)) {
+			agentUnavailable = true;
+			continue;
+		}
 		if (!allowed.has(entry.provider_family)) continue;
 		if (!providerUsageAllows(request, entry.provider_family)) {
 			providerUsageBlocked = true;
 			continue;
 		}
+		const compatibilityError = entryCompatibilityError(entry);
+		if (compatibilityError !== null) {
+			return negativeSelection({ taskId, role: taskRole, status: "blocked", reasonCodes: [compatibilityError], blockedLabels: [compatibilityError], now });
+		}
 		return selectedSelection({ taskId, role: taskRole, entry, now, extraReasonCodes: [tierReason, modelPreferenceReason].filter((reason): reason is string => typeof reason === "string") });
 	}
-	const blockedReason = providerUsageBlocked ? "provider_usage_unavailable" : "provider_not_allowed";
+	const blockedReason = providerUsageBlocked ? "provider_usage_unavailable" : agentUnavailable ? "agent_not_available" : "provider_not_allowed";
 	return negativeSelection({ taskId, role: taskRole, status: "blocked", reasonCodes: [blockedReason], blockedLabels: [blockedReason], now });
 }
 

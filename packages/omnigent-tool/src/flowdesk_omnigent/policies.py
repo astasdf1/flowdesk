@@ -31,6 +31,7 @@ DEFAULT_AGENT_HARNESS_BINDINGS: Mapping[str, str] = {
 FLOWDESK_SELECTION_STATE_KEY = "flowdesk_selection_events"
 FLOWDESK_SELECTOR_TARGETS = frozenset({"flowdesk_select_agent_model", "select_agent_model", "mcp__flowdesk__flowdesk_select_agent_model"})
 _MAX_IN_MEMORY_SELECTION_RECORDS = 200
+_MAX_GUARD_CACHE_BYTES = 524288  # 512 KiB bound so a bloated/hostile cache cannot be read unbounded
 _DIRECT_SELECTION_RECORDS: list[dict[str, Any]] = []
 _GUARD_CACHE_ENV = "FLOWDESK_OMNIGENT_GUARD_CACHE_PATH"
 
@@ -47,6 +48,16 @@ def make_omnigent_selection_dispatch_guard(
     It does not prove that a selector tool was called earlier; it only ensures
     that guarded ``sys_session_send`` calls match FlowDesk's current static
     advisory binding contract.
+
+    ``allow_unknown_agents`` defaults to ``True`` **by design**, not by
+    oversight: per ADR 0003 the guard is scoped to FlowDesk-known
+    ``{agent, harness, model}`` bindings only and must not deny dispatches for
+    agents outside the FlowDesk registry (that would break legitimate Omnigent
+    workflows the guard has no opinion on). This means unknown agents pass
+    unchecked — an intentional scope limit, documented as a fail-open path in
+    ``docs/omnigent/OMNIGENT_UPSTREAM_HOOK_REVIEW.md`` ("Honest Limitations").
+    Set ``allow_unknown_agents=False`` only for a closed fixture where every
+    dispatchable agent is FlowDesk-registered.
     """
 
     local_selection_records: list[dict[str, Any]] = []
@@ -192,15 +203,33 @@ def _append_in_memory_selection_record(records: list[dict[str, Any]], record: Ma
 
 
 def _append_cached_selection_record(record: Mapping[str, Any]) -> None:
+    # Best-effort transient cache. NOT a trust boundary: a same-user process can
+    # still tamper with it (see OMNIGENT_UPSTREAM_HOOK_REVIEW "Honest Limitations").
+    # We harden the cheap, correct parts: 0700 dir / 0600 file so other users
+    # cannot read or forge it, a unique per-process tmp name so concurrent writers
+    # do not clobber a shared tmp, and O_NOFOLLOW so a swapped symlink is refused.
     path = _guard_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
         records = _read_cached_selection_records()
         records.append(dict(record))
         records = records[-_MAX_IN_MEMORY_SELECTION_RECORDS:]
-        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(records, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(path)
+        payload = json.dumps(records, sort_keys=True).encode("utf-8")
+        tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            try:
+                os.fchmod(fd, 0o600)
+            except (OSError, AttributeError):
+                pass
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, path)
     except OSError:
         return
 
@@ -208,8 +237,20 @@ def _append_cached_selection_record(record: Mapping[str, Any]) -> None:
 def _read_cached_selection_records() -> list[Mapping[str, Any]]:
     path = _guard_cache_path()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return []
+    try:
+        raw = os.read(fd, _MAX_GUARD_CACHE_BYTES + 1)
+    except OSError:
+        return []
+    finally:
+        os.close(fd)
+    if len(raw) > _MAX_GUARD_CACHE_BYTES:
+        return []
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return []
     if not isinstance(payload, list):
         return []

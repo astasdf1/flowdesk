@@ -10,6 +10,10 @@ from .selection import select_agent_model
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 MCP_TOOL_NAME = "flowdesk_select_agent_model"
+# Per-line byte cap so a newline-less giant payload cannot be buffered without
+# bound (`for line in sys.stdin` would read until EOF). 256 KiB is far above any
+# legitimate selection request.
+MAX_REQUEST_BYTES = 262144
 
 
 def handle_mcp_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -48,18 +52,42 @@ def handle_mcp_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
     return _error(request_id, -32601, "method not found")
 
 
+def _bounded_lines(stream: Any, max_bytes: int):
+    """Yield input lines, or ``None`` for a line exceeding ``max_bytes``.
+
+    Oversized lines are drained one bounded chunk at a time (never buffered
+    whole), so a newline-less giant payload cannot exhaust memory.
+    """
+
+    while True:
+        line = stream.readline(max_bytes + 1)
+        if line == "":
+            return
+        if len(line) > max_bytes and not line.endswith("\n"):
+            while True:
+                chunk = stream.readline(max_bytes + 1)
+                if chunk == "" or chunk.endswith("\n"):
+                    break
+            yield None
+            continue
+        yield line
+
+
 def main() -> None:
     """Run a line-delimited JSON-RPC stdio loop."""
 
-    for line in sys.stdin:
-        if not line.strip():
+    for line in _bounded_lines(sys.stdin, MAX_REQUEST_BYTES):
+        if line is None:
+            response: dict[str, Any] | None = _error(None, -32600, "request too large")
+        elif not line.strip():
             continue
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            response = _error(None, -32700, "parse error")
         else:
-            response = handle_mcp_request(request) if isinstance(request, Mapping) else _error(None, -32600, "invalid request")
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError:
+                response = _error(None, -32700, "parse error")
+            else:
+                response = handle_mcp_request(request) if isinstance(request, Mapping) else _error(None, -32600, "invalid request")
         if response is not None:
             sys.stdout.write(json.dumps(response, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
             sys.stdout.write("\n")
