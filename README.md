@@ -11,10 +11,10 @@ FlowDesk is influenced by Sakana AI's paper [Learning to Orchestrate Agents in N
 
 ## What Exists Today
 
-Version `0.2.1` is the current package version in this repository:
+Version `0.3.0` is the current package version in this repository:
 
 ```bash
-npm install @flowdesk/core@^0.2.1 @flowdesk/opencode-plugin@^0.2.1
+npm install @flowdesk/core@^0.3.0 @flowdesk/opencode-plugin@^0.3.0
 ```
 
 See `docs/INSTALL.md` for local development install, OpenCode bootstrap, and Omnigent tool installation.
@@ -148,7 +148,7 @@ Note on Operational Intelligence (Phase 7–8): the scoring/ledger/registry appa
 
 - [x] **Phase 3: OpenCode plugin command path (about 95%)**
   - `@flowdesk/opencode-plugin`, command-backed handlers, `/flowdesk-*` command files, bootstrap installer, safe local tools, chat intake/steering, pending confirmation behavior, status/recovery/diagnostics, and Release 1 production-eligible non-dispatch registration exist.
-  - Packages are prepared as `@flowdesk/core@0.2.1` and `@flowdesk/opencode-plugin@0.2.1` for the next package publication.
+  - Packages are prepared as `@flowdesk/core@0.3.0` and `@flowdesk/opencode-plugin@0.3.0` for the next package publication.
   - Remaining: user-facing hardening and continued proof that default behavior stays non-dispatch.
 
 - [ ] **Phase 4: OpenCode conformance (about 58%)**
