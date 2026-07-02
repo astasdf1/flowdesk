@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from .selection import agent_allowed_bindings, select_agent_model
@@ -230,9 +231,10 @@ def _append_cached_selection_record(record: Mapping[str, Any]) -> None:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
-        records = _read_cached_selection_records()
+        records = [r for r in _read_cached_selection_records() if not _selection_is_expired(r)]
         records.append(dict(record))
         records = records[-_MAX_IN_MEMORY_SELECTION_RECORDS:]
+        _cleanup_stale_guard_cache_tmp(path)
         payload = json.dumps(records, sort_keys=True).encode("utf-8")
         tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -245,6 +247,21 @@ def _append_cached_selection_record(record: Mapping[str, Any]) -> None:
         finally:
             os.close(fd)
         os.replace(tmp_path, path)
+    except OSError:
+        return
+
+
+def _cleanup_stale_guard_cache_tmp(path: Path) -> None:
+    # Remove abandoned tmp files left by a crashed writer. A live write completes in
+    # milliseconds, so any `<name>.<pid>.tmp` older than an hour is safe to delete.
+    try:
+        cutoff = time.time() - 3600
+        for tmp in path.parent.glob(f"{path.name}.*.tmp"):
+            try:
+                if tmp.stat().st_mtime < cutoff:
+                    tmp.unlink()
+            except OSError:
+                continue
     except OSError:
         return
 

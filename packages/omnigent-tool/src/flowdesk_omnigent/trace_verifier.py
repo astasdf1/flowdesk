@@ -151,18 +151,6 @@ def _issue(severity: TraceIssueSeverity, code: str, **details: Any) -> dict[str,
     return {"severity": severity, "code": code, **details}
 
 
-def _selection_provider_family(selection: Mapping[str, Any]) -> str | None:
-    provider_family = selection.get("provider_family")
-    if isinstance(provider_family, str) and provider_family in {"claude", "openai", "gemini"}:
-        return provider_family
-    selected_model = selection.get("model")
-    if isinstance(selected_model, str):
-        derived = _provider_family_for_model(selected_model)
-        if derived is not None:
-            return derived
-    return _provider_family_for_harness(selection.get("harness") if isinstance(selection.get("harness"), str) else None)
-
-
 def _provider_family_for_model(model: str | None) -> str | None:
     if model is None:
         return None

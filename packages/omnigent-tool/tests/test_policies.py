@@ -5,8 +5,10 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from flowdesk_omnigent.policies import make_omnigent_selection_dispatch_guard, omnigent_selection_dispatch_guard
+from flowdesk_omnigent import policies as _policies
 
 
 def _event(agent: str, model: str | None = None, *, session_ref: str | None = None) -> dict:
@@ -193,6 +195,46 @@ class PolicyTests(unittest.TestCase):
             "flowdesk_selection_events": [_selection_record(agent="architecture-agent", provider_family="openai", model=None)]
         }
         self.assertEqual(guard(event)["result"], "DENY")
+
+    def test_guard_cache_prunes_expired_records_on_append(self) -> None:
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "guard-cache.json")
+            with open(cache, "w", encoding="utf-8") as f:
+                json.dump(
+                    [
+                        {"task_id": "old", "agent": "architecture-agent", "selection_status": "selected", "expires_at": past},
+                        {"task_id": "keep", "agent": "architecture-agent", "selection_status": "selected", "expires_at": future},
+                    ],
+                    f,
+                )
+            with patch.dict(os.environ, {"FLOWDESK_OMNIGENT_GUARD_CACHE_PATH": cache}):
+                _policies._append_cached_selection_record(
+                    {"task_id": "new", "agent": "architecture-agent", "selection_status": "selected", "expires_at": future}
+                )
+                task_ids = {r.get("task_id") for r in _policies._read_cached_selection_records()}
+        self.assertNotIn("old", task_ids)  # expired record pruned
+        self.assertIn("keep", task_ids)
+        self.assertIn("new", task_ids)
+
+    def test_guard_reads_canonical_sys_session_send_event_shape(self) -> None:
+        # Pins the Omnigent sys_session_send tool_call shape the guard depends on:
+        # agent at arguments.agent, task id at arguments.args.task_id (or title),
+        # model/harness nested under arguments.args. A shape drift here would make the
+        # guard silently fail to extract the binding.
+        event = {
+            "type": "tool_call",
+            "target": "sys_session_send",
+            "data": {
+                "name": "sys_session_send",
+                "arguments": {"agent": "architecture-agent", "title": "task-shape", "args": {"model": "openai/gpt-5.5", "harness": "codex"}},
+            },
+        }
+        arguments = event["data"]["arguments"]
+        self.assertEqual(_policies._dispatch_model(arguments), "openai/gpt-5.5")
+        self.assertEqual(_policies._dispatch_harness(arguments), "codex")
+        self.assertEqual(_policies._dispatch_task_id(arguments), "task-shape")
 
     def test_allows_codex_default_agent_model_override(self) -> None:
         guard = make_omnigent_selection_dispatch_guard()

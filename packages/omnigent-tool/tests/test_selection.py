@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from flowdesk_omnigent.selection import DEFAULT_REGISTRY, HARNESSES_BY_FAMILY, RegistryEntry, agent_allowed_bindings, select_agent_model
+from flowdesk_omnigent.selection import DEFAULT_REGISTRY, HARNESSES_BY_FAMILY, MODEL_PREFIXES, RegistryEntry, agent_allowed_bindings, select_agent_model
 
 
 PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
@@ -45,6 +45,21 @@ class SelectionTests(unittest.TestCase):
                 claude_models = {entry.model for entry in entries if entry.provider_family == "claude" and entry.model is not None}
                 self.assertEqual(claude_models, CLAUDE_MODEL_SET)
                 self.assertTrue(any(entry.provider_family == "openai" and entry.model is None for entry in entries))
+
+    def test_registry_model_ids_conform_to_family_prefixes(self) -> None:
+        # Registry model ids are a manually-verified artifact (see OMNIGENT_SETUP).
+        # This is a drift canary: a non-null model id must match a known prefix for its
+        # provider family, catching typos or a family/model mismatch in the JSON.
+        for role, entries in DEFAULT_REGISTRY.items():
+            for entry in entries:
+                if entry.model is None:
+                    continue
+                with self.subTest(role=role, model=entry.model, family=entry.provider_family):
+                    prefixes = MODEL_PREFIXES.get(entry.provider_family, ())
+                    self.assertTrue(
+                        entry.model.startswith(tuple(prefixes)),
+                        f"model {entry.model} does not match any {entry.provider_family} prefix {prefixes}",
+                    )
 
     def test_registry_harness_is_coupled_to_model_family(self) -> None:
         for role, entries in DEFAULT_REGISTRY.items():

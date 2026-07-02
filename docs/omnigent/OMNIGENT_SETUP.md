@@ -101,6 +101,15 @@ omnigent server start
 Python 코드 변경은 editable install이라 `git pull`만으로 즉시 반영된다.
 `uv sync`는 `pyproject.toml`이 변경된 경우에만 필요하다.
 
+### 셀렉터 레지스트리 model-id 유지보수
+
+`packages/omnigent-tool/src/flowdesk_omnigent/omnigent_selector_registry.v1.json`의 model-id(예: `claude-opus-4-8`, `openai/gpt-5.5`, `gemini-3.5-flash`)는 **수동 확인 산물**이다. 자동 검증(provider 실 목록 대조)은 아직 없으므로, provider가 모델을 deprecate/rename하면 이 JSON을 직접 갱신해야 한다. 두 가지 안전망이 drift를 부분적으로 잡는다:
+
+- `test_registry_model_ids_conform_to_family_prefixes` — 모든 non-null model-id가 자기 provider family의 prefix(`claude-`/`anthropic/`/`claude/`, `openai/`, `google/`/`gemini-`/`gemini/`)를 따르는지 검사(typo·family 오배치 canary).
+- `test_registry_harness_is_coupled_to_model_family` — 각 엔트리 harness가 family 허용 harness인지 검사.
+
+이 검사들은 "id가 실제로 provider에 존재하는지"까지는 보장하지 못한다. 그건 dispatch 시점에 provider가 거부하면서 드러난다(선택은 advisory이므로 조용한 오작동은 아니지만, 갱신은 수동 책임이다).
+
 ---
 
 ## 구독 Provider 설정
