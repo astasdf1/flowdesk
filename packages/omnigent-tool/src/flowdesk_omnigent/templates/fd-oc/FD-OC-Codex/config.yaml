@@ -39,7 +39,11 @@ prompt: |
   agent and harness exactly. Use the selected task_id as the sys_session_send
   title to keep provenance checks aligned. Pass the selected harness as
   args.harness. If model is a non-empty string, pass it as args.model; if model
-  is null, omit args.model.
+  is null, omit args.model. The harness is coupled to the model's provider family:
+  if you override args.model to a different family, you MUST also set args.harness
+  to that family's harness (claude -> claude-native, openai -> codex,
+  gemini -> antigravity-native). Never send a model and harness from different
+  families in the same dispatch.
 
   Use task_role values that match the work: policy_security, architecture,
   implementation, verification, research, or general. Dispatch independent

@@ -93,6 +93,20 @@ MODEL_PREFIXES: Mapping[ProviderFamily, tuple[str, ...]] = {
     "gemini": ("google/", "gemini/", "gemini-"),
 }
 
+# Canonical harness for each provider family. Omnigent requires the harness to be
+# set together with the model, and the harness is coupled to the model's family:
+# a model-family change MUST carry the matching harness. HARNESSES_BY_FAMILY lists
+# every harness accepted for a family (primary first); PROVIDER_FAMILY_HARNESS is
+# the single default a caller should pair with a model of that family.
+HARNESSES_BY_FAMILY: Mapping[ProviderFamily, tuple[str, ...]] = {
+    "claude": ("claude-native", "claude-sdk"),
+    "openai": ("codex",),
+    "gemini": ("antigravity-native",),
+}
+PROVIDER_FAMILY_HARNESS: Mapping[ProviderFamily, str] = {
+    family: harnesses[0] for family, harnesses in HARNESSES_BY_FAMILY.items()
+}
+
 
 @dataclass(frozen=True)
 class RegistryEntry:
@@ -156,6 +170,21 @@ def _load_selector_registry_artifact() -> Mapping[str, tuple[RegistryEntry, ...]
 
 
 DEFAULT_REGISTRY = _load_selector_registry_artifact()
+
+
+def agent_allowed_bindings(
+    registry: Mapping[str, tuple[RegistryEntry, ...]] | None = None,
+) -> dict[str, set[tuple[str, str]]]:
+    """Map each agent to the set of ``(provider_family, harness)`` pairs the
+    registry sanctions for it. Used by the dispatch guard so a cross-family
+    model override is allowed only when the harness is changed together to a
+    family-consistent pair the agent actually supports."""
+
+    bindings: dict[str, set[tuple[str, str]]] = {}
+    for entries in (registry or DEFAULT_REGISTRY).values():
+        for entry in entries:
+            bindings.setdefault(entry.agent, set()).add((entry.provider_family, entry.harness))
+    return bindings
 
 
 def select_agent_model(

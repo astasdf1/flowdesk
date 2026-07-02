@@ -231,6 +231,14 @@
 
 4개 독립 관점(보안/권한경계, 엔지니어링/검증, 제품/전략, 운영/플랫폼결합) 리뷰의 검증된 발견을 우선순위화한 백로그다. HIGH 발견은 전부 코드 라인 단위로 재검증되었다(TS 로직 부재 0-hit grep, dead literal line 378 덮어쓰기, guard cache 무권한 write/무검증 read, template manifest 0건 등).
 
+### 구현 진행 (2026-07-02)
+
+- **완료**: TS selector parity 이식(available_agents/agent_not_available/compatibility, `pythonTruthy` 빈-리스트 무제약 재현) + parity fixture 3케이스, dead DEFAULT_REGISTRY 리터럴 제거, MCP stdio 바이트 상한, provider_usage O_NOFOLLOW/fstat, NODE_PATH 제거, guard cache perms(0700/0600)+unique tmp+O_NOFOLLOW+read 상한, guard 실패 방향 문서 정정(4곳), allow_unknown 의도 docstring.
+- **완료(신규)**: harness↔model-family 커플링 — 정본 `HARNESSES_BY_FAMILY`/`PROVIDER_FAMILY_HARNESS`(Py+TS), `agent_allowed_bindings()`, guard를 "recorded harness exact-match"에서 "dispatched (family,harness) 쌍 일관 + agent 레지스트리 허용 쌍" 검증으로 변경(matcher family 필터 제거), 레지스트리 harness↔family 불변식 테스트(Py+TS), cross-family coupled guard 테스트 3건, FD-OC 프롬프트에 family별 harness 동반 설정 지시. 검증: Python 97 OK, TS core 987, TS omnigent 26.
+- **부분**: guard cache 무결성(same-UID poisoning은 근본적으로 남음 — session-binding/HMAC 미도입, "best-effort" 문서 유지); parity fixture(allowed_models·preferred+tier·dispatchable=false·expires_at 케이스 미추가); guard 실패 모드 매트릭스의 `OMNIGENT_SAFETY_RULES.md` 반영 미완.
+- **미착수(P1 잔여)**: event-shape 계약 테스트+버전 핀, model-id drift 검증, guard cache pruning/다중세션 격리(근본 해결 upstream hook), template manifest, live E2E smoke, 설치경로 정리, ts_cli ADR.
+- **후속 parity 갭**: 트레이스 verifier(`trace_verifier`/`omnigent-trace-verification`)는 여전히 cross-family override를 실패로 본다. guard가 coupled cross-family를 허용하도록 바뀌었으므로, post-run verifier도 동일 규칙(agent 레지스트리 허용 쌍)으로 완화해야 guard와 정합. 별도 작업으로 분리.
+
 ### P0 — 기존 기능의 정확성·안전 (즉시)
 
 - [ ] **Guard cache 위협모델 + 무결성**: `~/.cache/flowdesk/omnigent-selection-guard-cache.json`은 같은 UID의 임의 프로세스가 가짜 selected record를 주입해 guard DENY를 우회할 수 있다(`policies.py:194-216` — 권한 미설정 write, 무검증 Mapping 수용). 파일/디렉토리 0600/0700 강제, session_ref 매칭 필수화, record HMAC 서명 또는 in-process-only(캐시 폐기) 중 설계 결정 + 테스트. (보안 HIGH)

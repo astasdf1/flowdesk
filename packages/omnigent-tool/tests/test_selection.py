@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from flowdesk_omnigent.selection import DEFAULT_REGISTRY, RegistryEntry, select_agent_model
+from flowdesk_omnigent.selection import DEFAULT_REGISTRY, HARNESSES_BY_FAMILY, RegistryEntry, agent_allowed_bindings, select_agent_model
 
 
 PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
@@ -45,6 +45,25 @@ class SelectionTests(unittest.TestCase):
                 claude_models = {entry.model for entry in entries if entry.provider_family == "claude" and entry.model is not None}
                 self.assertEqual(claude_models, CLAUDE_MODEL_SET)
                 self.assertTrue(any(entry.provider_family == "openai" and entry.model is None for entry in entries))
+
+    def test_registry_harness_is_coupled_to_model_family(self) -> None:
+        for role, entries in DEFAULT_REGISTRY.items():
+            for entry in entries:
+                with self.subTest(role=role, agent=entry.agent, harness=entry.harness):
+                    allowed = HARNESSES_BY_FAMILY.get(entry.provider_family)
+                    self.assertIsNotNone(allowed, f"unknown provider_family {entry.provider_family}")
+                    self.assertIn(entry.harness, allowed)
+
+    def test_agent_allowed_bindings_pairs_family_with_harness(self) -> None:
+        bindings = agent_allowed_bindings()
+        # Every recorded pair must be internally consistent (harness belongs to family).
+        for agent, pairs in bindings.items():
+            for family, harness in pairs:
+                with self.subTest(agent=agent, family=family, harness=harness):
+                    self.assertIn(harness, HARNESSES_BY_FAMILY.get(family, ()))
+        # architecture-agent supports both openai/codex and claude/claude-native.
+        self.assertIn(("openai", "codex"), bindings["architecture-agent"])
+        self.assertIn(("claude", "claude-native"), bindings["architecture-agent"])
 
     def test_python_registry_exposes_dedicated_gemini_agent(self) -> None:
         entries = DEFAULT_REGISTRY["gemini_experimental"]

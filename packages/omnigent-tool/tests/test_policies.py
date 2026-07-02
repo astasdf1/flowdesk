@@ -161,6 +161,39 @@ class PolicyTests(unittest.TestCase):
         }
         self.assertEqual(guard(event)["result"], "DENY")
 
+    def test_allows_cross_family_when_harness_changed_together(self) -> None:
+        # Model family changed AND harness changed to match; (openai, codex) is a
+        # registered binding for policy-security-agent -> coupled switch is allowed.
+        guard = make_omnigent_selection_dispatch_guard()
+        event = _event("policy-security-agent", "openai/gpt-5.5")
+        event["data"]["arguments"]["args"]["harness"] = "codex"
+        event["session_state"] = {
+            "flowdesk_selection_events": [_selection_record(agent="policy-security-agent", provider_family="claude", model="claude-opus-4-8")]
+        }
+        self.assertEqual(guard(event)["result"], "ALLOW")
+
+    def test_denies_cross_family_when_harness_not_updated(self) -> None:
+        # Model switched to openai but harness left as claude-native -> pair is
+        # inconsistent (harness family != model family) -> DENY.
+        guard = make_omnigent_selection_dispatch_guard()
+        event = _event("policy-security-agent", "openai/gpt-5.5")
+        event["data"]["arguments"]["args"]["harness"] = "claude-native"
+        event["session_state"] = {
+            "flowdesk_selection_events": [_selection_record(agent="policy-security-agent", provider_family="claude", model="claude-opus-4-8")]
+        }
+        self.assertEqual(guard(event)["result"], "DENY")
+
+    def test_denies_family_outside_agent_registry_even_when_pair_consistent(self) -> None:
+        # gemini+antigravity is an internally consistent pair, but architecture-agent
+        # has no gemini binding in the registry -> DENY.
+        guard = make_omnigent_selection_dispatch_guard()
+        event = _event("architecture-agent", "google/gemini-3.1-flash-lite")
+        event["data"]["arguments"]["args"]["harness"] = "antigravity-native"
+        event["session_state"] = {
+            "flowdesk_selection_events": [_selection_record(agent="architecture-agent", provider_family="openai", model=None)]
+        }
+        self.assertEqual(guard(event)["result"], "DENY")
+
     def test_allows_codex_default_agent_model_override(self) -> None:
         guard = make_omnigent_selection_dispatch_guard()
         event = _event("architecture-agent", "openai/gpt-5.5")

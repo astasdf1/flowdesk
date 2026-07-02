@@ -148,6 +148,19 @@ const MODEL_PREFIXES: Record<FlowDeskOmnigentProviderFamilyV1, readonly string[]
 	openai: ["openai/"],
 	gemini: ["google/", "gemini/", "gemini-"],
 };
+// Harness is coupled to model family (parity with the Python selector). A model-family
+// change must carry the matching harness; every registry entry's harness must be one of
+// its family's harnesses (asserted in tests). Primary entry = canonical default.
+export const HARNESSES_BY_FAMILY: Record<FlowDeskOmnigentProviderFamilyV1, readonly string[]> = {
+	claude: ["claude-native", "claude-sdk"],
+	openai: ["codex"],
+	gemini: ["antigravity-native"],
+};
+export const PROVIDER_FAMILY_HARNESS: Record<FlowDeskOmnigentProviderFamilyV1, string> = {
+	claude: HARNESSES_BY_FAMILY.claude[0],
+	openai: HARNESSES_BY_FAMILY.openai[0],
+	gemini: HARNESSES_BY_FAMILY.gemini[0],
+};
 
 // Match the Python selector's `request.get("available_agents") or request.get("allowed_agents")`:
 // an EMPTY list is Python-falsy and falls through to allowed_agents (and, if that

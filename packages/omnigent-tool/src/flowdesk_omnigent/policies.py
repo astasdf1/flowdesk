@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .selection import select_agent_model
+from .selection import agent_allowed_bindings, select_agent_model
 
 DEFAULT_AGENT_MODEL_BINDINGS: Mapping[str, str | None] = {
     "policy-security-agent": None,
@@ -34,6 +34,14 @@ _MAX_IN_MEMORY_SELECTION_RECORDS = 200
 _MAX_GUARD_CACHE_BYTES = 524288  # 512 KiB bound so a bloated/hostile cache cannot be read unbounded
 _DIRECT_SELECTION_RECORDS: list[dict[str, Any]] = []
 _GUARD_CACHE_ENV = "FLOWDESK_OMNIGENT_GUARD_CACHE_PATH"
+_agent_allowed_bindings_cache: dict[str, set[tuple[str, str]]] | None = None
+
+
+def _agent_allowed_bindings() -> dict[str, set[tuple[str, str]]]:
+    global _agent_allowed_bindings_cache
+    if _agent_allowed_bindings_cache is None:
+        _agent_allowed_bindings_cache = agent_allowed_bindings()
+    return _agent_allowed_bindings_cache
 
 
 def make_omnigent_selection_dispatch_guard(
@@ -124,20 +132,27 @@ def _evaluate_omnigent_selection_dispatch_guard(
             return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection was not dispatchable."}
         if _selection_is_expired(matching_selection):
             return {"result": "DENY", "reason": "FlowDesk dispatch guard: recorded selection has expired."}
-        expected_provider_family = _selection_provider_family(matching_selection, agent=agent)
-        expected_harness = matching_selection.get("harness")
-    else:
-        expected_provider_family = _provider_family_for_harness(DEFAULT_AGENT_HARNESS_BINDINGS.get(agent))
-        expected_harness = DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
+    # Omnigent couples harness to model family: a model-family change must carry a
+    # matching harness. We validate the dispatched (family, harness) pair for internal
+    # consistency and then require it to be a pair the agent is registered for, rather
+    # than exact-matching the recorded selection's single family/harness. This lets an
+    # agent switch across the families it supports as long as model+harness move
+    # together, while a stale/mismatched harness still fails closed.
     actual_harness = _dispatch_harness(arguments)
     effective_harness = actual_harness or DEFAULT_AGENT_HARNESS_BINDINGS.get(agent)
-    if isinstance(expected_harness, str) and effective_harness != expected_harness:
-        return {"result": "DENY", "reason": "FlowDesk dispatch guard: harness does not match selected binding."}
-    if actual_model is not None:
-        if actual_provider_family is None:
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: model override does not match selected binding."}
-        if expected_provider_family is not None and actual_provider_family != expected_provider_family:
-            return {"result": "DENY", "reason": "FlowDesk dispatch guard: model family does not match selected binding."}
+    if actual_model is not None and actual_provider_family is None:
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: model override does not match selected binding."}
+    # The family the dispatch targets: from the model when overridden, else from the harness.
+    dispatch_family = actual_provider_family if actual_model is not None else _provider_family_for_harness(effective_harness)
+    harness_family = _provider_family_for_harness(effective_harness)
+    if actual_model is not None and harness_family != dispatch_family:
+        return {"result": "DENY", "reason": "FlowDesk dispatch guard: harness does not match model family."}
+    allowed_bindings = _agent_allowed_bindings().get(agent)
+    if allowed_bindings is not None:
+        if not isinstance(effective_harness, str) or dispatch_family is None:
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: harness/model family unresolved for guarded agent."}
+        if (dispatch_family, effective_harness) not in allowed_bindings:
+            return {"result": "DENY", "reason": "FlowDesk dispatch guard: (model family, harness) is not a registered binding for this agent."}
     return {"result": "ALLOW"}
 
 
@@ -345,8 +360,10 @@ def _matching_recorded_selection(
     event_session_ref = _event_session_ref(event)
     task_id = _dispatch_task_id(arguments)
     agent = arguments.get("agent")
-    model = _dispatch_model(arguments)
-    actual_provider_family = _model_provider_family(model)
+    # Match on session/task/agent/expiry only. Provider-family is intentionally NOT
+    # a match key: the binding check in the guard now validates the dispatched
+    # (family, harness) pair against the agent's registered bindings, so a legitimate
+    # cross-family dispatch (with a matching harness) must still find its selection.
     for raw in reversed(combined_records):
         if not isinstance(raw, Mapping):
             continue
@@ -358,9 +375,6 @@ def _matching_recorded_selection(
         if raw.get("agent") != agent:
             continue
         if _selection_is_expired(raw):
-            continue
-        expected_provider_family = _selection_provider_family(raw, agent=agent)
-        if actual_provider_family is not None and expected_provider_family is not None and actual_provider_family != expected_provider_family:
             continue
         return raw
     return None

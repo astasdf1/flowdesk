@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1, selectFlowDeskOmnigentAgentModelV1, validateFlowDeskOmnigentSelectionV1 } from "./index.js";
+import { FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1, HARNESSES_BY_FAMILY, selectFlowDeskOmnigentAgentModelV1, validateFlowDeskOmnigentSelectionV1 } from "./index.js";
 
 interface ParityCase {
 	name: string;
@@ -40,6 +40,16 @@ test("omnigent registry exposes all Claude variants per agent role", () => {
 		const claudeModels = new Set(entries.filter((entry) => entry.provider_family === "claude").map((entry) => entry.model).filter((model): model is string => typeof model === "string"));
 		assert.deepEqual(claudeModels, CLAUDE_MODEL_SET, role);
 		assert.ok(entries.some((entry) => entry.provider_family === "openai" && entry.model === null), `${role} must retain an OpenAI fallback`);
+	}
+});
+
+test("omnigent registry harness is coupled to model family for every entry", () => {
+	for (const [role, entries] of Object.entries(FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1)) {
+		for (const entry of entries) {
+			const allowedHarnesses = HARNESSES_BY_FAMILY[entry.provider_family];
+			assert.ok(allowedHarnesses, `${role}: unknown provider_family ${entry.provider_family}`);
+			assert.ok(allowedHarnesses.includes(entry.harness), `${role}: harness ${entry.harness} is not valid for family ${entry.provider_family}`);
+		}
 	}
 });
 
