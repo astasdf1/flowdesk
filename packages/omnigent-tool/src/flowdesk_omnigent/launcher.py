@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -60,6 +61,96 @@ def build_server_env(
     if origins:
         env["OMNIGENT_WS_ALLOWED_ORIGINS"] = ",".join(origins)
     return env
+
+
+def tailscale_origins_from_status(status: dict[str, object], *, port: int) -> list[str]:
+    """Build trusted browser origins for THIS machine's own Tailscale identity.
+
+    Reads the ``Self`` node from ``tailscale status --json`` output and returns
+    the browser ``Origin`` values a tailnet client would send when reaching this
+    server: the MagicDNS name over HTTPS (``tailscale serve`` terminates TLS on
+    443) and over plain HTTP on the server port, plus each Tailscale IP on the
+    server port (IPv6 bracketed). Only *this* node's own addresses are produced
+    — never other tailnet peers — so the CSRF trust stays scoped to this host.
+
+    :param status: Parsed ``tailscale status --json`` object.
+    :param port: The server port, used for the direct (non-serve) origins.
+    :returns: De-duplicated origins in ``scheme://host[:port]`` form.
+    """
+    self_node = status.get("Self")
+    if not isinstance(self_node, dict):
+        return []
+    origins: list[str] = []
+    dns = str(self_node.get("DNSName") or "").strip().rstrip(".")
+    if dns:
+        origins.append(f"https://{dns}")  # tailscale serve (443, no port)
+        origins.append(f"http://{dns}:{port}")  # direct MagicDNS + port
+    for raw_ip in self_node.get("TailscaleIPs") or []:
+        ip = str(raw_ip).strip()
+        if not ip:
+            continue
+        host = f"[{ip}]" if ":" in ip else ip  # bracket IPv6 literals
+        origins.append(f"http://{host}:{port}")
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for origin in origins:
+        if origin not in seen:
+            seen.add(origin)
+            deduped.append(origin)
+    return deduped
+
+
+def detect_tailscale_origins(*, port: int) -> list[str]:
+    """Run ``tailscale status --json`` and return this machine's own origins.
+
+    Degrades gracefully: returns ``[]`` (with a stderr note) when the tailscale
+    CLI is absent, the command fails, the node is logged out, or the output
+    cannot be parsed — the launcher then falls back to loopback-only plus any
+    explicit ``--allowed-origin`` values.
+
+    :param port: The server port, forwarded to :func:`tailscale_origins_from_status`.
+    :returns: This node's Tailscale origins, or ``[]`` when unavailable.
+    """
+    if shutil.which("tailscale") is None:
+        print(
+            "[flowdesk] --tailscale: tailscale CLI not found; skipping auto-origins",
+            file=sys.stderr,
+        )
+        return []
+    try:
+        proc = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(
+            f"[flowdesk] --tailscale: could not run tailscale status: {exc}",
+            file=sys.stderr,
+        )
+        return []
+    if proc.returncode != 0:
+        print(
+            f"[flowdesk] --tailscale: tailscale status failed (exit {proc.returncode}); skipping",
+            file=sys.stderr,
+        )
+        return []
+    try:
+        status = json.loads(proc.stdout)
+    except ValueError as exc:
+        print(
+            f"[flowdesk] --tailscale: could not parse tailscale status: {exc}",
+            file=sys.stderr,
+        )
+        return []
+    origins = tailscale_origins_from_status(status, port=port)
+    if not origins:
+        print(
+            "[flowdesk] --tailscale: no Tailscale identity found (logged out?); skipping",
+            file=sys.stderr,
+        )
+    return origins
 
 
 def missing_template_paths(agent_root: Path) -> list[Path]:
@@ -129,6 +220,17 @@ def main(argv: list[str] | None = None) -> int:
             "no path or trailing slash."
         ),
     )
+    parser.add_argument(
+        "--tailscale",
+        action="store_true",
+        help=(
+            "Auto-allow THIS machine's own Tailscale MagicDNS hostname and IPs "
+            "as trusted browser origins (runs `tailscale status --json`). Lets "
+            "tailnet browsers create sessions without 403. Portable — detects "
+            "the local node at launch, so any operator's own install works. "
+            "Skips gracefully if the tailscale CLI is missing or logged out."
+        ),
+    )
     args = parser.parse_args(argv)
 
     agent_root = Path(args.agent_root).expanduser()
@@ -153,7 +255,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {path}", file=sys.stderr)
         print("Run: flowdesk-omnigent-install-templates", file=sys.stderr)
         return 2
-    server_env = build_server_env(args.allowed_origins)
+    allowed_origins = list(args.allowed_origins or [])
+    if args.tailscale:
+        allowed_origins.extend(detect_tailscale_origins(port=args.port))
+    server_env = build_server_env(allowed_origins)
     if args.dry_run:
         print("server:")
         print("  " + _shell_join(server_command))

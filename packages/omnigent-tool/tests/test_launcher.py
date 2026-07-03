@@ -11,8 +11,10 @@ from flowdesk_omnigent.launcher import (
     build_host_command,
     build_server_command,
     build_server_env,
+    detect_tailscale_origins,
     main,
     missing_template_paths,
+    tailscale_origins_from_status,
 )
 
 
@@ -168,6 +170,83 @@ class DryRunAllowedOriginTests(unittest.TestCase):
         self.assertIn(
             "OMNIGENT_WS_ALLOWED_ORIGINS=https://host.ts.net", stdout.getvalue()
         )
+
+
+class TailscaleOriginsFromStatusTests(unittest.TestCase):
+    _STATUS = {
+        "Self": {
+            "DNSName": "bagel-macpro-055-macbookpro.tailabcdc5.ts.net.",
+            "TailscaleIPs": ["100.105.213.56", "fd7a:115c:a1e0::3d39:d539"],
+        }
+    }
+
+    def test_builds_magicdns_and_ip_origins(self) -> None:
+        origins = tailscale_origins_from_status(self._STATUS, port=6767)
+        self.assertEqual(
+            origins,
+            [
+                "https://bagel-macpro-055-macbookpro.tailabcdc5.ts.net",
+                "http://bagel-macpro-055-macbookpro.tailabcdc5.ts.net:6767",
+                "http://100.105.213.56:6767",
+                "http://[fd7a:115c:a1e0::3d39:d539]:6767",  # IPv6 bracketed
+            ],
+        )
+
+    def test_strips_trailing_dot_from_dnsname(self) -> None:
+        origins = tailscale_origins_from_status(
+            {"Self": {"DNSName": "host.ts.net."}}, port=6767
+        )
+        self.assertIn("https://host.ts.net", origins)
+        self.assertNotIn("https://host.ts.net.", origins)
+
+    def test_missing_self_returns_empty(self) -> None:
+        self.assertEqual(tailscale_origins_from_status({}, port=6767), [])
+
+    def test_logged_out_shape_returns_empty(self) -> None:
+        # A logged-out node has no DNSName and no IPs.
+        self.assertEqual(
+            tailscale_origins_from_status(
+                {"Self": {"DNSName": "", "TailscaleIPs": []}}, port=6767
+            ),
+            [],
+        )
+
+
+class DetectTailscaleOriginsTests(unittest.TestCase):
+    def test_returns_empty_when_cli_missing(self) -> None:
+        with patch("flowdesk_omnigent.launcher.shutil.which", return_value=None):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(detect_tailscale_origins(port=6767), [])
+
+    def test_parses_cli_output(self) -> None:
+        import subprocess
+
+        fake = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"Self": {"DNSName": "host.tailnet.ts.net.", "TailscaleIPs": ["100.64.0.5"]}}',
+            stderr="",
+        )
+        with patch(
+            "flowdesk_omnigent.launcher.shutil.which", return_value="/usr/bin/tailscale"
+        ):
+            with patch("flowdesk_omnigent.launcher.subprocess.run", return_value=fake):
+                origins = detect_tailscale_origins(port=6767)
+        self.assertIn("https://host.tailnet.ts.net", origins)
+        self.assertIn("http://100.64.0.5:6767", origins)
+
+    def test_bad_json_returns_empty(self) -> None:
+        import subprocess
+
+        fake = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not json", stderr=""
+        )
+        with patch(
+            "flowdesk_omnigent.launcher.shutil.which", return_value="/usr/bin/tailscale"
+        ):
+            with patch("flowdesk_omnigent.launcher.subprocess.run", return_value=fake):
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(detect_tailscale_origins(port=6767), [])
 
 
 if __name__ == "__main__":

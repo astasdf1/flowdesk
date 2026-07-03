@@ -205,6 +205,16 @@ flowdesk-omnigent-start --allowed-origin https://your-host.ts.net
 
 The value is the browser `Origin` header — `scheme://host[:port]`, no path or trailing slash (default ports 80/443 are omitted). Keeping `--bind 127.0.0.1` with `tailscale serve` in front is the most restrictive setup: the server is reachable only through the tailnet, not on the LAN.
 
+For Tailscale specifically, `--tailscale` does this automatically — it runs `tailscale status --json` and allows *this machine's own* MagicDNS hostname (`https://<host>.<tailnet>.ts.net` for `tailscale serve`, plus `http://<host>...:<port>`) and Tailscale IPs (`http://100.x.y.z:<port>`, IPv6 bracketed). It is portable: any operator who installs the tool and Tailscale gets their own node's origins with no hardcoding, and it only ever trusts this node's own addresses (never other tailnet peers). It degrades gracefully — if the `tailscale` CLI is missing or the node is logged out, it prints a note and adds nothing.
+
+```bash
+flowdesk-omnigent-start --tailscale
+# combine with explicit origins if you also reach it another way:
+flowdesk-omnigent-start --tailscale --allowed-origin https://proxy.example.com
+```
+
+Neither flag changes access control: in single-user local mode Omnigent authenticates no one (every reachable client is the `local` user), so *who* can reach the server is governed by your Tailscale ACLs, not by these origins (which are only a CSRF guard).
+
 If the launcher was backgrounded (or its terminal is gone), stop the whole trip with the companion command:
 
 ```bash
