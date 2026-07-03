@@ -5,7 +5,7 @@ description: Workspace-first FlowDesk orchestrator.
 executor:
   type: omnigent
   config:
-    harness: claude-native
+    harness: claude-sdk
 
 os_env:
   type: caller_process
