@@ -191,9 +191,19 @@ flowdesk-omnigent-start --port 6767
 flowdesk-omnigent-start --agent-root ~/.omnigent/agents
 flowdesk-omnigent-start --no-host-daemon
 flowdesk-omnigent-start --omnigent-bin /path/to/omnigent
+flowdesk-omnigent-start --allowed-origin https://your-host.ts.net
 ```
 
 The launcher binds to `127.0.0.1` by default. For Tailscale access, pass your Tailscale IP or MagicDNS hostname with `--bind`, for example `flowdesk-omnigent-start --bind 100.x.y.z --open`. Use `--bind 0.0.0.0` only when you intentionally want every interface to listen. The launcher is foreground-only. It does not register launchd/systemd services, edit shell profiles, or silently write Omnigent config. Stop it with `Ctrl-C`.
+
+**External browser access (403 on new sessions).** Omnigent's CSRF guard only trusts a *loopback* browser `Origin`, so an external browser (e.g. reaching the server over Tailscale via `tailscale serve`, or directly at a Tailscale IP) gets `403 Forbidden` on `POST /v1/sessions` — new sessions silently fail to create even though reads work. This is independent of the bind address: switching to `--bind 0.0.0.0` does **not** fix it (and needlessly exposes every interface). Instead, allow the exact browser origin with `--allowed-origin` (repeatable), which sets `OMNIGENT_WS_ALLOWED_ORIGINS` on the server:
+
+```bash
+# Reaching the server at https://your-host.ts.net (tailscale serve → 127.0.0.1)
+flowdesk-omnigent-start --allowed-origin https://your-host.ts.net
+```
+
+The value is the browser `Origin` header — `scheme://host[:port]`, no path or trailing slash (default ports 80/443 are omitted). Keeping `--bind 127.0.0.1` with `tailscale serve` in front is the most restrictive setup: the server is reachable only through the tailnet, not on the LAN.
 
 If the launcher was backgrounded (or its terminal is gone), stop the whole trip with the companion command:
 
