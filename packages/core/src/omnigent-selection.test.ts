@@ -27,6 +27,7 @@ const registryArtifact = JSON.parse(readFileSync("packages/omnigent-tool/src/flo
 };
 
 const CLAUDE_MODEL_SET = new Set(["claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]);
+const OPENAI_GPT56_MODEL_SET = new Set(["openai/gpt-5.6", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna"]);
 
 test("omnigent TypeScript registry matches shared registry artifact", () => {
 	assert.equal(registryArtifact.schema_version, "flowdesk.omnigent_selector_registry.v1");
@@ -38,8 +39,18 @@ test("omnigent registry exposes all Claude variants per agent role", () => {
 	for (const [role, entries] of Object.entries(FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1)) {
 		if (role === "gemini_experimental") continue;
 		const claudeModels = new Set(entries.filter((entry) => entry.provider_family === "claude").map((entry) => entry.model).filter((model): model is string => typeof model === "string"));
-		assert.deepEqual(claudeModels, CLAUDE_MODEL_SET, role);
+		assert.deepEqual(claudeModels, new Set([...CLAUDE_MODEL_SET, "claude-fable-5"]), role);
 		assert.ok(entries.some((entry) => entry.provider_family === "openai" && entry.model === null), `${role} must retain an OpenAI fallback`);
+	}
+});
+
+test("omnigent registry exposes GPT-5.6 variants in every non-gemini role", () => {
+	for (const [role, entries] of Object.entries(FLOWDESK_OMNIGENT_DEFAULT_REGISTRY_V1)) {
+		if (role === "gemini_experimental") continue;
+		const openaiModels = new Set(entries.filter((entry) => entry.provider_family === "openai").map((entry) => entry.model).filter((model): model is string => typeof model === "string"));
+		for (const modelId of OPENAI_GPT56_MODEL_SET) {
+			assert.ok(openaiModels.has(modelId), `${role} is missing ${modelId}`);
+		}
 	}
 });
 
@@ -147,6 +158,39 @@ test("omnigent selection can choose Codex spark model tier", () => {
 	assert.equal(result.agent, "general-agent");
 	assert.equal(result.harness, "codex");
 	assert.equal(result.model, "openai/gpt-5.3-codex-spark");
+});
+
+test("omnigent selection can choose GPT-5.6 Luna preferred model", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-gpt56-luna", task_role: "implementation", allowed_provider_families: ["openai"], preferred_model: "openai/gpt-5.6-luna" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "openai");
+	assert.equal(result.harness, "codex");
+	assert.equal(result.model, "openai/gpt-5.6-luna");
+});
+
+test("omnigent selection can choose GPT-5.6 Terra preferred model", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-gpt56-terra", task_role: "architecture", allowed_provider_families: ["openai"], preferred_model: "openai/gpt-5.6-terra" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "openai");
+	assert.equal(result.harness, "codex");
+	assert.equal(result.model, "openai/gpt-5.6-terra");
+});
+
+test("omnigent selection can choose Claude Fable 5 preferred model", () => {
+	const result = selectFlowDeskOmnigentAgentModelV1(
+		{ task_id: "task-claude-fable-5", task_role: "policy_security", allowed_provider_families: ["claude"], preferred_model: "claude-fable-5" },
+		new Date("2026-06-26T00:00:00.000Z"),
+	);
+	assert.equal(result.selection_status, "selected");
+	assert.equal(result.provider_family, "claude");
+	assert.equal(result.harness, "claude-native");
+	assert.equal(result.model, "claude-fable-5");
 });
 
 test("omnigent selection can choose exact preferred model", () => {

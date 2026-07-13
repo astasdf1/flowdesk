@@ -13,6 +13,7 @@ from flowdesk_omnigent.selection import DEFAULT_REGISTRY, HARNESSES_BY_FAMILY, M
 PARITY_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "omnigent_selection_parity_cases.json"
 REGISTRY_ARTIFACT_PATH = Path(__file__).parents[1] / "src" / "flowdesk_omnigent" / "omnigent_selector_registry.v1.json"
 CLAUDE_MODEL_SET = {"claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"}
+OPENAI_GPT56_MODEL_SET = {"openai/gpt-5.6", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna"}
 
 
 class SelectionTests(unittest.TestCase):
@@ -43,8 +44,16 @@ class SelectionTests(unittest.TestCase):
                 if role == "gemini_experimental":
                     continue
                 claude_models = {entry.model for entry in entries if entry.provider_family == "claude" and entry.model is not None}
-                self.assertEqual(claude_models, CLAUDE_MODEL_SET)
+                self.assertEqual(claude_models, CLAUDE_MODEL_SET | {"claude-fable-5"})
                 self.assertTrue(any(entry.provider_family == "openai" and entry.model is None for entry in entries))
+
+    def test_python_registry_exposes_openai_gpt56_variants_per_role(self) -> None:
+        for role, entries in DEFAULT_REGISTRY.items():
+            with self.subTest(role=role):
+                if role == "gemini_experimental":
+                    continue
+                openai_models = {entry.model for entry in entries if entry.provider_family == "openai" and entry.model is not None}
+                self.assertTrue(OPENAI_GPT56_MODEL_SET.issubset(openai_models))
 
     def test_selection_golden_examples_shape_is_stable(self) -> None:
         # Golden bridge between the Python response shape and the core schema:
@@ -258,6 +267,54 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(result["model"], "openai/gpt-5.4-mini-fast")
         self.assertIn("model_tier_preference_applied", result["reason_codes"])
         self.assertIn("model_family_compatible", result["reason_codes"])
+
+    def test_openai_preferred_model_can_select_gpt56_luna_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-gpt56-luna",
+                "task_role": "implementation",
+                "allowed_provider_families": ["openai"],
+                "preferred_model": "openai/gpt-5.6-luna",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "openai")
+        self.assertEqual(result["harness"], "codex")
+        self.assertEqual(result["model"], "openai/gpt-5.6-luna")
+
+    def test_openai_preferred_model_can_select_gpt56_terra_variant(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-gpt56-terra",
+                "task_role": "architecture",
+                "allowed_provider_families": ["openai"],
+                "preferred_model": "openai/gpt-5.6-terra",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "openai")
+        self.assertEqual(result["harness"], "codex")
+        self.assertEqual(result["model"], "openai/gpt-5.6-terra")
+
+    def test_claude_preferred_model_can_select_fable_five(self) -> None:
+        result = select_agent_model(
+            {
+                "task_id": "task-claude-fable-5",
+                "task_role": "policy_security",
+                "allowed_provider_families": ["claude"],
+                "preferred_model": "claude-fable-5",
+            },
+            write_evidence=False,
+        )
+
+        self.assertEqual(result["selection_status"], "selected")
+        self.assertEqual(result["provider_family"], "claude")
+        self.assertEqual(result["harness"], "claude-native")
+        self.assertEqual(result["model"], "claude-fable-5")
 
     def test_claude_model_tier_selects_sonnet_5_variant(self) -> None:
         result = select_agent_model(
