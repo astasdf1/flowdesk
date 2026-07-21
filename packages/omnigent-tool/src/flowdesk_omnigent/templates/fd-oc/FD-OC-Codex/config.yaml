@@ -4,6 +4,7 @@ description: Workspace-first FlowDesk orchestrator with Codex parent.
 
 executor:
   type: omnigent
+  model: openai/gpt-5.6-luna
   config:
     harness: codex
 
